@@ -9,10 +9,10 @@ use crate::prompt::{agent_skill_md, AGENT_PROMPT};
 pub struct Codex;
 
 const MCP_PARENT: &str = "mcp_servers";
-const MCP_SERVER_NAME: &str = "ast-outline";
+const MCP_SERVER_NAME: &str = "ast-bro";
 /// First-line marker used to confirm a SKILL.md file is one we wrote
 /// before deleting it during uninstall.
-const SKILL_MARKER: &str = "name: ast-outline";
+const SKILL_MARKER: &str = "name: ast-bro";
 
 impl Codex {
     fn prompt_path(&self, scope: &Scope) -> Result<PathBuf, String> {
@@ -36,13 +36,13 @@ impl Codex {
     /// for user-global. Same SKILL.md shape as Claude Code.
     fn skill_path(&self, scope: &Scope) -> Result<PathBuf, String> {
         match scope {
-            Scope::Local(root) => Ok(root.join(".agents/skills/ast-outline/SKILL.md")),
-            Scope::Global => paths::under_home(".agents/skills/ast-outline/SKILL.md"),
+            Scope::Local(root) => Ok(root.join(".agents/skills/ast-bro/SKILL.md")),
+            Scope::Global => paths::under_home(".agents/skills/ast-bro/SKILL.md"),
         }
     }
     fn mcp_entry(&self) -> Table {
         let mut t = Table::new();
-        t["command"] = toml_edit::value("ast-outline");
+        t["command"] = toml_edit::value("ast-bro");
         let mut args = Array::new();
         args.push("mcp");
         t["args"] = toml_edit::value(args);
@@ -94,10 +94,20 @@ impl Installer for Codex {
         if let Some(c) = common::uninstall_prompt_in(&self.prompt_path(scope)?, opts)? {
             changes.push(c);
         }
+        // Remove current MCP server name
         if let Some(c) = common::uninstall_toml_object_in(
             &self.config_path(scope)?,
             MCP_PARENT,
             MCP_SERVER_NAME,
+            opts,
+        )? {
+            changes.push(c);
+        }
+        // Also remove legacy name from pre-rename installs
+        if let Some(c) = common::uninstall_toml_object_in(
+            &self.config_path(scope)?,
+            MCP_PARENT,
+            common::OLD_MCP_SERVER_NAME,
             opts,
         )? {
             changes.push(c);
@@ -144,7 +154,7 @@ mod tests {
         let p = dir.path().join("AGENTS.md");
         assert!(p.exists());
         let contents = std::fs::read_to_string(&p).unwrap();
-        assert!(contents.contains("ast-outline:begin"));
+        assert!(contents.contains("ast-bro:begin"));
     }
 
     #[test]
@@ -156,8 +166,8 @@ mod tests {
             .unwrap();
         let contents =
             std::fs::read_to_string(dir.path().join(".codex/config.toml")).unwrap();
-        assert!(contents.contains("[mcp_servers.ast-outline]"));
-        assert!(contents.contains("command = \"ast-outline\""));
+        assert!(contents.contains("[mcp_servers.ast-bro]"));
+        assert!(contents.contains("command = \"ast-bro\""));
         assert!(contents.contains("\"mcp\""));
     }
 
@@ -179,7 +189,7 @@ mod tests {
         assert!(out.contains("# my codex config"), "comment lost: {}", out);
         assert!(out.contains("model = \"gpt-5\""));
         assert!(out.contains("approval_policy = \"auto\""));
-        assert!(out.contains("[mcp_servers.ast-outline]"));
+        assert!(out.contains("[mcp_servers.ast-bro]"));
     }
 
     #[test]
@@ -191,12 +201,12 @@ mod tests {
             .unwrap();
         assert!(matches!(change, Change::Created(_)));
         let contents = std::fs::read_to_string(
-            dir.path().join(".agents/skills/ast-outline/SKILL.md"),
+            dir.path().join(".agents/skills/ast-bro/SKILL.md"),
         )
         .unwrap();
         assert!(contents.starts_with("---\n"));
-        assert!(contents.contains("name: ast-outline"));
-        assert!(contents.contains("## Use `ast-outline` to explore the code"));
+        assert!(contents.contains("name: ast-bro"));
+        assert!(contents.contains("## Use `ast-bro` to explore the code"));
     }
 
     #[test]
@@ -215,7 +225,7 @@ mod tests {
         let scope = Scope::Local(dir.path().to_path_buf());
         let opts = InstallOpts::default();
         Codex.install_skills(&scope, &opts).unwrap();
-        let skill_dir = dir.path().join(".agents/skills/ast-outline");
+        let skill_dir = dir.path().join(".agents/skills/ast-bro");
         assert!(skill_dir.join("SKILL.md").exists());
         Codex.uninstall(&scope, &opts).unwrap();
         assert!(!skill_dir.exists());
@@ -238,6 +248,6 @@ mod tests {
         Codex.uninstall(&scope, &opts).unwrap();
         let out = std::fs::read_to_string(&p).unwrap();
         assert!(out.contains("[mcp_servers.docs]"));
-        assert!(!out.contains("[mcp_servers.ast-outline]"));
+        assert!(!out.contains("[mcp_servers.ast-bro]"));
     }
 }

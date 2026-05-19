@@ -22,7 +22,7 @@ pub fn run_deps(
     if file.is_dir() {
         eprintln!(
             "# note: `deps` expects a file, not a directory.\n  \
-             Use `ast-outline graph <dir>` to visualize the full dependency graph."
+             Use `ast-bro graph <dir>` to visualize the full dependency graph."
         );
         return 2;
     }
@@ -71,7 +71,7 @@ pub fn run_reverse_deps(
     if file.is_dir() {
         eprintln!(
             "# note: `reverse-deps` expects a file, not a directory.\n  \
-             Use `ast-outline graph <dir>` to visualize the full dependency graph."
+             Use `ast-bro graph <dir>` to visualize the full dependency graph."
         );
         return 2;
     }
@@ -173,8 +173,8 @@ pub fn run_graph(
         eprintln!(
             "# note: `graph` expects a directory, not a file.\n\
              For per-file dependency analysis, use:\n  \
-             ast-outline deps <file>       # what this file imports\n  \
-             ast-outline reverse-deps <file>  # who imports this file"
+             ast-bro deps <file>       # what this file imports\n  \
+             ast-bro reverse-deps <file>  # who imports this file"
         );
         return 2;
     }
@@ -208,7 +208,7 @@ pub fn run_graph(
 }
 
 /// Resolve `(graph_root, scope)` for directory-arg subcommands (cycles,
-/// graph). Walks up from `path` looking for an existing `.ast-outline/deps/`
+/// graph). Walks up from `path` looking for an existing `.ast-bro/deps/`
 /// (capped at `cwd`); falls back to building at `cwd` when `path` is under
 /// `cwd`, else `path` itself. `scope` is `path` expressed relative to the
 /// resolved root (POSIX, "" = whole root).
@@ -225,7 +225,7 @@ fn current_dir_or_dot() -> PathBuf {
     std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
 }
 
-/// Prefer an existing `.ast-outline/deps/` cache between `file` and CWD.
+/// Prefer an existing `.ast-bro/deps/` cache between `file` and CWD.
 /// Falls back to the manifest walk (`find_root_for`) when no cache exists,
 /// preserving the historical behaviour for users running `deps` for the
 /// first time.
@@ -288,7 +288,7 @@ pub fn find_root_for(file: &Path) -> Result<PathBuf, String> {
 
 /// Load (or build) the unified graph for `root`, going through the shared
 /// in-memory `Arc` so repeated calls within one process — most importantly
-/// `ast-outline mcp` — reuse the same parsed graph instead of re-deserialising.
+/// `ast-bro mcp` — reuse the same parsed graph instead of re-deserialising.
 fn load_unified(root: &Path, force_rebuild: bool) -> std::io::Result<Arc<crate::graph_cache::UnifiedGraph>> {
     if force_rebuild {
         graph_cache::shared::rebuild(root)

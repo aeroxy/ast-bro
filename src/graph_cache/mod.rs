@@ -1,11 +1,11 @@
 //! Unified on-disk + in-memory graph cache shared by `src/deps/` (file-level
 //! import graph) and `src/calls/` (symbol-level call graph).
 //!
-//! One cache file at `.ast-outline/deps/graph.bin`, one fingerprint table,
+//! One cache file at `.ast-bro/deps/graph.bin`, one fingerprint table,
 //! one advisory lock. The deps half is built eagerly on first access; the
 //! calls half lives behind `Option<CallGraph>` and only materialises when a
 //! `callers`/`callees` query asks for it. Within a process — most importantly
-//! `ast-outline mcp` — every consumer reads through `shared::get_or_init`,
+//! `ast-bro mcp` — every consumer reads through `shared::get_or_init`,
 //! which holds an `Arc<RwLock<Arc<UnifiedGraph>>>` so multiple tool calls
 //! share one in-memory graph and pay the parse cost exactly once per session.
 //!

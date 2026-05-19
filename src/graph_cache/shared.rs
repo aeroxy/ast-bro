@@ -1,6 +1,6 @@
 //! Process-wide in-memory share of the unified graph.
 //!
-//! The whole point: in `ast-outline mcp` (and any other long-lived
+//! The whole point: in `ast-bro mcp` (and any other long-lived
 //! invocation), every tool dispatch should reuse one parsed graph instead
 //! of re-loading from disk. `OnceLock<RwLock<HashMap<root, Arc<UnifiedGraph>>>>`
 //! gives us per-repo memoization without Tokio or extra deps. Within a

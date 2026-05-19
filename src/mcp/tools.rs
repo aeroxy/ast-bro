@@ -14,7 +14,7 @@ pub fn list() -> Value {
         "tools": [
             {
                 "name": "map",
-                "description": "AST-based structural map of source files — signatures with line ranges, no method bodies. Returns text by default (5–10× smaller than reading the file). Set `json: true` for the machine-readable schema `ast-outline.map.v1`.",
+                "description": "AST-based structural map of source files — signatures with line ranges, no method bodies. Returns text by default (5–10× smaller than reading the file). Set `json: true` for the machine-readable schema `ast-bro.map.v1`.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -30,14 +30,14 @@ pub fn list() -> Value {
                         "no_attrs":   { "type": "boolean", "description": "Hide attributes / decorators." },
                         "no_lines":   { "type": "boolean", "description": "Hide line-range suffixes." },
                         "glob":       { "type": "string",  "description": "Glob filter applied during directory walk." },
-                        "json":       { "type": "boolean", "description": "Return JSON (schema `ast-outline.map.v1`) instead of text." }
+                        "json":       { "type": "boolean", "description": "Return JSON (schema `ast-bro.map.v1`) instead of text." }
                     },
                     "required": ["paths"]
                 }
             },
             {
                 "name": "digest",
-                "description": "One-page module map for an unfamiliar directory: every file's types and public methods. Returns text by default; set `json: true` for `ast-outline.map.v1`.",
+                "description": "One-page module map for an unfamiliar directory: every file's types and public methods. Returns text by default; set `json: true` for `ast-bro.map.v1`.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -57,7 +57,7 @@ pub fn list() -> Value {
             },
             {
                 "name": "show",
-                "description": "Extract source of one or more symbols from a single file. Suffix matching: `TakeDamage`, or `Player.TakeDamage` when ambiguous. For markdown the symbol is a heading. Returns text by default; set `json: true` for `ast-outline.show.v1`.",
+                "description": "Extract source of one or more symbols from a single file. Suffix matching: `TakeDamage`, or `Player.TakeDamage` when ambiguous. For markdown the symbol is a heading. Returns text by default; set `json: true` for `ast-bro.show.v1`.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -75,7 +75,7 @@ pub fn list() -> Value {
             },
             {
                 "name": "implements",
-                "description": "Find subclasses / implementations of a type using AST matching. Transitive by default — set `direct: true` for level-1 only. Returns text by default; set `json: true` for `ast-outline.implements.v1`.",
+                "description": "Find subclasses / implementations of a type using AST matching. Transitive by default — set `direct: true` for level-1 only. Returns text by default; set `json: true` for `ast-bro.implements.v1`.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -94,7 +94,7 @@ pub fn list() -> Value {
             },
             {
                 "name": "surface",
-                "description": "True public API surface — resolves `pub use` re-exports (Rust) and `__all__` (Python) to compute exactly what a downstream user sees, not just every `pub`/non-underscore item per file. Falls back to visibility-filtered output for Java/C#/Go/Kotlin (no real re-export concept). Returns text by default; set `json: true` for `ast-outline.surface.v1`.",
+                "description": "True public API surface — resolves `pub use` re-exports (Rust) and `__all__` (Python) to compute exactly what a downstream user sees, not just every `pub`/non-underscore item per file. Falls back to visibility-filtered output for Java/C#/Go/Kotlin (no real re-export concept). Returns text by default; set `json: true` for `ast-bro.surface.v1`.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -110,7 +110,7 @@ pub fn list() -> Value {
             },
             {
                 "name": "deps",
-                "description": "Forward import-graph traversal: what does this file import (transitively)? Builds a per-repo dep graph at `.ast-outline/deps/graph.bin` on first call, then reuses it. Returns text by default; set `json: true` for `ast-outline.deps.v1`.",
+                "description": "Forward import-graph traversal: what does this file import (transitively)? Builds a per-repo dep graph at `.ast-bro/deps/graph.bin` on first call, then reuses it. Returns text by default; set `json: true` for `ast-bro.deps.v1`.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -125,7 +125,7 @@ pub fn list() -> Value {
             },
             {
                 "name": "reverse_deps",
-                "description": "Reverse import-graph: who imports this file (transitively)? Useful for refactor blast-radius assessment. Returns text by default; set `json: true` for `ast-outline.reverse-deps.v1`.",
+                "description": "Reverse import-graph: who imports this file (transitively)? Useful for refactor blast-radius assessment. Returns text by default; set `json: true` for `ast-bro.reverse-deps.v1`.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -140,7 +140,7 @@ pub fn list() -> Value {
             },
             {
                 "name": "cycles",
-                "description": "Find import cycles via Tarjan SCC. Returns the list of strongly-connected components with `len > 1` (or singletons with self-edges). Returns text by default; set `json: true` for `ast-outline.cycles.v1`. Exits non-zero when cycles exist (useful for CI gates).",
+                "description": "Find import cycles via Tarjan SCC. Returns the list of strongly-connected components with `len > 1` (or singletons with self-edges). Returns text by default; set `json: true` for `ast-bro.cycles.v1`. Exits non-zero when cycles exist (useful for CI gates).",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -153,12 +153,12 @@ pub fn list() -> Value {
             },
             {
                 "name": "graph",
-                "description": "Emit the file-level dependency graph. Returns text by default; set `json: true` for `ast-outline.graph.v1`.",
+                "description": "Emit the file-level dependency graph. Returns text by default; set `json: true` for `ast-bro.graph.v1`.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
                         "path":             { "type": "string",  "description": "Repo root (default \".\")." },
-                        "json":             { "type": "boolean", "description": "Return JSON (schema `ast-outline.graph.v1`) instead of text." },
+                        "json":             { "type": "boolean", "description": "Return JSON (schema `ast-bro.graph.v1`) instead of text." },
                         "include_external": { "type": "boolean", "description": "Include unresolved imports in JSON output." },
                         "rebuild":          { "type": "boolean" }
                     }
@@ -166,7 +166,7 @@ pub fn list() -> Value {
             },
             {
                 "name": "search",
-                "description": "Hybrid BM25 + dense semantic search over the repo. First call builds a per-repo index at `.ast-outline/index/` (one-time, ~seconds for typical repos). Returns text by default; set `json: true` for `ast-outline.search.v1`.",
+                "description": "Hybrid BM25 + dense semantic search over the repo. First call builds a per-repo index at `.ast-bro/index/` (one-time, ~seconds for typical repos). Returns text by default; set `json: true` for `ast-bro.search.v1`.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -175,14 +175,14 @@ pub fn list() -> Value {
                         "top_k":     { "type": "integer", "description": "Max results to return (default 10).", "minimum": 1 },
                         "alpha":     { "type": "number",  "description": "Override semantic-vs-BM25 weight (0.0=pure BM25, 1.0=pure semantic). Default auto-detects from query type." },
                         "languages": { "type": "array", "items": { "type": "string" }, "description": "Restrict to chunks of these languages (e.g. [\"rust\", \"python\"])." },
-                        "json":      { "type": "boolean", "description": "Return JSON (schema `ast-outline.search.v1`) instead of text." }
+                        "json":      { "type": "boolean", "description": "Return JSON (schema `ast-bro.search.v1`) instead of text." }
                     },
                     "required": ["query"]
                 }
             },
             {
                 "name": "find_related",
-                "description": "Find chunks semantically similar to a given file:line. Useful for navigating to related code. Returns text by default; set `json: true` for `ast-outline.related.v1`.",
+                "description": "Find chunks semantically similar to a given file:line. Useful for navigating to related code. Returns text by default; set `json: true` for `ast-bro.related.v1`.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -197,7 +197,7 @@ pub fn list() -> Value {
             },
             {
                 "name": "index",
-                "description": "Build, refresh, or inspect the per-repo search index. With `stats: true` returns index stats. With `rebuild: true` drops the cache and rebuilds. Otherwise just opens (and incrementally refreshes if files changed). Returns text by default; set `json: true` for `ast-outline.index-stats.v1`.",
+                "description": "Build, refresh, or inspect the per-repo search index. With `stats: true` returns index stats. With `rebuild: true` drops the cache and rebuilds. Otherwise just opens (and incrementally refreshes if files changed). Returns text by default; set `json: true` for `ast-bro.index-stats.v1`.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -210,7 +210,7 @@ pub fn list() -> Value {
             },
             {
                 "name": "callers",
-                "description": "Find callers of a symbol — AST-accurate, no grep noise. Suffix-matches the target like `show`/`implements`: `TakeDamage`, or `Type.method` when ambiguous. Builds a unified deps+calls cache at `.ast-outline/deps/graph.bin` on first call (the call half is built lazily). Returns text by default; set `json: true` for `ast-outline.callers.v1`.",
+                "description": "Find callers of a symbol — AST-accurate, no grep noise. Suffix-matches the target like `show`/`implements`: `TakeDamage`, or `Type.method` when ambiguous. Builds a unified deps+calls cache at `.ast-bro/deps/graph.bin` on first call (the call half is built lazily). Returns text by default; set `json: true` for `ast-bro.callers.v1`.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -227,7 +227,7 @@ pub fn list() -> Value {
             },
             {
                 "name": "callees",
-                "description": "What does this symbol call? — AST-accurate forward call traversal. Suffix-matches the target like `callers`. Returns text by default; set `json: true` for `ast-outline.callees.v1`.",
+                "description": "What does this symbol call? — AST-accurate forward call traversal. Suffix-matches the target like `callers`. Returns text by default; set `json: true` for `ast-bro.callees.v1`.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -239,6 +239,22 @@ pub fn list() -> Value {
                         "json":     { "type": "boolean" }
                     },
                     "required": ["target"]
+                }
+            },
+            {
+                "name": "run",
+                "description": "AST-aware pattern search and rewrite. Use metavariables like $FUNC, $ARG, $$$BODY for structural matching. Search-only without rewrite; transform code with rewrite and write. Returns text by default; set `json: true` for `ast-bro.run.v1`.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "pattern":  { "type": "string",  "description": "AST pattern with metavariables (e.g. '$FUNC($$$)')." },
+                        "rewrite":  { "type": "string",  "description": "Replacement template (e.g. 'bar($A)'). Omit for search-only." },
+                        "lang":     { "type": "string",  "description": "Language (auto-detected from file paths if omitted)." },
+                        "paths":    { "type": "array", "items": { "type": "string" }, "description": "Files or directories to search.", "minItems": 1 },
+                        "write":    { "type": "boolean", "description": "Write changes to disk. Default: false (dry-run)." },
+                        "json":     { "type": "boolean" }
+                    },
+                    "required": ["pattern"]
                 }
             }
         ]
@@ -268,6 +284,7 @@ pub fn call(name: &str, args: Value) -> CallResult {
         "index"        => crate::search::mcp::run_index(args),
         "callers"      => run_callers(args),
         "callees"      => run_callees(args),
+        "run"          => run_run(args),
         other => CallResult::Error(format!("unknown tool: {}", other)),
     }
 }
@@ -708,4 +725,127 @@ fn run_graph(args: Value) -> CallResult {
         crate::deps::render::render_graph_text(&graph)
     };
     CallResult::Text(body)
+}
+
+// ---- run (AST-aware pattern search + rewrite) ----
+
+/// Safety cap: MCP rewrite can touch at most this many files in a single call.
+/// Prevents a broad pattern from destroying an entire repo.
+const MCP_REWRITE_MAX_FILES: usize = 50;
+
+#[derive(Deserialize, Default)]
+struct RunArgs {
+    pattern: String,
+    #[serde(default)]
+    rewrite: Option<String>,
+    #[serde(default)]
+    lang: Option<String>,
+    #[serde(default)]
+    paths: Vec<PathBuf>,
+    #[serde(default)]
+    write: bool,
+    #[serde(default)]
+    json: bool,
+}
+
+fn run_run(args: Value) -> CallResult {
+    let a: RunArgs = match serde_json::from_value(args) {
+        Ok(v) => v,
+        Err(e) => return CallResult::Error(format!("invalid arguments: {}", e)),
+    };
+    let search_paths = if a.paths.is_empty() {
+        vec![PathBuf::from(".")]
+    } else {
+        a.paths
+    };
+    let files = crate::walk_and_parse(&search_paths, None);
+    let mut output = String::new();
+    let mut rewrite_count: usize = 0;
+    let mut error_count: usize = 0;
+
+    for result in &files {
+        let source = match std::fs::read_to_string(&result.path) {
+            Ok(s) => s,
+            Err(_) => {
+                error_count += 1;
+                continue;
+            },
+        };
+        let lang = if let Some(ref l) = a.lang {
+            match crate::run::cli::parse_lang(l) {
+                Some(l) => l,
+                None => {
+                    error_count += 1;
+                    continue;
+                },
+            }
+        } else {
+            match crate::run::detect_lang(&result.path) {
+                Some(l) => l,
+                None => {
+                    error_count += 1;
+                    continue;
+                },
+            }
+        };
+
+        if let Some(ref replacement) = a.rewrite {
+            match crate::run::rewrite(&source, lang, &a.pattern, replacement) {
+                Ok(Some(new_source)) => {
+                    if a.write {
+                        if rewrite_count >= MCP_REWRITE_MAX_FILES {
+                            output.push_str(&format!(
+                                "{}: skipped (safety cap {} files reached)\n",
+                                result.path.display(),
+                                MCP_REWRITE_MAX_FILES
+                            ));
+                            continue;
+                        }
+                        if let Err(e) = std::fs::write(&result.path, &new_source) {
+                            output.push_str(&format!("{}: write failed: {}\n", result.path.display(), e));
+                            error_count += 1;
+                        } else {
+                            output.push_str(&format!("{}: rewritten\n", result.path.display()));
+                            rewrite_count += 1;
+                        }
+                    } else {
+                        let diff = crate::run::cli::unified_diff(
+                            &result.path,
+                            &source,
+                            &new_source,
+                        );
+                        output.push_str(&diff);
+                    }
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    output.push_str(&format!("{}: {}\n", result.path.display(), e));
+                    error_count += 1;
+                },
+            }
+        } else {
+            match crate::run::search(&source, lang, &a.pattern) {
+                Ok(matches) => {
+                    for m in &matches {
+                        let first_line = m.matched_text.lines().next().unwrap_or("");
+                        output.push_str(&format!(
+                            "{}:{}:{}: {}\n",
+                            result.path.display(), m.start_line, m.start_col, first_line
+                        ));
+                    }
+                }
+                Err(e) => {
+                    output.push_str(&format!("{}: {}\n", result.path.display(), e));
+                    error_count += 1;
+                },
+            }
+        }
+    }
+    if a.write && rewrite_count > 0 {
+        output.push_str(&format!("\n{} file(s) rewritten\n", rewrite_count));
+    }
+    if error_count > 0 {
+        output.push_str(&format!("{} file(s) had errors\n", error_count));
+    }
+    CallResult::Text(output)
 }

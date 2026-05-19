@@ -7,7 +7,7 @@ use serde_json::{json, Map, Value};
 /// String prefix every adapter's hook command begins with. Adapter
 /// predicates use this to find our entry without relying on a stable
 /// `id` field (Claude Code and Gemini hook entries do not have one).
-pub const MARKER: &str = "ast-outline hook";
+pub const MARKER: &str = "ast-bro hook";
 
 pub fn upsert<F>(root: &mut Value, path: &[&str], entry: Value, matches: F) -> bool
 where
@@ -95,7 +95,7 @@ mod tests {
     fn entry() -> Value {
         json!({
             "matcher": "Read",
-            "hooks": [{"type": "command", "command": "ast-outline hook --protocol claude-code"}]
+            "hooks": [{"type": "command", "command": "ast-bro hook --protocol claude-code"}]
         })
     }
 
@@ -139,7 +139,7 @@ mod tests {
         let mut root = json!({
             "hooks": {
                 "PreToolUse": [
-                    { "matcher": "Read", "hooks": [{"type": "command", "command": "ast-outline hook OLD"}] },
+                    { "matcher": "Read", "hooks": [{"type": "command", "command": "ast-bro hook OLD"}] },
                     { "matcher": "Edit", "hooks": [{"type": "command", "command": "echo hi"}] }
                 ]
             }
@@ -149,7 +149,7 @@ mod tests {
         assert_eq!(arr.len(), 2);
         assert_eq!(
             arr[0]["hooks"][0]["command"].as_str().unwrap(),
-            "ast-outline hook --protocol claude-code"
+            "ast-bro hook --protocol claude-code"
         );
         assert_eq!(arr[1]["matcher"].as_str().unwrap(), "Edit");
     }
@@ -167,7 +167,7 @@ mod tests {
         let mut root = json!({
             "hooks": {
                 "PreToolUse": [
-                    { "matcher": "Read", "hooks": [{"type": "command", "command": "ast-outline hook X"}] },
+                    { "matcher": "Read", "hooks": [{"type": "command", "command": "ast-bro hook X"}] },
                     { "matcher": "Edit", "hooks": [{"type": "command", "command": "echo Y"}] }
                 ]
             }

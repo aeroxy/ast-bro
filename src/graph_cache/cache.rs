@@ -1,5 +1,5 @@
 //! Disk persistence for the unified `UnifiedGraph` at
-//! `.ast-outline/deps/graph.bin`. Replaces the previous `src/deps/cache.rs`
+//! `.ast-bro/deps/graph.bin`. Replaces the previous `src/deps/cache.rs`
 //! which serialized only `DepGraph`. Schema bump from `deps-index.v1` to
 //! `graph-index.v1` forces a one-time rebuild for upgrading users.
 //!
@@ -19,6 +19,8 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 pub const CACHE_SCHEMA: &str = JSON_SCHEMA_GRAPH_INDEX;
+/// Legacy schema from pre-rename installs — still readable.
+pub const CACHE_SCHEMA_LEGACY: &str = "ast-outline.graph-index.v2";
 
 /// On-disk wrapper combining the unified graph + the file fingerprints used
 /// for freshness detection.
@@ -32,7 +34,19 @@ pub struct CacheFile {
 }
 
 pub fn cache_dir(root: &Path) -> PathBuf {
-    root.join(".ast-outline").join("deps")
+    let new_dir = root.join(".ast-bro").join("deps");
+    let old_dir = root.join(".ast-outline").join("deps");
+
+    if old_dir.exists() && !new_dir.exists() {
+        if let Err(e) = fs::rename(&old_dir, &new_dir) {
+            eprintln!("warning: could not rename .ast-outline -> .ast-bro: {e}");
+            return old_dir;
+        } else {
+            eprintln!("info: auto-renamed .ast-outline -> .ast-bro");
+        }
+    }
+
+    new_dir
 }
 
 pub fn cache_path(root: &Path) -> PathBuf {
@@ -74,7 +88,7 @@ pub fn load_with_delta(root: &Path) -> LoadOutcome {
         Ok((cf, _)) => cf,
         Err(_) => return LoadOutcome::Missing,
     };
-    if cf.schema != CACHE_SCHEMA {
+    if cf.schema != CACHE_SCHEMA && cf.schema != CACHE_SCHEMA_LEGACY {
         return LoadOutcome::Missing;
     }
     let delta = compute_delta(root, root, &cf.files);

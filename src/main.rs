@@ -15,12 +15,13 @@ mod main_helpers;
 mod mcp;
 mod project_root;
 mod search;
+mod run;
 mod surface;
 
 use crate::core::{DigestOptions, MapOptions, ParseResult};
 
 #[derive(Parser)]
-#[command(name = "ast-outline")]
+#[command(name = "ast-bro")]
 #[command(version)]
 #[command(about = "Fast, AST-based structural outline for source files", long_about = None)]
 struct Cli {
@@ -103,7 +104,7 @@ enum Commands {
     },
     /// Print the agent prompt snippet
     Prompt,
-    /// Install ast-outline into a coding-agent CLI
+    /// Install ast-bro into a coding-agent CLI
     Install {
         #[arg(long, conflicts_with = "all")]
         target: Option<String>,
@@ -121,16 +122,16 @@ enum Commands {
         dry_run: bool,
         #[arg(long)]
         force: bool,
-        /// Install ast-outline as an MCP server entry instead of the CLAUDE.md prompt.
+        /// Install ast-bro as an MCP server entry instead of the CLAUDE.md prompt.
         /// Combine with `--skills` to install both.
         #[arg(long)]
         mcp: bool,
-        /// Install ast-outline as a Claude Code skill instead of the CLAUDE.md prompt.
+        /// Install ast-bro as a Claude Code skill instead of the CLAUDE.md prompt.
         /// Combine with `--mcp` to install both.
         #[arg(long)]
         skills: bool,
     },
-    /// Remove ast-outline from a coding-agent CLI
+    /// Remove ast-bro from a coding-agent CLI
     Uninstall {
         #[arg(long, conflicts_with = "all")]
         target: Option<String>,
@@ -375,6 +376,36 @@ enum Commands {
         #[arg(long)]
         compact: bool,
     },
+    /// AST-aware search and rewrite using pattern matching with metavariables
+    Run {
+        /// Pattern to match (e.g. '$FUNC($$$)', 'if ($COND) { $$$BODY }')
+        #[arg(short, long)]
+        pattern: String,
+
+        /// Replacement template (e.g. 'bar($A)'). Omit for search-only mode.
+        #[arg(short, long)]
+        rewrite: Option<String>,
+
+        /// Language (auto-detected from file extension if omitted)
+        #[arg(short, long)]
+        lang: Option<String>,
+
+        /// Paths to search (files or directories). Defaults to current directory.
+        #[arg(trailing_var_arg = true)]
+        paths: Vec<PathBuf>,
+
+        /// Actually write changes. Without this flag, only shows matches/dry-run.
+        #[arg(long)]
+        write: bool,
+
+        /// Emit output as JSON
+        #[arg(long)]
+        json: bool,
+
+        /// With --json: compact single-line JSON
+        #[arg(long)]
+        compact: bool,
+    },
 }
 
 pub(crate) fn parse_file(path: &Path) -> Option<ParseResult> {
@@ -422,7 +453,7 @@ pub(crate) fn walk_and_parse(paths: &[PathBuf], glob_str: Option<&str>) -> Vec<P
     }
 
     builder.hidden(false); // don't ignore hidden files automatically if they match
-    file_filter::add_filters(&mut builder); // honour .ast-outline-ignore
+    file_filter::add_filters(&mut builder, &existing[0]); // honour .ast-bro-ignore
 
     if let Some(g) = glob_str {
         if let Ok(override_builder) = ignore::overrides::OverrideBuilder::new("").add(g) {
@@ -436,7 +467,7 @@ pub(crate) fn walk_and_parse(paths: &[PathBuf], glob_str: Option<&str>) -> Vec<P
 
     // Pre-compute the (single) root used to check the hardcoded denylist —
     // when multiple roots are passed, fall back to the first; users who do
-    // that are typically scoping ast-outline at a sub-tree, where the denylist
+    // that are typically scoping ast-bro at a sub-tree, where the denylist
     // semantics still hold (e.g. `node_modules` under any of them).
     let root = existing[0].clone();
 
@@ -733,7 +764,7 @@ fn main() {
                     let cwd = std::env::current_dir()
                         .unwrap_or_else(|_| std::path::PathBuf::from("."));
                     if let Err(e) = crate::search::index::Index::build(path, &cwd) {
-                        eprintln!("ast-outline: rebuild failed: {e}");
+                        eprintln!("ast-bro: rebuild failed: {e}");
                         std::process::exit(1);
                     }
                 }
@@ -955,6 +986,26 @@ fn main() {
                     *depth,
                     *external,
                     *rebuild,
+                    *json,
+                    !(*compact),
+                );
+                std::process::exit(exit);
+            }
+            Commands::Run {
+                pattern,
+                rewrite,
+                lang,
+                paths,
+                write,
+                json,
+                compact,
+            } => {
+                let exit = crate::run::cli::run(
+                    pattern,
+                    rewrite.as_deref(),
+                    lang.as_deref(),
+                    paths,
+                    *write,
                     *json,
                     !(*compact),
                 );

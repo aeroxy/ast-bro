@@ -1,6 +1,6 @@
 # Network & Security
 
-`ast-outline` makes outbound HTTPS requests in exactly one situation: the first time you run `ast-outline search` (or `find-related`), it downloads the embedding model used for semantic search. Everything else — outline, digest, show, implements, MCP — is fully offline.
+`ast-bro` makes outbound HTTPS requests in exactly one situation: the first time you run `ast-bro search` (or `find-related`), it downloads the embedding model used for semantic search. Everything else — outline, digest, show, implements, MCP — is fully offline.
 
 This page explains *what* it downloads, *where* the bytes come from, and *why* the TLS defaults are unusual.
 
@@ -14,15 +14,15 @@ A single embedding model:
 | `tokenizer.json` | same | ~2 MB |
 | `model.safetensors` | same | ~64 MB |
 
-Stored under `~/.cache/ast-outline/models/potion-code-16M/` (see [cache layout](#cache-layout) below).
+Stored under `~/.cache/ast-bro/models/potion-code-16M/` (see [cache layout](#cache-layout) below).
 
-The model is `minishlab/potion-code-16M` — a static model2vec embedding (no neural net inference, just a vocab × 256 float32 lookup table). It runs on CPU in microseconds and stays mmap'd in memory while ast-outline is running.
+The model is `minishlab/potion-code-16M` — a static model2vec embedding (no neural net inference, just a vocab × 256 float32 lookup table). It runs on CPU in microseconds and stays mmap'd in memory while ast-bro is running.
 
 ## Mirror fallback
 
 `huggingface.co` is blocked by many corporate networks. To keep things working:
 
-1. ast-outline first probes `https://huggingface.co/.../config.json` with a 3-second timeout.
+1. ast-bro first probes `https://huggingface.co/.../config.json` with a 3-second timeout.
 2. If the probe fails (timeout, DNS failure, content-length anomaly from a captive portal), it transparently falls back to `https://hf-mirror.com/.../config.json`.
 3. `hf-mirror.com` is a community-run URL-rewrite mirror of HuggingFace — it serves the exact same bytes from a different domain.
 
@@ -39,13 +39,13 @@ This is intentional. The reason:
 Strict TLS verification fails universally there, because the corporate CA isn't in any standard trust store. We could refuse to work in those environments, or we could accept the trade-off. We picked the trade-off because:
 
 1. **Search is opt-in** — users who never run `search` never make any outbound request, so this policy has zero impact on them.
-2. **Integrity is enforced via SHA-256, not TLS** — after first download, ast-outline writes a `manifest.json` with a SHA-256 hash of every file. Subsequent loads verify each cached file against the manifest before using it. A network attacker who tampers with the *first* download will succeed; tampering with subsequent loads will be detected.
+2. **Integrity is enforced via SHA-256, not TLS** — after first download, ast-bro writes a `manifest.json` with a SHA-256 hash of every file. Subsequent loads verify each cached file against the manifest before using it. A network attacker who tampers with the *first* download will succeed; tampering with subsequent loads will be detected.
 3. **The bytes are reproducible** — anyone can verify the model files against HuggingFace's published hashes if they're paranoid about a first-time MITM.
 
 A loud stderr warning fires on every download in non-strict mode:
 
 ```
-ast-outline: TLS certificate verification is DISABLED for model downloads
+ast-bro: TLS certificate verification is DISABLED for model downloads
 (works through corp MITM proxies). Set AST_OUTLINE_TLS_STRICT=1 to enforce
 full chain verification. Integrity is checked via SHA-256 on subsequent loads.
 ```
@@ -64,20 +64,20 @@ For a security-conscious user behind a corp proxy:
 ```bash
 export AST_OUTLINE_TLS_STRICT=1
 export AST_OUTLINE_CA_BUNDLE=/usr/local/share/ca-certificates/corp-mitm.crt
-ast-outline search "anything" .   # validates against the corp CA
+ast-bro search "anything" .   # validates against the corp CA
 ```
 
 ## Cache layout
 
 ```
-~/.cache/ast-outline/models/potion-code-16M/
+~/.cache/ast-bro/models/potion-code-16M/
 ├── config.json           # model config
 ├── tokenizer.json        # huggingface tokenizers serialized form
 ├── model.safetensors     # ~64 MB of f32 weights, mmap'd at runtime
 └── manifest.json         # { "sha256": {...}, "source": "hf" | "hf-mirror" }
 ```
 
-Cache root is `dirs::cache_dir()` (XDG-respecting) joined with `ast-outline/models`. Override with `AST_OUTLINE_MODEL_DIR=/some/path`.
+Cache root is `dirs::cache_dir()` (XDG-respecting) joined with `ast-bro/models`. Override with `AST_OUTLINE_MODEL_DIR=/some/path`.
 
 ## Pinning the source
 
@@ -94,11 +94,11 @@ If you don't want the auto-probe (e.g. CI where you know HF is reachable, or a c
 
 For clarity:
 
-- `ast-outline` (default outline command) — no network
-- `ast-outline digest` — no network
-- `ast-outline show` — no network
-- `ast-outline implements` — no network
-- `ast-outline mcp` (server) — no network at startup; the `search`/`find_related`/`index` MCP tools download the model on first call (same path as the CLI)
-- `ast-outline install` / `uninstall` / `status` — no network
+- `ast-bro` (default outline command) — no network
+- `ast-bro digest` — no network
+- `ast-bro show` — no network
+- `ast-bro implements` — no network
+- `ast-bro mcp` (server) — no network at startup; the `search`/`find_related`/`index` MCP tools download the model on first call (same path as the CLI)
+- `ast-bro install` / `uninstall` / `status` — no network
 
 Only `search`, `find-related`, and `index` touch the network, and only on first run (or when the cache is invalid).

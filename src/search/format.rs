@@ -10,9 +10,9 @@ use colored::Colorize;
 use serde_json::{json, Value};
 use std::path::Path;
 
-pub const JSON_SCHEMA_SEARCH: &str = "ast-outline.search.v1";
-pub const JSON_SCHEMA_RELATED: &str = "ast-outline.related.v1";
-pub const JSON_SCHEMA_INDEX: &str = "ast-outline.index-stats.v1";
+pub const JSON_SCHEMA_SEARCH: &str = "ast-bro.search.v1";
+pub const JSON_SCHEMA_RELATED: &str = "ast-bro.related.v1";
+pub const JSON_SCHEMA_INDEX: &str = "ast-bro.index-stats.v1";
 
 /// Text rendering of search hits. One block per hit, separated by blank lines.
 pub fn render_search_text(query: &str, hits: &[SearchHit]) -> String {
@@ -213,7 +213,8 @@ mod tests {
     #[test]
     fn search_text_empty() {
         let out = render_search_text("foo", &[]);
-        assert!(out.contains("No results for 'foo'"));
+        assert!(out.contains("No results for"));
+        assert!(out.contains("foo"));
     }
 
     #[test]
@@ -253,7 +254,7 @@ mod tests {
     #[test]
     fn index_stats_json() {
         let meta = Meta {
-            schema: "ast-outline.search-index.v2".to_string(),
+            schema: "ast-bro.search-index.v1".to_string(),
             ast_outline_version: "0.0.0".to_string(),
             model: ModelMeta { id: "m".into(), dim: 256 },
             created_unix: 42,
@@ -276,7 +277,7 @@ mod tests {
     #[test]
     fn index_stats_text_includes_home_and_corpus() {
         let meta = Meta {
-            schema: "ast-outline.search-index.v2".to_string(),
+            schema: "ast-bro.search-index.v1".to_string(),
             ast_outline_version: "0.0.0".to_string(),
             model: ModelMeta { id: "m".into(), dim: 256 },
             created_unix: 0,

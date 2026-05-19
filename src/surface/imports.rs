@@ -8,7 +8,7 @@
 //!
 //! These extractors return lightweight structs that the per-language
 //! resolvers consume — they are *not* added to the outline IR (that
-//! would change the public `ast-outline.outline.v1` JSON schema).
+//! would change the public `ast-bro.outline.v1` JSON schema).
 
 use ast_grep_core::{Doc, Node};
 use ast_grep_language::{LanguageExt, SupportLang};

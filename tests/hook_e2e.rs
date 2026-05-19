@@ -4,7 +4,7 @@ use std::process::{Command, Stdio};
 use tempfile::TempDir;
 
 fn binary() -> std::path::PathBuf {
-    std::path::PathBuf::from(env!("CARGO_BIN_EXE_ast-outline"))
+    std::path::PathBuf::from(env!("CARGO_BIN_EXE_ast-bro"))
 }
 
 fn run_hook(protocol: &str, stdin: &str, args: &[&str]) -> (String, String, i32) {
@@ -16,7 +16,7 @@ fn run_hook(protocol: &str, stdin: &str, args: &[&str]) -> (String, String, i32)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let mut child = cmd.spawn().expect("spawn ast-outline");
+    let mut child = cmd.spawn().expect("spawn ast-bro");
     child
         .stdin
         .as_mut()
@@ -61,7 +61,7 @@ fn claude_code_substitutes_for_big_file() {
     let (stdout, _, code) = run_hook("claude-code", &stdin, &["--min-lines", "200"]);
     assert_eq!(code, 0);
     assert!(stdout.contains("\"decision\":\"block\""));
-    assert!(stdout.contains("ast-outline substituted"));
+    assert!(stdout.contains("ast-bro substituted"));
 }
 
 #[test]

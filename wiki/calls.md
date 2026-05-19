@@ -1,6 +1,6 @@
 # Call graph
 
-Two subcommands — `callers` and `callees` — and a per-repo persistent call-graph cache that rides inside the same on-disk file as the dep graph (`.ast-outline/graph/index.bin`). This page documents the internal architecture. For the user-facing surface see the README. For the file-level import graph that the call-graph resolver leans on for disambiguation see [deps.md](deps.md). For what gets walked see [file-filtering.md](file-filtering.md).
+Two subcommands — `callers` and `callees` — and a per-repo persistent call-graph cache that rides inside the same on-disk file as the dep graph (`.ast-bro/graph/index.bin`). This page documents the internal architecture. For the user-facing surface see the README. For the file-level import graph that the call-graph resolver leans on for disambiguation see [deps.md](deps.md). For what gets walked see [file-filtering.md](file-filtering.md).
 
 ## What it answers
 
@@ -16,10 +16,10 @@ Both directions are inverses on their respective graphs. Diamond inheritance is 
 Symbol forms accepted by both subcommands:
 
 ```
-ast-outline callers TakeDamage
-ast-outline callers Player.TakeDamage
-ast-outline callers src/Player.cs:TakeDamage
-ast-outline callers --file src/Player.cs --symbol TakeDamage
+ast-bro callers TakeDamage
+ast-bro callers Player.TakeDamage
+ast-bro callers src/Player.cs:TakeDamage
+ast-bro callers --file src/Player.cs --symbol TakeDamage
 ```
 
 The first three are positional; the flag form exists for clients that prefer to avoid string-splitting on `:` / `.`.
@@ -71,7 +71,7 @@ src/calls/
 ├── mod.rs          orchestrator: build_call_graph(root, &DepGraph) -> CallGraph
 ├── pass.rs         shared phase-1 IR: FilePass, RawEdge, qn_from, raw_to_edge,
 │                   file_rel  (lifted out of build.rs to break the
-│                   build ↔ resolve cycle — `ast-outline cycles src/calls/`
+│                   build ↔ resolve cycle — `ast-bro cycles src/calls/`
 │                   was flagging it)
 ├── build.rs        per-file extraction + FilePass aggregation
 ├── resolve.rs      three-pass resolver:
@@ -148,7 +148,7 @@ For each ambiguous edge with N candidates, load the dep half of the unified grap
 - Exactly 1 survives → promote to `Resolved` with `Inferred`.
 - More than 1 → keep all in `CallEdge::candidates` and tag `Ambiguous`. The renderer surfaces the count and one canonical choice; `--include-ambiguous` shows every candidate.
 
-This mirrors `code-review-graph`'s `resolve_bare_call_targets` but uses the richer ast-outline dep graph instead of just IMPORTS_FROM edges.
+This mirrors `code-review-graph`'s `resolve_bare_call_targets` but uses the richer ast-bro dep graph instead of just IMPORTS_FROM edges.
 
 ### Confidence
 
@@ -192,12 +192,12 @@ Languages still emitting empty `Declaration::calls`: **none.** JavaScript is ser
 
 ## Unified graph cache
 
-The call graph does **not** get its own cache file. It rides inside a unified `UnifiedGraph { deps, calls: Option<CallGraph> }` at `.ast-outline/graph/index.bin`. The schema constant is `JSON_SCHEMA_GRAPH_INDEX = "ast-outline.graph-index.v2"`.
+The call graph does **not** get its own cache file. It rides inside a unified `UnifiedGraph { deps, calls: Option<CallGraph> }` at `.ast-bro/graph/index.bin`. The schema constant is `JSON_SCHEMA_GRAPH_INDEX = "ast-bro.graph-index.v1"`.
 
 ### Disk layout
 
 ```
-.ast-outline/
+.ast-bro/
 ├── .gitignore             # auto-written: "*"
 ├── graph/
 │   ├── index.bin          # bincode UnifiedCacheFile { schema, graph, files }
@@ -212,13 +212,13 @@ The call graph does **not** get its own cache file. It rides inside a unified `U
 
 ### Process-wide sharing
 
-`src/graph_cache/shared.rs` holds a `OnceLock<RwLock<HashMap<root, Arc<UnifiedGraph>>>>`. Within a single process — the `ast-outline mcp` long-running server is the case that matters — every `tools/call` reuses the same parsed `Arc<UnifiedGraph>`. Zero re-deserialisation, zero re-parse on warm hits. `Arc` swap on promotion means existing readers keep their pre-promotion view safely.
+`src/graph_cache/shared.rs` holds a `OnceLock<RwLock<HashMap<root, Arc<UnifiedGraph>>>>`. Within a single process — the `ast-bro mcp` long-running server is the case that matters — every `tools/call` reuses the same parsed `Arc<UnifiedGraph>`. Zero re-deserialisation, zero re-parse on warm hits. `Arc` swap on promotion means existing readers keep their pre-promotion view safely.
 
 For one-shot CLI invocations the registry initialises, work happens, the process exits — equivalent to today.
 
 ### Schema migration
 
-The legacy `.ast-outline/deps/graph.bin` (`deps-index.v1`) was deleted in the v2.1.0 cut. Users with an old cache hit the schema-mismatch branch in `cache::load_with_delta`, the loader returns `LoadOutcome::Missing`, and `load_or_build` rebuilds into `.ast-outline/graph/index.bin`. One-time, transparent.
+The legacy `.ast-bro/deps/graph.bin` (`deps-index.v1`) was deleted in the v2.1.0 cut. Users with an old cache hit the schema-mismatch branch in `cache::load_with_delta`, the loader returns `LoadOutcome::Missing`, and `load_or_build` rebuilds into `.ast-bro/graph/index.bin`. One-time, transparent.
 
 The schema bump from `graph-index.v1` to `v2` happened mid-development to fix a silent bincode round-trip bug — `#[serde(skip_serializing_if)]` on `DepEdge::local_name` / `raw_path` and `CallEdge::receiver` / `candidates` corrupts bincode's positional encoding (a skipped Option/Vec field shifts every byte that follows). The skip annotations were a JSON-output ergonomics holdover that never applied to the cache; binary positional formats *require* every field to be encoded. Removed the annotations, bumped the schema, and any v1 cache files (which were all corrupt and silently re-cold-built every invocation) get a clean rebuild.
 
@@ -250,7 +250,7 @@ The schema bump from `graph-index.v1` to `v2` happened mid-development to fix a 
 7. Bare-name re-resolution: for every `Bare` edge, look up its name in the (now updated) symbol table; promote single-match, no-receiver hits to `Resolved/Inferred`. Mirrors the receiver suppression in pass B exactly so cold and warm builds produce identical edge resolutions. Picks up two cases the partial path would otherwise miss: edges demoted in step 6 whose target moved to a different file, and pre-existing `Bare` edges in unchanged files that finally have a target because a *new* file in this delta defines it.
 8. Rebuild reverse adjacency + recompute stats. Both are derived; rebuilding fresh is cheaper than incremental maintenance.
 
-### Cost numbers (ast-outline against itself, release build)
+### Cost numbers (ast-bro against itself, release build)
 
 | operation                       | before    | after  |
 |---------------------------------|-----------|--------|
@@ -263,11 +263,11 @@ The schema bump from `graph-index.v1` to `v2` happened mid-development to fix a 
 
 ⚠️ = pre-fix "warm" was actually cold every time due to the silent decode bug. The warm-no-edits row is the load-from-cache happy path that never happened until the schema-v2 cut; the warm-with-edits row is the new per-file patch path replacing full rebuild.
 
-For `ast-outline mcp`, where the in-process `Arc<UnifiedGraph>` already shared parsed state across `tools/call`s, the schema-v2 fix recovers the *first* call of each session — which previously reloaded from scratch instead of deserialising the persisted cache — and makes the rest of the session correctly reflect file edits without forcing `--rebuild`.
+For `ast-bro mcp`, where the in-process `Arc<UnifiedGraph>` already shared parsed state across `tools/call`s, the schema-v2 fix recovers the *first* call of each session — which previously reloaded from scratch instead of deserialising the persisted cache — and makes the rest of the session correctly reflect file edits without forcing `--rebuild`.
 
 ### Concurrency
 
-Same pattern as the search index and the legacy deps cache: `fs2` advisory exclusive lock at `.ast-outline/graph/lock` during writes; atomic `.tmp` + rename so a SIGKILL mid-write leaves the previous cache intact. Reads use the in-memory `Arc` and don't touch the lock.
+Same pattern as the search index and the legacy deps cache: `fs2` advisory exclusive lock at `.ast-bro/graph/lock` during writes; atomic `.tmp` + rename so a SIGKILL mid-write leaves the previous cache intact. Reads use the in-memory `Arc` and don't touch the lock.
 
 ## Known gaps
 

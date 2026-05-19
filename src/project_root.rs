@@ -1,30 +1,30 @@
 //! Project-root resolution: walk up from a path arg looking for an existing
-//! `.ast-outline/` directory, capped at CWD so we never escape the project
+//! `.ast-bro/` directory, capped at CWD so we never escape the project
 //! the user is working in.
 //!
-//! Used by both the search subsystem (looking for `.ast-outline/index/`) and
-//! the deps subsystem (looking for `.ast-outline/deps/`). The two flavours
+//! Used by both the search subsystem (looking for `.ast-bro/index/`) and
+//! the deps subsystem (looking for `.ast-bro/deps/`). The two flavours
 //! differ only in which subdirectory marker counts as "found".
 
 use std::path::{Path, PathBuf};
 
-/// Which `.ast-outline/<sub>` marker counts as "this is an existing project root".
+/// Which `.ast-bro/<sub>` marker counts as "this is an existing project root".
 #[derive(Clone, Copy)]
 pub enum Marker {
-    /// `.ast-outline/index/meta.json` — the search index.
+    /// `.ast-bro/index/meta.json` — the search index.
     SearchIndex,
-    /// `.ast-outline/deps/graph.bin` — the deps cache. Reserved for the
+    /// `.ast-bro/deps/graph.bin` — the deps cache. Reserved for the
     /// deps-subsystem follow-up; not yet wired into deps CLI.
     #[allow(dead_code)]
     DepsCache,
-    /// Any `.ast-outline/` directory. Reserved for shared resolver use.
+    /// Any `.ast-bro/` directory. Reserved for shared resolver use.
     #[allow(dead_code)]
     Any,
 }
 
 impl Marker {
     fn matches(self, candidate: &Path) -> bool {
-        let dir = candidate.join(".ast-outline");
+        let dir = candidate.join(".ast-bro");
         if !dir.is_dir() {
             return false;
         }
@@ -36,13 +36,13 @@ impl Marker {
     }
 }
 
-/// Walk up from `path_arg` looking for an existing `.ast-outline/` (per
+/// Walk up from `path_arg` looking for an existing `.ast-bro/` (per
 /// `marker`). Stop ascent at `cwd` (inclusive). Cap is enforced via
 /// canonical-path prefix check so symlinks don't fool us.
 ///
 /// Returns `(home, found_existing)`.
 ///
-/// - `found_existing = true`: an existing `.ast-outline/<marker>` was located
+/// - `found_existing = true`: an existing `.ast-bro/<marker>` was located
 ///   at `home` (between `path_arg` and `cwd` inclusive).
 /// - `found_existing = false`: no existing marker. `home` is `cwd` when
 ///   `path_arg` is under `cwd`, else `path_arg` itself.
@@ -246,9 +246,9 @@ mod tests {
     fn resolve_home_finds_existing_above() {
         let dir = tempdir().unwrap();
         let cwd = dir.path();
-        fs::create_dir_all(cwd.join(".ast-outline").join("index")).unwrap();
+        fs::create_dir_all(cwd.join(".ast-bro").join("index")).unwrap();
         fs::write(
-            cwd.join(".ast-outline").join("index").join("meta.json"),
+            cwd.join(".ast-bro").join("index").join("meta.json"),
             "{}",
         )
         .unwrap();
@@ -287,9 +287,9 @@ mod tests {
         // escape past cwd to find the outer marker.
         let dir = tempdir().unwrap();
         let outer = dir.path();
-        fs::create_dir_all(outer.join(".ast-outline").join("index")).unwrap();
+        fs::create_dir_all(outer.join(".ast-bro").join("index")).unwrap();
         fs::write(
-            outer.join(".ast-outline").join("index").join("meta.json"),
+            outer.join(".ast-bro").join("index").join("meta.json"),
             "{}",
         )
         .unwrap();

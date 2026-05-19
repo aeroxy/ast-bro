@@ -41,7 +41,7 @@ src/deps/
 ├── manifest.rs      go.mod / tsconfig.json / Cargo.toml parsing
 ├── scc.rs           iterative Tarjan SCC (~80 lines, no petgraph)
 ├── traverse.rs      forward_bfs / reverse_bfs / neighbourhood_depths
-├── cache.rs         disk persistence at .ast-outline/deps/graph.bin
+├── cache.rs         disk persistence at .ast-bro/deps/graph.bin
 ├── render.rs        text / JSON renderers
 ├── cli.rs           run_deps / run_reverse_deps / run_cycles / run_graph
 └── mcp.rs           MCP wrappers
@@ -109,13 +109,13 @@ Cycles sort by member count descending; members within each cycle sort lexicogra
 
 ## Caching
 
-Disk format: `.ast-outline/deps/graph.bin` (bincode-serialized `CacheFile = { schema, graph, files }`). Sibling to `.ast-outline/index/`. The `.ast-outline/.gitignore` written by the search subsystem (`*` content) covers it for free.
+Disk format: `.ast-bro/deps/graph.bin` (bincode-serialized `CacheFile = { schema, graph, files }`). Sibling to `.ast-bro/index/`. The `.ast-bro/.gitignore` written by the search subsystem (`*` content) covers it for free.
 
 Refresh strategy: load → run `search::cache::compute_delta` against the recorded `Vec<FileRecord>`. If any file's `(mtime, size)` changed (cheap path) or its `xxhash3-64` differs (expensive path, only on size/mtime mismatch) — full rebuild. Same "any-delta = full rebuild" simplification the search index uses today; partial-rebuild is a v2 swap-in.
 
-Schema constant: `JSON_SCHEMA_DEPS_INDEX = "ast-outline.deps-index.v1"`. Bumped on any `DepGraph` / `DepEdge` shape change to force a rebuild via the schema-mismatch branch in `cache::load_if_fresh`.
+Schema constant: `JSON_SCHEMA_DEPS_INDEX = "ast-bro.deps-index.v1"`. Bumped on any `DepGraph` / `DepEdge` shape change to force a rebuild via the schema-mismatch branch in `cache::load_if_fresh`.
 
-Concurrency: `fs2` advisory exclusive lock at `.ast-outline/deps/lock` during writes; atomic `.tmp` + rename so a SIGKILL mid-write leaves the previous cache intact. Same pattern as the search index.
+Concurrency: `fs2` advisory exclusive lock at `.ast-bro/deps/lock` during writes; atomic `.tmp` + rename so a SIGKILL mid-write leaves the previous cache intact. Same pattern as the search index.
 
 `--rebuild` on any of the four CLI subcommands forces a fresh build regardless of staleness.
 
@@ -138,7 +138,7 @@ Disable per-call with `--no-dep-boost`. Configurable depth with `--dep-depth N`.
 ## On-disk format
 
 ```
-.ast-outline/
+.ast-bro/
 ├── .gitignore             # auto-written: "*"
 ├── deps/
 │   ├── graph.bin          # bincode CacheFile { schema, graph, files }

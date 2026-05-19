@@ -1,4 +1,4 @@
-//! End-to-end smoke tests for `ast-outline surface`. These shell out
+//! End-to-end smoke tests for `ast-bro surface`. These shell out
 //! to the built binary so they exercise the same code path users hit.
 //!
 //! Fixtures live in `tests/fixtures/surface/<name>/`. Each test asserts
@@ -11,7 +11,7 @@ use std::process::Command;
 
 fn bin() -> PathBuf {
     // CARGO_BIN_EXE_<bin name> is set by cargo for integration tests.
-    PathBuf::from(env!("CARGO_BIN_EXE_ast-outline"))
+    PathBuf::from(env!("CARGO_BIN_EXE_ast-bro"))
 }
 
 fn surface(args: &[&str]) -> String {
@@ -19,10 +19,10 @@ fn surface(args: &[&str]) -> String {
         .args(args)
         .env("NO_COLOR", "1")
         .output()
-        .expect("run ast-outline");
+        .expect("run ast-bro");
     assert!(
         out.status.success(),
-        "ast-outline surface failed: stderr={}",
+        "ast-bro surface failed: stderr={}",
         String::from_utf8_lossy(&out.stderr)
     );
     String::from_utf8(out.stdout).expect("utf8 stdout")
@@ -116,7 +116,7 @@ fn json_schema_present() {
         "--compact",
     ]);
     assert!(
-        s.contains("\"schema\":\"ast-outline.surface.v1\""),
+        s.contains("\"schema\":\"ast-bro.surface.v1\""),
         "schema id missing:\n{s}"
     );
     assert!(s.contains("\"qualified_path\":\"rust_chained::Client\""));

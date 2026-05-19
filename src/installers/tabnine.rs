@@ -10,10 +10,18 @@ use crate::prompt::AGENT_PROMPT;
 pub struct Tabnine;
 
 const HOOK_PATH: &[&str] = &["hooks", "BeforeTool"];
-const HOOK_NAME: &str = "ast-outline-read-interceptor";
+const HOOK_NAME: &str = "ast-bro-read-interceptor";
+const OLD_HOOK_NAME: &str = "ast-outline-read-interceptor";
 
 impl Tabnine {
     fn prompt_path(&self, scope: &Scope) -> Result<PathBuf, String> {
+        match scope {
+            Scope::Local(root) => Ok(root.join(".tabnine/guidelines/ast-bro.md")),
+            Scope::Global => paths::under_home(".tabnine/guidelines/ast-bro.md"),
+        }
+    }
+
+    fn old_prompt_path(&self, scope: &Scope) -> Result<PathBuf, String> {
         match scope {
             Scope::Local(root) => Ok(root.join(".tabnine/guidelines/ast-outline.md")),
             Scope::Global => paths::under_home(".tabnine/guidelines/ast-outline.md"),
@@ -27,7 +35,7 @@ impl Tabnine {
     }
     fn hook_entry(&self, opts: &InstallOpts) -> Value {
         let mut cmd = format!(
-            "ast-outline hook --protocol gemini --min-lines {}",
+            "ast-bro hook --protocol gemini --min-lines {}",
             opts.min_lines
         );
         if opts.always {
@@ -47,10 +55,11 @@ fn matches_entry(v: &Value) -> bool {
             .and_then(|h| h.first())
             .map(|h0| {
                 h0.get("name").and_then(|n| n.as_str()) == Some(HOOK_NAME)
+                    || h0.get("name").and_then(|n| n.as_str()) == Some(OLD_HOOK_NAME)
                     || h0
                         .get("command")
                         .and_then(|c| c.as_str())
-                        .map(|c| c.starts_with(MARKER))
+                        .map(|c| c.starts_with(MARKER) || c.starts_with("ast-outline hook"))
                         .unwrap_or(false)
             })
             .unwrap_or(false)
@@ -92,6 +101,10 @@ impl Installer for Tabnine {
         if let Some(c) = common::uninstall_prompt_in(&self.prompt_path(scope)?, opts)? {
             changes.push(c);
         }
+        // Also clean up legacy prompt path from pre-rename installs
+        if let Some(c) = common::uninstall_prompt_in(&self.old_prompt_path(scope)?, opts)? {
+            changes.push(c);
+        }
         if let Some(c) =
             common::uninstall_json_hook_in(&self.settings_path(scope)?, HOOK_PATH, matches_entry, opts)?
         {
@@ -126,10 +139,10 @@ mod tests {
             .install_hook(&scope, &InstallOpts::default())
             .unwrap();
         let prompt =
-            std::fs::read_to_string(dir.path().join(".tabnine/guidelines/ast-outline.md")).unwrap();
+            std::fs::read_to_string(dir.path().join(".tabnine/guidelines/ast-bro.md")).unwrap();
         let settings =
             std::fs::read_to_string(dir.path().join(".tabnine/agent/settings.json")).unwrap();
-        assert!(prompt.contains("ast-outline:begin"));
+        assert!(prompt.contains("ast-bro:begin"));
         assert!(settings.contains("--protocol gemini"));
     }
 }

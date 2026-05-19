@@ -1,8 +1,12 @@
-//! Manages a `<!-- ast-outline:begin v=X.Y.Z -->...<!-- ast-outline:end -->`
+//! Manages a `<!-- ast-bro:begin v=X.Y.Z -->...<!-- ast-bro:end -->`
 //! block inside a prose file. Pure string operations — caller does I/O.
+//!
+//! Also recognizes legacy `<!-- ast-outline:begin` markers for backward
+//! compatibility, auto-migrating them to `<!-- ast-bro:begin` on write.
 
-const BEGIN_PREFIX: &str = "<!-- ast-outline:begin";
-const END_MARKER: &str = "<!-- ast-outline:end -->";
+const BEGIN_PREFIX: &str = "<!-- ast-bro:begin";
+const OLD_BEGIN_PREFIX: &str = "<!-- ast-outline:begin";
+const END_MARKER: &str = "<!-- ast-bro:end -->";
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum ApplyOutcome {
@@ -69,23 +73,24 @@ pub fn remove(file_contents: &str) -> (String, bool) {
 }
 
 /// True if the file looks like it already contains a hand-rolled copy of the
-/// ast-outline agent snippet outside any managed marker block. Used to warn
+/// ast-bro agent snippet outside any managed marker block. Used to warn
 /// before the auto-installer creates a second, marker-wrapped copy alongside
 /// the manual one.
 ///
-/// Casual prose mentions of "ast-outline" (e.g. project README references)
+/// Casual prose mentions of "ast-bro" (e.g. project README references)
 /// don't trigger — we look for snippet-shaped patterns: a backticked
-/// `\`ast-outline\`` token (markdown code-formatted) or a CLI invocation
-/// `ast-outline <subcommand>`. Both are characteristic of pasted instructions
+/// `\`ast-bro\`` token (markdown code-formatted) or a CLI invocation
+/// `ast-bro <subcommand>`. Both are characteristic of pasted instructions
 /// and rare in incidental documentation.
 pub fn has_unmanaged_brand_content(content: &str) -> bool {
     fn looks_like_snippet(text: &str) -> bool {
-        // Backticked code reference: `ast-outline` or `ast-outline …`.
-        if text.contains("`ast-outline") {
+        // Backticked code reference: `ast-bro` or `ast-outline`.
+        if text.contains("`ast-bro") || text.contains("`ast-outline") {
             return true;
         }
-        // CLI invocation: `ast-outline ` followed by a known subcommand. Keep
-        // the list narrow — these are the most distinctive shape tokens.
+        // CLI invocation: `ast-bro ` or `ast-outline ` followed by a known
+        // subcommand. Keep the list narrow — these are the most distinctive
+        // shape tokens.
         const SUBCOMMANDS: &[&str] = &[
             "map",
             "digest",
@@ -101,10 +106,12 @@ pub fn has_unmanaged_brand_content(content: &str) -> bool {
             "index",
             "prompt",
             "mcp",
+            "run",
         ];
         for sub in SUBCOMMANDS {
-            let needle = format!("ast-outline {}", sub);
-            if text.contains(&needle) {
+            let needle_bro = format!("ast-bro {}", sub);
+            let needle_old = format!("ast-outline {}", sub);
+            if text.contains(&needle_bro) || text.contains(&needle_old) {
                 return true;
             }
         }
@@ -139,7 +146,9 @@ struct EndPos {
 }
 
 fn find_block(contents: &str) -> Option<(BeginPos, EndPos)> {
-    let begin_offset = contents.find(BEGIN_PREFIX)?;
+    // Try new marker first, then legacy ast-outline marker
+    let begin_offset = contents.find(BEGIN_PREFIX)
+        .or_else(|| contents.find(OLD_BEGIN_PREFIX))?;
     let begin_line_end = contents[begin_offset..].find('\n')? + begin_offset + 1;
     let line_start = contents[..begin_offset]
         .rfind('\n')
@@ -170,7 +179,7 @@ fn find_block(contents: &str) -> Option<(BeginPos, EndPos)> {
 
 fn render_block(body: &str, version: &str) -> String {
     let mut s = String::with_capacity(body.len() + 80);
-    s.push_str(&format!("<!-- ast-outline:begin v={} -->\n", version));
+    s.push_str(&format!("<!-- ast-bro:begin v={} -->\n", version));
     s.push_str(body.trim_end_matches('\n'));
     s.push('\n');
     s.push_str(END_MARKER);
@@ -197,8 +206,8 @@ mod tests {
     fn appends_to_empty_file() {
         let (out, outcome) = apply("", BODY, BODY, "", "1.0.0", false);
         assert_eq!(outcome, ApplyOutcome::Appended);
-        assert!(out.contains("<!-- ast-outline:begin v=1.0.0 -->"));
-        assert!(out.contains("<!-- ast-outline:end -->"));
+        assert!(out.contains("<!-- ast-bro:begin v=1.0.0 -->"));
+        assert!(out.contains("<!-- ast-bro:end -->"));
         assert!(out.contains("Line."));
     }
 
@@ -206,13 +215,13 @@ mod tests {
     fn appends_with_blank_line_after_existing_content() {
         let (out, outcome) = apply("Existing.\n", BODY, BODY, "", "1.0.0", false);
         assert_eq!(outcome, ApplyOutcome::Appended);
-        assert!(out.starts_with("Existing.\n\n<!-- ast-outline:begin"));
+        assert!(out.starts_with("Existing.\n\n<!-- ast-bro:begin"));
     }
 
     #[test]
     fn replaces_existing_block_in_place() {
         let initial = format!(
-            "Top.\n\n<!-- ast-outline:begin v=1.0.0 -->\n{}<!-- ast-outline:end -->\nBottom.\n",
+            "Top.\n\n<!-- ast-bro:begin v=1.0.0 -->\n{}<!-- ast-bro:end -->\nBottom.\n",
             BODY
         );
         let (out, outcome) = apply(&initial, NEW_BODY, BODY, "", "2.0.0", false);
@@ -226,7 +235,7 @@ mod tests {
     #[test]
     fn refuses_when_user_edited_block_without_force() {
         let initial =
-            "<!-- ast-outline:begin v=1.0.0 -->\n## Hello\nUSER EDITED.\n<!-- ast-outline:end -->\n"
+            "<!-- ast-bro:begin v=1.0.0 -->\n## Hello\nUSER EDITED.\n<!-- ast-bro:end -->\n"
                 .to_string();
         let (out, outcome) = apply(&initial, NEW_BODY, BODY, "", "2.0.0", false);
         assert_eq!(out, initial);
@@ -241,7 +250,7 @@ mod tests {
     #[test]
     fn force_overrides_user_edits() {
         let initial =
-            "<!-- ast-outline:begin v=1.0.0 -->\n## Hello\nUSER EDITED.\n<!-- ast-outline:end -->\n"
+            "<!-- ast-bro:begin v=1.0.0 -->\n## Hello\nUSER EDITED.\n<!-- ast-bro:end -->\n"
                 .to_string();
         let (out, outcome) = apply(&initial, NEW_BODY, BODY, "", "2.0.0", true);
         assert_eq!(outcome, ApplyOutcome::Replaced);
@@ -251,12 +260,12 @@ mod tests {
 
     #[test]
     fn wraps_legacy_snippet_in_place() {
-        let legacy = "## Code exploration\nUse ast-outline.\n";
+        let legacy = "## Code exploration\nUse ast-bro.\n";
         let initial = format!("Top.\n\n{}\nBottom.\n", legacy);
         let (out, outcome) = apply(&initial, NEW_BODY, BODY, legacy, "1.0.0", false);
         assert_eq!(outcome, ApplyOutcome::WrappedLegacy);
-        assert!(out.contains("<!-- ast-outline:begin v=1.0.0 -->"));
-        assert!(!out.contains("## Code exploration\nUse ast-outline."));
+        assert!(out.contains("<!-- ast-bro:begin v=1.0.0 -->"));
+        assert!(!out.contains("## Code exploration\nUse ast-bro."));
     }
 
     #[test]
@@ -290,21 +299,21 @@ mod tests {
 
     #[test]
     fn has_unmanaged_brand_content_flags_backticked_reference() {
-        assert!(has_unmanaged_brand_content("Use `ast-outline` to explore.\n"));
+        assert!(has_unmanaged_brand_content("Use `ast-bro` to explore.\n"));
     }
 
     #[test]
     fn has_unmanaged_brand_content_flags_cli_invocation() {
-        assert!(has_unmanaged_brand_content("Run `ast-outline map src/`.\n"));
-        assert!(has_unmanaged_brand_content("ast-outline digest .\n"));
+        assert!(has_unmanaged_brand_content("Run `ast-bro map src/`.\n"));
+        assert!(has_unmanaged_brand_content("ast-bro digest .\n"));
     }
 
     #[test]
     fn has_unmanaged_brand_content_ignores_casual_prose_mention() {
-        // A plain prose mention ("we use ast-outline") is not a pasted snippet
+        // A plain prose mention ("we use ast-bro") is not a pasted snippet
         // and shouldn't block the install.
         assert!(!has_unmanaged_brand_content(
-            "Our team uses ast-outline and other tools.\n"
+            "Our team uses ast-bro and other tools.\n"
         ));
         assert!(!has_unmanaged_brand_content("Just normal docs.\n"));
         assert!(!has_unmanaged_brand_content(""));
@@ -315,8 +324,8 @@ mod tests {
         // Mention only inside marker block → managed, not loose.
         let (with_block, _) = apply(
             "",
-            "Use `ast-outline` here.\n",
-            "Use `ast-outline` here.\n",
+            "Use `ast-bro` here.\n",
+            "Use `ast-bro` here.\n",
             "",
             "1.0.0",
             false,
@@ -327,7 +336,7 @@ mod tests {
     #[test]
     fn has_unmanaged_brand_content_finds_snippet_outside_block() {
         let (with_block, _) = apply(
-            "I already pasted `ast-outline` instructions manually here.\n",
+            "I already pasted `ast-bro` instructions manually here.\n",
             BODY,
             BODY,
             "",

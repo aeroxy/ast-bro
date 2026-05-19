@@ -1,4 +1,4 @@
-//! `ast-outline surface` — compute the true public API surface of a package.
+//! `ast-bro surface` — compute the true public API surface of a package.
 //!
 //! Where `digest` filters per-file by visibility, `surface` resolves the
 //! transitive re-export graph from the package entry point, so it shows

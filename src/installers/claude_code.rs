@@ -13,14 +13,14 @@ const HOOK_PATH: &[&str] = &["hooks", "PreToolUse"];
 
 /// Built-in Claude Code subagents that run in their own context and never see
 /// `CLAUDE.md`. Shadowing them with `.claude/agents/<Name>.md` is the official
-/// way to push the ast-outline prompt into their system prompt.
+/// way to push the ast-bro prompt into their system prompt.
 const SHADOWED_SUBAGENTS: &[&str] = &["Explore"];
 
 const MCP_KEY_PATH: &[&str] = &["mcpServers"];
-const MCP_SERVER_NAME: &str = "ast-outline";
+const MCP_SERVER_NAME: &str = "ast-bro";
 /// First-line marker used to confirm a SKILL.md file is one we wrote
 /// before deleting it during uninstall.
-const SKILL_MARKER: &str = "name: ast-outline";
+const SKILL_MARKER: &str = "name: ast-bro";
 
 impl ClaudeCode {
     fn prompt_path(&self, scope: &Scope) -> Result<PathBuf, String> {
@@ -50,16 +50,16 @@ impl ClaudeCode {
     }
     fn skill_path(&self, scope: &Scope) -> Result<PathBuf, String> {
         match scope {
-            Scope::Local(root) => Ok(root.join(".claude/skills/ast-outline/SKILL.md")),
-            Scope::Global => paths::under_home(".claude/skills/ast-outline/SKILL.md"),
+            Scope::Local(root) => Ok(root.join(".claude/skills/ast-bro/SKILL.md")),
+            Scope::Global => paths::under_home(".claude/skills/ast-bro/SKILL.md"),
         }
     }
     fn mcp_entry(&self) -> Value {
-        json!({ "command": "ast-outline", "args": ["mcp"] })
+        json!({ "command": "ast-bro", "args": ["mcp"] })
     }
     fn hook_command(&self, opts: &InstallOpts) -> String {
         let mut cmd = format!(
-            "ast-outline hook --protocol claude-code --min-lines {}",
+            "ast-bro hook --protocol claude-code --min-lines {}",
             opts.min_lines
         );
         if opts.always {
@@ -159,10 +159,20 @@ impl Installer for ClaudeCode {
                 changes.push(c);
             }
         }
+        // Remove current MCP server name
         if let Some(c) = common::uninstall_json_object_in(
             &self.mcp_path(scope)?,
             MCP_KEY_PATH,
             MCP_SERVER_NAME,
+            opts,
+        )? {
+            changes.push(c);
+        }
+        // Also remove legacy name from pre-rename installs
+        if let Some(c) = common::uninstall_json_object_in(
+            &self.mcp_path(scope)?,
+            MCP_KEY_PATH,
+            common::OLD_MCP_SERVER_NAME,
             opts,
         )? {
             changes.push(c);
@@ -217,8 +227,8 @@ mod tests {
             .unwrap();
         assert!(matches!(change, Change::Created(_)));
         let contents = std::fs::read_to_string(dir.path().join("CLAUDE.md")).unwrap();
-        assert!(contents.contains("<!-- ast-outline:begin"));
-        assert!(contents.contains("ast-outline"));
+        assert!(contents.contains("<!-- ast-bro:begin"));
+        assert!(contents.contains("ast-bro"));
     }
 
     #[test]
@@ -281,10 +291,10 @@ mod tests {
         let removed = ClaudeCode.uninstall(&scope, &opts).unwrap();
         assert_eq!(removed.len(), 2);
         let prompt = std::fs::read_to_string(dir.path().join("CLAUDE.md")).unwrap();
-        assert!(!prompt.contains("ast-outline:begin"));
+        assert!(!prompt.contains("ast-bro:begin"));
         let settings = std::fs::read_to_string(dir.path().join(".claude/settings.json")).unwrap();
         assert!(settings.contains("echo hi"));
-        assert!(!settings.contains("ast-outline hook"));
+        assert!(!settings.contains("ast-bro hook"));
     }
 
     #[test]
@@ -327,8 +337,8 @@ mod tests {
         let path = dir.path().join(".claude/agents/Explore.md");
         let contents = std::fs::read_to_string(&path).unwrap();
         assert!(contents.starts_with("---\nname: Explore\n"), "frontmatter must be at offset 0");
-        assert!(contents.contains("<!-- ast-outline:begin"));
-        assert!(contents.contains("ast-outline"));
+        assert!(contents.contains("<!-- ast-bro:begin"));
+        assert!(contents.contains("ast-bro"));
     }
 
     #[test]
@@ -348,7 +358,7 @@ mod tests {
     #[test]
     fn install_subagents_wraps_legacy_explore_md_in_place() {
         // Simulates a user who manually created ~/.claude/agents/Explore.md by
-        // pasting `ast-outline prompt` output before this installer existed.
+        // pasting `ast-bro prompt` output before this installer existed.
         let dir = TempDir::new().unwrap();
         let agent_path = dir.path().join(".claude/agents/Explore.md");
         std::fs::create_dir_all(agent_path.parent().unwrap()).unwrap();
@@ -359,9 +369,9 @@ mod tests {
             .unwrap();
         assert!(matches!(changes[0], Change::Updated(_)));
         let contents = std::fs::read_to_string(&agent_path).unwrap();
-        assert!(contents.contains("<!-- ast-outline:begin"));
+        assert!(contents.contains("<!-- ast-bro:begin"));
         // Body is wrapped exactly once — the legacy bare snippet is gone.
-        assert_eq!(contents.matches("## Use `ast-outline` to explore the code").count(), 1);
+        assert_eq!(contents.matches("## Use `ast-bro` to explore the code").count(), 1);
     }
 
     #[test]
@@ -377,7 +387,7 @@ mod tests {
             .unwrap();
         let contents = std::fs::read_to_string(&agent_path).unwrap();
         assert!(contents.starts_with(custom));
-        assert!(contents.contains("<!-- ast-outline:begin"));
+        assert!(contents.contains("<!-- ast-bro:begin"));
     }
 
     #[test]
@@ -393,7 +403,7 @@ mod tests {
         let removed = ClaudeCode.uninstall(&scope, &opts).unwrap();
         assert!(removed.iter().any(|c| matches!(c, Change::Removed(p) if p.ends_with("Explore.md"))));
         let contents = std::fs::read_to_string(&agent_path).unwrap();
-        assert!(!contents.contains("ast-outline:begin"));
+        assert!(!contents.contains("ast-bro:begin"));
         assert!(contents.contains("Keep me."));
     }
 
@@ -425,8 +435,8 @@ mod tests {
         assert!(matches!(change, Change::Created(_)));
         let contents = std::fs::read_to_string(dir.path().join(".mcp.json")).unwrap();
         let v: Value = serde_json::from_str(&contents).unwrap();
-        assert_eq!(v["mcpServers"]["ast-outline"]["command"], "ast-outline");
-        assert_eq!(v["mcpServers"]["ast-outline"]["args"][0], "mcp");
+        assert_eq!(v["mcpServers"]["ast-bro"]["command"], "ast-bro");
+        assert_eq!(v["mcpServers"]["ast-bro"]["args"][0], "mcp");
     }
 
     #[test]
@@ -458,7 +468,7 @@ mod tests {
         let contents = std::fs::read_to_string(&mcp_path).unwrap();
         let v: Value = serde_json::from_str(&contents).unwrap();
         assert_eq!(v["mcpServers"]["other"]["command"], "x");
-        assert_eq!(v["mcpServers"]["ast-outline"]["command"], "ast-outline");
+        assert_eq!(v["mcpServers"]["ast-bro"]["command"], "ast-bro");
     }
 
     #[test]
@@ -481,7 +491,7 @@ mod tests {
         for i in 0..50 {
             assert_eq!(v[format!("key_{:02}", i)], json!(i), "key_{:02} lost", i);
         }
-        assert_eq!(v["mcpServers"]["ast-outline"]["command"], "ast-outline");
+        assert_eq!(v["mcpServers"]["ast-bro"]["command"], "ast-bro");
     }
 
     #[test]
@@ -502,12 +512,12 @@ mod tests {
             .unwrap();
         assert!(matches!(change, Change::Created(_)));
         let contents =
-            std::fs::read_to_string(dir.path().join(".claude/skills/ast-outline/SKILL.md"))
+            std::fs::read_to_string(dir.path().join(".claude/skills/ast-bro/SKILL.md"))
                 .unwrap();
         assert!(contents.starts_with("---\n"));
-        assert!(contents.contains("name: ast-outline"));
+        assert!(contents.contains("name: ast-bro"));
         assert!(contents.contains("user-invocable: true"));
-        assert!(contents.contains("## Use `ast-outline` to explore the code"));
+        assert!(contents.contains("## Use `ast-bro` to explore the code"));
     }
 
     #[test]
@@ -523,16 +533,16 @@ mod tests {
     #[test]
     fn install_skills_overwrites_when_content_differs() {
         let dir = TempDir::new().unwrap();
-        let skill_path = dir.path().join(".claude/skills/ast-outline/SKILL.md");
+        let skill_path = dir.path().join(".claude/skills/ast-bro/SKILL.md");
         std::fs::create_dir_all(skill_path.parent().unwrap()).unwrap();
-        std::fs::write(&skill_path, "---\nname: ast-outline\n---\nold body\n").unwrap();
+        std::fs::write(&skill_path, "---\nname: ast-bro\n---\nold body\n").unwrap();
         let scope = local_scope(&dir);
         let change = ClaudeCode
             .install_skills(&scope, &InstallOpts::default())
             .unwrap();
         assert!(matches!(change, Change::Updated(_)));
         let contents = std::fs::read_to_string(&skill_path).unwrap();
-        assert!(contents.contains("Use `ast-outline`"));
+        assert!(contents.contains("Use `ast-bro`"));
         assert!(!contents.contains("old body"));
     }
 
@@ -542,7 +552,7 @@ mod tests {
         let scope = local_scope(&dir);
         let opts = InstallOpts { dry_run: true, ..Default::default() };
         ClaudeCode.install_skills(&scope, &opts).unwrap();
-        assert!(!dir.path().join(".claude/skills/ast-outline/SKILL.md").exists());
+        assert!(!dir.path().join(".claude/skills/ast-bro/SKILL.md").exists());
     }
 
     #[test]
@@ -560,7 +570,7 @@ mod tests {
         ClaudeCode.uninstall(&scope, &opts).unwrap();
         let v: Value =
             serde_json::from_str(&std::fs::read_to_string(&mcp_path).unwrap()).unwrap();
-        assert!(v["mcpServers"].get("ast-outline").is_none());
+        assert!(v["mcpServers"].get("ast-bro").is_none());
         assert_eq!(v["mcpServers"]["other"]["command"], "x");
     }
 
@@ -570,7 +580,7 @@ mod tests {
         let scope = local_scope(&dir);
         let opts = InstallOpts::default();
         ClaudeCode.install_skills(&scope, &opts).unwrap();
-        let skill_dir = dir.path().join(".claude/skills/ast-outline");
+        let skill_dir = dir.path().join(".claude/skills/ast-bro");
         assert!(skill_dir.join("SKILL.md").exists());
         ClaudeCode.uninstall(&scope, &opts).unwrap();
         assert!(!skill_dir.join("SKILL.md").exists());
@@ -585,7 +595,7 @@ mod tests {
         let scope = local_scope(&dir);
         let opts = InstallOpts::default();
         ClaudeCode.install_skills(&scope, &opts).unwrap();
-        // Drop a sibling skill in the same parent — but ast-outline is in its
+        // Drop a sibling skill in the same parent — but ast-bro is in its
         // own subdir, so this verifies the parent .claude/skills/ stays.
         std::fs::create_dir_all(dir.path().join(".claude/skills/other")).unwrap();
         std::fs::write(
@@ -600,10 +610,10 @@ mod tests {
     #[test]
     fn uninstall_skips_user_replaced_skill_file() {
         let dir = TempDir::new().unwrap();
-        let skill_path = dir.path().join(".claude/skills/ast-outline/SKILL.md");
+        let skill_path = dir.path().join(".claude/skills/ast-bro/SKILL.md");
         std::fs::create_dir_all(skill_path.parent().unwrap()).unwrap();
         // User completely replaced our file with their own content (no
-        // ast-outline marker). Uninstall must NOT delete it.
+        // ast-bro marker). Uninstall must NOT delete it.
         std::fs::write(&skill_path, "---\nname: my-skill\n---\nmine\n").unwrap();
         let scope = local_scope(&dir);
         ClaudeCode

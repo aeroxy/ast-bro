@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use std::process::Command;
 
 fn bin() -> PathBuf {
-    PathBuf::from(env!("CARGO_BIN_EXE_ast-outline"))
+    PathBuf::from(env!("CARGO_BIN_EXE_ast-bro"))
 }
 
 fn run_in(dir: &std::path::Path, args: &[&str]) -> (String, i32) {
@@ -234,7 +234,7 @@ fn callers_file_filter_unknown_path_errors() {
 
 #[test]
 fn passing_subdir_as_path_walks_up_to_project_root() {
-    // Regression: `ast-outline callers <sym> ./src` used to treat ./src as
+    // Regression: `ast-bro callers <sym> ./src` used to treat ./src as
     // the project root, producing qns like `main.rs::run` instead of
     // `src/main.rs::run`. The `<file>:<symbol>` filter then silently missed.
     let tmp = tempfile::tempdir().unwrap();
@@ -1348,10 +1348,10 @@ fn callers_unknown_symbol_returns_error() {
 // Each of these builds the cache by running a query, mutates a single file,
 // re-runs the query (without `--rebuild`), and asserts the in-memory graph
 // reflects the change without the user opting into a rebuild. The cache file
-// is written to `.ast-outline/deps/graph.bin` under each fixture root.
+// is written to `.ast-bro/deps/graph.bin` under each fixture root.
 
 fn cache_mtime(root: &std::path::Path) -> Option<std::time::SystemTime> {
-    std::fs::metadata(root.join(".ast-outline/deps/graph.bin"))
+    std::fs::metadata(root.join(".ast-bro/deps/graph.bin"))
         .ok()?
         .modified()
         .ok()

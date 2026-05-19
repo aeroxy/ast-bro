@@ -3,17 +3,17 @@ use serde::{Serialize, Serializer};
 use std::path::{Path, PathBuf};
 
 // Stable JSON schema identifiers — bump on breaking changes.
-pub const JSON_SCHEMA_MAP: &str = "ast-outline.map.v1";
-pub const JSON_SCHEMA_SHOW: &str = "ast-outline.show.v1";
-pub const JSON_SCHEMA_IMPLEMENTS: &str = "ast-outline.implements.v1";
-pub const JSON_SCHEMA_SURFACE: &str = "ast-outline.surface.v1";
-pub const JSON_SCHEMA_DEPS: &str = "ast-outline.deps.v1";
-pub const JSON_SCHEMA_REVERSE_DEPS: &str = "ast-outline.reverse-deps.v1";
-pub const JSON_SCHEMA_CYCLES: &str = "ast-outline.cycles.v1";
-pub const JSON_SCHEMA_GRAPH: &str = "ast-outline.graph.v1";
-pub const JSON_SCHEMA_DEPS_INDEX: &str = "ast-outline.deps-index.v1";
-pub const JSON_SCHEMA_CALLERS: &str = "ast-outline.callers.v1";
-pub const JSON_SCHEMA_CALLEES: &str = "ast-outline.callees.v1";
+pub const JSON_SCHEMA_MAP: &str = "ast-bro.map.v1";
+pub const JSON_SCHEMA_SHOW: &str = "ast-bro.show.v1";
+pub const JSON_SCHEMA_IMPLEMENTS: &str = "ast-bro.implements.v1";
+pub const JSON_SCHEMA_SURFACE: &str = "ast-bro.surface.v1";
+pub const JSON_SCHEMA_DEPS: &str = "ast-bro.deps.v1";
+pub const JSON_SCHEMA_REVERSE_DEPS: &str = "ast-bro.reverse-deps.v1";
+pub const JSON_SCHEMA_CYCLES: &str = "ast-bro.cycles.v1";
+pub const JSON_SCHEMA_GRAPH: &str = "ast-bro.graph.v1";
+pub const JSON_SCHEMA_DEPS_INDEX: &str = "ast-bro.deps-index.v1";
+pub const JSON_SCHEMA_CALLERS: &str = "ast-bro.callers.v1";
+pub const JSON_SCHEMA_CALLEES: &str = "ast-bro.callees.v1";
 /// Unified on-disk cache holding both the file-level dep graph and (lazily)
 /// the symbol-level call graph. Bumped from `graph-index.v1` to `v2` after
 /// the per-file-invalidation work removed `skip_serializing_if` from
@@ -22,7 +22,7 @@ pub const JSON_SCHEMA_CALLEES: &str = "ast-outline.callees.v1";
 /// were silently un-decodable (the loader returned `None` and rebuilt
 /// every time, masking the bug). The v2 bump ensures upgrading users get
 /// a clean rebuild rather than continuing to hit the silent fallback.
-pub const JSON_SCHEMA_GRAPH_INDEX: &str = "ast-outline.graph-index.v2";
+pub const JSON_SCHEMA_GRAPH_INDEX: &str = "ast-bro.graph-index.v1";
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Copy, Default)]
 pub enum DeclarationKind {

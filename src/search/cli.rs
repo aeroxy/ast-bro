@@ -12,7 +12,7 @@ use crate::search::fusion::resolve_alpha;
 use crate::search::index::{Index, SearchOptions};
 use std::path::{Path, PathBuf};
 
-/// Run `ast-outline search <QUERY> [PATH]`. Returns process exit code.
+/// Run `ast-bro search <QUERY> [PATH]`. Returns process exit code.
 pub fn run_search(
     query: &str,
     path: &PathBuf,
@@ -26,7 +26,7 @@ pub fn run_search(
     let index = match Index::open(path, &cwd) {
         Ok(i) => i,
         Err(e) => {
-            eprintln!("ast-outline: failed to open index: {e}");
+            eprintln!("ast-bro: failed to open index: {e}");
             return 1;
         }
     };
@@ -47,7 +47,7 @@ pub fn run_search(
     0
 }
 
-/// Run `ast-outline find-related <FILE>:<LINE> [PATH]`.
+/// Run `ast-bro find-related <FILE>:<LINE> [PATH]`.
 pub fn run_find_related(
     file_path: &str,
     line: u32,
@@ -60,7 +60,7 @@ pub fn run_find_related(
     let index = match Index::open(path, &cwd) {
         Ok(i) => i,
         Err(e) => {
-            eprintln!("ast-outline: failed to open index: {e}");
+            eprintln!("ast-bro: failed to open index: {e}");
             return 1;
         }
     };
@@ -71,7 +71,7 @@ pub fn run_find_related(
         Some(h) => h,
         None => {
             eprintln!(
-                "ast-outline: no chunk at {file_path}:{line} (was the file indexed?)"
+                "ast-bro: no chunk at {file_path}:{line} (was the file indexed?)"
             );
             return 2;
         }
@@ -84,7 +84,7 @@ pub fn run_find_related(
     0
 }
 
-/// Run `ast-outline index [PATH]`. With `--rebuild`, drops any existing
+/// Run `ast-bro index [PATH]`. With `--rebuild`, drops any existing
 /// cache and rebuilds from scratch. With `--stats`, just prints stats and
 /// exits 0 if an index exists, 2 if not.
 pub fn run_index(path: &PathBuf, rebuild: bool, stats: bool, json: bool, pretty: bool) -> i32 {
@@ -94,7 +94,7 @@ pub fn run_index(path: &PathBuf, rebuild: bool, stats: bool, json: bool, pretty:
         let index = match Index::open(path, &cwd) {
             Ok(i) => i,
             Err(e) => {
-                eprintln!("ast-outline: no readable index at {}: {e}", path.display());
+                eprintln!("ast-bro: no readable index at {}: {e}", path.display());
                 return 2;
             }
         };
@@ -131,13 +131,13 @@ pub fn run_index(path: &PathBuf, rebuild: bool, stats: bool, json: bool, pretty:
         // Explicit user override: build at the requested corpus, no
         // reconciliation. Print the action so users know what happened.
         eprintln!(
-            "ast-outline: forced rebuild — corpus = {}",
+            "ast-bro: forced rebuild — corpus = {}",
             display_corpus(&requested_corpus)
         );
         return match Index::build_with_corpus(path, &cwd, &requested_corpus) {
             Ok(_) => 0,
             Err(e) => {
-                eprintln!("ast-outline: index build failed: {e}");
+                eprintln!("ast-bro: index build failed: {e}");
                 1
             }
         };
@@ -152,7 +152,7 @@ pub fn run_index(path: &PathBuf, rebuild: bool, stats: bool, json: bool, pretty:
                     // Already covered — refresh stale chunks against the
                     // recorded (wider-or-equal) corpus.
                     eprintln!(
-                        "ast-outline: corpus already covers {} (recorded: {}); refreshing",
+                        "ast-bro: corpus already covers {} (recorded: {}); refreshing",
                         display_corpus(&requested_corpus),
                         display_corpus(&recorded_corpus)
                     );
@@ -160,7 +160,7 @@ pub fn run_index(path: &PathBuf, rebuild: bool, stats: bool, json: bool, pretty:
                 }
                 CorpusRel::Superset => {
                     eprintln!(
-                        "ast-outline: widening corpus from {} to {}",
+                        "ast-bro: widening corpus from {} to {}",
                         display_corpus(&recorded_corpus),
                         display_corpus(&requested_corpus)
                     );
@@ -168,7 +168,7 @@ pub fn run_index(path: &PathBuf, rebuild: bool, stats: bool, json: bool, pretty:
                 }
                 CorpusRel::Sibling { common } => {
                     eprintln!(
-                        "ast-outline: widening corpus from {} to {} (common ancestor of {} and {})",
+                        "ast-bro: widening corpus from {} to {} (common ancestor of {} and {})",
                         display_corpus(&recorded_corpus),
                         display_corpus(&common),
                         display_corpus(&recorded_corpus),
@@ -187,14 +187,14 @@ pub fn run_index(path: &PathBuf, rebuild: bool, stats: bool, json: bool, pretty:
     match result {
         Ok(_) => 0,
         Err(e) => {
-            eprintln!("ast-outline: index build failed: {e}");
+            eprintln!("ast-bro: index build failed: {e}");
             1
         }
     }
 }
 
 /// Read just the `indexed_corpus` field from an existing meta.json at
-/// `home/.ast-outline/index/meta.json`. Returns `None` if no readable meta
+/// `home/.ast-bro/index/meta.json`. Returns `None` if no readable meta
 /// exists yet.
 fn peek_recorded_corpus(home: &Path) -> Option<String> {
     use serde::Deserialize;
@@ -204,7 +204,7 @@ fn peek_recorded_corpus(home: &Path) -> Option<String> {
         indexed_corpus: String,
     }
     let meta_path = home
-        .join(".ast-outline")
+        .join(".ast-bro")
         .join("index")
         .join("meta.json");
     let bytes = std::fs::read(&meta_path).ok()?;
@@ -254,14 +254,14 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
-    fn peek_recorded_corpus_reads_v2_meta() {
+    fn peek_recorded_corpus_reads_current_meta() {
         let dir = tempdir().unwrap();
         let home = dir.path();
-        let idx = home.join(".ast-outline").join("index");
+        let idx = home.join(".ast-bro").join("index");
         fs::create_dir_all(&idx).unwrap();
         fs::write(
             idx.join("meta.json"),
-            r#"{ "schema": "ast-outline.search-index.v2",
+            r#"{ "schema": "ast-bro.search-index.v1",
                  "ast_outline_version": "0.0.0",
                  "model": { "id": "m", "dim": 256 },
                  "created_unix": 0,
@@ -278,10 +278,10 @@ mod tests {
     }
 
     #[test]
-    fn peek_recorded_corpus_treats_v1_as_empty() {
+    fn peek_recorded_corpus_treats_legacy_v1_as_empty() {
         let dir = tempdir().unwrap();
         let home = dir.path();
-        let idx = home.join(".ast-outline").join("index");
+        let idx = home.join(".ast-bro").join("index");
         fs::create_dir_all(&idx).unwrap();
         fs::write(
             idx.join("meta.json"),
@@ -294,7 +294,7 @@ mod tests {
                  "tombstones": [] }"#,
         )
         .unwrap();
-        // v1 lacks the field → serde(default) → empty string.
+        // Legacy v1 lacks the field → serde(default) → empty string.
         assert_eq!(peek_recorded_corpus(home).as_deref(), Some(""));
     }
 

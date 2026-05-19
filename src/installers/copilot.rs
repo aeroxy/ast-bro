@@ -10,7 +10,7 @@ pub struct Copilot;
 
 // VS Code's MCP file uses "servers" (NOT "mcpServers" like Cursor/Claude/Gemini).
 const MCP_KEY_PATH: &[&str] = &["servers"];
-const MCP_SERVER_NAME: &str = "ast-outline";
+const MCP_SERVER_NAME: &str = "ast-bro";
 
 impl Copilot {
     fn prompt_path(&self, scope: &Scope) -> Result<PathBuf, String> {
@@ -30,7 +30,7 @@ impl Copilot {
         }
     }
     fn mcp_entry(&self) -> Value {
-        json!({ "command": "ast-outline", "args": ["mcp"] })
+        json!({ "command": "ast-bro", "args": ["mcp"] })
     }
 }
 
@@ -78,8 +78,16 @@ impl Installer for Copilot {
             changes.push(c);
         }
         if let Some(path) = self.mcp_path(scope) {
+            let path = path?;
+            // Remove current name
             if let Some(c) =
-                common::uninstall_json_object_in(&path?, MCP_KEY_PATH, MCP_SERVER_NAME, opts)?
+                common::uninstall_json_object_in(&path, MCP_KEY_PATH, MCP_SERVER_NAME, opts)?
+            {
+                changes.push(c);
+            }
+            // Also remove legacy name from pre-rename installs
+            if let Some(c) =
+                common::uninstall_json_object_in(&path, MCP_KEY_PATH, common::OLD_MCP_SERVER_NAME, opts)?
             {
                 changes.push(c);
             }
@@ -129,7 +137,7 @@ mod tests {
         )
         .unwrap();
         // VS Code uses "servers", not "mcpServers".
-        assert_eq!(v["servers"]["ast-outline"]["command"], "ast-outline");
+        assert_eq!(v["servers"]["ast-bro"]["command"], "ast-bro");
         assert!(v.get("mcpServers").is_none());
     }
 
@@ -153,6 +161,6 @@ mod tests {
             .unwrap();
         let v: Value = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
         assert_eq!(v["servers"]["docs"]["type"], "http");
-        assert_eq!(v["servers"]["ast-outline"]["command"], "ast-outline");
+        assert_eq!(v["servers"]["ast-bro"]["command"], "ast-bro");
     }
 }

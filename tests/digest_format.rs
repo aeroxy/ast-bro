@@ -12,7 +12,7 @@ use std::path::PathBuf;
 use std::process::Command;
 
 fn bin() -> PathBuf {
-    PathBuf::from(env!("CARGO_BIN_EXE_ast-outline"))
+    PathBuf::from(env!("CARGO_BIN_EXE_ast-bro"))
 }
 
 fn run(args: &[&str]) -> String {
@@ -52,7 +52,7 @@ fn digest_legend_includes_overloads_when_overload_collapse_fires() {
     // methods on a type force a collapse; the legend must surface the
     // `[N×] = N overloads` entry.
     let dir = std::env::temp_dir().join(format!(
-        "ast-outline-legend-overload-test-{}",
+        "ast-bro-legend-overload-test-{}",
         std::process::id()
     ));
     let _ = std::fs::create_dir_all(&dir);
@@ -74,7 +74,7 @@ fn digest_legend_includes_overloads_when_overload_collapse_fires() {
 #[test]
 fn digest_legend_includes_deprecated_only_when_present() {
     let dir = std::env::temp_dir().join(format!(
-        "ast-outline-legend-test-{}",
+        "ast-bro-legend-test-{}",
         std::process::id()
     ));
     let _ = std::fs::create_dir_all(&dir);
@@ -144,7 +144,7 @@ fn rust_trait_renders_as_trait_not_interface() {
 fn deprecated_and_modifier_markers() {
     // Build a quick fixture inline.
     let dir = std::env::temp_dir().join(format!(
-        "ast-outline-digest-test-{}",
+        "ast-bro-digest-test-{}",
         std::process::id()
     ));
     let _ = std::fs::create_dir_all(&dir);
@@ -179,7 +179,7 @@ fn deprecated_and_modifier_markers() {
 #[test]
 fn python_decorator_modifiers_and_deprecation() {
     let dir = std::env::temp_dir().join(format!(
-        "ast-outline-py-test-{}",
+        "ast-bro-py-test-{}",
         std::process::id()
     ));
     let _ = std::fs::create_dir_all(&dir);
@@ -200,7 +200,7 @@ fn python_decorator_modifiers_and_deprecation() {
 #[test]
 fn typescript_modifiers_and_deprecation() {
     let dir = std::env::temp_dir().join(format!(
-        "ast-outline-ts-test-{}",
+        "ast-bro-ts-test-{}",
         std::process::id()
     ));
     let _ = std::fs::create_dir_all(&dir);
@@ -221,7 +221,7 @@ fn typescript_modifiers_and_deprecation() {
 #[test]
 fn kotlin_native_kind_data_and_sealed() {
     let dir = std::env::temp_dir().join(format!(
-        "ast-outline-kt-test-{}",
+        "ast-bro-kt-test-{}",
         std::process::id()
     ));
     let _ = std::fs::create_dir_all(&dir);
@@ -245,7 +245,7 @@ fn kotlin_native_kind_data_and_sealed() {
 #[test]
 fn java_deprecation_annotation() {
     let dir = std::env::temp_dir().join(format!(
-        "ast-outline-java-test-{}",
+        "ast-bro-java-test-{}",
         std::process::id()
     ));
     let _ = std::fs::create_dir_all(&dir);
@@ -265,7 +265,7 @@ fn java_deprecation_annotation() {
 #[test]
 fn go_deprecation_doc_convention() {
     let dir = std::env::temp_dir().join(format!(
-        "ast-outline-go-test-{}",
+        "ast-bro-go-test-{}",
         std::process::id()
     ));
     let _ = std::fs::create_dir_all(&dir);
@@ -286,7 +286,7 @@ fn go_deprecation_doc_convention() {
 #[test]
 fn overload_collapse() {
     let dir = std::env::temp_dir().join(format!(
-        "ast-outline-overload-test-{}",
+        "ast-bro-overload-test-{}",
         std::process::id()
     ));
     let _ = std::fs::create_dir_all(&dir);

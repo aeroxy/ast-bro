@@ -2,7 +2,7 @@
 
 1. Bump the version: `make bump-patch` (or `bump-minor` / `bump-major`)
 2. Build and zip the release binary: `make release`
-3. Update `Formula/ast-outline.rb` with the new SHA256: `make update-formula`
+3. Update `Formula/ast-bro.rb` with the new SHA256: `make update-formula`
 
 ## WIKI
 

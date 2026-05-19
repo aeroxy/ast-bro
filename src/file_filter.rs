@@ -1,12 +1,12 @@
-//! Shared file-walk filtering used by every ast-outline subcommand.
+//! Shared file-walk filtering used by every ast-bro subcommand.
 //!
 //! Two layers on top of `ignore::WalkBuilder`'s default `.gitignore` handling:
 //!
-//! 1. **`.ast-outline-ignore`** — a custom gitignore-syntax file that lets a
-//!    repo exclude paths from ast-outline specifically without polluting
+//! 1. **`.ast-bro-ignore`** — a custom gitignore-syntax file that lets a
+//!    repo exclude paths from ast-bro specifically without polluting
 //!    `.gitignore`. Useful for things like generated fixtures that you want
 //!    git-tracked but not analysed.
-//! 2. **Hardcoded denylist** — directories almost no one wants ast-outline to
+//! 2. **Hardcoded denylist** — directories almost no one wants ast-bro to
 //!    walk into (build outputs, dependency caches, vendored deps). A safety
 //!    net for repos that forget to gitignore these.
 //!
@@ -14,6 +14,7 @@
 //! `implements`, and the new `search` / `find-related` / `index` commands.
 
 use ignore::WalkBuilder;
+use std::fs;
 use std::path::Path;
 
 /// Directories we always skip — even if `.gitignore` doesn't list them.
@@ -35,22 +36,40 @@ pub const HARDCODED_IGNORE_DIRS: &[&str] = &[
     // Other
     ".cache", ".gradle", ".idea", ".vscode",
     // Self
-    ".ast-outline",
+    ".ast-bro",
 ];
 
-/// Wire `.ast-outline-ignore` into a `WalkBuilder`.
+/// Wire `.ast-bro-ignore` into a `WalkBuilder`.
 ///
-/// Call this on every walker that should observe ast-outline's per-repo
+/// Call this on every walker that should observe ast-bro's per-repo
 /// excludes. It's separate from `should_skip_path` because the `ignore` crate
 /// can prune ignored directories before recursing into them — much faster
 /// than visiting every entry and post-filtering.
-pub fn add_filters(builder: &mut WalkBuilder) {
-    builder.add_custom_ignore_filename(".ast-outline-ignore");
+///
+/// Also accepts `.ast-outline-ignore` for backward compatibility. If only the
+/// old file exists, it is auto-renamed to `.ast-bro-ignore` with a stderr
+/// notice.
+pub fn add_filters(builder: &mut WalkBuilder, repo_root: &Path) {
+    let new_name = ".ast-bro-ignore";
+    let old_name = ".ast-outline-ignore";
+
+    let new_path = repo_root.join(new_name);
+    let old_path = repo_root.join(old_name);
+
+    if old_path.exists() && !new_path.exists() {
+        if let Err(e) = fs::rename(&old_path, &new_path) {
+            eprintln!("warning: could not rename {old_name} -> {new_name}: {e}");
+        } else {
+            eprintln!("info: auto-renamed {old_name} -> {new_name}");
+        }
+    }
+
+    builder.add_custom_ignore_filename(new_name);
 }
 
 /// Return `true` if any component of `path` (relative to `repo_root`) matches
 /// the hardcoded denylist. Used as a post-filter — the `ignore` crate handles
-/// `.gitignore` and `.ast-outline-ignore` for us, but the denylist is our
+/// `.gitignore` and `.ast-bro-ignore` for us, but the denylist is our
 /// belt-and-suspenders.
 ///
 /// Components are compared case-sensitively; directory names like
@@ -89,7 +108,7 @@ mod tests {
     #[test]
     fn skip_self_managed_index() {
         let root = PathBuf::from("/r");
-        assert!(should_skip_path(&root.join(".ast-outline/index/meta.json"), &root));
+        assert!(should_skip_path(&root.join(".ast-bro/index/meta.json"), &root));
     }
 
     #[test]

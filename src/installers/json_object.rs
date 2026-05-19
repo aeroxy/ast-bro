@@ -69,15 +69,15 @@ mod tests {
     use super::*;
 
     fn entry() -> Value {
-        json!({ "command": "ast-outline", "args": ["mcp"] })
+        json!({ "command": "ast-bro", "args": ["mcp"] })
     }
 
     #[test]
     fn upsert_into_empty_root() {
         let mut root = json!({});
-        let modified = upsert(&mut root, &["mcpServers"], "ast-outline", entry());
+        let modified = upsert(&mut root, &["mcpServers"], "ast-bro", entry());
         assert!(modified);
-        assert!(is_installed(&root, &["mcpServers"], "ast-outline"));
+        assert!(is_installed(&root, &["mcpServers"], "ast-bro"));
     }
 
     #[test]
@@ -89,7 +89,7 @@ mod tests {
                 .unwrap()
                 .insert(format!("key_{:02}", i), json!(i));
         }
-        upsert(&mut root, &["mcpServers"], "ast-outline", entry());
+        upsert(&mut root, &["mcpServers"], "ast-bro", entry());
         for i in 0..50 {
             assert_eq!(
                 root[format!("key_{:02}", i)],
@@ -104,20 +104,20 @@ mod tests {
     fn upsert_replaces_in_place_by_key() {
         let mut root = json!({
             "mcpServers": {
-                "ast-outline": { "command": "old", "args": ["mcp"] },
+                "ast-bro": { "command": "old", "args": ["mcp"] },
                 "other": { "command": "x", "args": [] }
             }
         });
-        upsert(&mut root, &["mcpServers"], "ast-outline", entry());
-        assert_eq!(root["mcpServers"]["ast-outline"]["command"], "ast-outline");
+        upsert(&mut root, &["mcpServers"], "ast-bro", entry());
+        assert_eq!(root["mcpServers"]["ast-bro"]["command"], "ast-bro");
         assert_eq!(root["mcpServers"]["other"]["command"], "x");
     }
 
     #[test]
     fn upsert_idempotent_when_entry_unchanged() {
         let mut root = json!({});
-        upsert(&mut root, &["mcpServers"], "ast-outline", entry());
-        let modified = upsert(&mut root, &["mcpServers"], "ast-outline", entry());
+        upsert(&mut root, &["mcpServers"], "ast-bro", entry());
+        let modified = upsert(&mut root, &["mcpServers"], "ast-bro", entry());
         assert!(!modified);
     }
 
@@ -125,33 +125,33 @@ mod tests {
     fn remove_drops_key_keeps_siblings() {
         let mut root = json!({
             "mcpServers": {
-                "ast-outline": { "command": "ast-outline", "args": ["mcp"] },
+                "ast-bro": { "command": "ast-bro", "args": ["mcp"] },
                 "other": { "command": "x", "args": [] }
             }
         });
-        let removed = remove(&mut root, &["mcpServers"], "ast-outline");
+        let removed = remove(&mut root, &["mcpServers"], "ast-bro");
         assert!(removed);
-        assert!(!is_installed(&root, &["mcpServers"], "ast-outline"));
+        assert!(!is_installed(&root, &["mcpServers"], "ast-bro"));
         assert!(is_installed(&root, &["mcpServers"], "other"));
     }
 
     #[test]
     fn remove_noop_when_path_absent() {
         let mut root = json!({});
-        assert!(!remove(&mut root, &["mcpServers"], "ast-outline"));
+        assert!(!remove(&mut root, &["mcpServers"], "ast-bro"));
     }
 
     #[test]
     fn remove_noop_when_key_absent() {
         let mut root = json!({ "mcpServers": { "other": {} } });
-        assert!(!remove(&mut root, &["mcpServers"], "ast-outline"));
+        assert!(!remove(&mut root, &["mcpServers"], "ast-bro"));
         assert!(is_installed(&root, &["mcpServers"], "other"));
     }
 
     #[test]
     fn is_installed_false_when_path_missing() {
         let root = json!({});
-        assert!(!is_installed(&root, &["mcpServers"], "ast-outline"));
+        assert!(!is_installed(&root, &["mcpServers"], "ast-bro"));
     }
 
     #[test]
@@ -162,7 +162,7 @@ mod tests {
                 .unwrap()
                 .insert(name.into(), json!({}));
         }
-        upsert(&mut root, &["mcpServers"], "ast-outline", entry());
+        upsert(&mut root, &["mcpServers"], "ast-bro", entry());
         let keys: Vec<&String> = root.as_object().unwrap().keys().collect();
         // First three preserve order; "mcpServers" appended last.
         assert_eq!(keys, vec!["alpha", "beta", "gamma", "mcpServers"]);

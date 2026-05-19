@@ -1,36 +1,36 @@
-# ast-outline
+# ast-bro
 
 Fast, AST-based **code-navigation toolkit** for source files — surface the *shape* of a file (signatures with line numbers, no method bodies), the *true public API* of a package, the *dependency graph* between files, the *call graph* between symbols, and search the repo by *symbol* or *behaviour*. Fourteen subcommands, one binary, built for LLM coding agents and humans who’d rather not waste tokens reading every file just to understand a codebase.
 
-[ast-outline](https://github.com/aeroxy/ast-outline) is written in Rust and uses [ast-grep](https://github.com/ast-grep/ast-grep)’s incredibly fast [tree-sitter](https://github.com/tree-sitter/tree-sitter) bindings. Thanks to [rayon](https://github.com/rayon-rs/rayon), it parses your entire workspace concurrently—often in milliseconds. For Google- or ByteDance-scale monorepos, [ast-outline](https://github.com/aeroxy/ast-outline) benefits from the additional abstraction layer provided by [repolayer](https://github.com/zhousiyao03-cyber/repolayer).
+[ast-bro](https://github.com/aeroxy/ast-bro) is written in Rust and uses [ast-grep](https://github.com/ast-grep/ast-grep)’s incredibly fast [tree-sitter](https://github.com/tree-sitter/tree-sitter) bindings. Thanks to [rayon](https://github.com/rayon-rs/rayon), it parses your entire workspace concurrently—often in milliseconds. For Google- or ByteDance-scale monorepos, [ast-bro](https://github.com/aeroxy/ast-bro) benefits from the additional abstraction layer provided by [repolayer](https://github.com/zhousiyao03-cyber/repolayer).
 
-[![crates.io](https://img.shields.io/crates/v/ast-outline.svg)](https://crates.io/crates/ast-outline)
-[![npm](https://img.shields.io/npm/v/@ast-outline/cli)](https://www.npmjs.com/package/@ast-outline/cli)
-[![PyPI](https://img.shields.io/pypi/v/ast-outline-cli)](https://pypi.org/project/ast-outline-cli/)
+[![crates.io](https://img.shields.io/crates/v/ast-bro.svg)](https://crates.io/crates/ast-bro)
+[![npm](https://img.shields.io/npm/v/ast-bro)](https://www.npmjs.com/package/ast-bro)
+[![PyPI](https://img.shields.io/pypi/v/ast-bro)](https://pypi.org/project/ast-bro/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
-[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/aeroxy/ast-outline)
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/aeroxy/ast-bro)
 
 ---
 
 ## Purpose
 
-**[ast-outline](https://github.com/aeroxy/ast-outline) exists to make LLM coding agents faster, cheaper, and smarter
+**[ast-bro](https://github.com/aeroxy/ast-bro) exists to make LLM coding agents faster, cheaper, and smarter
 when navigating unfamiliar code.**
 
 Modern agentic coding tools explore codebases by reading files directly. That's reliable but has a massive cost: on a 1000-line file, the agent pays for 1000 lines of tokens just to answer *"what methods exist here?"* — and reading is only one of several questions an agent has. *"Who imports this?"* *"What's the public API?"* *"Are there cycles?"* *"Where in the repo is the login flow?"* — each one historically required dozens of file reads or noisy `grep`s.
 
-[ast-outline](https://github.com/aeroxy/ast-outline) collapses each of those questions into a single command:
+[ast-bro](https://github.com/aeroxy/ast-bro) collapses each of those questions into a single command:
 
 1. **Shape over bytes.** `map` / `digest` / `show` give you signatures and line ranges instead of method bodies — typically a **95% token saving** vs reading the file. `implements` finds subclasses with AST accuracy, no `grep` false positives.
 2. **Published API in one call.** `surface` resolves `pub use` re-exports (Rust), `__all__` (Python), barrel files (TypeScript), `export` clauses (Scala) so you see the surface a downstream user actually sees — not the union of every public item per file.
-3. **Dependency graph for free.** `deps` / `reverse-deps` / `cycles` / `graph` build a file-level import graph (Rust, Python, TS/JS, Java, C#, Kotlin, Scala, Go) cached at `.ast-outline/graph/`. Use `reverse-deps` before refactoring to know the blast radius. `cycles` exits non-zero — wire it into a CI gate. `graph` emits the full dependency graph (text by default, `--json` for JSON).
+3. **Dependency graph for free.** `deps` / `reverse-deps` / `cycles` / `graph` build a file-level import graph (Rust, Python, TS/JS, Java, C#, Kotlin, Scala, Go) cached at `.ast-bro/graph/`. Use `reverse-deps` before refactoring to know the blast radius. `cycles` exits non-zero — wire it into a CI gate. `graph` emits the full dependency graph (text by default, `--json` for JSON).
 4. **Symbol-level call graph.** `callers` / `callees` answer "who calls X" and "what does X call" with AST accuracy across all 14 languages — no `grep` false positives on overloaded names, comments, or string literals. Both are kind-aware: ask for a function and you get call-sites; ask for a type and you get implementors / constructions / ancestors. A three-pass resolver (same-file → global symbol table → dep-graph disambiguation) tags every edge `Exact` / `Inferred` / `Ambiguous` so you can filter by precision. Same on-disk cache as the dep graph.
 5. **Hybrid semantic search.** `search` runs BM25 + dense embeddings via [`potion-code-16M`](https://huggingface.co/minishlab/potion-code-16M) (a static, no-inference model — ~64 MB, runs on CPU in microseconds). `find-related` returns chunks structurally similar to one you already have, with a dep-graph-aware boost when a graph cache exists.
-6. **Fourteen native MCP tools.** Every CLI command is also exposed as an MCP tool — `ast-outline install --mcp <agent>` wires it into Claude Code, Cursor, Gemini, Codex, or VS Code Copilot in one line.
+6. **Fourteen native MCP tools.** Every CLI command is also exposed as an MCP tool — `ast-bro install --mcp <agent>` wires it into Claude Code, Cursor, Gemini, Codex, or VS Code Copilot in one line.
 
 ### The workflow
 
-**Before [ast-outline](https://github.com/aeroxy/ast-outline):**
+**Before [ast-bro](https://github.com/aeroxy/ast-bro):**
 
 ```
 Agent: Read Player.cs            # 1200 lines of tokens
@@ -40,18 +40,18 @@ Agent: grep "IDamageable" src/   # noisy, lots of false matches
 ...
 ```
 
-**With [ast-outline](https://github.com/aeroxy/ast-outline):**
+**With [ast-bro](https://github.com/aeroxy/ast-bro):**
 
 ```
-Agent: ast-outline surface .                  # one-page true public API of the crate/package
-Agent: ast-outline digest src/Combat          # ~100 lines, whole module's structure
-Agent: ast-outline implements IDamageable     # precise list, no grep noise
-Agent: ast-outline search "damage handling"   # hybrid BM25 + dense semantic, ranked
-Agent: ast-outline show Player.cs TakeDamage  # just the method body
-Agent: ast-outline reverse-deps Player.cs     # who imports this — blast radius before refactor
-Agent: ast-outline callers Player.TakeDamage  # AST-accurate call sites — no grep false positives
-Agent: ast-outline callees Player.TakeDamage  # what TakeDamage itself calls
-Agent: ast-outline cycles src/                # find import cycles via Tarjan SCC
+Agent: ast-bro surface .                  # one-page true public API of the crate/package
+Agent: ast-bro digest src/Combat          # ~100 lines, whole module's structure
+Agent: ast-bro implements IDamageable     # precise list, no grep noise
+Agent: ast-bro search "damage handling"   # hybrid BM25 + dense semantic, ranked
+Agent: ast-bro show Player.cs TakeDamage  # just the method body
+Agent: ast-bro reverse-deps Player.cs     # who imports this — blast radius before refactor
+Agent: ast-bro callers Player.TakeDamage  # AST-accurate call sites — no grep false positives
+Agent: ast-bro callees Player.TakeDamage  # what TakeDamage itself calls
+Agent: ast-bro cycles src/                # find import cycles via Tarjan SCC
 ```
 
 Result: **same understanding, a fraction of the tokens, a fraction of the round-trips.**
@@ -84,21 +84,21 @@ For "what does this package actually expose?" — historically the most expensiv
 
 ## What gets walked
 
-[ast-outline](https://github.com/aeroxy/ast-outline) skips a lot of files when walking a directory — by design. Filters apply uniformly across every subcommand.
+[ast-bro](https://github.com/aeroxy/ast-bro) skips a lot of files when walking a directory — by design. Filters apply uniformly across every subcommand.
 
 1. **`.gitignore` and friends** — every level's `.gitignore`, your global gitignore, `.git/info/exclude`, and `.ignore` files (the [`ignore`](https://crates.io/crates/ignore) crate's convention used by `ripgrep`/`fd`).
-2. **Hardcoded denylist** — directories almost no one wants walked, even if `.gitignore` doesn't list them: `.git`, `node_modules`, `target`, `dist`, `build`, `__pycache__`, `.venv`, `venv`, `.cache`, `.idea`, `.vscode`, `.next`, `.nuxt`, `.turbo`, `.parcel-cache`, `.gradle`, `.tox`, `.mypy_cache`, `.pytest_cache`, `.ruff_cache`, `.eggs`, `.ast-outline`, and a few others.
-3. **`.ast-outline-ignore`** — per-repo escape hatch. Same syntax as `.gitignore`. Useful for excluding paths from [ast-outline](https://github.com/aeroxy/ast-outline) that you *don't* want excluded from git itself, e.g. test fixtures or vendored corpora:
+2. **Hardcoded denylist** — directories almost no one wants walked, even if `.gitignore` doesn't list them: `.git`, `node_modules`, `target`, `dist`, `build`, `__pycache__`, `.venv`, `venv`, `.cache`, `.idea`, `.vscode`, `.next`, `.nuxt`, `.turbo`, `.parcel-cache`, `.gradle`, `.tox`, `.mypy_cache`, `.pytest_cache`, `.ruff_cache`, `.eggs`, `.ast-bro`, and a few others.
+3. **`.ast-bro-ignore`** — per-repo escape hatch. Same syntax as `.gitignore`. Useful for excluding paths from [ast-bro](https://github.com/aeroxy/ast-bro) that you *don't* want excluded from git itself, e.g. test fixtures or vendored corpora:
 
    ```gitignore
-   # .ast-outline-ignore
+   # .ast-bro-ignore
    tests/fixtures/large_corpus/
    benches/data/
    *.generated.rs
    ```
-4. **Extension allowlist** — files are only opened if their extension is one ast-outline knows how to parse (the table above for map/digest/show/implements; a broader set for the search commands).
+4. **Extension allowlist** — files are only opened if their extension is one ast-bro knows how to parse (the table above for map/digest/show/implements; a broader set for the search commands).
 
-Want to see exactly what ast-outline walks? Compare `ast-outline digest some/dir` with `rg --files some/dir` — anything in `rg` but not the digest is being filtered by one of the layers above.
+Want to see exactly what ast-bro walks? Compare `ast-bro digest some/dir` with `rg --files some/dir` — anything in `rg` but not the digest is being filtered by one of the layers above.
 
 ---
 
@@ -107,35 +107,35 @@ Want to see exactly what ast-outline walks? Compare `ast-outline digest some/dir
 ### Homebrew (macOS)
 
 ```bash
-brew install aeroxy/tap/ast-outline
+brew install aeroxy/tap/ast-bro
 ```
 
 ### npm
 
 ```bash
-npm install -g @ast-outline/cli
+npm install -g ast-bro
 ```
 
 ### pip
 
 ```bash
-pip install ast-outline-cli
+pip install ast-bro
 ```
 
 ### Cargo
 
 ```bash
-cargo install ast-outline
+cargo install ast-bro
 ```
 
-This installs the [ast-outline](https://github.com/aeroxy/ast-outline) CLI globally into `~/.cargo/bin` — make sure that's on your `PATH`.
+This installs the [ast-bro](https://github.com/aeroxy/ast-bro) CLI globally into `~/.cargo/bin` — make sure that's on your `PATH`.
 
 ### Nix
 
-You can run [ast-outline](https://github.com/aeroxy/ast-outline) directly with Nix without installing:
+You can run [ast-bro](https://github.com/aeroxy/ast-bro) directly with Nix without installing:
 
 ```bash
-nix run github:aeroxy/ast-outline
+nix run github:aeroxy/ast-bro
 ```
 
 Or add it as a dependency in your Nix flake:
@@ -144,16 +144,16 @@ Or add it as a dependency in your Nix flake:
 {
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
-    ast-outline.url = "github:aeroxy/ast-outline";
+    ast-bro.url = "github:aeroxy/ast-bro";
   };
 
-  outputs = { self, nixpkgs, ast-outline }:
+  outputs = { self, nixpkgs, ast-bro }:
     let
       system = "x86_64-linux";
       pkgs = nixpkgs.legacyPackages.${system};
     in {
       devShells.${system}.default = pkgs.mkShell {
-        buildInputs = [ ast-outline.packages.${system}.default ];
+        buildInputs = [ ast-bro.packages.${system}.default ];
       };
     };
 }
@@ -165,89 +165,89 @@ Or add it as a dependency in your Nix flake:
 
 ```bash
 # Map the structure of one file
-ast-outline map path/to/Player.rs
-ast-outline map path/to/user_service.py
+ast-bro map path/to/Player.rs
+ast-bro map path/to/user_service.py
 
 # Map a whole directory (recurses supported extensions in parallel)
-ast-outline map src/
+ast-bro map src/
 
 # Print the exact source of one specific method
-ast-outline show Player.cs TakeDamage
+ast-bro show Player.cs TakeDamage
 
 # Compact public-API map of a whole module
-ast-outline digest src/Services
+ast-bro digest src/Services
 
 # True public surface (resolves `pub use` / `__all__`, not every `pub` item)
-ast-outline surface .                  # auto-detect Cargo.toml / pyproject.toml / __init__.py
-ast-outline surface --tree --include-chain mycrate/
+ast-bro surface .                  # auto-detect Cargo.toml / pyproject.toml / __init__.py
+ast-bro surface --tree --include-chain mycrate/
 
 # Every class that inherits/implements a given type
-ast-outline implements IDamageable src/
+ast-bro implements IDamageable src/
 
 # Dependency graph: forward, reverse, cycles, full
-ast-outline deps src/auth.rs --depth 2  # what auth.rs imports (transitively)
-ast-outline reverse-deps src/auth.rs    # who imports auth.rs (refactor blast radius)
-ast-outline cycles                      # find import cycles via Tarjan SCC
-ast-outline graph .                     # full dependency graph (text)
-ast-outline graph . --json              # same, as JSON (ast-outline.graph.v1)
+ast-bro deps src/auth.rs --depth 2  # what auth.rs imports (transitively)
+ast-bro reverse-deps src/auth.rs    # who imports auth.rs (refactor blast radius)
+ast-bro cycles                      # find import cycles via Tarjan SCC
+ast-bro graph .                     # full dependency graph (text)
+ast-bro graph . --json              # same, as JSON (ast-bro.graph.v1)
 
 # Call graph: who calls X, what does X call (AST-accurate, all 14 langs)
-ast-outline callers TakeDamage              # function/method: in-edges
-ast-outline callers Player                  # type: implementors + constructions
-ast-outline callees Player.TakeDamage       # function/method: out-edges
-ast-outline callees Player --depth 2        # type: ancestor walk (transitive)
-ast-outline callers src/Player.cs:TakeDamage --include-ambiguous
+ast-bro callers TakeDamage              # function/method: in-edges
+ast-bro callers Player                  # type: implementors + constructions
+ast-bro callees Player.TakeDamage       # function/method: out-edges
+ast-bro callees Player --depth 2        # type: ancestor walk (transitive)
+ast-bro callers src/Player.cs:TakeDamage --include-ambiguous
 
 # Hybrid BM25 + dense semantic search (builds an index on first call)
-ast-outline search "how does login work"
-ast-outline search "HandlerStack" -k 5
+ast-bro search "how does login work"
+ast-bro search "HandlerStack" -k 5
 
 # Find code semantically similar to a given file:line
-ast-outline find-related src/auth/login.rs:42
+ast-bro find-related src/auth/login.rs:42
 
 # Build / refresh / inspect the per-repo search index
-ast-outline index            # build or refresh
-ast-outline index --stats    # show chunk count, model, etc.
-ast-outline index --rebuild  # drop cache and rebuild
+ast-bro index            # build or refresh
+ast-bro index --stats    # show chunk count, model, etc.
+ast-bro index --rebuild  # drop cache and rebuild
 
 # Output a prompt snippet to steer LLM agents
-ast-outline prompt >> AGENTS.md
+ast-bro prompt >> AGENTS.md
 
 # Machine-readable JSON (stable schema, great for tooling)
-ast-outline map src/player.rs --json
-ast-outline digest src/ --json
-ast-outline show Player.cs TakeDamage --json
-ast-outline implements IDamageable src/ --json
-ast-outline search "json rendering" --json
+ast-bro map src/player.rs --json
+ast-bro digest src/ --json
+ast-bro show Player.cs TakeDamage --json
+ast-bro implements IDamageable src/ --json
+ast-bro search "json rendering" --json
 ```
 
 ---
 
 ## Using with LLM coding agents
 
-This is the main use case. The fastest path is `ast-outline install`,
+This is the main use case. The fastest path is `ast-bro install`,
 which writes the agent prompt snippet (and, where supported, a real
 `Read`-interceptor hook) into your coding agent's config.
 
 ```bash
 # Install into every supported CLI it can detect on your system.
-ast-outline install --all
+ast-bro install --all
 
 # Or pick a single target.
-ast-outline install --target claude-code
-ast-outline install --target gemini --min-lines 150
+ast-bro install --target claude-code
+ast-bro install --target gemini --min-lines 150
 
 # See exactly what would change before writing.
-ast-outline install --all --dry-run
+ast-bro install --all --dry-run
 
 # Per-repo install (default is global).
-ast-outline install --target claude-code --local
+ast-bro install --target claude-code --local
 
 # Remove everything we wrote.
-ast-outline uninstall --all
+ast-bro uninstall --all
 
 # Quick visibility.
-ast-outline status
+ast-bro status
 ```
 
 Supported targets: `claude-code`, `gemini`, `tabnine`, `cursor`,
@@ -259,16 +259,16 @@ The other targets receive the prompt only.
 ### Claude Code subagent shadowing
 
 Claude Code has isolated subagents (Explore, Plan, general-purpose) that run in
-their own context and cannot see the main `CLAUDE.md`. `ast-outline install` 
+their own context and cannot see the main `CLAUDE.md`. `ast-bro install` 
 automatically shadows these subagents with `.claude/agents/<Name>.md` files 
-containing the full ast-outline prompt.
+containing the full ast-bro prompt.
 
-When you run `ast-outline install --target claude-code`, you get:
+When you run `ast-bro install --target claude-code`, you get:
 - `CLAUDE.md` — main agent prompt (global or local per-repo)
 - `.claude/settings.json` — `Read` tool hook
 - `.claude/agents/Explore.md` — Explore subagent with the prompt injected
 
-This solves the "why doesn't my subagent use ast-outline?" problem — subagents
+This solves the "why doesn't my subagent use ast-bro?" problem — subagents
 now get the prompt automatically. Legacy manual `~/.claude/agents/Explore.md` files
 are wrapped in marker blocks in-place (non-breaking).
 
@@ -278,24 +278,24 @@ A `skills/` folder is included in the repo for users who prefer manual setup:
 
 ```bash
 # Clone or download the repo
-git clone https://github.com/aeroxy/ast-outline.git
-cd ast-outline
+git clone https://github.com/aeroxy/ast-bro.git
+cd ast-bro
 
 # Copy the skill to your user skills directory
-cp -r skills/ast-outline ~/.claude/skills/ast-outline
+cp -r skills/ast-bro ~/.claude/skills/ast-bro
 
 # Then manually invoke from Claude Code
-/ast-outline
+/ast-bro
 ```
 
-This works alongside `ast-outline install` — the skill definition tells Claude Code
-how to invoke the [ast-outline](https://github.com/aeroxy/ast-outline) CLI with proper tool schemas and documentation.
+This works alongside `ast-bro install` — the skill definition tells Claude Code
+how to invoke the [ast-bro](https://github.com/aeroxy/ast-bro) CLI with proper tool schemas and documentation.
 
-Manual install via `ast-outline prompt` (e.g. project-level):
+Manual install via `ast-bro prompt` (e.g. project-level):
 
 ```bash
-ast-outline prompt >> AGENTS.md
-ast-outline prompt | pbcopy   # macOS clipboard
+ast-bro prompt >> AGENTS.md
+ast-bro prompt | pbcopy   # macOS clipboard
 ```
 
 ### Works with
@@ -329,7 +329,7 @@ pub struct Declaration  L10-120
 
 ### `show` with ancestor context
 
-`ast-outline show <file> <Symbol>` prints a `# in: ...` breadcrumb
+`ast-bro show <file> <Symbol>` prints a `# in: ...` breadcrumb
 between the header and the body so you know what the extracted code is
 nested inside, without a second `map` call:
 
@@ -350,11 +350,11 @@ servers, CI tooling, or any script that needs to consume the data
 programmatically.
 
 ```bash
-ast-outline map src/player.rs --json        # per-file map
-ast-outline digest src/ --json              # digest view
-ast-outline show Player.cs TakeDamage --json
-ast-outline implements IDamageable src/ --json
-ast-outline map src/ --json --compact       # single-line (no pretty-print)
+ast-bro map src/player.rs --json        # per-file map
+ast-bro digest src/ --json              # digest view
+ast-bro show Player.cs TakeDamage --json
+ast-bro implements IDamageable src/ --json
+ast-bro map src/ --json --compact       # single-line (no pretty-print)
 ```
 
 Every JSON document includes a `schema` field that is bumped on breaking
@@ -362,7 +362,7 @@ changes, so downstream tooling can guard on it:
 
 ```json
 {
-  "schema": "ast-outline.outline.v1",
+  "schema": "ast-bro.outline.v1",
   "files": [
     {
       "path": "src/player.rs",
@@ -387,30 +387,30 @@ changes, so downstream tooling can guard on it:
 
 | Schema | Command |
 |--------|----------|
-| `ast-outline.outline.v1` | default outline, `digest --json` |
-| `ast-outline.show.v1` | `show --json` |
-| `ast-outline.implements.v1` | `implements --json` |
-| `ast-outline.surface.v1` | `surface --json` |
-| `ast-outline.deps.v1` | `deps --json` |
-| `ast-outline.reverse-deps.v1` | `reverse-deps --json` |
-| `ast-outline.cycles.v1` | `cycles --json` |
-| `ast-outline.graph.v1` | `graph --json` |
-| `ast-outline.callers.v1` | `callers --json` |
-| `ast-outline.callees.v1` | `callees --json` |
-| `ast-outline.search.v1` | `search --json` |
-| `ast-outline.related.v1` | `find-related --json` |
-| `ast-outline.index-stats.v1` | `index --stats --json` |
+| `ast-bro.outline.v1` | default outline, `digest --json` |
+| `ast-bro.show.v1` | `show --json` |
+| `ast-bro.implements.v1` | `implements --json` |
+| `ast-bro.surface.v1` | `surface --json` |
+| `ast-bro.deps.v1` | `deps --json` |
+| `ast-bro.reverse-deps.v1` | `reverse-deps --json` |
+| `ast-bro.cycles.v1` | `cycles --json` |
+| `ast-bro.graph.v1` | `graph --json` |
+| `ast-bro.callers.v1` | `callers --json` |
+| `ast-bro.callees.v1` | `callees --json` |
+| `ast-bro.search.v1` | `search --json` |
+| `ast-bro.related.v1` | `find-related --json` |
+| `ast-bro.index-stats.v1` | `index --stats --json` |
 
 ---
 
 ## MCP server
 
-Run [ast-outline](https://github.com/aeroxy/ast-outline) as a [Model Context Protocol](https://modelcontextprotocol.io)
+Run [ast-bro](https://github.com/aeroxy/ast-bro) as a [Model Context Protocol](https://modelcontextprotocol.io)
 server over stdio so any MCP-aware coding agent can call the same operations
 as native tools — no shell parsing required:
 
 ```bash
-ast-outline mcp
+ast-bro mcp
 ```
 
 The server speaks line-delimited JSON-RPC 2.0 on stdin/stdout and exposes fourteen
@@ -418,27 +418,27 @@ tools that map 1:1 to the CLI commands:
 
 | Tool | Equivalent CLI | Returns |
 |------|----------------|---------|
-| `map`          | `ast-outline map <paths>`                | text, or `ast-outline.map.v1` with `json: true` |
-| `digest`       | `ast-outline digest <paths>`             | text, or `ast-outline.map.v1` with `json: true` |
-| `show`         | `ast-outline show <path> <syms>`         | text, or `ast-outline.show.v1` with `json: true` |
-| `implements`   | `ast-outline implements <type> <paths>`  | text, or `ast-outline.implements.v1` with `json: true` |
-| `callers`      | `ast-outline callers <symbol>`           | text, or `ast-outline.callers.v1` with `json: true` |
-| `callees`      | `ast-outline callees <symbol>`           | text, or `ast-outline.callees.v1` with `json: true` |
-| `surface`      | `ast-outline surface [path]`             | text, or `ast-outline.surface.v1` with `json: true` |
-| `deps`         | `ast-outline deps <file>`                | text, or `ast-outline.deps.v1` with `json: true` |
-| `reverse_deps` | `ast-outline reverse-deps <file>`        | text, or `ast-outline.reverse-deps.v1` with `json: true` |
-| `cycles`       | `ast-outline cycles [path]`              | text, or `ast-outline.cycles.v1` with `json: true` |
-| `graph`        | `ast-outline graph [path]`               | text by default; `json: true` for `ast-outline.graph.v1` |
-| `search`       | `ast-outline search "<query>"`           | text, or `ast-outline.search.v1` with `json: true` |
-| `find_related` | `ast-outline find-related <file>:<line>` | text, or `ast-outline.related.v1` with `json: true` |
-| `index`        | `ast-outline index`                      | text, or `ast-outline.index-stats.v1` with `json: true` |
+| `map`          | `ast-bro map <paths>`                | text, or `ast-bro.map.v1` with `json: true` |
+| `digest`       | `ast-bro digest <paths>`             | text, or `ast-bro.map.v1` with `json: true` |
+| `show`         | `ast-bro show <path> <syms>`         | text, or `ast-bro.show.v1` with `json: true` |
+| `implements`   | `ast-bro implements <type> <paths>`  | text, or `ast-bro.implements.v1` with `json: true` |
+| `callers`      | `ast-bro callers <symbol>`           | text, or `ast-bro.callers.v1` with `json: true` |
+| `callees`      | `ast-bro callees <symbol>`           | text, or `ast-bro.callees.v1` with `json: true` |
+| `surface`      | `ast-bro surface [path]`             | text, or `ast-bro.surface.v1` with `json: true` |
+| `deps`         | `ast-bro deps <file>`                | text, or `ast-bro.deps.v1` with `json: true` |
+| `reverse_deps` | `ast-bro reverse-deps <file>`        | text, or `ast-bro.reverse-deps.v1` with `json: true` |
+| `cycles`       | `ast-bro cycles [path]`              | text, or `ast-bro.cycles.v1` with `json: true` |
+| `graph`        | `ast-bro graph [path]`               | text by default; `json: true` for `ast-bro.graph.v1` |
+| `search`       | `ast-bro search "<query>"`           | text, or `ast-bro.search.v1` with `json: true` |
+| `find_related` | `ast-bro find-related <file>:<line>` | text, or `ast-bro.related.v1` with `json: true` |
+| `index`        | `ast-bro index`                      | text, or `ast-bro.index-stats.v1` with `json: true` |
 
 Wire it into a client by pointing at the binary:
 
 ```jsonc
 {
   "mcpServers": {
-    "ast-outline": { "command": "ast-outline", "args": ["mcp"] }
+    "ast-bro": { "command": "ast-bro", "args": ["mcp"] }
   }
 }
 ```
@@ -451,27 +451,27 @@ code runs unless you invoke the `mcp` subcommand.
 
 ## Semantic search
 
-`ast-outline search` runs hybrid retrieval over a per-repo index:
+`ast-bro search` runs hybrid retrieval over a per-repo index:
 
 - **BM25** for exact identifier matches and keyword density.
 - **Dense embeddings** via [`minishlab/potion-code-16M`](https://huggingface.co/minishlab/potion-code-16M) — a static (no inference) `vocab × 256` model that runs on CPU in microseconds.
 - **Reciprocal Rank Fusion** (k = 60) blends the two; alpha auto-resolves to 0.3 for symbol queries (`HandlerStack`, `Sinatra::Base` — lean BM25) and 0.5 for natural language ("how does login work" — balanced).
 - A ranking pass adds definition boosts (3× for chunks that *define* a queried symbol), file-coherence boosts (multi-chunk hits in the same file lift the top chunk), file-stem matches for NL queries, and path-based penalties (test files 0.3×, `.d.ts` stubs 0.7×, `__init__.py` 0.5×).
 
-`ast-outline find-related <file>:<line>` is the same engine in semantic-only mode, language-filtered, with the source chunk excluded — useful for "what else is structured like this?"
+`ast-bro find-related <file>:<line>` is the same engine in semantic-only mode, language-filtered, with the source chunk excluded — useful for "what else is structured like this?"
 
 ```bash
-ast-outline search "request validation" -k 5
-ast-outline search "HandlerStack" --json
-ast-outline find-related src/auth/login.rs:42 -k 3
+ast-bro search "request validation" -k 5
+ast-bro search "HandlerStack" --json
+ast-bro find-related src/auth/login.rs:42 -k 3
 ```
 
 ### How indexing works
 
-First call to `search` / `find-related` builds an index at `.ast-outline/index/`:
+First call to `search` / `find-related` builds an index at `.ast-bro/index/`:
 
 ```
-.ast-outline/
+.ast-bro/
   .gitignore           # auto-written, contents: "*"
   index/
     meta.json          # schema + model + chunk_count
@@ -484,9 +484,9 @@ First call to `search` / `find-related` builds an index at `.ast-outline/index/`
 
 Subsequent calls walk the tree, compare `(mtime, size)` against `files.bin`, and only hash files where the cheap check fails. If anything changed, the index rebuilds automatically (a v2 will support partial updates against the same on-disk format). Steady-state cost on an unchanged 10k-file repo: ~30 ms of stat syscalls.
 
-The model is downloaded once (~64 MB) on first use to `~/.cache/ast-outline/models/`. It tries HuggingFace first, falls back to `hf-mirror.com` if blocked. **TLS verification is disabled by default** so corporate MITM proxies don't break setup; integrity is enforced via SHA-256 on every cached file. Set `AST_OUTLINE_TLS_STRICT=1` to enforce strict TLS.
+The model is downloaded once (~64 MB) on first use to `~/.cache/ast-bro/models/`. It tries HuggingFace first, falls back to `hf-mirror.com` if blocked. **TLS verification is disabled by default** so corporate MITM proxies don't break setup; integrity is enforced via SHA-256 on every cached file. Set `AST_OUTLINE_TLS_STRICT=1` to enforce strict TLS.
 
-For more on what gets indexed (the five filter layers, `.ast-outline-ignore` syntax) see the "What gets walked" section above. For the security trade-offs around the TLS default, see the [network-security wiki page](https://github.com/aeroxy/ast-outline/blob/main/wiki/network-security.md) on GitHub.
+For more on what gets indexed (the five filter layers, `.ast-bro-ignore` syntax) see the "What gets walked" section above. For the security trade-offs around the TLS default, see the [network-security wiki page](https://github.com/aeroxy/ast-bro/blob/main/wiki/network-security.md) on GitHub.
 
 `find-related` quietly benefits from the dep graph too — when one is cached, results are reranked so files within depth 2 of the source (importer or importee) get a multiplicative boost. Disable with `--no-dep-boost`.
 
@@ -494,17 +494,17 @@ For more on what gets indexed (the five filter layers, `.ast-outline-ignore` syn
 
 ## Dependency graph
 
-`ast-outline deps`, `reverse-deps`, `cycles`, and `graph` build a file-level import graph for the project and answer different questions on it:
+`ast-bro deps`, `reverse-deps`, `cycles`, and `graph` build a file-level import graph for the project and answer different questions on it:
 
 ```bash
-ast-outline deps src/auth.rs --depth 2          # what does auth.rs pull in?
-ast-outline reverse-deps src/auth.rs            # who imports auth.rs? (refactor blast radius)
-ast-outline cycles                              # find import cycles via Tarjan SCC (exit 3 if any)
-ast-outline graph .                              # full dependency graph (text)
-ast-outline graph . --json                      # same, as JSON (ast-outline.graph.v1)
+ast-bro deps src/auth.rs --depth 2          # what does auth.rs pull in?
+ast-bro reverse-deps src/auth.rs            # who imports auth.rs? (refactor blast radius)
+ast-bro cycles                              # find import cycles via Tarjan SCC (exit 3 if any)
+ast-bro graph .                              # full dependency graph (text)
+ast-bro graph . --json                      # same, as JSON (ast-bro.graph.v1)
 ```
 
-All four commands share one cache at `.ast-outline/graph/index.bin` (a unified `UnifiedGraph { deps, calls: Option<CallGraph> }` — same file used by `callers` / `callees`, see below). First call builds the dep half (~hundreds of ms for typical repos via the same `ignore`-respecting walk used by search); subsequent calls reuse it via per-file delta detection, with `--rebuild` to force a fresh build. Inside `ast-outline mcp`, every `tools/call` shares one in-memory `Arc<UnifiedGraph>` so the second invocation in a session is a memory read, not a disk read.
+All four commands share one cache at `.ast-bro/graph/index.bin` (a unified `UnifiedGraph { deps, calls: Option<CallGraph> }` — same file used by `callers` / `callees`, see below). First call builds the dep half (~hundreds of ms for typical repos via the same `ignore`-respecting walk used by search); subsequent calls reuse it via per-file delta detection, with `--rebuild` to force a fresh build. Inside `ast-bro mcp`, every `tools/call` shares one in-memory `Arc<UnifiedGraph>` so the second invocation in a session is a memory read, not a disk read.
 
 Resolution is per-language but shares one suffix-index resolver:
 
@@ -514,20 +514,20 @@ Resolution is per-language but shares one suffix-index resolver:
 - **Java / Kotlin / Scala / C#**: FQN suffix index built from each file's `package` / `namespace` declaration. Inner classes resolve via strip-and-retry.
 - **Go**: `go.mod` `module` prefix is stripped; `import "mymod/pkg/foo"` resolves to `pkg/foo/*.go` (directory-as-package).
 
-The four commands are also exposed as MCP tools for agents. For internals (suffix index, Tarjan SCC, per-file invalidation, find-related dep boost) see the [deps wiki page](https://github.com/aeroxy/ast-outline/blob/main/wiki/deps.md) on GitHub.
+The four commands are also exposed as MCP tools for agents. For internals (suffix index, Tarjan SCC, per-file invalidation, find-related dep boost) see the [deps wiki page](https://github.com/aeroxy/ast-bro/blob/main/wiki/deps.md) on GitHub.
 
 ---
 
 ## Call graph
 
-`ast-outline callers` and `ast-outline callees` answer "who calls X" and "what does X call" with AST accuracy across all 14 languages. They replace `grep` for refactor blast-radius assessment — no false positives on overloaded names, comments, or string literals.
+`ast-bro callers` and `ast-bro callees` answer "who calls X" and "what does X call" with AST accuracy across all 14 languages. They replace `grep` for refactor blast-radius assessment — no false positives on overloaded names, comments, or string literals.
 
 ```bash
-ast-outline callers TakeDamage              # function/method: in-edges
-ast-outline callees TakeDamage              # function/method: out-edges
-ast-outline callers Player                  # type: implementors + constructions
-ast-outline callees Player --depth 2        # type: ancestor walk (transitive)
-ast-outline callers Player.TakeDamage --include-ambiguous --json
+ast-bro callers TakeDamage              # function/method: in-edges
+ast-bro callees TakeDamage              # function/method: out-edges
+ast-bro callers Player                  # type: implementors + constructions
+ast-bro callees Player --depth 2        # type: ancestor walk (transitive)
+ast-bro callers Player.TakeDamage --include-ambiguous --json
 ```
 
 Both commands are **kind-aware**:
@@ -547,21 +547,21 @@ Symbol forms accepted by both: bare suffix (`TakeDamage`), dotted (`Player.TakeD
 
 Every edge carries a `Confidence` tag — `Exact` (passes A/B), `Inferred` (pass C narrowed to one), or `Ambiguous` (multiple candidates survive). `--include-ambiguous` (callers) and `--external` (callees) surface the noisier results when explicitly requested.
 
-**Cache.** Same `.ast-outline/graph/index.bin` as the dep graph, lazily promoted — users who only run `deps` / `cycles` never pay the call-graph build cost. Per-file invalidation: edit one file, only that file gets re-extracted and re-resolved.
+**Cache.** Same `.ast-bro/graph/index.bin` as the dep graph, lazily promoted — users who only run `deps` / `cycles` never pay the call-graph build cost. Per-file invalidation: edit one file, only that file gets re-extracted and re-resolved.
 
-For internals (per-language node-kind tables, the call-shape pitfalls each adapter handles, the per-file patch path, cost numbers) see the [calls wiki page](https://github.com/aeroxy/ast-outline/blob/main/wiki/calls.md) on GitHub.
+For internals (per-language node-kind tables, the call-shape pitfalls each adapter handles, the per-file patch path, cost numbers) see the [calls wiki page](https://github.com/aeroxy/ast-bro/blob/main/wiki/calls.md) on GitHub.
 
 ---
 
 ## Architecture & Development
 
-See the [wiki](https://github.com/aeroxy/ast-outline/blob/main/wiki/architecture.md) on GitHub for details on how [ast-outline](https://github.com/aeroxy/ast-outline) leverages `ast-grep` internally and how you can add new language adapters.
+See the [wiki](https://github.com/aeroxy/ast-bro/blob/main/wiki/architecture.md) on GitHub for details on how [ast-bro](https://github.com/aeroxy/ast-bro) leverages `ast-grep` internally and how you can add new language adapters.
 
 ### Getting started
 
 ```bash
-git clone https://github.com/aeroxy/ast-outline.git
-cd ast-outline
+git clone https://github.com/aeroxy/ast-bro.git
+cd ast-bro
 
 # With Cargo
 cargo run -- digest src/

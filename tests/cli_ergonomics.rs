@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::process::Command;
 
 fn bin() -> PathBuf {
-    PathBuf::from(env!("CARGO_BIN_EXE_ast-outline"))
+    PathBuf::from(env!("CARGO_BIN_EXE_ast-bro"))
 }
 
 fn run(args: &[&str]) -> (bool, String, String) {
@@ -14,7 +14,7 @@ fn run(args: &[&str]) -> (bool, String, String) {
         .args(args)
         .env("NO_COLOR", "1")
         .output()
-        .expect("run ast-outline");
+        .expect("run ast-bro");
     (
         out.status.success(),
         String::from_utf8(out.stdout).expect("utf8"),
@@ -24,7 +24,7 @@ fn run(args: &[&str]) -> (bool, String, String) {
 
 #[test]
 fn map_typo_path_exits_zero_with_note() {
-    let (ok, stdout, _) = run(&["map", "/tmp/ast-outline-does-not-exist-xyz"]);
+    let (ok, stdout, _) = run(&["map", "/tmp/ast-bro-does-not-exist-xyz"]);
     assert!(ok, "must exit 0");
     assert!(
         stdout.contains("# note: path not found:"),
@@ -55,7 +55,7 @@ fn unknown_subcommand_prints_help_exits_zero() {
 
 #[test]
 fn digest_typo_path_exits_zero_with_note() {
-    let (ok, stdout, _) = run(&["digest", "/tmp/ast-outline-does-not-exist-xyz"]);
+    let (ok, stdout, _) = run(&["digest", "/tmp/ast-bro-does-not-exist-xyz"]);
     assert!(ok, "must exit 0");
     assert!(
         stdout.contains("# note: path not found:"),
@@ -68,7 +68,7 @@ fn implements_typo_path_exits_zero_with_note() {
     let (ok, stdout, _) = run(&[
         "implements",
         "Foo",
-        "/tmp/ast-outline-does-not-exist-xyz",
+        "/tmp/ast-bro-does-not-exist-xyz",
     ]);
     assert!(ok, "must exit 0");
     assert!(
@@ -81,7 +81,7 @@ fn implements_typo_path_exits_zero_with_note() {
 fn show_missing_path_exits_zero_with_note() {
     let (ok, stdout, _) = run(&[
         "show",
-        "/tmp/ast-outline-does-not-exist-xyz",
+        "/tmp/ast-bro-does-not-exist-xyz",
         "Foo",
     ]);
     assert!(ok, "must exit 0");

@@ -10,9 +10,9 @@ use crate::prompt::AGENT_PROMPT;
 pub struct Gemini;
 
 const HOOK_PATH: &[&str] = &["hooks", "BeforeTool"];
-const HOOK_NAME: &str = "ast-outline-read-interceptor";
+const HOOK_NAME: &str = "ast-bro-read-interceptor";
 const MCP_KEY_PATH: &[&str] = &["mcpServers"];
-const MCP_SERVER_NAME: &str = "ast-outline";
+const MCP_SERVER_NAME: &str = "ast-bro";
 
 impl Gemini {
     pub(crate) fn prompt_path(&self, scope: &Scope) -> Result<PathBuf, String> {
@@ -28,11 +28,11 @@ impl Gemini {
         }
     }
     fn mcp_entry(&self) -> Value {
-        json!({ "command": "ast-outline", "args": ["mcp"] })
+        json!({ "command": "ast-bro", "args": ["mcp"] })
     }
     pub(crate) fn hook_entry(&self, opts: &InstallOpts) -> Value {
         let mut cmd = format!(
-            "ast-outline hook --protocol gemini --min-lines {}",
+            "ast-bro hook --protocol gemini --min-lines {}",
             opts.min_lines
         );
         if opts.always {
@@ -112,10 +112,20 @@ impl Installer for Gemini {
         {
             changes.push(c);
         }
+        // Remove current MCP server name
         if let Some(c) = common::uninstall_json_object_in(
             &self.settings_path(scope)?,
             MCP_KEY_PATH,
             MCP_SERVER_NAME,
+            opts,
+        )? {
+            changes.push(c);
+        }
+        // Also remove legacy name from pre-rename installs
+        if let Some(c) = common::uninstall_json_object_in(
+            &self.settings_path(scope)?,
+            MCP_KEY_PATH,
+            common::OLD_MCP_SERVER_NAME,
             opts,
         )? {
             changes.push(c);
@@ -159,7 +169,7 @@ mod tests {
             .unwrap();
         let prompt = std::fs::read_to_string(dir.path().join("GEMINI.md")).unwrap();
         let settings = std::fs::read_to_string(dir.path().join(".gemini/settings.json")).unwrap();
-        assert!(prompt.contains("ast-outline:begin"));
+        assert!(prompt.contains("ast-bro:begin"));
         assert!(settings.contains("--protocol gemini"));
         assert!(settings.contains("\"matcher\": \"read_file\""));
         assert!(settings.contains("BeforeTool"));
@@ -177,7 +187,7 @@ mod tests {
         )
         .unwrap();
         // Both the hook and the MCP entry must coexist in the same file.
-        assert_eq!(v["mcpServers"]["ast-outline"]["command"], "ast-outline");
+        assert_eq!(v["mcpServers"]["ast-bro"]["command"], "ast-bro");
         assert!(v["hooks"]["BeforeTool"].is_array());
     }
 
@@ -192,7 +202,7 @@ mod tests {
         Gemini.install_mcp(&scope, &opts).unwrap();
         Gemini.uninstall(&scope, &opts).unwrap();
         let v: Value = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
-        assert!(v["mcpServers"].get("ast-outline").is_none());
+        assert!(v["mcpServers"].get("ast-bro").is_none());
         assert_eq!(v["mcpServers"]["docs"]["command"], "x");
     }
 }

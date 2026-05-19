@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::process::Command;
 
 fn bin() -> PathBuf {
-    PathBuf::from(env!("CARGO_BIN_EXE_ast-outline"))
+    PathBuf::from(env!("CARGO_BIN_EXE_ast-bro"))
 }
 
 fn run(args: &[&str]) -> String {

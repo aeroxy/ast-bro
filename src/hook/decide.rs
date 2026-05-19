@@ -30,7 +30,7 @@ pub fn decide(event: &ToolCallEvent, opts: &DecideOpts) -> Decision {
     match render_map_for(path) {
         Some(content) => Decision::Substitute {
             content: format!(
-                "{}\n# ast-outline substituted full file. Re-read with offset/limit, or\n# `ast-outline show <file> <symbol>` for a body.\n",
+                "{}\n# ast-bro substituted full file. Re-read with offset/limit, or\n# `ast-bro show <file> <symbol>` for a body.\n",
                 content
             ),
         },
@@ -158,7 +158,7 @@ mod tests {
         let d = decide(&ev("Read", Some(p), false), &opts());
         match d {
             Decision::Substitute { content } => {
-                assert!(content.contains("# ast-outline substituted"));
+                assert!(content.contains("# ast-bro substituted"));
                 assert!(content.contains("fn f"));
             }
             other => panic!("unexpected: {:?}", other),

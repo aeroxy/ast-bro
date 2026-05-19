@@ -270,7 +270,7 @@ mod tests {
     #[test]
     fn is_indexable_accepts_extra_ast_grep_languages() {
         // We rely on whatever ast-grep claims it can parse — these are languages
-        // ast-outline has no outline adapter for, but the chunker still works.
+        // ast-bro has no outline adapter for, but the chunker still works.
         for ext in ["lua", "yaml", "yml", "json", "html", "css", "rb", "php"] {
             let p = PathBuf::from(format!("a.{ext}"));
             assert!(

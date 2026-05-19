@@ -104,7 +104,7 @@ Then four boosting / penalty passes:
 ## On-disk format
 
 ```
-.ast-outline/
+.ast-bro/
 ├── .gitignore               # auto-written: "*"
 └── index/
     ├── meta.json            # ~2 KB — schema, model id+revision, chunk_count, tombstones
@@ -115,7 +115,7 @@ Then four boosting / penalty passes:
     └── lock                 # advisory exclusive lock during writes
 ```
 
-Loader refuses if `meta.json.schema != "ast-outline.search-index.v1"`, model id mismatches, or `chunks.len() × 256 × 4 != len(embeddings.f32)`. Each binary is read via bincode with `serde::Deserialize`. Embeddings are read into memory in v1 (mmap is a v2 swap that won't change the format).
+Loader refuses if `meta.json.schema != "ast-bro.search-index.v1"`, model id mismatches, or `chunks.len() × 256 × 4 != len(embeddings.f32)`. Each binary is read via bincode with `serde::Deserialize`. Embeddings are read into memory in v1 (mmap is a v2 swap that won't change the format).
 
 `embeddings.f32` is row-major so a single chunk's vector is one cache-friendly slice — friendly to both the in-memory and future-mmap paths.
 
@@ -128,7 +128,7 @@ v1's update strategy is simpler: any non-empty delta triggers a full rebuild. Th
 
 ## Concurrency
 
-`fs2` advisory lock at `.ast-outline/index/lock` — exclusive during writes. Two `search` calls at the same instant during a rebuild serialize; the loser sees the winner's update on its next read. All writes use `.tmp` + atomic rename so a SIGKILL mid-write leaves the previous index intact.
+`fs2` advisory lock at `.ast-bro/index/lock` — exclusive during writes. Two `search` calls at the same instant during a rebuild serialize; the loser sees the winner's update on its next read. All writes use `.tmp` + atomic rename so a SIGKILL mid-write leaves the previous index intact.
 
 ## Adding a new model
 

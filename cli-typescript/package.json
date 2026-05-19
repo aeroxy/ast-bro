@@ -1,12 +1,14 @@
 {
-  "name": "@ast-outline/cli",
+  "name": "ast-bro",
   "version": "2.1.0",
   "publishConfig": {
     "access": "public"
   },
   "description": "Fast, AST-based code-navigation toolkit — downloads the binary on install",
   "bin": {
-    "ast-outline": "bin/ast-outline.js"
+    "ast-bro": "bin/ast-bro.js",
+    "ast-outline": "bin/ast-bro.js",
+    "sb": "bin/ast-bro.js"
   },
   "files": [
     "bin",
@@ -30,7 +32,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/aeroxy/ast-outline.git"
+    "url": "git+https://github.com/aeroxy/ast-bro.git"
   },
-  "homepage": "https://github.com/aeroxy/ast-outline"
+  "homepage": "https://github.com/aeroxy/ast-bro"
 }

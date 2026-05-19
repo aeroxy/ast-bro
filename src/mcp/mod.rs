@@ -1,7 +1,7 @@
 //! MCP (Model Context Protocol) server over stdio.
 //!
 //! Implements the small subset of JSON-RPC 2.0 that MCP clients need to
-//! discover and invoke ast-outline's existing operations as tools:
+//! discover and invoke ast-bro's existing operations as tools:
 //! `initialize`, `tools/list`, `tools/call`, plus `ping` and the
 //! `notifications/initialized` notification.
 //!
@@ -30,7 +30,7 @@ pub fn run() -> i32 {
         let line = match line {
             Ok(l) => l,
             Err(e) => {
-                eprintln!("ast-outline mcp: stdin read error: {}", e);
+                eprintln!("ast-bro mcp: stdin read error: {}", e);
                 return 1;
             }
         };
@@ -43,7 +43,7 @@ pub fn run() -> i32 {
             Ok(req) => {
                 if let Some(resp) = handle(req) {
                     if let Err(e) = write_message(&mut out, &resp) {
-                        eprintln!("ast-outline mcp: stdout write error: {}", e);
+                        eprintln!("ast-bro mcp: stdout write error: {}", e);
                         return 1;
                     }
                 }
@@ -55,7 +55,7 @@ pub fn run() -> i32 {
                     format!("parse error: {}", e),
                 );
                 if let Err(e) = write_message(&mut out, &resp) {
-                    eprintln!("ast-outline mcp: stdout write error: {}", e);
+                    eprintln!("ast-bro mcp: stdout write error: {}", e);
                     return 1;
                 }
             }
@@ -80,7 +80,7 @@ fn handle(req: Request) -> Option<Response> {
     if is_notification {
         match method {
             "notifications/initialized" | "notifications/cancelled" => {}
-            _ => eprintln!("ast-outline mcp: ignoring unknown notification: {}", method),
+            _ => eprintln!("ast-bro mcp: ignoring unknown notification: {}", method),
         }
         return None;
     }
@@ -108,7 +108,7 @@ fn initialize_result() -> Value {
             "tools": { "listChanged": false }
         },
         "serverInfo": {
-            "name": "ast-outline",
+            "name": "ast-bro",
             "version": env!("CARGO_PKG_VERSION")
         },
         "instructions": "Structural code outlines via tree-sitter. Use `map` for one file's shape, `digest` for an unfamiliar directory, `show` to extract a single symbol's source, and `implements` to find subclasses of a type."

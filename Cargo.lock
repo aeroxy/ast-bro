@@ -82,6 +82,37 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
 
 [[package]]
+name = "ast-bro"
+version = "2.1.0"
+dependencies = [
+ "ast-grep-core",
+ "ast-grep-language",
+ "bincode",
+ "clap",
+ "colored",
+ "dirs",
+ "fs2",
+ "ignore",
+ "memmap2",
+ "rayon",
+ "regex",
+ "reqwest",
+ "safetensors",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "sha2",
+ "similar",
+ "tempfile",
+ "tokenizers",
+ "toml_edit",
+ "tree-sitter",
+ "tree-sitter-md",
+ "wide",
+ "xxhash-rust",
+]
+
+[[package]]
 name = "ast-grep-core"
 version = "0.42.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -129,37 +160,6 @@ dependencies = [
  "tree-sitter-swift",
  "tree-sitter-typescript",
  "tree-sitter-yaml",
-]
-
-[[package]]
-name = "ast-outline"
-version = "2.1.0"
-dependencies = [
- "ast-grep-core",
- "ast-grep-language",
- "bincode",
- "clap",
- "colored",
- "dirs",
- "fs2",
- "ignore",
- "memmap2",
- "rayon",
- "regex",
- "reqwest",
- "safetensors",
- "serde",
- "serde_json",
- "serde_yaml",
- "sha2",
- "similar",
- "tempfile",
- "tokenizers",
- "toml_edit",
- "tree-sitter",
- "tree-sitter-md",
- "wide",
- "xxhash-rust",
 ]
 
 [[package]]

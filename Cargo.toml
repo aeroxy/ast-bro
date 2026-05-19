@@ -1,13 +1,13 @@
 [package]
-name = "ast-outline"
+name = "ast-bro"
 version = "2.1.0"
 edition = "2021"
 description = "Fast, AST-based code-navigation toolkit for source files. Built for LLM coding agents and humans."
 authors = ["Aero <aero.windwalker@gmail.com>"]
-repository = "https://github.com/aeroxy/ast-outline"
+repository = "https://github.com/aeroxy/ast-bro"
 license = "MIT"
 readme = "README.md"
-keywords = ["ast", "outline", "tree-sitter", "llm", "cli"]
+keywords = ["ast", "bro", "tree-sitter", "llm", "cli"]
 categories = ["command-line-utilities", "development-tools"]
 include = [
     "src/**/*",
@@ -15,6 +15,18 @@ include = [
     "README.md",
     "LICENSE",
 ]
+
+[[bin]]
+name = "ast-bro"
+path = "src/main.rs"
+
+[[bin]]
+name = "ast-outline"
+path = "src/main.rs"
+
+[[bin]]
+name = "sb"
+path = "src/main.rs"
 
 [dependencies]
 ast-grep-core = "0.42.1"

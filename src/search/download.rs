@@ -13,9 +13,10 @@
 //!    `manifest.json` so subsequent loads can verify integrity.
 //!
 //! Env overrides:
-//! - `AST_OUTLINE_MODEL_DIR` — replace the default cache root entirely
-//! - `AST_OUTLINE_MODEL_SOURCE=hf|hf-mirror|<base-url>` — skip the probe and
-//!   force a specific source
+//! - `AST_BRO_MODEL_DIR` (or legacy `AST_OUTLINE_MODEL_DIR`) — replace the
+//!   default cache root entirely
+//! - `AST_BRO_MODEL_SOURCE=hf|hf-mirror|<base-url>` (or legacy
+//!   `AST_OUTLINE_MODEL_SOURCE`) — skip the probe and force a specific source
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -87,20 +88,37 @@ struct Manifest {
     source: String,
 }
 
-/// Root of the model cache. Honours `AST_OUTLINE_MODEL_DIR`, then
-/// `XDG_CACHE_HOME` (via `dirs::cache_dir`), falling back to
-/// `~/.cache/ast-outline/models` on platforms without one.
+/// Root of the model cache. Honours `AST_BRO_MODEL_DIR` (or legacy
+/// `AST_OUTLINE_MODEL_DIR`), then `XDG_CACHE_HOME` (via `dirs::cache_dir`),
+/// falling back to `~/.cache/ast-bro/models` on platforms without one.
+///
+/// Auto-renames `~/.cache/ast-outline/models` -> `~/.cache/ast-bro/models`
+/// if the old directory exists and the new one does not.
 pub fn cache_root() -> io::Result<PathBuf> {
+    if let Ok(custom) = std::env::var("AST_BRO_MODEL_DIR") {
+        return Ok(PathBuf::from(custom));
+    }
     if let Ok(custom) = std::env::var("AST_OUTLINE_MODEL_DIR") {
         return Ok(PathBuf::from(custom));
     }
     let base = dirs::cache_dir().ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::NotFound,
-            "no cache directory found (set AST_OUTLINE_MODEL_DIR)",
+            "no cache directory found (set AST_BRO_MODEL_DIR)",
         )
     })?;
-    Ok(base.join("ast-outline").join("models"))
+    let new_dir = base.join("ast-bro");
+    let old_dir = base.join("ast-outline");
+
+    if old_dir.exists() && !new_dir.exists() {
+        if let Err(e) = std::fs::rename(&old_dir, &new_dir) {
+            eprintln!("warning: could not rename {} -> {}: {e}", old_dir.display(), new_dir.display());
+        } else {
+            eprintln!("info: auto-renamed {} -> {}", old_dir.display(), new_dir.display());
+        }
+    }
+
+    Ok(new_dir.join("models"))
 }
 
 /// Local directory for a single model. Created on demand by `ensure_model`.
@@ -127,7 +145,7 @@ pub fn ensure_model(info: &ModelInfo) -> io::Result<PathBuf> {
     warn_about_tls_policy();
     let source = select_source(info);
     eprintln!(
-        "ast-outline: downloading model {} via {} ({} files)",
+        "ast-bro: downloading model {} via {} ({} files)",
         info.id,
         source.label(),
         info.files.len()
@@ -152,7 +170,9 @@ pub fn ensure_model(info: &ModelInfo) -> io::Result<PathBuf> {
 }
 
 fn select_source<'a>(_info: &'a ModelInfo) -> Source<'a> {
-    if let Ok(forced) = std::env::var("AST_OUTLINE_MODEL_SOURCE") {
+    let forced = std::env::var("AST_BRO_MODEL_SOURCE")
+        .or_else(|_| std::env::var("AST_OUTLINE_MODEL_SOURCE"));
+    if let Ok(forced) = forced {
         return match forced.as_str() {
             "hf" => Source::HuggingFace,
             "hf-mirror" => Source::HfMirror,
@@ -163,7 +183,7 @@ fn select_source<'a>(_info: &'a ModelInfo) -> Source<'a> {
             }
             other => {
                 eprintln!(
-                    "ast-outline: ignoring AST_OUTLINE_MODEL_SOURCE={other:?} (use hf, hf-mirror, or a URL)"
+                    "ast-bro: ignoring AST_BRO_MODEL_SOURCE={other:?} (use hf, hf-mirror, or a URL)"
                 );
                 Source::HuggingFace
             }
@@ -172,7 +192,7 @@ fn select_source<'a>(_info: &'a ModelInfo) -> Source<'a> {
     if probe_huggingface(&_info.id) {
         Source::HuggingFace
     } else {
-        eprintln!("ast-outline: HuggingFace unreachable, falling back to hf-mirror.com");
+        eprintln!("ast-bro: HuggingFace unreachable, falling back to hf-mirror.com");
         Source::HfMirror
     }
 }
@@ -196,7 +216,7 @@ fn probe_huggingface(model_id: &str) -> bool {
         let hi = (PROBE_REFERENCE_SIZE as f64 * (1.0 + PROBE_SIZE_TOLERANCE)) as u64;
         if len > hi {
             eprintln!(
-                "ast-outline: HF probe returned implausibly large content-length {len} (expected ≤{hi}); likely a captive portal, falling back"
+                "ast-bro: HF probe returned implausibly large content-length {len} (expected ≤{hi}); likely a captive portal, falling back"
             );
             return false;
         }
@@ -208,15 +228,17 @@ fn build_client(timeout: Duration) -> io::Result<reqwest::blocking::Client> {
     let mut builder = reqwest::blocking::Client::builder()
         .connect_timeout(timeout)
         .timeout(timeout)
-        .user_agent(concat!("ast-outline/", env!("CARGO_PKG_VERSION")));
+        .user_agent(concat!("ast-bro/", env!("CARGO_PKG_VERSION")));
 
     // Add an extra CA bundle if the user pointed us at one. Useful behind corp
     // TLS-intercepting proxies whose root is exported as a PEM file.
-    if let Ok(bundle) = std::env::var("AST_OUTLINE_CA_BUNDLE") {
+    let ca_bundle = std::env::var("AST_BRO_CA_BUNDLE")
+        .or_else(|_| std::env::var("AST_OUTLINE_CA_BUNDLE"));
+    if let Ok(bundle) = ca_bundle {
         let pem = fs::read(&bundle).map_err(|e| {
             io::Error::new(
                 io::ErrorKind::Other,
-                format!("AST_OUTLINE_CA_BUNDLE={bundle}: {e}"),
+                format!("AST_BRO_CA_BUNDLE={bundle}: {e}"),
             )
         })?;
         for cert in reqwest::Certificate::from_pem_bundle(&pem)
@@ -231,11 +253,9 @@ fn build_client(timeout: Duration) -> io::Result<reqwest::blocking::Client> {
     //   proxies without per-user CA configuration. Integrity is enforced by the
     //   SHA-256 manifest written after first download — subsequent loads detect
     //   tampering even if the original fetch was over a MITM channel.
-    // - `AST_OUTLINE_TLS_STRICT=1` opts back into full chain verification.
-    let strict = std::env::var("AST_OUTLINE_TLS_STRICT")
-        .ok()
-        .filter(|v| !v.is_empty() && v != "0" && v.to_ascii_lowercase() != "false")
-        .is_some();
+    // - `AST_BRO_TLS_STRICT=1` (or legacy `AST_OUTLINE_TLS_STRICT=1`) opts back
+    //   into full chain verification.
+    let strict = tls_strict();
     if !strict {
         builder = builder.danger_accept_invalid_certs(true);
     }
@@ -245,18 +265,25 @@ fn build_client(timeout: Duration) -> io::Result<reqwest::blocking::Client> {
         .map_err(|e| io::Error::new(io::ErrorKind::Other, e))
 }
 
+/// Check whether TLS strict mode is enabled via `AST_BRO_TLS_STRICT` or
+/// legacy `AST_OUTLINE_TLS_STRICT`.
+fn tls_strict() -> bool {
+    std::env::var("AST_BRO_TLS_STRICT")
+        .or_else(|_| std::env::var("AST_OUTLINE_TLS_STRICT"))
+        .ok()
+        .filter(|v| !v.is_empty() && v != "0" && v.to_ascii_lowercase() != "false")
+        .is_some()
+}
+
 /// Print the one-time TLS-policy notice. Called from `ensure_model` so it only
 /// fires when we're actually about to make outbound requests (not e.g. when
 /// loading from cache).
 fn warn_about_tls_policy() {
-    let strict = std::env::var("AST_OUTLINE_TLS_STRICT")
-        .ok()
-        .filter(|v| !v.is_empty() && v != "0" && v.to_ascii_lowercase() != "false")
-        .is_some();
+    let strict = tls_strict();
     if !strict {
         eprintln!(
-            "ast-outline: TLS certificate verification is DISABLED for model downloads \
-             (works through corp MITM proxies). Set AST_OUTLINE_TLS_STRICT=1 to enforce \
+            "ast-bro: TLS certificate verification is DISABLED for model downloads \
+             (works through corp MITM proxies). Set AST_BRO_TLS_STRICT=1 to enforce \
              full chain verification. Integrity is checked via SHA-256 on subsequent loads."
         );
     }
@@ -358,7 +385,7 @@ fn cache_is_valid(dir: &Path, info: &ModelInfo) -> io::Result<bool> {
         let actual = sha256_file(&path)?;
         if &actual != expected {
             eprintln!(
-                "ast-outline: cached {file} failed integrity check, will re-download"
+                "ast-bro: cached {file} failed integrity check, will re-download"
             );
             return Ok(false);
         }
@@ -380,18 +407,18 @@ mod tests {
 
     /// One combined test for the two env-var-touching cases. Cargo runs unit
     /// tests in parallel by default, so two tests both setting/unsetting
-    /// `AST_OUTLINE_MODEL_DIR` race. Folding them avoids a flake without
+    /// `AST_BRO_MODEL_DIR` race. Folding them avoids a flake without
     /// pulling in a serial-test crate.
     #[test]
     fn cache_root_and_model_dir_honour_env_override() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().to_path_buf();
-        std::env::set_var("AST_OUTLINE_MODEL_DIR", &path);
+        std::env::set_var("AST_BRO_MODEL_DIR", &path);
 
         let resolved_root = cache_root().unwrap();
         let resolved_model = model_dir(&ModelInfo::potion_code_16m()).unwrap();
 
-        std::env::remove_var("AST_OUTLINE_MODEL_DIR");
+        std::env::remove_var("AST_BRO_MODEL_DIR");
 
         assert_eq!(resolved_root, path);
         assert!(resolved_model.starts_with(&path));
@@ -465,7 +492,7 @@ mod tests {
     #[ignore]
     fn network_real_download() {
         let tmp = tempfile::tempdir().unwrap();
-        std::env::set_var("AST_OUTLINE_MODEL_DIR", tmp.path());
+        std::env::set_var("AST_BRO_MODEL_DIR", tmp.path());
         let info = ModelInfo::potion_code_16m();
         let dir = ensure_model(&info).expect("download failed");
         // Re-validate: should be a no-op because manifest now matches.
@@ -474,6 +501,6 @@ mod tests {
         for f in &info.files {
             assert!(dir.join(f).exists(), "missing {f}");
         }
-        std::env::remove_var("AST_OUTLINE_MODEL_DIR");
+        std::env::remove_var("AST_BRO_MODEL_DIR");
     }
 }

@@ -1,5 +1,5 @@
 {
-  "name": "ast-outline/php-psr4-fixture",
+  "name": "ast-bro/php-psr4-fixture",
   "autoload": {
     "psr-4": {
       "App\\": "src/"

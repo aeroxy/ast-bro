@@ -1,4 +1,4 @@
-//! CLI handlers for `ast-outline callers` and `ast-outline callees`.
+//! CLI handlers for `ast-bro callers` and `ast-bro callees`.
 //!
 //! Two resolution paths under one command surface:
 //!   1. Callable targets → walk the call-edge graph (today's behaviour).
@@ -464,7 +464,7 @@ fn normalise_type_name(name: &str) -> String {
 
 /// Walk up from `path` (file or directory) looking for a project manifest
 /// (`Cargo.toml`, `pyproject.toml`, `package.json`, …) and use that as the
-/// graph root. Stops at the cwd. Without this, `ast-outline callers X ./src`
+/// graph root. Stops at the cwd. Without this, `ast-bro callers X ./src`
 /// would treat `./src` itself as the root — qns would then look like
 /// `main_helpers.rs::…` instead of `src/main_helpers.rs::…`, and any
 /// `<file>:<symbol>` filter the user wrote against the project-relative path

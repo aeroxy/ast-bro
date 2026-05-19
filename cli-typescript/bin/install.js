@@ -1,5 +1,5 @@
 /**
- * ast-outline binary installer — downloads from GitHub releases on postinstall.
+ * ast-bro binary installer — downloads from GitHub releases on postinstall.
  */
 
 const { execSync } = require("child_process");
@@ -8,16 +8,16 @@ const os = require("os");
 const path = require("path");
 
 const VERSION = "2.1.0";
-const GITHUB_REPO = "aeroxy/ast-outline";
-const BINARY_NAME = "ast-outline";
+const GITHUB_REPO = "aeroxy/ast-bro";
+const BINARY_NAME = "ast-bro";
 
 function getCacheDir() {
   if (os.platform() === "darwin") {
-    const dir = path.join(os.homedir(), "Library", "Caches", "ast-outline");
+    const dir = path.join(os.homedir(), "Library", "Caches", "ast-bro");
     fs.mkdirSync(dir, { recursive: true });
     return dir;
   }
-  const dir = path.join(os.homedir(), ".cache", "ast-outline");
+  const dir = path.join(os.homedir(), ".cache", "ast-bro");
   fs.mkdirSync(dir, { recursive: true });
   return dir;
 }
@@ -35,7 +35,7 @@ function getPlatform() {
   if (!osName || !archName) {
     throw new Error(
       `No pre-built binary for ${platform}/${arch}. ` +
-      `Build from source: cargo install ast-outline`
+      `Build from source: cargo install ast-bro`
     );
   }
 
@@ -44,7 +44,7 @@ function getPlatform() {
   if (!available.has(`${osName}-${archName}`)) {
     throw new Error(
       `No pre-built binary for ${osName}-${archName} yet (available: macos-arm64). ` +
-      `Build from source: cargo install ast-outline`
+      `Build from source: cargo install ast-bro`
     );
   }
 
@@ -69,7 +69,7 @@ function downloadBinary() {
   const ext = osName === "windows" ? ".zip" : ".tar.gz";
   const url = `https://github.com/${GITHUB_REPO}/releases/download/${VERSION}/${BINARY_NAME}-${osName}-${archName}${ext}`;
 
-  console.log(`Downloading ast-outline ${VERSION} for ${osName}-${archName}...`);
+  console.log(`Downloading ast-bro ${VERSION} for ${osName}-${archName}...`);
   console.log(`  ${url}`);
 
   const archivePath = path.join(cacheDir, `archive${ext}`);
@@ -92,7 +92,7 @@ function downloadBinary() {
     fs.chmodSync(binaryPath, 0o755);
   }
 
-  console.log(`Installed ast-outline to ${binaryPath}`);
+  console.log(`Installed ast-bro to ${binaryPath}`);
   return binaryPath;
 }
 
@@ -101,8 +101,8 @@ if (require.main === module) {
   try {
     downloadBinary();
   } catch (err) {
-    console.error("Failed to install ast-outline binary:", err.message);
-    console.error("You can manually install by running: cargo install ast-outline");
+    console.error("Failed to install ast-bro binary:", err.message);
+    console.error("You can manually install by running: cargo install ast-bro");
     // Don't fail install — user can still use the CLI after manual install
   }
 }

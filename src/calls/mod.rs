@@ -1,4 +1,4 @@
-//! `ast-outline callers|callees` — symbol-level call-graph analysis.
+//! `ast-bro callers|callees` — symbol-level call-graph analysis.
 //!
 //! Three-pass pipeline anchored to
 //! existing `Declaration` IR + the file-level `DepGraph` for disambiguation:
@@ -16,7 +16,7 @@
 //!      file's forward-dep closure (loaded from the same unified graph).
 //! 3. **Traverse** (`traverse.rs`): forward / reverse BFS over `CallGraph`.
 //!
-//! Storage rides inside the unified `.ast-outline/deps/graph.bin` cache via
+//! Storage rides inside the unified `.ast-bro/deps/graph.bin` cache via
 //! `crate::graph_cache`. The call graph is built lazily — the very first
 //! `callers`/`callees` query triggers `graph_cache::promote_calls`, which
 //! persists the promoted graph for subsequent sessions.

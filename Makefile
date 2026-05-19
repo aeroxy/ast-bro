@@ -7,7 +7,7 @@ build:
 ## Release build — use this before manual testing
 release:
 	cargo build --release
-	zip -j target/release/ast-outline-macos-arm64.zip target/release/ast-outline
+	zip -j target/release/ast-bro-macos-arm64.zip target/release/ast-bro
 
 ## Type-check without producing a binary
 check:
@@ -35,8 +35,8 @@ bump-patch:
 	patch=$$(echo $$old | cut -d. -f3); \
 	new="$$major.$$minor.$$((patch+1))"; \
 	sed -i '' "s/^version = \"$$old\"/version = \"$$new\"/" Cargo.toml; \
-	sed -i '' "s/version \"$$old\"/version \"$$new\"/" Formula/ast-outline.rb; \
-	sed -i '' "s|/$$old/|/$$new/|g" Formula/ast-outline.rb; \
+	sed -i '' "s/version \"$$old\"/version \"$$new\"/" Formula/ast-bro.rb; \
+	sed -i '' "s|/$$old/|/$$new/|g" Formula/ast-bro.rb; \
 	sed -i '' "s/^version = \"$$old\"/version = \"$$new\"/" cli-python/pyproject.toml; \
 	sed -i '' "s/VERSION = \"$$old\"/VERSION = \"$$new\"/" cli-python/ast_outline_cli/__init__.py; \
 	sed -i '' "s/\"version\": \"$$old\"/\"version\": \"$$new\"/" cli-typescript/package.json; \
@@ -50,8 +50,8 @@ bump-minor:
 	minor=$$(echo $$old | cut -d. -f2); \
 	new="$$major.$$((minor+1)).0"; \
 	sed -i '' "s/^version = \"$$old\"/version = \"$$new\"/" Cargo.toml; \
-	sed -i '' "s/version \"$$old\"/version \"$$new\"/" Formula/ast-outline.rb; \
-	sed -i '' "s|/$$old/|/$$new/|g" Formula/ast-outline.rb; \
+	sed -i '' "s/version \"$$old\"/version \"$$new\"/" Formula/ast-bro.rb; \
+	sed -i '' "s|/$$old/|/$$new/|g" Formula/ast-bro.rb; \
 	sed -i '' "s/^version = \"$$old\"/version = \"$$new\"/" cli-python/pyproject.toml; \
 	sed -i '' "s/VERSION = \"$$old\"/VERSION = \"$$new\"/" cli-python/ast_outline_cli/__init__.py; \
 	sed -i '' "s/\"version\": \"$$old\"/\"version\": \"$$new\"/" cli-typescript/package.json; \
@@ -64,25 +64,25 @@ bump-major:
 	major=$$(echo $$old | cut -d. -f1); \
 	new="$$((major+1)).0.0"; \
 	sed -i '' "s/^version = \"$$old\"/version = \"$$new\"/" Cargo.toml; \
-	sed -i '' "s/version \"$$old\"/version \"$$new\"/" Formula/ast-outline.rb; \
-	sed -i '' "s|/$$old/|/$$new/|g" Formula/ast-outline.rb; \
+	sed -i '' "s/version \"$$old\"/version \"$$new\"/" Formula/ast-bro.rb; \
+	sed -i '' "s|/$$old/|/$$new/|g" Formula/ast-bro.rb; \
 	sed -i '' "s/^version = \"$$old\"/version = \"$$new\"/" cli-python/pyproject.toml; \
 	sed -i '' "s/VERSION = \"$$old\"/VERSION = \"$$new\"/" cli-python/ast_outline_cli/__init__.py; \
 	sed -i '' "s/\"version\": \"$$old\"/\"version\": \"$$new\"/" cli-typescript/package.json; \
 	sed -i '' "s/const VERSION = \"$$old\"/const VERSION = \"$$new\"/" cli-typescript/bin/install.js; \
 	echo "$$old → $$new"
 
-## Update Formula/ast-outline.rb SHA256 from local release zip (run after release-macos, before upload)
+## Update Formula/ast-bro.rb SHA256 from local release zip (run after release-macos, before upload)
 ##   make update-formula
 update-formula:
-	@mac_zip="target/release/ast-outline-macos-arm64.zip"; \
+	@mac_zip="target/release/ast-bro-macos-arm64.zip"; \
 	echo "Computing macOS SHA256 …"; \
 	mac_sha=$$(shasum -a 256 "$$mac_zip" | cut -d' ' -f1); \
 	echo "macOS SHA256: $$mac_sha"; \
-	sed -i '' "s/sha256 \"[a-f0-9]*\"/sha256 \"$$mac_sha\"/" Formula/ast-outline.rb; \
-	echo "Formula/ast-outline.rb updated"
+	sed -i '' "s/sha256 \"[a-f0-9]*\"/sha256 \"$$mac_sha\"/" Formula/ast-bro.rb; \
+	echo "Formula/ast-bro.rb updated"
 
-## Publish @ast-outline/cli to npm
+## Publish ast-bro to npm
 publish-npm:
 	cd cli-typescript && npm publish
 
@@ -91,6 +91,6 @@ setup-pypi:
 	python3 -m venv cli-python/venv
 	cli-python/venv/bin/pip install build twine httpx
 
-## Build and publish ast-outline-cli to PyPI
+## Build and publish ast-bro to PyPI
 publish-pypi:
 	cd cli-python && venv/bin/python -m build && venv/bin/twine upload dist/*

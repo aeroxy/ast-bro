@@ -45,7 +45,7 @@ mod tests {
 
     fn entry() -> Table {
         let mut t = Table::new();
-        t["command"] = toml_edit::value("ast-outline");
+        t["command"] = toml_edit::value("ast-bro");
         let mut args = toml_edit::Array::new();
         args.push("mcp");
         t["args"] = toml_edit::value(args);
@@ -55,12 +55,12 @@ mod tests {
     #[test]
     fn upsert_into_empty_doc() {
         let mut doc: DocumentMut = "".parse().unwrap();
-        let modified = upsert(&mut doc, "mcp_servers", "ast-outline", entry());
+        let modified = upsert(&mut doc, "mcp_servers", "ast-bro", entry());
         assert!(modified);
-        assert!(is_installed(&doc, "mcp_servers", "ast-outline"));
+        assert!(is_installed(&doc, "mcp_servers", "ast-bro"));
         let s = doc.to_string();
-        assert!(s.contains("[mcp_servers.ast-outline]"));
-        assert!(s.contains("command = \"ast-outline\""));
+        assert!(s.contains("[mcp_servers.ast-bro]"));
+        assert!(s.contains("command = \"ast-bro\""));
     }
 
     #[test]
@@ -74,12 +74,12 @@ approval_policy = "auto"
 default_shell = "zsh"
 "#;
         let mut doc: DocumentMut = src.parse().unwrap();
-        upsert(&mut doc, "mcp_servers", "ast-outline", entry());
+        upsert(&mut doc, "mcp_servers", "ast-bro", entry());
         let out = doc.to_string();
         assert!(out.contains("# my codex config"), "comment lost: {}", out);
         assert!(out.contains("model = \"gpt-5\""));
         assert!(out.contains("default_shell = \"zsh\""));
-        assert!(out.contains("[mcp_servers.ast-outline]"));
+        assert!(out.contains("[mcp_servers.ast-bro]"));
     }
 
     #[test]
@@ -90,41 +90,41 @@ command = "docs-server"
 args = ["serve"]
 "#;
         let mut doc: DocumentMut = src.parse().unwrap();
-        upsert(&mut doc, "mcp_servers", "ast-outline", entry());
+        upsert(&mut doc, "mcp_servers", "ast-bro", entry());
         let out = doc.to_string();
         assert!(out.contains("[mcp_servers.docs]"));
-        assert!(out.contains("[mcp_servers.ast-outline]"));
+        assert!(out.contains("[mcp_servers.ast-bro]"));
     }
 
     #[test]
     fn upsert_idempotent_when_entry_unchanged() {
         let mut doc: DocumentMut = "".parse().unwrap();
-        upsert(&mut doc, "mcp_servers", "ast-outline", entry());
-        let modified = upsert(&mut doc, "mcp_servers", "ast-outline", entry());
+        upsert(&mut doc, "mcp_servers", "ast-bro", entry());
+        let modified = upsert(&mut doc, "mcp_servers", "ast-bro", entry());
         assert!(!modified);
     }
 
     #[test]
     fn remove_drops_entry_keeps_siblings() {
         let mut doc: DocumentMut = "".parse().unwrap();
-        upsert(&mut doc, "mcp_servers", "ast-outline", entry());
+        upsert(&mut doc, "mcp_servers", "ast-bro", entry());
         let mut other = Table::new();
         other["command"] = toml_edit::value("x");
         upsert(&mut doc, "mcp_servers", "other", other);
-        assert!(remove(&mut doc, "mcp_servers", "ast-outline"));
-        assert!(!is_installed(&doc, "mcp_servers", "ast-outline"));
+        assert!(remove(&mut doc, "mcp_servers", "ast-bro"));
+        assert!(!is_installed(&doc, "mcp_servers", "ast-bro"));
         assert!(is_installed(&doc, "mcp_servers", "other"));
     }
 
     #[test]
     fn remove_noop_when_parent_missing() {
         let mut doc: DocumentMut = "model = \"gpt-5\"\n".parse().unwrap();
-        assert!(!remove(&mut doc, "mcp_servers", "ast-outline"));
+        assert!(!remove(&mut doc, "mcp_servers", "ast-bro"));
     }
 
     #[test]
     fn is_installed_false_when_path_missing() {
         let doc: DocumentMut = "".parse().unwrap();
-        assert!(!is_installed(&doc, "mcp_servers", "ast-outline"));
+        assert!(!is_installed(&doc, "mcp_servers", "ast-bro"));
     }
 }

@@ -1,9 +1,9 @@
 //! Per-repo persistent search index.
 //!
 //! `Index::open(path_arg, cwd)` either loads the cached index from
-//! `.ast-outline/index/` (and refreshes it if files have changed) or builds
+//! `.ast-bro/index/` (and refreshes it if files have changed) or builds
 //! one from scratch on first use. The home directory is resolved by walking
-//! up from `path_arg` looking for an existing `.ast-outline/index/`, capped
+//! up from `path_arg` looking for an existing `.ast-bro/index/`, capped
 //! at `cwd` so we never escape the project the user is working in. If no
 //! existing index is found, the index is built at `cwd` (when `path_arg`
 //! is under `cwd`) or at `path_arg` itself otherwise.
@@ -47,12 +47,13 @@ use std::sync::Arc;
 use std::time::SystemTime;
 
 /// Current schema version written by all new builds.
-const SCHEMA: &str = "ast-outline.search-index.v2";
-/// Older schema we still read transparently. v1 metas have no
-/// `indexed_corpus` field; we treat that as "whole home".
-const SCHEMA_V1: &str = "ast-outline.search-index.v1";
+const SCHEMA: &str = "ast-bro.search-index.v1";
+/// Legacy v1 schema from pre-rename installs — still readable.
+const SCHEMA_V1_LEGACY: &str = "ast-outline.search-index.v1";
+/// Legacy v2 schema from pre-rename installs — still readable.
+const SCHEMA_V2_LEGACY: &str = "ast-outline.search-index.v2";
 
-/// On-disk paths under a repo's `.ast-outline/index/` directory.
+/// On-disk paths under a repo's `.ast-bro/index/` directory.
 #[derive(Debug, Clone)]
 pub struct IndexPaths {
     pub root: PathBuf,
@@ -68,7 +69,19 @@ pub struct IndexPaths {
 
 impl IndexPaths {
     pub fn from_repo(repo_root: &Path) -> Self {
-        let index_dir = repo_root.join(".ast-outline").join("index");
+        let new_dir = repo_root.join(".ast-bro");
+        let old_dir = repo_root.join(".ast-outline");
+
+        // Auto-rename .ast-outline/ -> .ast-bro/ on first access
+        if old_dir.exists() && !new_dir.exists() {
+            if let Err(e) = std::fs::rename(&old_dir, &new_dir) {
+                eprintln!("warning: could not rename .ast-outline -> .ast-bro: {e}");
+            } else {
+                eprintln!("info: auto-renamed .ast-outline -> .ast-bro");
+            }
+        }
+
+        let index_dir = new_dir.join("index");
         Self {
             root: repo_root.to_path_buf(),
             meta_json: index_dir.join("meta.json"),
@@ -77,7 +90,7 @@ impl IndexPaths {
             bm25_bin: index_dir.join("bm25.bin"),
             files_bin: index_dir.join("files.bin"),
             lock: index_dir.join("lock"),
-            gitignore: repo_root.join(".ast-outline").join(".gitignore"),
+            gitignore: new_dir.join(".gitignore"),
             index_dir,
         }
     }
@@ -154,7 +167,7 @@ pub struct Index {
     /// skip the live filter entirely.
     live_mask: Option<Vec<bool>>,
     /// Memoised dep graph for `find-related` boost. `None` until the
-    /// first call; then either Some(graph) when `.ast-outline/deps/`
+    /// first call; then either Some(graph) when `.ast-bro/deps/`
     /// has a fresh cache, or stays None to mean "no boost available".
     /// Mutated via `RwLock` so the borrow remains shared.
     dep_graph: std::sync::RwLock<Option<Option<crate::deps::DepGraph>>>,
@@ -162,11 +175,13 @@ pub struct Index {
 
 /// Compaction kicks in when tombstones occupy more than this fraction of
 /// total chunk slots — a full rebuild reclaims the space and resets BM25
-/// IDF skew. Override at build time with `AST_OUTLINE_COMPACTION_RATIO`.
+/// IDF skew. Override at build time with `AST_BRO_COMPACTION_RATIO` (or
+/// legacy `AST_OUTLINE_COMPACTION_RATIO`).
 const DEFAULT_COMPACTION_RATIO: f32 = 0.30;
 
 fn compaction_ratio() -> f32 {
-    std::env::var("AST_OUTLINE_COMPACTION_RATIO")
+    std::env::var("AST_BRO_COMPACTION_RATIO")
+        .or_else(|_| std::env::var("AST_OUTLINE_COMPACTION_RATIO"))
         .ok()
         .and_then(|s| s.parse::<f32>().ok())
         .filter(|v| (0.0..=1.0).contains(v))
@@ -175,7 +190,7 @@ fn compaction_ratio() -> f32 {
 
 impl Index {
     /// Open the index for `path_arg`. Walks up from `path_arg` to `cwd`
-    /// looking for an existing `.ast-outline/index/`; if found, refreshes
+    /// looking for an existing `.ast-bro/index/`; if found, refreshes
     /// it on detected file changes, otherwise builds at the resolved home.
     pub fn open(path_arg: &Path, cwd: &Path) -> io::Result<Self> {
         let (home, _found) = resolve_home(path_arg, cwd, Marker::SearchIndex);
@@ -194,7 +209,7 @@ impl Index {
                         && (dead as f32) / (total_chunks as f32) > compaction_ratio()
                     {
                         eprintln!(
-                            "ast-outline: tombstones {}/{} exceed {:.0}% — compacting (full rebuild)",
+                            "ast-bro: tombstones {}/{} exceed {:.0}% — compacting (full rebuild)",
                             dead,
                             total_chunks,
                             compaction_ratio() * 100.0,
@@ -214,7 +229,7 @@ impl Index {
 
                     if delta.requires_rebuild() {
                         eprintln!(
-                            "ast-outline: index stale ({} added, {} modified, {} removed) — applying delta",
+                            "ast-bro: index stale ({} added, {} modified, {} removed) — applying delta",
                             delta.added.len(),
                             delta.modified.len(),
                             delta.removed.len(),
@@ -224,7 +239,7 @@ impl Index {
                         Ok(()) => return Ok(loaded),
                         Err(e) => {
                             eprintln!(
-                                "ast-outline: delta apply failed ({e}); falling back to full rebuild"
+                                "ast-bro: delta apply failed ({e}); falling back to full rebuild"
                             );
                             return Self::build_with_corpus(
                                 path_arg,
@@ -235,7 +250,7 @@ impl Index {
                     }
                 }
                 Err(e) => {
-                    eprintln!("ast-outline: index unreadable ({e}); rebuilding");
+                    eprintln!("ast-bro: index unreadable ({e}); rebuilding");
                 }
             }
         }
@@ -271,10 +286,10 @@ impl Index {
         let started = std::time::Instant::now();
         let walk_dir = corpus_walk_dir(&paths.root, corpus);
         if corpus.is_empty() {
-            eprintln!("ast-outline: building index for {}", paths.root.display());
+            eprintln!("ast-bro: building index for {}", paths.root.display());
         } else {
             eprintln!(
-                "ast-outline: building index for {} (corpus: {})",
+                "ast-bro: building index for {} (corpus: {})",
                 paths.root.display(),
                 corpus
             );
@@ -315,7 +330,7 @@ impl Index {
         }
         let chunk_count = chunks.len() as u32;
         eprintln!(
-            "ast-outline: chunked {} files → {} chunks in {:.1}s",
+            "ast-bro: chunked {} files → {} chunks in {:.1}s",
             file_paths.len(),
             chunk_count,
             started.elapsed().as_secs_f64()
@@ -333,7 +348,7 @@ impl Index {
             })
             .collect();
         eprintln!(
-            "ast-outline: embedded in {:.1}s",
+            "ast-bro: embedded in {:.1}s",
             started_embed.elapsed().as_secs_f64()
         );
 
@@ -345,7 +360,7 @@ impl Index {
             .collect();
         let bm25 = Bm25Index::build(bm25_docs);
         eprintln!(
-            "ast-outline: bm25 built in {:.1}s",
+            "ast-bro: bm25 built in {:.1}s",
             started_bm25.elapsed().as_secs_f64()
         );
 
@@ -373,7 +388,7 @@ impl Index {
         write_embeddings(&paths.embeddings_f32, &embeddings)?;
 
         eprintln!(
-            "ast-outline: index built in {:.1}s total",
+            "ast-bro: index built in {:.1}s total",
             started.elapsed().as_secs_f64()
         );
 
@@ -554,7 +569,7 @@ impl Index {
         write_meta(&self.paths.meta_json, &self.meta)?;
 
         eprintln!(
-            "ast-outline: delta applied (+{added_chunks} chunks, +{tombstoned_chunks} tombstones) in {:.2}s",
+            "ast-bro: delta applied (+{added_chunks} chunks, +{tombstoned_chunks} tombstones) in {:.2}s",
             started.elapsed().as_secs_f64()
         );
         Ok(())
@@ -563,12 +578,11 @@ impl Index {
     /// Load from disk without delta-checking. Used by `open` and tests.
     fn load_unlocked(paths: &IndexPaths) -> io::Result<Self> {
         let meta: Meta = read_meta(&paths.meta_json)?;
-        // Accept current schema and the older v1 (which lacks `indexed_corpus`
-        // — `serde(default)` fills it in as `""` = whole home).
-        if meta.schema != SCHEMA && meta.schema != SCHEMA_V1 {
+        // Accept current schema and the older legacy schemas.
+        if meta.schema != SCHEMA && meta.schema != SCHEMA_V1_LEGACY && meta.schema != SCHEMA_V2_LEGACY {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("schema {} not in [{SCHEMA}, {SCHEMA_V1}]", meta.schema),
+                format!("schema {} not in [{SCHEMA}, {SCHEMA_V1_LEGACY}, {SCHEMA_V2_LEGACY}]", meta.schema),
             ));
         }
         if meta.model.dim as usize != DIM {
@@ -654,8 +668,8 @@ impl Index {
                 && !path_starts_with(corpus, scope)
             {
                 eprintln!(
-                    "ast-outline: query scope '{scope}' is outside the indexed corpus '{corpus}' \
-                     — results will be empty. Re-run `ast-outline index .` to widen."
+                    "ast-bro: query scope '{scope}' is outside the indexed corpus '{corpus}' \
+                     — results will be empty. Re-run `ast-bro index .` to widen."
                 );
             }
         }
@@ -964,7 +978,7 @@ fn walk_and_chunk(walk_root: &Path, strip_root: &Path) -> (Vec<PathBuf>, Vec<Vec
     // Collect indexable paths first so chunking can run in parallel.
     let mut paths: Vec<PathBuf> = Vec::new();
     let mut builder = WalkBuilder::new(walk_root);
-    add_filters(&mut builder);
+    add_filters(&mut builder, walk_root);
     let walker = builder.build();
     for entry in walker.flatten() {
         let p = entry.path();
@@ -1120,8 +1134,8 @@ mod tests {
     #[test]
     fn index_paths_layout() {
         let p = IndexPaths::from_repo(Path::new("/r"));
-        assert!(p.index_dir.ends_with(".ast-outline/index"));
-        assert!(p.gitignore.ends_with(".ast-outline/.gitignore"));
+        assert!(p.index_dir.ends_with(".ast-bro/index"));
+        assert!(p.gitignore.ends_with(".ast-bro/.gitignore"));
         assert!(p.meta_json.ends_with("meta.json"));
         assert!(p.embeddings_f32.ends_with("embeddings.f32"));
     }

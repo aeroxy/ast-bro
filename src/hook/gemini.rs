@@ -53,7 +53,7 @@ pub fn run(opts: DecideOpts) -> i32 {
     let event: InputEvent = match serde_json::from_str(&buf) {
         Ok(e) => e,
         Err(e) => {
-            eprintln!("ast-outline hook: bad stdin json: {}", e);
+            eprintln!("ast-bro hook: bad stdin json: {}", e);
             return emit_pass_through();
         }
     };

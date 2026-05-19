@@ -139,7 +139,7 @@ mod tests {
             .unwrap();
 
         let conv = std::fs::read_to_string(dir.path().join("CONVENTIONS.md")).unwrap();
-        assert!(conv.contains("ast-outline:begin"));
+        assert!(conv.contains("ast-bro:begin"));
 
         let yaml = std::fs::read_to_string(dir.path().join(".aider.conf.yml")).unwrap();
         assert!(yaml.contains("CONVENTIONS.md"));

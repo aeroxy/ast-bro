@@ -11,6 +11,11 @@ use super::{Change, InstallOpts, Status};
 
 use toml_edit::{DocumentMut, Table};
 
+/// Legacy MCP server name used before the ast-outline → ast-bro rename.
+/// Uninstall routines check for this in addition to the current name so
+/// ghost entries from older installs are cleaned up.
+pub const OLD_MCP_SERVER_NAME: &str = "ast-outline";
+
 pub fn install_prompt_in(
     path: &Path,
     snippet: &str,
@@ -37,7 +42,7 @@ pub fn install_prompt_in(
             if !opts.force && marker_block::has_unmanaged_brand_content(&existing) =>
         {
             Err(format!(
-                "{}: user-written ast-outline content outside marker block; pass --force to overwrite",
+                "{}: user-written ast-bro content outside marker block; pass --force to overwrite",
                 path.display()
             ))
         }
@@ -101,7 +106,7 @@ pub fn install_subagent_in(
             if !opts.force && !is_new && marker_block::has_unmanaged_brand_content(&on_disk) =>
         {
             Err(format!(
-                "{}: user-written ast-outline content outside marker block; pass --force to overwrite",
+                "{}: user-written ast-bro content outside marker block; pass --force to overwrite",
                 path.display()
             ))
         }
@@ -392,26 +397,26 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("CLAUDE.md");
         // User pasted snippet-shaped content (backticked brand) without our markers.
-        std::fs::write(&path, "Use `ast-outline` to explore the code.\n").unwrap();
+        std::fs::write(&path, "Use `ast-bro` to explore the code.\n").unwrap();
         let err = install_prompt_in(&path, "## Snippet\n", &InstallOpts::default()).unwrap_err();
-        assert!(err.contains("user-written ast-outline content outside marker block"));
+        assert!(err.contains("user-written ast-bro content outside marker block"));
         // File must not be touched on rejection.
         let after = std::fs::read_to_string(&path).unwrap();
-        assert_eq!(after, "Use `ast-outline` to explore the code.\n");
+        assert_eq!(after, "Use `ast-bro` to explore the code.\n");
     }
 
     #[test]
     fn install_prompt_force_overrides_snippet_check() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("CLAUDE.md");
-        std::fs::write(&path, "Use `ast-outline` to explore.\n").unwrap();
+        std::fs::write(&path, "Use `ast-bro` to explore.\n").unwrap();
         let opts = InstallOpts { force: true, ..Default::default() };
         let change = install_prompt_in(&path, "## Snippet\n", &opts).unwrap();
         assert!(matches!(change, Change::Updated(_)));
         let after = std::fs::read_to_string(&path).unwrap();
-        assert!(after.contains("<!-- ast-outline:begin"));
+        assert!(after.contains("<!-- ast-bro:begin"));
         // Original line is preserved above the new block.
-        assert!(after.starts_with("Use `ast-outline` to explore.\n"));
+        assert!(after.starts_with("Use `ast-bro` to explore.\n"));
     }
 
     #[test]
@@ -422,7 +427,7 @@ mod tests {
         let change = install_prompt_in(&path, "## Snippet\n", &InstallOpts::default()).unwrap();
         assert!(matches!(change, Change::Updated(_)));
         let after = std::fs::read_to_string(&path).unwrap();
-        assert!(after.contains("<!-- ast-outline:begin"));
+        assert!(after.contains("<!-- ast-bro:begin"));
     }
 
     #[test]
@@ -430,10 +435,10 @@ mod tests {
         // Plain prose mention isn't snippet-shaped — install should proceed.
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("CLAUDE.md");
-        std::fs::write(&path, "Our team uses ast-outline among other tools.\n").unwrap();
+        std::fs::write(&path, "Our team uses ast-bro among other tools.\n").unwrap();
         let change = install_prompt_in(&path, "## Snippet\n", &InstallOpts::default()).unwrap();
         assert!(matches!(change, Change::Updated(_)));
         let after = std::fs::read_to_string(&path).unwrap();
-        assert!(after.contains("<!-- ast-outline:begin"));
+        assert!(after.contains("<!-- ast-bro:begin"));
     }
 }

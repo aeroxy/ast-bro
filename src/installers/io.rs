@@ -45,9 +45,9 @@ pub fn atomic_write(path: &Path, contents: &str) -> Result<(), String> {
 fn tmp_extension(path: &Path) -> String {
     let prev = path.extension().and_then(|o| o.to_str()).unwrap_or("");
     if prev.is_empty() {
-        "ast-outline.tmp".to_string()
+        "ast-bro.tmp".to_string()
     } else {
-        format!("{}.ast-outline.tmp", prev)
+        format!("{}.ast-bro.tmp", prev)
     }
 }
 
@@ -58,9 +58,9 @@ fn backup_path(path: &Path) -> std::path::PathBuf {
         .unwrap_or(0);
     let prev = path.extension().and_then(|o| o.to_str()).unwrap_or("");
     let suffix = if prev.is_empty() {
-        format!("ast-outline.bak.{}", ts)
+        format!("ast-bro.bak.{}", ts)
     } else {
-        format!("{}.ast-outline.bak.{}", prev, ts)
+        format!("{}.ast-bro.bak.{}", prev, ts)
     };
     path.with_extension(suffix)
 }
@@ -74,7 +74,8 @@ fn backup_exists(path: &Path) -> bool {
         Some(s) => s,
         None => return false,
     };
-    let prefix = format!("{}.ast-outline.bak.", stem);
+    let new_prefix = format!("{}.ast-bro.bak.", stem);
+    let old_prefix = format!("{}.ast-outline.bak.", stem);
     fs::read_dir(parent)
         .ok()
         .into_iter()
@@ -83,7 +84,7 @@ fn backup_exists(path: &Path) -> bool {
         .any(|e| {
             e.file_name()
                 .to_str()
-                .map(|n| n.starts_with(&prefix))
+                .map(|n| n.starts_with(&new_prefix) || n.starts_with(&old_prefix))
                 .unwrap_or(false)
         })
 }
@@ -121,7 +122,7 @@ mod tests {
             .filter(|e| {
                 e.file_name()
                     .to_str()
-                    .map(|n| n.contains(".ast-outline.bak."))
+                    .map(|n| n.contains(".ast-bro.bak."))
                     .unwrap_or(false)
             })
             .collect();

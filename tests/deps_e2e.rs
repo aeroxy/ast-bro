@@ -1,4 +1,4 @@
-//! End-to-end tests for `ast-outline deps|reverse-deps|cycles|graph`.
+//! End-to-end tests for `ast-bro deps|reverse-deps|cycles|graph`.
 //! Each test shells out to the built binary against a fixture directory
 //! under `tests/fixtures/deps/`. Tests assert invariants on the output
 //! (presence/absence of specific edges) rather than full snapshots.
@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use std::process::Command;
 
 fn bin() -> PathBuf {
-    PathBuf::from(env!("CARGO_BIN_EXE_ast-outline"))
+    PathBuf::from(env!("CARGO_BIN_EXE_ast-bro"))
 }
 
 fn run(args: &[&str]) -> (i32, String, String) {
@@ -15,7 +15,7 @@ fn run(args: &[&str]) -> (i32, String, String) {
         .args(args)
         .env("NO_COLOR", "1")
         .output()
-        .expect("run ast-outline");
+        .expect("run ast-bro");
     let stdout = String::from_utf8(out.stdout).expect("utf8 stdout");
     let stderr = String::from_utf8(out.stderr).expect("utf8 stderr");
     let code = out.status.code().unwrap_or(-1);
@@ -183,7 +183,7 @@ fn graph_json_carries_schema() {
         "--rebuild",
     ]);
     assert!(
-        s.contains("ast-outline.graph.v1"),
+        s.contains("ast-bro.graph.v1"),
         "schema constant missing:\n{s}"
     );
 }

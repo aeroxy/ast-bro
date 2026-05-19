@@ -36,7 +36,7 @@ impl LanguageAdapter for RustAdapter {
 ///    through as a synthesized top-level decl, matching the pre-rewrite
 ///    behaviour so we never lose info.
 ///
-/// `ast-outline implements Trait` now finds the *struct*, not a
+/// `ast-bro implements Trait` now finds the *struct*, not a
 /// synthetic `impl_Foo` shadow.
 fn _walk_mod<'a, D: Doc>(node: &Node<'a, D>, src: &[u8], out: &mut Vec<Declaration>) {
     let mut pending_impls: Vec<Declaration> = Vec::new();

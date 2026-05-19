@@ -94,8 +94,8 @@ impl SuffixIndex {
 }
 
 /// Walk `root` and build a suffix index of every indexable source file.
-/// Honours `.gitignore`, `.ast-outline-ignore`, and the hardcoded denylist
-/// (matches the rest of ast-outline).
+/// Honours `.gitignore`, `.ast-bro-ignore`, and the hardcoded denylist
+/// (matches the rest of ast-bro).
 pub fn build_suffix_index(root: &Path) -> SuffixIndex {
     let mut idx = SuffixIndex {
         root: root.to_path_buf(),
@@ -104,7 +104,7 @@ pub fn build_suffix_index(root: &Path) -> SuffixIndex {
 
     let mut builder = WalkBuilder::new(root);
     builder.hidden(false);
-    add_filters(&mut builder);
+    add_filters(&mut builder, root);
 
     for entry in builder.build().flatten() {
         let path = entry.path();

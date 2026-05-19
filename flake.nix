@@ -72,7 +72,7 @@
 
         # Build the actual crate itself, reusing the dependency
         # artifacts from above.
-        astOutline = craneLib.buildPackage (
+        astBro = craneLib.buildPackage (
           commonArgs
           // {
             inherit cargoArtifacts;
@@ -88,7 +88,7 @@
       in {
         checks = {
           # Build the crate as part of `nix flake check` for convenience
-          inherit astOutline;
+          inherit astBro;
 
           # Run clippy (and deny all warnings) on the crate source,
           # again, reusing the dependency artifacts from above.
@@ -96,7 +96,7 @@
           # Note that this is done as a separate derivation so that
           # we can block the CI if there are issues here, but not
           # prevent downstream consumers from building our crate by itself.
-          astOutlineClippy = craneLib.cargoClippy (
+          astBroClippy = craneLib.cargoClippy (
             commonArgs
             // {
               inherit cargoArtifacts;
@@ -104,7 +104,7 @@
             }
           );
 
-          astOutlineDoc = craneLib.cargoDoc (
+          astBroDoc = craneLib.cargoDoc (
             commonArgs
             // {
               inherit cargoArtifacts;
@@ -115,9 +115,9 @@
           );
 
           # Run tests with cargo-nextest
-          # Consider setting `doCheck = false` on `astOutline` if you do not want
+          # Consider setting `doCheck = false` on `astBro` if you do not want
           # the tests to run twice
-          astOutlineNextest = craneLib.cargoNextest (
+          astBroNextest = craneLib.cargoNextest (
             commonArgs
             // {
               inherit cargoArtifacts;
@@ -130,13 +130,13 @@
 
         # This is equivalent to packages.<system>.default
         packages = {
-          default = astOutline;
+          default = astBro;
         };
 
         apps.default = {
           type = "app";
-          program = lib.getExe astOutline;
-          inherit (astOutline) meta;
+          program = lib.getExe astBro;
+          inherit (astBro) meta;
         };
 
         devShells.default = craneLib.devShell {

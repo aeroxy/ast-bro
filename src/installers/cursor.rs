@@ -9,12 +9,12 @@ use crate::prompt::AGENT_PROMPT;
 pub struct Cursor;
 
 const MCP_KEY_PATH: &[&str] = &["mcpServers"];
-const MCP_SERVER_NAME: &str = "ast-outline";
+const MCP_SERVER_NAME: &str = "ast-bro";
 
 impl Cursor {
     fn prompt_path(&self, scope: &Scope) -> Result<PathBuf, String> {
         match scope {
-            Scope::Local(root) => Ok(root.join(".cursor/rules/ast-outline.mdc")),
+            Scope::Local(root) => Ok(root.join(".cursor/rules/ast-bro.mdc")),
             Scope::Global => paths::under_home(".cursor/User Rules.md"),
         }
     }
@@ -25,7 +25,7 @@ impl Cursor {
         }
     }
     fn mcp_entry(&self) -> Value {
-        json!({ "command": "ast-outline", "args": ["mcp"] })
+        json!({ "command": "ast-bro", "args": ["mcp"] })
     }
 }
 
@@ -69,10 +69,20 @@ impl Installer for Cursor {
         if let Some(c) = common::uninstall_prompt_in(&self.prompt_path(scope)?, opts)? {
             changes.push(c);
         }
+        // Remove current name
         if let Some(c) = common::uninstall_json_object_in(
             &self.mcp_path(scope)?,
             MCP_KEY_PATH,
             MCP_SERVER_NAME,
+            opts,
+        )? {
+            changes.push(c);
+        }
+        // Also remove legacy name from pre-rename installs
+        if let Some(c) = common::uninstall_json_object_in(
+            &self.mcp_path(scope)?,
+            MCP_KEY_PATH,
+            common::OLD_MCP_SERVER_NAME,
             opts,
         )? {
             changes.push(c);
@@ -106,10 +116,10 @@ mod tests {
         Cursor
             .install_prompt(&scope, &InstallOpts::default())
             .unwrap();
-        let p = dir.path().join(".cursor/rules/ast-outline.mdc");
+        let p = dir.path().join(".cursor/rules/ast-bro.mdc");
         assert!(p.exists());
         let contents = std::fs::read_to_string(&p).unwrap();
-        assert!(contents.contains("ast-outline:begin"));
+        assert!(contents.contains("ast-bro:begin"));
     }
 
     #[test]
@@ -134,7 +144,7 @@ mod tests {
             &std::fs::read_to_string(dir.path().join(".cursor/mcp.json")).unwrap(),
         )
         .unwrap();
-        assert_eq!(v["mcpServers"]["ast-outline"]["command"], "ast-outline");
+        assert_eq!(v["mcpServers"]["ast-bro"]["command"], "ast-bro");
     }
 
     #[test]
@@ -147,7 +157,7 @@ mod tests {
         Cursor.install_mcp(&scope, &InstallOpts::default()).unwrap();
         let v: Value = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
         assert_eq!(v["mcpServers"]["docs"]["command"], "x");
-        assert_eq!(v["mcpServers"]["ast-outline"]["command"], "ast-outline");
+        assert_eq!(v["mcpServers"]["ast-bro"]["command"], "ast-bro");
     }
 
     #[test]
@@ -161,6 +171,6 @@ mod tests {
             &std::fs::read_to_string(dir.path().join(".cursor/mcp.json")).unwrap(),
         )
         .unwrap();
-        assert!(v["mcpServers"].get("ast-outline").is_none());
+        assert!(v["mcpServers"].get("ast-bro").is_none());
     }
 }

@@ -1,4 +1,4 @@
-//! `ast-outline deps|reverse-deps|cycles|graph` — file-level
+//! `ast-bro deps|reverse-deps|cycles|graph` — file-level
 //! dependency-graph analysis.
 //!
 //! Two-stage pipeline:

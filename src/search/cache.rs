@@ -1,6 +1,6 @@
 //! On-disk record of indexed files + cheap mtime/hash delta detection.
 //!
-//! Per-file record stored in `.ast-outline/index/files.bin` (bincode). On
+//! Per-file record stored in `.ast-bro/index/files.bin` (bincode). On
 //! `Index::open`, we walk the working tree once and compare each file's
 //! `(mtime_ns, size)` against the recorded value — only mismatches advance to
 //! an xxhash3 of the file bytes. This keeps the steady-state "no changes"
@@ -84,7 +84,7 @@ pub fn compute_delta(
     let mut seen: HashSet<String> = HashSet::with_capacity(cached.len());
 
     let mut builder = WalkBuilder::new(walk_root);
-    add_filters(&mut builder);
+    add_filters(&mut builder, walk_root);
     let walker = builder.build();
 
     for entry in walker.flatten() {
@@ -93,7 +93,7 @@ pub fn compute_delta(
             continue;
         }
         // Belt-and-suspenders: skip the hardcoded denylist even when
-        // .gitignore / .ast-outline-ignore don't list it.
+        // .gitignore / .ast-bro-ignore don't list it.
         if should_skip_path(path, walk_root) {
             continue;
         }

@@ -11,7 +11,7 @@ pub fn run(protocol: &str, min_lines: usize, always: bool) -> i32 {
         "claude-code" => claude_code::run(opts),
         "gemini" => gemini::run(opts),
         other => {
-            eprintln!("ast-outline hook: unknown --protocol '{}'", other);
+            eprintln!("ast-bro hook: unknown --protocol '{}'", other);
             2
         }
     }
