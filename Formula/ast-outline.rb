@@ -1,3 +1,6 @@
+# Pinned to the last pre-rename release. New versions ship as ast-bro.rb.
+# Kept for backward compatibility — existing `brew install ast-outline` users
+# will continue to get this formula.
 class AstOutline < Formula
   desc "Fast AST-based code-navigation toolkit: shape, surface, deps, search"
   homepage "https://github.com/aeroxy/ast-outline"

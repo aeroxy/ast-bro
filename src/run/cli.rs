@@ -143,33 +143,12 @@ pub fn parse_lang(s: &str) -> Option<SupportLang> {
     }
 }
 
-fn show_diff(path: &Path, old: &str, new: &str) {
-    use similar::TextDiff;
-    let diff = TextDiff::from_lines(old, new);
-    for op in diff.ops() {
-        for change in diff.iter_changes(op) {
-            let sign = match change.tag() {
-                similar::ChangeTag::Delete => "-",
-                similar::ChangeTag::Insert => "+",
-                similar::ChangeTag::Equal => " ",
-            };
-            eprint!(
-                "{}:{}: {}{}",
-                path.display(),
-                change.old_index().unwrap_or(0),
-                sign,
-                change
-            );
-        }
-    }
-}
-
-/// Generate a unified diff string for use by MCP tool (returns String instead
-/// of printing to stderr).
+/// Produce a unified diff string between `old` and `new`.
+/// Used by both CLI (dry-run rewrite) and MCP `run` tool.
 pub fn unified_diff(path: &Path, old: &str, new: &str) -> String {
     use similar::TextDiff;
-    let diff = TextDiff::from_lines(old, new);
     let mut out = String::new();
+    let diff = TextDiff::from_lines(old, new);
     for op in diff.ops() {
         for change in diff.iter_changes(op) {
             let sign = match change.tag() {
@@ -187,4 +166,9 @@ pub fn unified_diff(path: &Path, old: &str, new: &str) -> String {
         }
     }
     out
+}
+
+/// Print diff to stderr (CLI dry-run mode).
+fn show_diff(path: &Path, old: &str, new: &str) {
+    eprint!("{}", unified_diff(path, old, new));
 }

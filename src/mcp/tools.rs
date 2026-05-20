@@ -251,8 +251,7 @@ pub fn list() -> Value {
                         "rewrite":  { "type": "string",  "description": "Replacement template (e.g. 'bar($A)'). Omit for search-only." },
                         "lang":     { "type": "string",  "description": "Language (auto-detected from file paths if omitted)." },
                         "paths":    { "type": "array", "items": { "type": "string" }, "description": "Files or directories to search.", "minItems": 1 },
-                        "write":    { "type": "boolean", "description": "Write changes to disk. Default: false (dry-run)." },
-                        "json":     { "type": "boolean" }
+                        "write":    { "type": "boolean", "description": "Write changes to disk. Default: false (dry-run)." }
                     },
                     "required": ["pattern"]
                 }
@@ -759,6 +758,8 @@ fn run_run(args: Value) -> CallResult {
         a.paths
     };
     let files = crate::walk_and_parse(&search_paths, None);
+    
+    let mut all_matches = Vec::new();
     let mut output = String::new();
     let mut rewrite_count: usize = 0;
     let mut error_count: usize = 0;
@@ -789,63 +790,76 @@ fn run_run(args: Value) -> CallResult {
             }
         };
 
-        if let Some(ref replacement) = a.rewrite {
-            match crate::run::rewrite(&source, lang, &a.pattern, replacement) {
-                Ok(Some(new_source)) => {
-                    if a.write {
-                        if rewrite_count >= MCP_REWRITE_MAX_FILES {
-                            output.push_str(&format!(
-                                "{}: skipped (safety cap {} files reached)\n",
-                                result.path.display(),
-                                MCP_REWRITE_MAX_FILES
-                            ));
-                            continue;
-                        }
+        // Search-only mode (no rewrite template)
+        if a.rewrite.is_none() {
+            if let Ok(mut matches) = crate::run::search(&source, lang, &a.pattern) {
+                if !matches.is_empty() {
+                    let file_str = result.path.to_string_lossy().to_string();
+                    for m in &mut matches {
+                        m.file = file_str.clone();
+                    }
+                    all_matches.extend(matches);
+                }
+            }
+            continue;
+        }
+
+        // Rewrite mode (dry-run or write)
+        let replacement = a.rewrite.as_deref().unwrap_or("");
+        match crate::run::rewrite(&source, lang, &a.pattern, replacement) {
+            Ok(Some(new_source)) => {
+                let file_str = result.path.to_string_lossy().to_string();
+                if a.write {
+                    if rewrite_count < MCP_REWRITE_MAX_FILES {
                         if let Err(e) = std::fs::write(&result.path, &new_source) {
-                            output.push_str(&format!("{}: write failed: {}\n", result.path.display(), e));
+                            output.push_str(&format!("{}: write failed: {}\n", file_str, e));
                             error_count += 1;
                         } else {
-                            output.push_str(&format!("{}: rewritten\n", result.path.display()));
                             rewrite_count += 1;
                         }
-                    } else {
-                        let diff = crate::run::cli::unified_diff(
-                            &result.path,
-                            &source,
-                            &new_source,
-                        );
-                        output.push_str(&diff);
                     }
+                } else {
+                    // Dry-run: show unified diff
+                    let diff = crate::run::cli::unified_diff(&result.path, &source, &new_source);
+                    output.push_str(&diff);
+                    rewrite_count += 1;
                 }
-                Ok(None) => {}
-                Err(e) => {
-                    output.push_str(&format!("{}: {}\n", result.path.display(), e));
-                    error_count += 1;
-                },
             }
-        } else {
-            match crate::run::search(&source, lang, &a.pattern) {
-                Ok(matches) => {
-                    for m in &matches {
-                        let first_line = m.matched_text.lines().next().unwrap_or("");
-                        output.push_str(&format!(
-                            "{}:{}:{}: {}\n",
-                            result.path.display(), m.start_line, m.start_col, first_line
-                        ));
-                    }
-                }
-                Err(e) => {
-                    output.push_str(&format!("{}: {}\n", result.path.display(), e));
-                    error_count += 1;
-                },
+            Ok(None) => {} // no matches in this file
+            Err(e) => {
+                let file_str = result.path.to_string_lossy().to_string();
+                output.push_str(&format!("{}: {}\n", file_str, e));
+                error_count += 1;
             }
         }
     }
-    if a.write && rewrite_count > 0 {
-        output.push_str(&format!("\n{} file(s) rewritten\n", rewrite_count));
+
+    // Rewrite mode: output already contains diffs or write confirmations
+    if a.rewrite.is_some() {
+        if output.is_empty() {
+            output.push_str("No matches found for rewrite.");
+        }
+        if error_count > 0 {
+            output.push_str(&format!("\n({} files had errors)", error_count));
+        }
+        return CallResult::Text(output);
     }
-    if error_count > 0 {
-        output.push_str(&format!("{} file(s) had errors\n", error_count));
+
+    // Search-only mode
+    if a.json {
+        CallResult::Text(serde_json::to_string_pretty(&all_matches).unwrap_or_default())
+    } else {
+        if all_matches.is_empty() {
+            output.push_str("No matches found.");
+        } else {
+            output.push_str(&format!("Found {} matches in {} files:\n", all_matches.len(), files.len()));
+            for m in all_matches {
+                output.push_str(&format!("{}:{}:{}: {}\n", m.file, m.start_line, m.start_col, m.matched_text));
+            }
+        }
+        if error_count > 0 {
+            output.push_str(&format!("\n(Skipped {} files due to read errors)", error_count));
+        }
+        CallResult::Text(output)
     }
-    CallResult::Text(output)
 }

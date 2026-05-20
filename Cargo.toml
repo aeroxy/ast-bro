@@ -1,6 +1,6 @@
 [package]
 name = "ast-bro"
-version = "2.1.0"
+version = "2.2.0"
 edition = "2021"
 description = "Fast, AST-based code-navigation toolkit for source files. Built for LLM coding agents and humans."
 authors = ["Aero <aero.windwalker@gmail.com>"]
@@ -16,17 +16,21 @@ include = [
     "LICENSE",
 ]
 
+[lib]
+name = "ast_bro"
+path = "src/lib.rs"
+
 [[bin]]
 name = "ast-bro"
 path = "src/main.rs"
 
 [[bin]]
 name = "ast-outline"
-path = "src/main.rs"
+path = "src/bin/ast-outline.rs"
 
 [[bin]]
 name = "sb"
-path = "src/main.rs"
+path = "src/bin/sb.rs"
 
 [dependencies]
 ast-grep-core = "0.42.1"
