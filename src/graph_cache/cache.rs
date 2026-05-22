@@ -14,8 +14,10 @@ use crate::search::cache::{compute_delta, hash_file, Delta, FileRecord};
 use bincode::serde::{decode_from_slice, encode_to_vec};
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::fs;
 use std::io::Write;
+use std::sync::{Mutex, OnceLock};
 use std::path::{Path, PathBuf};
 
 pub const CACHE_SCHEMA: &str = JSON_SCHEMA_GRAPH_INDEX;
@@ -35,17 +37,28 @@ pub struct CacheFile {
 
 pub fn cache_dir(root: &Path) -> PathBuf {
     let new_root = root.join(".ast-bro");
-    let old_root = root.join(".ast-outline");
+    migrate_legacy_cache_root(root, &new_root);
+    new_root.join("deps")
+}
 
+/// Per-process guard so the `.ast-outline` -> `.ast-bro` rename is attempted
+/// at most once per repo root, even when called concurrently from parallel
+/// walkers or from multiple MCP `tools/call` handlers in the same process.
+fn migrate_legacy_cache_root(root: &Path, new_root: &Path) {
+    static ATTEMPTED: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
+    let set = ATTEMPTED.get_or_init(|| Mutex::new(HashSet::new()));
+    let mut guard = set.lock().unwrap();
+    if !guard.insert(root.to_path_buf()) {
+        return;
+    }
+    let old_root = root.join(".ast-outline");
     if old_root.exists() && !new_root.exists() {
-        if let Err(e) = fs::rename(&old_root, &new_root) {
+        if let Err(e) = fs::rename(&old_root, new_root) {
             eprintln!("warning: could not rename .ast-outline -> .ast-bro: {e}");
         } else {
             eprintln!("info: auto-renamed .ast-outline -> .ast-bro");
         }
     }
-
-    new_root.join("deps")
 }
 
 pub fn cache_path(root: &Path) -> PathBuf {

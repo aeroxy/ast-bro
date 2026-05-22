@@ -27,6 +27,10 @@ pub fn run(
     let mut match_count: usize = 0;
     let mut rewrite_count: usize = 0;
     let mut error_count: usize = 0;
+    // Collect search matches when emitting JSON so the whole run produces
+    // one valid JSON array (consistent with `map` / `show` / etc.) rather
+    // than newline-delimited objects.
+    let mut json_matches: Vec<super::RunMatch> = Vec::new();
 
     for path in &files {
         let source = match std::fs::read_to_string(path) {
@@ -81,14 +85,7 @@ pub fn run(
                     for mut m in matches {
                         m.file = path.display().to_string();
                         if json {
-                            let s = if pretty {
-                                serde_json::to_string_pretty(&m)
-                            } else {
-                                serde_json::to_string(&m)
-                            };
-                            if let Ok(s) = s {
-                                println!("{}", s);
-                            }
+                            json_matches.push(m);
                         } else {
                             let first_line = m
                                 .matched_text
@@ -107,6 +104,18 @@ pub fn run(
                     error_count += 1;
                 },
             }
+        }
+    }
+
+    // Flush collected search results as a single JSON array.
+    if json && rewrite_template.is_none() {
+        let serialized = if pretty {
+            serde_json::to_string_pretty(&json_matches)
+        } else {
+            serde_json::to_string(&json_matches)
+        };
+        if let Ok(s) = serialized {
+            println!("{}", s);
         }
     }
 

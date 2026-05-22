@@ -14,8 +14,10 @@
 //! `implements`, and the new `search` / `find-related` / `index` commands.
 
 use ignore::WalkBuilder;
+use std::collections::HashMap;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 
 /// Directories we always skip — even if `.gitignore` doesn't list them.
 ///
@@ -52,20 +54,42 @@ pub const HARDCODED_IGNORE_DIRS: &[&str] = &[
 pub fn add_filters(builder: &mut WalkBuilder, repo_root: &Path) {
     let new_name = ".ast-bro-ignore";
     let old_name = ".ast-outline-ignore";
+    let rename_failed = migrate_legacy_ignore_file(repo_root, new_name, old_name);
+    if rename_failed {
+        builder.add_custom_ignore_filename(old_name);
+    }
+    builder.add_custom_ignore_filename(new_name);
+}
 
+/// Per-process guard so the `.ast-outline-ignore` -> `.ast-bro-ignore`
+/// rename is attempted at most once per repo root. Returns `true` when a
+/// previous (or current) attempt left the legacy file in place, so the
+/// caller should keep the legacy filename registered as a fallback.
+fn migrate_legacy_ignore_file(repo_root: &Path, new_name: &str, old_name: &str) -> bool {
+    static STATE: OnceLock<Mutex<HashMap<PathBuf, bool>>> = OnceLock::new();
+    let map = STATE.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut guard = map.lock().unwrap();
+    if let Some(&needs_fallback) = guard.get(repo_root) {
+        return needs_fallback;
+    }
     let new_path = repo_root.join(new_name);
     let old_path = repo_root.join(old_name);
-
-    if old_path.exists() && !new_path.exists() {
-        if let Err(e) = fs::rename(&old_path, &new_path) {
-            eprintln!("warning: could not rename {old_name} -> {new_name}: {e}");
-            builder.add_custom_ignore_filename(old_name);
-        } else {
-            eprintln!("info: auto-renamed {old_name} -> {new_name}");
+    let needs_fallback = if old_path.exists() && !new_path.exists() {
+        match fs::rename(&old_path, &new_path) {
+            Err(e) => {
+                eprintln!("warning: could not rename {old_name} -> {new_name}: {e}");
+                true
+            }
+            Ok(()) => {
+                eprintln!("info: auto-renamed {old_name} -> {new_name}");
+                false
+            }
         }
-    }
-
-    builder.add_custom_ignore_filename(new_name);
+    } else {
+        false
+    };
+    guard.insert(repo_root.to_path_buf(), needs_fallback);
+    needs_fallback
 }
 
 /// Return `true` if any component of `path` (relative to `repo_root`) matches
