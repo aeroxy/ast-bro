@@ -8,7 +8,7 @@
 4. **`src/calls/`** — symbol-level call graph (`callers`, `callees`) for all 14 languages, with a three-pass resolver (same-file → global symbol table → dep-graph disambiguation). See [calls.md](calls.md).
 5. **`src/search/`** — hybrid BM25 + dense semantic search, plus `find-related`. Cached at `.ast-bro/index/`. See [search.md](search.md).
 
-The dep graph and call graph share one on-disk cache at `.ast-bro/graph/index.bin` (`UnifiedGraph { deps, calls: Option<CallGraph> }`) and one process-wide `Arc<UnifiedGraph>` registry in `src/graph_cache/` so MCP `tools/call`s reuse a single parsed copy across the whole session.
+The dep graph and call graph share one on-disk cache at `.ast-bro/deps/graph.bin` (`UnifiedGraph { deps, calls: Option<CallGraph> }`) and one process-wide `Arc<UnifiedGraph>` registry in `src/graph_cache/` so MCP `tools/call`s reuse a single parsed copy across the whole session.
 
 It is written natively in Rust, relying heavily on the [tree-sitter](https://tree-sitter.github.io/tree-sitter/) parsing framework via the excellent [`ast-grep`](https://ast-grep.github.io/) ecosystem bindings, achieving incredibly fast speeds while still taking advantage of `rayon` for massive multithreading across directories. The five subsystems all share `src/file_filter.rs` for what gets walked (see [file-filtering.md](file-filtering.md)) — adding a feature in one subsystem doesn't change what files the others see.
 

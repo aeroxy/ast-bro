@@ -42,7 +42,7 @@ Agent: grep "IDamageable" src/   # noisy, lots of false matches
 
 **With [ast-bro](https://github.com/aeroxy/ast-bro):**
 
-```
+```console
 Agent: ast-bro surface .                  # one-page true public API of the crate/package
 Agent: ast-bro digest src/Combat          # ~100 lines, whole module's structure
 Agent: ast-bro implements IDamageable     # precise list, no grep noise
@@ -470,7 +470,7 @@ ast-bro find-related src/auth/login.rs:42 -k 3
 
 First call to `search` / `find-related` builds an index at `.ast-bro/index/`:
 
-```
+```text
 .ast-bro/
   .gitignore           # auto-written, contents: "*"
   index/

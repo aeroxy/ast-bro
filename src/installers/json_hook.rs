@@ -9,6 +9,15 @@ use serde_json::{json, Map, Value};
 /// `id` field (Claude Code and Gemini hook entries do not have one).
 pub const MARKER: &str = "ast-bro hook";
 
+/// Pre-rebrand prefix. Still recognized so legacy entries get upgraded /
+/// removed on the next install or uninstall, rather than orphaned in place.
+pub const LEGACY_MARKER: &str = "ast-outline hook";
+
+/// True if `command` is one of ours — either current or legacy form.
+pub fn matches_any_marker(command: &str) -> bool {
+    command.starts_with(MARKER) || command.starts_with(LEGACY_MARKER)
+}
+
 pub fn upsert<F>(root: &mut Value, path: &[&str], entry: Value, matches: F) -> bool
 where
     F: Fn(&Value) -> bool,
@@ -106,7 +115,7 @@ mod tests {
                 .and_then(|h| h.first())
                 .and_then(|h0| h0.get("command"))
                 .and_then(|c| c.as_str())
-                .map(|c| c.starts_with(MARKER))
+                .map(matches_any_marker)
                 .unwrap_or(false)
     }
 
@@ -189,5 +198,45 @@ mod tests {
     fn is_installed_false_when_path_missing() {
         let root = json!({});
         assert!(!is_installed(&root, &["hooks", "PreToolUse"], predicate));
+    }
+
+    #[test]
+    fn matches_any_marker_accepts_legacy_and_current() {
+        assert!(matches_any_marker("ast-bro hook --protocol claude-code"));
+        assert!(matches_any_marker("ast-outline hook --protocol claude-code"));
+        assert!(!matches_any_marker("echo hi"));
+    }
+
+    #[test]
+    fn legacy_entry_is_upgraded_in_place() {
+        let mut root = json!({
+            "hooks": {
+                "PreToolUse": [
+                    { "matcher": "Read", "hooks": [{"type": "command", "command": "ast-outline hook --protocol claude-code"}] }
+                ]
+            }
+        });
+        let modified = upsert(&mut root, &["hooks", "PreToolUse"], entry(), predicate);
+        assert!(modified);
+        let arr = root["hooks"]["PreToolUse"].as_array().unwrap();
+        assert_eq!(arr.len(), 1);
+        assert_eq!(
+            arr[0]["hooks"][0]["command"].as_str().unwrap(),
+            "ast-bro hook --protocol claude-code"
+        );
+    }
+
+    #[test]
+    fn legacy_entry_is_removed() {
+        let mut root = json!({
+            "hooks": {
+                "PreToolUse": [
+                    { "matcher": "Read", "hooks": [{"type": "command", "command": "ast-outline hook --protocol claude-code"}] }
+                ]
+            }
+        });
+        let removed = remove(&mut root, &["hooks", "PreToolUse"], predicate);
+        assert!(removed);
+        assert!(root["hooks"]["PreToolUse"].as_array().unwrap().is_empty());
     }
 }

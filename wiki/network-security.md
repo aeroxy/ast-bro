@@ -44,7 +44,7 @@ Strict TLS verification fails universally there, because the corporate CA isn't 
 
 A loud stderr warning fires on every download in non-strict mode:
 
-```
+```text
 ast-bro: TLS certificate verification is DISABLED for model downloads
 (works through corp MITM proxies). Set AST_OUTLINE_TLS_STRICT=1 to enforce
 full chain verification. Integrity is checked via SHA-256 on subsequent loads.
@@ -69,7 +69,7 @@ ast-bro search "anything" .   # validates against the corp CA
 
 ## Cache layout
 
-```
+```text
 ~/.cache/ast-bro/models/potion-code-16M/
 ├── config.json           # model config
 ├── tokenizer.json        # huggingface tokenizers serialized form

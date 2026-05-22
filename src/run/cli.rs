@@ -157,10 +157,15 @@ pub fn unified_diff(path: &Path, old: &str, new: &str) -> String {
                 similar::ChangeTag::Insert => "+",
                 similar::ChangeTag::Equal => " ",
             };
+            let display_idx = change
+                .old_index()
+                .or_else(|| change.new_index())
+                .unwrap_or(0)
+                + 1;
             out.push_str(&format!(
                 "{}:{}: {}{}",
                 path.display(),
-                change.old_index().unwrap_or(0),
+                display_idx,
                 sign,
                 change
             ));

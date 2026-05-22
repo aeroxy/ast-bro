@@ -11,10 +11,13 @@ fn main() {
         .spawn();
 
     match res {
-        Ok(mut child) => {
-            let status = child.wait().expect("failed to wait on child");
-            std::process::exit(status.code().unwrap_or(1));
-        }
+        Ok(mut child) => match child.wait() {
+            Ok(status) => std::process::exit(status.code().unwrap_or(1)),
+            Err(e) => {
+                eprintln!("error: failed to wait on 'ast-bro': {}", e);
+                std::process::exit(1);
+            }
+        },
         Err(e) if e.kind() == ErrorKind::NotFound => {
             eprintln!("error: 'ast-bro' binary not found.");
             eprintln!("");

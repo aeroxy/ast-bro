@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use serde_json::{json, Value};
 
-use super::json_hook::MARKER;
+use super::json_hook::matches_any_marker;
 use super::paths;
 use super::{common, Change, Detection, InstallOpts, Installer, Scope, Status};
 use crate::prompt::AGENT_PROMPT;
@@ -59,7 +59,7 @@ fn matches_entry(v: &Value) -> bool {
                     || h0
                         .get("command")
                         .and_then(|c| c.as_str())
-                        .map(|c| c.starts_with(MARKER) || c.starts_with("ast-outline hook"))
+                        .map(matches_any_marker)
                         .unwrap_or(false)
             })
             .unwrap_or(false)

@@ -7,6 +7,7 @@
 const BEGIN_PREFIX: &str = "<!-- ast-bro:begin";
 const OLD_BEGIN_PREFIX: &str = "<!-- ast-outline:begin";
 const END_MARKER: &str = "<!-- ast-bro:end -->";
+const OLD_END_MARKER: &str = "<!-- ast-outline:end -->";
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum ApplyOutcome {
@@ -146,16 +147,20 @@ struct EndPos {
 }
 
 fn find_block(contents: &str) -> Option<(BeginPos, EndPos)> {
-    // Try new marker first, then legacy ast-outline marker
-    let begin_offset = contents.find(BEGIN_PREFIX)
-        .or_else(|| contents.find(OLD_BEGIN_PREFIX))?;
+    // Try new marker first, then legacy ast-outline marker. The end marker
+    // we look for must match the family of the begin marker we found —
+    // legacy begin paired with new end (or vice versa) shouldn't match.
+    let (begin_offset, end_marker) = match contents.find(BEGIN_PREFIX) {
+        Some(off) => (off, END_MARKER),
+        None => (contents.find(OLD_BEGIN_PREFIX)?, OLD_END_MARKER),
+    };
     let begin_line_end = contents[begin_offset..].find('\n')? + begin_offset + 1;
     let line_start = contents[..begin_offset]
         .rfind('\n')
         .map(|i| i + 1)
         .unwrap_or(0);
 
-    let end_offset = contents[begin_line_end..].find(END_MARKER)? + begin_line_end;
+    let end_offset = contents[begin_line_end..].find(end_marker)? + begin_line_end;
     let end_line_start = contents[..end_offset]
         .rfind('\n')
         .map(|i| i + 1)

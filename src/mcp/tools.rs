@@ -251,7 +251,9 @@ pub fn list() -> Value {
                         "rewrite":  { "type": "string",  "description": "Replacement template (e.g. 'bar($A)'). Omit for search-only." },
                         "lang":     { "type": "string",  "description": "Language (auto-detected from file paths if omitted)." },
                         "paths":    { "type": "array", "items": { "type": "string" }, "description": "Files or directories to search.", "minItems": 1 },
-                        "write":    { "type": "boolean", "description": "Write changes to disk. Default: false (dry-run)." }
+                        "glob":     { "type": "string",  "description": "Glob pattern to filter files, e.g. '**/*.rs'." },
+                        "write":    { "type": "boolean", "description": "Write changes to disk. Default: false (dry-run)." },
+                        "json":     { "type": "boolean", "description": "Return results as JSON instead of text." }
                     },
                     "required": ["pattern"]
                 }
@@ -793,13 +795,25 @@ fn run_run(args: Value) -> CallResult {
 
         // Search-only mode (no rewrite template)
         if a.rewrite.is_none() {
-            if let Ok(mut matches) = crate::run::search(&source, lang, &a.pattern) {
-                if !matches.is_empty() {
-                    let file_str = path.to_string_lossy().to_string();
-                    for m in &mut matches {
-                        m.file = file_str.clone();
+            match crate::run::search(&source, lang, &a.pattern) {
+                Ok(mut matches) => {
+                    if !matches.is_empty() {
+                        let file_str = path.to_string_lossy().to_string();
+                        for m in &mut matches {
+                            m.file = file_str.clone();
+                        }
+                        all_matches.extend(matches);
                     }
-                    all_matches.extend(matches);
+                }
+                Err(e) => {
+                    eprintln!(
+                        "ast-bro mcp: search failed for pattern {:?} ({}) in {}: {}",
+                        a.pattern,
+                        lang,
+                        path.display(),
+                        e
+                    );
+                    error_count += 1;
                 }
             }
             continue;
@@ -841,7 +855,7 @@ fn run_run(args: Value) -> CallResult {
 
     // Rewrite mode: output already contains diffs or write confirmations
     if a.rewrite.is_some() {
-        if output.is_empty() {
+        if rewrite_count == 0 && !rewrite_capped && error_count == 0 {
             output.push_str("No matches found for rewrite.");
         }
         if rewrite_capped {

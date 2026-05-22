@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use serde_json::{json, Value};
 
-use super::json_hook::MARKER;
+use super::json_hook::matches_any_marker;
 use super::paths;
 use super::{common, json_object, Change, Detection, InstallOpts, Installer, Scope, Status};
 use crate::prompt::{agent_skill_md, AGENT_PROMPT, EXPLORE_FRONTMATTER};
@@ -82,7 +82,7 @@ fn matches_entry(v: &Value) -> bool {
             .and_then(|h| h.first())
             .and_then(|h0| h0.get("command"))
             .and_then(|c| c.as_str())
-            .map(|c| c.starts_with(MARKER))
+            .map(matches_any_marker)
             .unwrap_or(false)
 }
 

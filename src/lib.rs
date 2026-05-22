@@ -246,9 +246,6 @@ enum Commands {
         file: PathBuf,
         #[arg(long, default_value_t = 3)]
         depth: usize,
-        /// Include unresolved imports (the `external` bucket) in output.
-        #[arg(long)]
-        external: bool,
         /// Force a fresh dep-graph build.
         #[arg(long)]
         rebuild: bool,
@@ -930,7 +927,6 @@ pub fn run() {
             Commands::Deps {
                 file,
                 depth,
-                external: _,
                 rebuild,
                 json,
                 compact,

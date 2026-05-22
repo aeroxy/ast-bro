@@ -59,6 +59,7 @@ pub fn add_filters(builder: &mut WalkBuilder, repo_root: &Path) {
     if old_path.exists() && !new_path.exists() {
         if let Err(e) = fs::rename(&old_path, &new_path) {
             eprintln!("warning: could not rename {old_name} -> {new_name}: {e}");
+            builder.add_custom_ignore_filename(old_name);
         } else {
             eprintln!("info: auto-renamed {old_name} -> {new_name}");
         }

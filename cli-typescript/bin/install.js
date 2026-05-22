@@ -12,12 +12,13 @@ const GITHUB_REPO = "aeroxy/ast-bro";
 const BINARY_NAME = "ast-bro";
 
 function getCacheDir() {
+  const versioned = `ast-bro-${VERSION}`;
   if (os.platform() === "darwin") {
-    const dir = path.join(os.homedir(), "Library", "Caches", "ast-bro");
+    const dir = path.join(os.homedir(), "Library", "Caches", versioned);
     fs.mkdirSync(dir, { recursive: true });
     return dir;
   }
-  const dir = path.join(os.homedir(), ".cache", "ast-bro");
+  const dir = path.join(os.homedir(), ".cache", versioned);
   fs.mkdirSync(dir, { recursive: true });
   return dir;
 }
