@@ -100,7 +100,8 @@ impl IndexPaths {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Meta {
     pub schema: String,
-    pub ast_outline_version: String,
+    #[serde(alias = "ast_outline_version")]
+    pub ast_bro_version: String,
     pub model: ModelMeta,
     pub created_unix: u64,
     pub chunk_count: u32,
@@ -367,7 +368,7 @@ impl Index {
         // 5. Persist everything atomically — write to temp paths then rename.
         let meta = Meta {
             schema: SCHEMA.to_string(),
-            ast_outline_version: env!("CARGO_PKG_VERSION").to_string(),
+            ast_bro_version: env!("CARGO_PKG_VERSION").to_string(),
             model: ModelMeta {
                 id: ModelInfo::potion_code_16m().id,
                 dim: DIM as u32,
@@ -1221,7 +1222,7 @@ mod tests {
         let embeddings = vec![0.0; DIM];
         let meta = Meta {
             schema: SCHEMA.to_string(),
-            ast_outline_version: env!("CARGO_PKG_VERSION").to_string(),
+            ast_bro_version: env!("CARGO_PKG_VERSION").to_string(),
             model: ModelMeta { id: "m".into(), dim: DIM as u32 },
             created_unix: 0,
             chunk_count: 1,

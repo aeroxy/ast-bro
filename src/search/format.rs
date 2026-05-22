@@ -156,7 +156,7 @@ pub fn render_index_stats_json(
     let live = total.saturating_sub(tombs);
     let v = json!({
         "schema": JSON_SCHEMA_INDEX,
-        "ast_outline_version": meta.ast_outline_version,
+        "ast_bro_version": meta.ast_bro_version,
         "home": home.display().to_string(),
         "indexed_corpus": meta.indexed_corpus,
         "model_id": meta.model.id,
@@ -255,7 +255,7 @@ mod tests {
     fn index_stats_json() {
         let meta = Meta {
             schema: "ast-bro.search-index.v1".to_string(),
-            ast_outline_version: "0.0.0".to_string(),
+            ast_bro_version: "0.0.0".to_string(),
             model: ModelMeta { id: "m".into(), dim: 256 },
             created_unix: 42,
             chunk_count: 7,
@@ -278,7 +278,7 @@ mod tests {
     fn index_stats_text_includes_home_and_corpus() {
         let meta = Meta {
             schema: "ast-bro.search-index.v1".to_string(),
-            ast_outline_version: "0.0.0".to_string(),
+            ast_bro_version: "0.0.0".to_string(),
             model: ModelMeta { id: "m".into(), dim: 256 },
             created_unix: 0,
             chunk_count: 0,

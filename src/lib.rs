@@ -394,6 +394,10 @@ enum Commands {
         #[arg(trailing_var_arg = true)]
         paths: Vec<PathBuf>,
 
+        /// Filter files by glob pattern
+        #[arg(long)]
+        glob: Option<String>,
+
         /// Actually write changes. Without this flag, only shows matches/dry-run.
         #[arg(long)]
         write: bool,
@@ -420,6 +424,69 @@ fn parse_file_line(s: &str) -> Option<(String, u32)> {
         return None;
     }
     Some((file.to_string(), line.parse().ok()?))
+}
+
+pub(crate) fn walk_paths(paths: &[PathBuf], glob_str: Option<&str>) -> Vec<PathBuf> {
+    let (tx, rx) = std::sync::mpsc::channel();
+
+    if paths.is_empty() {
+        return Vec::new();
+    }
+
+    let existing: Vec<PathBuf> = paths
+        .iter()
+        .filter(|p| {
+            if p.exists() {
+                true
+            } else {
+                println!("# note: path not found: {}", p.display());
+                false
+            }
+        })
+        .cloned()
+        .collect();
+    if existing.is_empty() {
+        return Vec::new();
+    }
+
+    let mut builder = WalkBuilder::new(&existing[0]);
+    for p in existing.iter().skip(1) {
+        builder.add(p);
+    }
+
+    builder.hidden(false);
+    file_filter::add_filters(&mut builder, &existing[0]);
+
+    if let Some(g) = glob_str {
+        if let Ok(override_builder) = ignore::overrides::OverrideBuilder::new("").add(g) {
+            if let Ok(over) = override_builder.build() {
+                builder.overrides(over);
+            }
+        }
+    }
+
+    let walker = builder.build_parallel();
+    let root = existing[0].clone();
+
+    walker.run(|| {
+        let tx = tx.clone();
+        let root = root.clone();
+        Box::new(move |result| {
+            if let Ok(entry) = result {
+                if entry.file_type().is_some_and(|ft| ft.is_file())
+                    && !file_filter::should_skip_path(entry.path(), &root)
+                {
+                    let _ = tx.send(entry.path().to_path_buf());
+                }
+            }
+            ignore::WalkState::Continue
+        })
+    });
+
+    drop(tx);
+    let mut results: Vec<_> = rx.into_iter().collect();
+    results.sort();
+    results
 }
 
 pub(crate) fn walk_and_parse(paths: &[PathBuf], glob_str: Option<&str>) -> Vec<ParseResult> {
@@ -996,6 +1063,7 @@ pub fn run() {
                 rewrite,
                 lang,
                 paths,
+                glob,
                 write,
                 json,
                 compact,
@@ -1005,6 +1073,7 @@ pub fn run() {
                     rewrite.as_deref(),
                     lang.as_deref(),
                     paths,
+                    glob.as_deref(),
                     *write,
                     *json,
                     !(*compact),

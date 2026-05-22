@@ -76,10 +76,11 @@ impl Installer for Codex {
     }
 
     fn install_mcp(&self, scope: &Scope, opts: &InstallOpts) -> Result<Change, String> {
-        common::install_toml_object_in(
+        common::install_toml_mcp_in(
             &self.config_path(scope)?,
             MCP_PARENT,
             MCP_SERVER_NAME,
+            common::OLD_MCP_SERVER_NAME,
             self.mcp_entry(),
             opts,
         )

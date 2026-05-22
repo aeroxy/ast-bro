@@ -742,6 +742,8 @@ struct RunArgs {
     #[serde(default)]
     paths: Vec<PathBuf>,
     #[serde(default)]
+    glob: Option<String>,
+    #[serde(default)]
     write: bool,
     #[serde(default)]
     json: bool,
@@ -757,15 +759,16 @@ fn run_run(args: Value) -> CallResult {
     } else {
         a.paths
     };
-    let files = crate::walk_and_parse(&search_paths, None);
+    let files = crate::walk_paths(&search_paths, a.glob.as_deref());
     
     let mut all_matches = Vec::new();
     let mut output = String::new();
     let mut rewrite_count: usize = 0;
     let mut error_count: usize = 0;
+    let mut rewrite_capped = false;
 
-    for result in &files {
-        let source = match std::fs::read_to_string(&result.path) {
+    for path in &files {
+        let source = match std::fs::read_to_string(path) {
             Ok(s) => s,
             Err(_) => {
                 error_count += 1;
@@ -781,7 +784,7 @@ fn run_run(args: Value) -> CallResult {
                 },
             }
         } else {
-            match crate::run::detect_lang(&result.path) {
+            match crate::run::detect_lang(path) {
                 Some(l) => l,
                 None => {
                     error_count += 1;
@@ -794,7 +797,7 @@ fn run_run(args: Value) -> CallResult {
         if a.rewrite.is_none() {
             if let Ok(mut matches) = crate::run::search(&source, lang, &a.pattern) {
                 if !matches.is_empty() {
-                    let file_str = result.path.to_string_lossy().to_string();
+                    let file_str = path.to_string_lossy().to_string();
                     for m in &mut matches {
                         m.file = file_str.clone();
                     }
@@ -808,26 +811,28 @@ fn run_run(args: Value) -> CallResult {
         let replacement = a.rewrite.as_deref().unwrap_or("");
         match crate::run::rewrite(&source, lang, &a.pattern, replacement) {
             Ok(Some(new_source)) => {
-                let file_str = result.path.to_string_lossy().to_string();
+                let file_str = path.to_string_lossy().to_string();
                 if a.write {
                     if rewrite_count < MCP_REWRITE_MAX_FILES {
-                        if let Err(e) = std::fs::write(&result.path, &new_source) {
+                        if let Err(e) = std::fs::write(path, &new_source) {
                             output.push_str(&format!("{}: write failed: {}\n", file_str, e));
                             error_count += 1;
                         } else {
                             rewrite_count += 1;
                         }
+                    } else {
+                        rewrite_capped = true;
                     }
                 } else {
                     // Dry-run: show unified diff
-                    let diff = crate::run::cli::unified_diff(&result.path, &source, &new_source);
+                    let diff = crate::run::cli::unified_diff(path, &source, &new_source);
                     output.push_str(&diff);
                     rewrite_count += 1;
                 }
             }
             Ok(None) => {} // no matches in this file
             Err(e) => {
-                let file_str = result.path.to_string_lossy().to_string();
+                let file_str = path.to_string_lossy().to_string();
                 output.push_str(&format!("{}: {}\n", file_str, e));
                 error_count += 1;
             }
@@ -838,6 +843,9 @@ fn run_run(args: Value) -> CallResult {
     if a.rewrite.is_some() {
         if output.is_empty() {
             output.push_str("No matches found for rewrite.");
+        }
+        if rewrite_capped {
+            output.push_str(&format!("\n# warning: reached safety cap of {} files; some matches were not rewritten.", MCP_REWRITE_MAX_FILES));
         }
         if error_count > 0 {
             output.push_str(&format!("\n({} files had errors)", error_count));
@@ -854,7 +862,7 @@ fn run_run(args: Value) -> CallResult {
         } else {
             output.push_str(&format!("Found {} matches in {} files:\n", all_matches.len(), files.len()));
             for m in all_matches {
-                output.push_str(&format!("{}:{}:{}: {}\n", m.file, m.start_line, m.start_col, m.matched_text));
+                output.push_str(&format!("{}:{}:{}-{}:{}: {}\n", m.file, m.start_line, m.start_col, m.end_line, m.end_col, m.matched_text));
             }
         }
         if error_count > 0 {

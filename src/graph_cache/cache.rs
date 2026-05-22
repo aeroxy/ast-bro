@@ -34,19 +34,18 @@ pub struct CacheFile {
 }
 
 pub fn cache_dir(root: &Path) -> PathBuf {
-    let new_dir = root.join(".ast-bro").join("deps");
-    let old_dir = root.join(".ast-outline").join("deps");
+    let new_root = root.join(".ast-bro");
+    let old_root = root.join(".ast-outline");
 
-    if old_dir.exists() && !new_dir.exists() {
-        if let Err(e) = fs::rename(&old_dir, &new_dir) {
+    if old_root.exists() && !new_root.exists() {
+        if let Err(e) = fs::rename(&old_root, &new_root) {
             eprintln!("warning: could not rename .ast-outline -> .ast-bro: {e}");
-            return old_dir;
         } else {
             eprintln!("info: auto-renamed .ast-outline -> .ast-bro");
         }
     }
 
-    new_dir
+    new_root.join("deps")
 }
 
 pub fn cache_path(root: &Path) -> PathBuf {

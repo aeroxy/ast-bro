@@ -262,7 +262,7 @@ mod tests {
         fs::write(
             idx.join("meta.json"),
             r#"{ "schema": "ast-bro.search-index.v1",
-                 "ast_outline_version": "0.0.0",
+                 "ast_bro_version": "0.0.0",
                  "model": { "id": "m", "dim": 256 },
                  "created_unix": 0,
                  "chunk_count": 0,
@@ -286,7 +286,7 @@ mod tests {
         fs::write(
             idx.join("meta.json"),
             r#"{ "schema": "ast-outline.search-index.v1",
-                 "ast_outline_version": "0.0.0",
+                 "ast_bro_version": "0.0.0",
                  "model": { "id": "m", "dim": 256 },
                  "created_unix": 0,
                  "chunk_count": 0,

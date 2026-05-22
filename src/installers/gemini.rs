@@ -93,10 +93,11 @@ impl Installer for Gemini {
     }
 
     fn install_mcp(&self, scope: &Scope, opts: &InstallOpts) -> Result<Change, String> {
-        common::install_json_object_in(
+        common::install_mcp_in(
             &self.settings_path(scope)?,
             MCP_KEY_PATH,
             MCP_SERVER_NAME,
+            common::OLD_MCP_SERVER_NAME,
             self.mcp_entry(),
             opts,
         )

@@ -1,14 +1,34 @@
-fn main() -> std::io::Result<()> {
+fn main() {
     use std::env::args;
+    use std::io::ErrorKind;
     use std::process::{Command, Stdio};
 
-    let mut child = Command::new("ast-bro")
+    let res = Command::new("ast-bro")
         .args(args().skip(1))
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
-        .spawn()?;
+        .spawn();
 
-    let status = child.wait()?;
-    std::process::exit(status.code().unwrap_or(1))
+    match res {
+        Ok(mut child) => {
+            let status = child.wait().expect("failed to wait on child");
+            std::process::exit(status.code().unwrap_or(1));
+        }
+        Err(e) if e.kind() == ErrorKind::NotFound => {
+            eprintln!("error: 'ast-bro' binary not found.");
+            eprintln!("");
+            eprintln!("'ast-outline' is now a compatibility alias for 'ast-bro'.");
+            eprintln!("Please install 'ast-bro' to continue:");
+            eprintln!("  - cargo install ast-bro");
+            eprintln!("  - npm install -g ast-bro");
+            eprintln!("  - pip install ast-bro-cli");
+            eprintln!("  - brew install aeroxy/tap/ast-bro");
+            std::process::exit(1);
+        }
+        Err(e) => {
+            eprintln!("error: failed to execute 'ast-bro': {}", e);
+            std::process::exit(1);
+        }
+    }
 }

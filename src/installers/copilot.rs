@@ -63,10 +63,11 @@ impl Installer for Copilot {
         let Some(path) = self.mcp_path(scope) else {
             return Ok(Change::NotApplicable);
         };
-        common::install_json_object_in(
+        common::install_mcp_in(
             &path?,
             MCP_KEY_PATH,
             MCP_SERVER_NAME,
+            common::OLD_MCP_SERVER_NAME,
             self.mcp_entry(),
             opts,
         )

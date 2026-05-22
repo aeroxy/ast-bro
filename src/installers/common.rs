@@ -198,17 +198,28 @@ where
     Ok(Some(Change::Removed(path.to_path_buf())))
 }
 
-pub fn install_json_object_in(
+pub fn install_mcp_in(
     path: &Path,
     key_path: &[&str],
-    key: &str,
+    name: &str,
+    old_name: &str,
     entry: Value,
     opts: &InstallOpts,
 ) -> Result<Change, String> {
     let existing = read_optional(path)?.unwrap_or_else(|| "{}".into());
     let mut root: Value = serde_json::from_str(&existing)
         .map_err(|e| format!("parse {}: {}", path.display(), e))?;
-    let modified = json_object::upsert(&mut root, key_path, key, entry);
+
+    let mut modified = false;
+    // Remove old name if it exists (migration)
+    if json_object::remove(&mut root, key_path, old_name) {
+        modified = true;
+    }
+    // Upsert current name
+    if json_object::upsert(&mut root, key_path, name, entry) {
+        modified = true;
+    }
+
     if !modified {
         return Ok(Change::Skipped {
             path: path.to_path_buf(),
@@ -247,10 +258,11 @@ pub fn uninstall_json_object_in(
     Ok(Some(Change::Removed(path.to_path_buf())))
 }
 
-pub fn install_toml_object_in(
+pub fn install_toml_mcp_in(
     path: &Path,
     parent: &str,
-    key: &str,
+    name: &str,
+    old_name: &str,
     entry: Table,
     opts: &InstallOpts,
 ) -> Result<Change, String> {
@@ -258,7 +270,17 @@ pub fn install_toml_object_in(
     let mut doc: DocumentMut = existing
         .parse()
         .map_err(|e| format!("parse {}: {}", path.display(), e))?;
-    let modified = toml_object::upsert(&mut doc, parent, key, entry);
+
+    let mut modified = false;
+    // Remove old name if it exists (migration)
+    if toml_object::remove(&mut doc, parent, old_name) {
+        modified = true;
+    }
+    // Upsert current name
+    if toml_object::upsert(&mut doc, parent, name, entry) {
+        modified = true;
+    }
+
     if !modified {
         return Ok(Change::Skipped {
             path: path.to_path_buf(),

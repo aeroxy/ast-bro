@@ -12,6 +12,7 @@ pub fn run(
     rewrite_template: Option<&str>,
     lang_override: Option<&str>,
     paths: &[PathBuf],
+    glob: Option<&str>,
     write_changes: bool,
     json: bool,
     pretty: bool,
@@ -22,13 +23,13 @@ pub fn run(
         paths.to_vec()
     };
 
-    let files = crate::walk_and_parse(&search_paths, None);
+    let files = crate::walk_paths(&search_paths, glob);
     let mut match_count: usize = 0;
     let mut rewrite_count: usize = 0;
     let mut error_count: usize = 0;
 
-    for result in &files {
-        let source = match std::fs::read_to_string(&result.path) {
+    for path in &files {
+        let source = match std::fs::read_to_string(path) {
             Ok(s) => s,
             Err(_) => {
                 error_count += 1;
@@ -45,7 +46,7 @@ pub fn run(
                 }
             }
         } else {
-            match detect_lang(&result.path) {
+            match detect_lang(path) {
                 Some(l) => l,
                 None => continue,
             }
@@ -55,21 +56,21 @@ pub fn run(
             match rewrite(&source, lang, pattern, replacement) {
                 Ok(Some(new_source)) => {
                     if write_changes {
-                        if let Err(e) = std::fs::write(&result.path, &new_source) {
-                            eprintln!("{}: write failed: {}", result.path.display(), e);
+                        if let Err(e) = std::fs::write(path, &new_source) {
+                            eprintln!("{}: write failed: {}", path.display(), e);
                             error_count += 1;
                         } else {
-                            println!("{}: rewritten", result.path.display());
+                            println!("{}: rewritten", path.display());
                             rewrite_count += 1;
                         }
                     } else {
-                        show_diff(&result.path, &source, &new_source);
+                        show_diff(path, &source, &new_source);
                         rewrite_count += 1;
                     }
                 }
                 Ok(None) => {}
                 Err(e) => {
-                    eprintln!("{}: {}", result.path.display(), e);
+                    eprintln!("{}: {}", path.display(), e);
                     error_count += 1;
                 },
             }
@@ -78,7 +79,7 @@ pub fn run(
                 Ok(matches) => {
                     match_count += matches.len();
                     for mut m in matches {
-                        m.file = result.path.display().to_string();
+                        m.file = path.display().to_string();
                         if json {
                             let s = if pretty {
                                 serde_json::to_string_pretty(&m)
@@ -95,14 +96,14 @@ pub fn run(
                                 .next()
                                 .unwrap_or("");
                             println!(
-                                "{}:{}:{}: {}",
-                                m.file, m.start_line, m.start_col, first_line
+                                "{}:{}:{}-{}:{}: {}",
+                                m.file, m.start_line, m.start_col, m.end_line, m.end_col, first_line
                             );
                         }
                     }
                 }
                 Err(e) => {
-                    eprintln!("{}: {}", result.path.display(), e);
+                    eprintln!("{}: {}", path.display(), e);
                     error_count += 1;
                 },
             }
@@ -112,8 +113,8 @@ pub fn run(
     // Exit code semantics:
     // 0 = success (matches found, or rewrites applied)
     // 1 = no matches found (search mode) or no rewrites possible (rewrite mode)
-    // 2 = all files errored
-    if error_count > 0 && match_count == 0 && rewrite_count == 0 {
+    // 2 = all files errored (and at least one file was attempted)
+    if !files.is_empty() && error_count == files.len() {
         2
     } else if rewrite_template.is_some() && rewrite_count == 0 {
         1

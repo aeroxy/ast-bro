@@ -42,14 +42,12 @@ pub fn search(
         .map(|m| {
             let start = m.start_pos();
             let end = m.end_pos();
-            let (_, start_col) = start.byte_point();
-            let (_, end_col) = end.byte_point();
             RunMatch {
                 file: String::new(),
                 start_line: start.line() + 1,
                 end_line: end.line() + 1,
-                start_col: start_col + 1,
-                end_col: end_col + 1,
+                start_col: start.column(&m) + 1,
+                end_col: end.column(&m) + 1,
                 matched_text: m.text().to_string(),
             }
         })

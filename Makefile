@@ -38,7 +38,7 @@ bump-patch:
 	sed -i '' "s/version \"$$old\"/version \"$$new\"/" Formula/ast-bro.rb; \
 	sed -i '' "s|/$$old/|/$$new/|g" Formula/ast-bro.rb; \
 	sed -i '' "s/^version = \"$$old\"/version = \"$$new\"/" cli-python/pyproject.toml; \
-	sed -i '' "s/VERSION = \"$$old\"/VERSION = \"$$new\"/" cli-python/ast_outline_cli/__init__.py; \
+	sed -i '' "s/VERSION = \"$$old\"/VERSION = \"$$new\"/" cli-python/ast_bro_cli/__init__.py; \
 	sed -i '' "s/\"version\": \"$$old\"/\"version\": \"$$new\"/" cli-typescript/package.json; \
 	sed -i '' "s/const VERSION = \"$$old\"/const VERSION = \"$$new\"/" cli-typescript/bin/install.js; \
 	echo "$$old → $$new"
@@ -53,7 +53,7 @@ bump-minor:
 	sed -i '' "s/version \"$$old\"/version \"$$new\"/" Formula/ast-bro.rb; \
 	sed -i '' "s|/$$old/|/$$new/|g" Formula/ast-bro.rb; \
 	sed -i '' "s/^version = \"$$old\"/version = \"$$new\"/" cli-python/pyproject.toml; \
-	sed -i '' "s/VERSION = \"$$old\"/VERSION = \"$$new\"/" cli-python/ast_outline_cli/__init__.py; \
+	sed -i '' "s/VERSION = \"$$old\"/VERSION = \"$$new\"/" cli-python/ast_bro_cli/__init__.py; \
 	sed -i '' "s/\"version\": \"$$old\"/\"version\": \"$$new\"/" cli-typescript/package.json; \
 	sed -i '' "s/const VERSION = \"$$old\"/const VERSION = \"$$new\"/" cli-typescript/bin/install.js; \
 	echo "$$old → $$new"
@@ -67,7 +67,7 @@ bump-major:
 	sed -i '' "s/version \"$$old\"/version \"$$new\"/" Formula/ast-bro.rb; \
 	sed -i '' "s|/$$old/|/$$new/|g" Formula/ast-bro.rb; \
 	sed -i '' "s/^version = \"$$old\"/version = \"$$new\"/" cli-python/pyproject.toml; \
-	sed -i '' "s/VERSION = \"$$old\"/VERSION = \"$$new\"/" cli-python/ast_outline_cli/__init__.py; \
+	sed -i '' "s/VERSION = \"$$old\"/VERSION = \"$$new\"/" cli-python/ast_bro_cli/__init__.py; \
 	sed -i '' "s/\"version\": \"$$old\"/\"version\": \"$$new\"/" cli-typescript/package.json; \
 	sed -i '' "s/const VERSION = \"$$old\"/const VERSION = \"$$new\"/" cli-typescript/bin/install.js; \
 	echo "$$old → $$new"
