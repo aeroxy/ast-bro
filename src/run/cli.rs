@@ -32,6 +32,17 @@ pub fn run(
     // than newline-delimited objects.
     let mut json_matches: Vec<super::RunMatch> = Vec::new();
 
+    #[derive(serde::Serialize)]
+    struct RewriteRecord {
+        file: String,
+        status: &'static str,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        diff: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    }
+    let mut json_rewrites: Vec<RewriteRecord> = Vec::new();
+
     for path in &files {
         let source = match std::fs::read_to_string(path) {
             Ok(s) => s,
@@ -59,14 +70,45 @@ pub fn run(
         if let Some(replacement) = rewrite_template {
             match rewrite(&source, lang, pattern, replacement) {
                 Ok(Some(new_source)) => {
+                    let file_str = path.display().to_string();
                     if write_changes {
-                        if let Err(e) = std::fs::write(path, &new_source) {
-                            eprintln!("{}: write failed: {}", path.display(), e);
-                            error_count += 1;
-                        } else {
-                            println!("{}: rewritten", path.display());
-                            rewrite_count += 1;
+                        match std::fs::write(path, &new_source) {
+                            Err(e) => {
+                                if json {
+                                    json_rewrites.push(RewriteRecord {
+                                        file: file_str,
+                                        status: "write_failed",
+                                        diff: None,
+                                        error: Some(e.to_string()),
+                                    });
+                                } else {
+                                    eprintln!("{}: write failed: {}", path.display(), e);
+                                }
+                                error_count += 1;
+                            }
+                            Ok(()) => {
+                                if json {
+                                    json_rewrites.push(RewriteRecord {
+                                        file: file_str,
+                                        status: "rewritten",
+                                        diff: None,
+                                        error: None,
+                                    });
+                                } else {
+                                    println!("{}: rewritten", path.display());
+                                }
+                                rewrite_count += 1;
+                            }
                         }
+                    } else if json {
+                        let diff = unified_diff(path, &source, &new_source);
+                        json_rewrites.push(RewriteRecord {
+                            file: file_str,
+                            status: "diff",
+                            diff: Some(diff),
+                            error: None,
+                        });
+                        rewrite_count += 1;
                     } else {
                         show_diff(path, &source, &new_source);
                         rewrite_count += 1;
@@ -74,7 +116,16 @@ pub fn run(
                 }
                 Ok(None) => {}
                 Err(e) => {
-                    eprintln!("{}: {}", path.display(), e);
+                    if json {
+                        json_rewrites.push(RewriteRecord {
+                            file: path.display().to_string(),
+                            status: "rewrite_error",
+                            diff: None,
+                            error: Some(e.clone()),
+                        });
+                    } else {
+                        eprintln!("{}: {}", path.display(), e);
+                    }
                     error_count += 1;
                 },
             }
@@ -107,15 +158,41 @@ pub fn run(
         }
     }
 
-    // Flush collected search results as a single JSON array.
-    if json && rewrite_template.is_none() {
-        let serialized = if pretty {
+    // Flush collected results as a single JSON document so machine
+    // consumers can parse one valid object per invocation.
+    if json {
+        let serialized = if rewrite_template.is_some() {
+            #[derive(serde::Serialize)]
+            struct RewriteDoc<'a> {
+                mode: &'static str,
+                dry_run: bool,
+                rewrite_count: usize,
+                error_count: usize,
+                files: &'a [RewriteRecord],
+            }
+            let doc = RewriteDoc {
+                mode: "rewrite",
+                dry_run: !write_changes,
+                rewrite_count,
+                error_count,
+                files: &json_rewrites,
+            };
+            if pretty {
+                serde_json::to_string_pretty(&doc)
+            } else {
+                serde_json::to_string(&doc)
+            }
+        } else if pretty {
             serde_json::to_string_pretty(&json_matches)
         } else {
             serde_json::to_string(&json_matches)
         };
-        if let Ok(s) = serialized {
-            println!("{}", s);
+        match serialized {
+            Ok(s) => println!("{}", s),
+            Err(e) => {
+                eprintln!("error: failed to serialize JSON output: {}", e);
+                return 2;
+            }
         }
     }
 

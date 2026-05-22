@@ -388,7 +388,6 @@ enum Commands {
         lang: Option<String>,
 
         /// Paths to search (files or directories). Defaults to current directory.
-        #[arg(trailing_var_arg = true)]
         paths: Vec<PathBuf>,
 
         /// Filter files by glob pattern
