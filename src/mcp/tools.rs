@@ -779,6 +779,7 @@ fn run_run(args: Value) -> CallResult {
             match crate::run::cli::parse_lang(l) {
                 Some(l) => l,
                 None => {
+                    // Only count as error if explicitly requested
                     error_count += 1;
                     continue;
                 },
@@ -786,10 +787,7 @@ fn run_run(args: Value) -> CallResult {
         } else {
             match crate::run::detect_lang(path) {
                 Some(l) => l,
-                None => {
-                    error_count += 1;
-                    continue;
-                },
+                None => continue, // Silently skip non-source files in directory walk
             }
         };
 
@@ -818,10 +816,12 @@ fn run_run(args: Value) -> CallResult {
                             output.push_str(&format!("{}: write failed: {}\n", file_str, e));
                             error_count += 1;
                         } else {
+                            output.push_str(&format!("{}: rewritten\n", file_str));
                             rewrite_count += 1;
                         }
                     } else {
                         rewrite_capped = true;
+                        break;
                     }
                 } else {
                     // Dry-run: show unified diff
@@ -845,7 +845,7 @@ fn run_run(args: Value) -> CallResult {
             output.push_str("No matches found for rewrite.");
         }
         if rewrite_capped {
-            output.push_str(&format!("\n# warning: reached safety cap of {} files; some matches were not rewritten.", MCP_REWRITE_MAX_FILES));
+            output.push_str(&format!("\n# warning: reached safety cap of {} files; remaining matches were not rewritten.", MCP_REWRITE_MAX_FILES));
         }
         if error_count > 0 {
             output.push_str(&format!("\n({} files had errors)", error_count));
@@ -862,7 +862,8 @@ fn run_run(args: Value) -> CallResult {
         } else {
             output.push_str(&format!("Found {} matches in {} files:\n", all_matches.len(), files.len()));
             for m in all_matches {
-                output.push_str(&format!("{}:{}:{}-{}:{}: {}\n", m.file, m.start_line, m.start_col, m.end_line, m.end_col, m.matched_text));
+                let first_line = m.matched_text.lines().next().unwrap_or("");
+                output.push_str(&format!("{}:{}:{}-{}:{}: {}\n", m.file, m.start_line, m.start_col, m.end_line, m.end_col, first_line));
             }
         }
         if error_count > 0 {

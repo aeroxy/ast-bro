@@ -169,7 +169,7 @@ pub fn unified_diff(path: &Path, old: &str, new: &str) -> String {
     out
 }
 
-/// Print diff to stderr (CLI dry-run mode).
+/// Print diff to stdout (CLI dry-run mode).
 fn show_diff(path: &Path, old: &str, new: &str) {
-    eprint!("{}", unified_diff(path, old, new));
+    print!("{}", unified_diff(path, old, new));
 }

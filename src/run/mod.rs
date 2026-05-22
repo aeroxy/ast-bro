@@ -35,10 +35,16 @@ pub fn search(
     lang: SupportLang,
     pattern: &str,
 ) -> Result<Vec<RunMatch>, String> {
+    use ast_grep_core::Pattern;
     let ast = lang.ast_grep(source.to_string());
+    
+    // Validate pattern first to avoid panic in find_all
+    let compiled = Pattern::try_new(pattern, lang.clone())
+        .map_err(|e| format!("invalid pattern: {}", e))?;
+
     let matches: Vec<RunMatch> = ast
         .root()
-        .find_all(pattern)
+        .find_all(compiled)
         .map(|m| {
             let start = m.start_pos();
             let end = m.end_pos();
