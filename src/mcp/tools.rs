@@ -763,8 +763,19 @@ fn run_run(args: Value) -> CallResult {
     };
     let files = crate::walk_paths(&search_paths, a.glob.as_deref());
     
+    #[derive(serde::Serialize)]
+    struct RewriteRecord {
+        file: String,
+        status: &'static str,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        diff: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    }
+
     let mut all_matches = Vec::new();
     let mut output = String::new();
+    let mut rewrite_records: Vec<RewriteRecord> = Vec::new();
     let mut rewrite_count: usize = 0;
     let mut error_count: usize = 0;
     let mut rewrite_capped = false;
@@ -806,13 +817,13 @@ fn run_run(args: Value) -> CallResult {
                     }
                 }
                 Err(e) => {
-                    eprintln!(
-                        "ast-bro mcp: search failed for pattern {:?} ({}) in {}: {}",
+                    output.push_str(&format!(
+                        "search failed for pattern {:?} ({}) in {}: {}\n",
                         a.pattern,
                         lang,
                         path.display(),
-                        e
-                    );
+                        e,
+                    ));
                     error_count += 1;
                 }
             }
@@ -829,9 +840,21 @@ fn run_run(args: Value) -> CallResult {
                         if let Err(e) = std::fs::write(path, &new_source) {
                             output.push_str(&format!("{}: write failed: {}\n", file_str, e));
                             error_count += 1;
+                            rewrite_records.push(RewriteRecord {
+                                file: file_str,
+                                status: "write_failed",
+                                diff: None,
+                                error: Some(e.to_string()),
+                            });
                         } else {
                             output.push_str(&format!("{}: rewritten\n", file_str));
                             rewrite_count += 1;
+                            rewrite_records.push(RewriteRecord {
+                                file: file_str,
+                                status: "rewritten",
+                                diff: None,
+                                error: None,
+                            });
                         }
                     } else {
                         rewrite_capped = true;
@@ -842,6 +865,12 @@ fn run_run(args: Value) -> CallResult {
                     let diff = crate::run::cli::unified_diff(path, &source, &new_source);
                     output.push_str(&diff);
                     rewrite_count += 1;
+                    rewrite_records.push(RewriteRecord {
+                        file: file_str,
+                        status: "diff",
+                        diff: Some(diff),
+                        error: None,
+                    });
                 }
             }
             Ok(None) => {} // no matches in this file
@@ -849,12 +878,42 @@ fn run_run(args: Value) -> CallResult {
                 let file_str = path.to_string_lossy().to_string();
                 output.push_str(&format!("{}: {}\n", file_str, e));
                 error_count += 1;
+                rewrite_records.push(RewriteRecord {
+                    file: file_str,
+                    status: "rewrite_error",
+                    diff: None,
+                    error: Some(e.to_string()),
+                });
             }
         }
     }
 
     // Rewrite mode: output already contains diffs or write confirmations
     if a.rewrite.is_some() {
+        if a.json {
+            #[derive(serde::Serialize)]
+            struct RewriteDoc<'a> {
+                mode: &'static str,
+                dry_run: bool,
+                rewrite_count: usize,
+                error_count: usize,
+                capped: bool,
+                cap_limit: usize,
+                files: &'a [RewriteRecord],
+            }
+            let doc = RewriteDoc {
+                mode: "rewrite",
+                dry_run: !a.write,
+                rewrite_count,
+                error_count,
+                capped: rewrite_capped,
+                cap_limit: MCP_REWRITE_MAX_FILES,
+                files: &rewrite_records,
+            };
+            return CallResult::Text(
+                serde_json::to_string_pretty(&doc).unwrap_or_default(),
+            );
+        }
         if rewrite_count == 0 && !rewrite_capped && error_count == 0 {
             output.push_str("No matches found for rewrite.");
         }
