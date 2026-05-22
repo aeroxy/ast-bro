@@ -243,7 +243,7 @@ pub fn list() -> Value {
             },
             {
                 "name": "run",
-                "description": "AST-aware pattern search and rewrite. Use metavariables like $FUNC, $ARG, $$$BODY for structural matching. Search-only without rewrite; transform code with rewrite and write. Returns text by default; set `json: true` for `ast-bro.run.v1`.",
+                "description": "AST-aware pattern search and rewrite. Use metavariables like $FUNC, $ARG, $$$BODY for structural matching. Search-only without rewrite; transform code with rewrite and write. WARNING: `write: true` mutates files on disk — a broad pattern can touch many files at once (capped at 50 per call). Always preview with the default dry-run first and confirm the diff before re-running with `write: true`. Returns text by default; set `json: true` for `ast-bro.run.v1`.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -252,7 +252,7 @@ pub fn list() -> Value {
                         "lang":     { "type": "string",  "description": "Language (auto-detected from file paths if omitted)." },
                         "paths":    { "type": "array", "items": { "type": "string" }, "description": "Files or directories to search.", "minItems": 1 },
                         "glob":     { "type": "string",  "description": "Glob pattern to filter files, e.g. '**/*.rs'." },
-                        "write":    { "type": "boolean", "description": "Write changes to disk. Default: false (dry-run)." },
+                        "write":    { "type": "boolean", "description": "Write changes to disk. Default: false (dry-run). DANGEROUS: mutates files; preview the dry-run diff first and confirm before flipping to true." },
                         "json":     { "type": "boolean", "description": "Return results as JSON instead of text." }
                     },
                     "required": ["pattern"]
@@ -756,6 +756,17 @@ fn run_run(args: Value) -> CallResult {
         Ok(v) => v,
         Err(e) => return CallResult::Error(format!("invalid arguments: {}", e)),
     };
+
+    // Validate pattern upfront when language is known, so an invalid
+    // pattern fails fast instead of after walking every file.
+    if let Some(ref l) = a.lang {
+        if let Some(lang) = crate::run::cli::parse_lang(l) {
+            if let Err(e) = ast_grep_core::Pattern::try_new(&a.pattern, lang) {
+                return CallResult::Error(format!("invalid pattern: {}", e));
+            }
+        }
+    }
+
     let search_paths = if a.paths.is_empty() {
         vec![PathBuf::from(".")]
     } else {
@@ -775,6 +786,10 @@ fn run_run(args: Value) -> CallResult {
 
     let mut all_matches = Vec::new();
     let mut output = String::new();
+    // Search-mode errors are kept out of `output` so the final report can
+    // group them in a clearly separated `--- errors ---` block after the
+    // match list, rather than interleaving error lines with results.
+    let mut search_errors: Vec<String> = Vec::new();
     let mut rewrite_records: Vec<RewriteRecord> = Vec::new();
     let mut rewrite_count: usize = 0;
     let mut error_count: usize = 0;
@@ -817,8 +832,8 @@ fn run_run(args: Value) -> CallResult {
                     }
                 }
                 Err(e) => {
-                    output.push_str(&format!(
-                        "search failed for pattern {:?} ({}) in {}: {}\n",
+                    search_errors.push(format!(
+                        "search failed for pattern {:?} ({}) in {}: {}",
                         a.pattern,
                         lang,
                         path.display(),
@@ -862,7 +877,7 @@ fn run_run(args: Value) -> CallResult {
                     }
                 } else {
                     // Dry-run: show unified diff
-                    let diff = crate::run::cli::unified_diff(path, &source, &new_source);
+                    let diff = crate::run::cli::line_change_report(path, &source, &new_source);
                     output.push_str(&diff);
                     rewrite_count += 1;
                     rewrite_records.push(RewriteRecord {
@@ -939,8 +954,15 @@ fn run_run(args: Value) -> CallResult {
                 output.push_str(&format!("{}:{}:{}-{}:{}: {}\n", m.file, m.start_line, m.start_col, m.end_line, m.end_col, first_line));
             }
         }
+        if !search_errors.is_empty() {
+            output.push_str("\n--- errors ---\n");
+            for line in &search_errors {
+                output.push_str(line);
+                output.push('\n');
+            }
+        }
         if error_count > 0 {
-            output.push_str(&format!("\n(Skipped {} files due to read errors)", error_count));
+            output.push_str(&format!("\n(Skipped {} files due to errors)", error_count));
         }
         CallResult::Text(output)
     }

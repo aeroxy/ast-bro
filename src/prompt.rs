@@ -58,7 +58,7 @@ Stop at the step that answers the question:
 10. **AST-aware pattern search and rewrite** — `ast-bro run` uses metavariable patterns ($FUNC, $ARG, $$$BODY) for structural code matching and transformation.
     - `ast-bro run -p '$FUNC($$$)' -l rust`: find all function calls in Rust files.
     - `ast-bro run -p 'foo($A)' -r 'bar($A)' -l py`: dry-run rewrite foo→bar in Python.
-    - `ast-bro run -p 'foo($A)' -r 'bar($A)' --write`: apply the rewrite to disk.
+    - `ast-bro run -p 'foo($A)' -r 'bar($A)' --write`: apply the rewrite to disk. **`--write` mutates files** — always run the dry-run first and read the diff before re-running with `--write`; a broad pattern can touch many files at once.
 
 **Path type expectations:**
 - `deps`, `reverse-deps` → expect a **file** path

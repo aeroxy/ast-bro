@@ -101,7 +101,7 @@ pub fn run(
                             }
                         }
                     } else if json {
-                        let diff = unified_diff(path, &source, &new_source);
+                        let diff = line_change_report(path, &source, &new_source);
                         json_rewrites.push(RewriteRecord {
                             file: file_str,
                             status: "diff",
@@ -230,9 +230,11 @@ pub fn parse_lang(s: &str) -> Option<SupportLang> {
     }
 }
 
-/// Produce a unified diff string between `old` and `new`.
-/// Used by both CLI (dry-run rewrite) and MCP `run` tool.
-pub fn unified_diff(path: &Path, old: &str, new: &str) -> String {
+/// Produce a path-prefixed, line-by-line change report between `old` and
+/// `new`. Each changed line is emitted as `path:line: -old` / `path:line: +new`
+/// (a custom format — *not* a standard `--- / +++ / @@` unified diff). Used
+/// by both CLI (dry-run rewrite) and MCP `run` tool.
+pub fn line_change_report(path: &Path, old: &str, new: &str) -> String {
     use similar::TextDiff;
     let mut out = String::new();
     let diff = TextDiff::from_lines(old, new);
@@ -262,5 +264,5 @@ pub fn unified_diff(path: &Path, old: &str, new: &str) -> String {
 
 /// Print diff to stdout (CLI dry-run mode).
 fn show_diff(path: &Path, old: &str, new: &str) {
-    print!("{}", unified_diff(path, old, new));
+    print!("{}", line_change_report(path, old, new));
 }
