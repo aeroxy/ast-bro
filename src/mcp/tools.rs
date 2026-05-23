@@ -809,7 +809,19 @@ fn run_run(args: Value) -> CallResult {
     for path in &files {
         let source = match std::fs::read_to_string(path) {
             Ok(s) => s,
-            Err(_) => {
+            Err(e) => {
+                let msg = format!("{}: read failed: {}", path.display(), e);
+                if a.rewrite.is_some() {
+                    rewrite_records.push(RewriteRecord {
+                        file: path.display().to_string(),
+                        status: "read_failed",
+                        diff: None,
+                        error: Some(e.to_string()),
+                    });
+                    output.push_str(&format!("{}\n", msg));
+                } else {
+                    search_errors.push(msg);
+                }
                 error_count += 1;
                 continue;
             },
@@ -837,12 +849,19 @@ fn run_run(args: Value) -> CallResult {
                         for m in &mut matches {
                             m.file = file_str.clone();
                         }
+                        let remaining = MCP_SEARCH_MAX_MATCHES.saturating_sub(all_matches.len());
+                        if remaining == 0 {
+                            search_capped = true;
+                            break;
+                        }
+                        if matches.len() > remaining {
+                            matches.truncate(remaining);
+                        }
                         all_matches.extend(matches);
-                    }
-                    if all_matches.len() >= MCP_SEARCH_MAX_MATCHES {
-                        all_matches.truncate(MCP_SEARCH_MAX_MATCHES);
-                        search_capped = true;
-                        break;
+                        if all_matches.len() >= MCP_SEARCH_MAX_MATCHES {
+                            search_capped = true;
+                            break;
+                        }
                     }
                 }
                 Err(e) => {
@@ -896,7 +915,9 @@ fn run_run(args: Value) -> CallResult {
                 } else {
                     // Dry-run: show unified diff
                     let diff = crate::run::cli::line_change_report(path, &source, &new_source);
-                    output.push_str(&diff);
+                    if !a.json {
+                        output.push_str(&diff);
+                    }
                     rewrite_count += 1;
                     rewrite_records.push(RewriteRecord {
                         file: file_str,

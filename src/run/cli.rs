@@ -83,7 +83,12 @@ pub fn run(
         };
 
         if let Some(replacement) = rewrite_template {
-            match rewrite(&source, lang, pattern, replacement) {
+            let result = if let Some(ref compiled) = compiled_pattern {
+                super::rewrite_with_pattern(&source, lang, compiled, replacement)
+            } else {
+                rewrite(&source, lang, pattern, replacement)
+            };
+            match result {
                 Ok(Some(new_source)) => {
                     let file_str = path.display().to_string();
                     if write_changes {
