@@ -37,8 +37,8 @@ pub const HARDCODED_IGNORE_DIRS: &[&str] = &[
     "dist", "build", "out", ".eggs", "target",
     // Other
     ".cache", ".gradle", ".idea", ".vscode",
-    // Self
-    ".ast-bro",
+    // Self (keep legacy name during transition)
+    ".ast-bro", ".ast-outline",
 ];
 
 /// Wire `.ast-bro-ignore` into a `WalkBuilder`.

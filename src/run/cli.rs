@@ -240,10 +240,13 @@ pub fn line_change_report(path: &Path, old: &str, new: &str) -> String {
     let diff = TextDiff::from_lines(old, new);
     for op in diff.ops() {
         for change in diff.iter_changes(op) {
+            if change.tag() == similar::ChangeTag::Equal {
+                continue;
+            }
             let sign = match change.tag() {
                 similar::ChangeTag::Delete => "-",
                 similar::ChangeTag::Insert => "+",
-                similar::ChangeTag::Equal => " ",
+                similar::ChangeTag::Equal => unreachable!(),
             };
             let display_idx = change
                 .old_index()
