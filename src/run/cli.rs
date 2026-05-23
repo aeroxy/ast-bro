@@ -5,7 +5,7 @@ use std::str::FromStr;
 
 use ast_grep_language::SupportLang;
 
-use super::{detect_lang, rewrite, search};
+use super::{detect_lang, rewrite, search, search_with_pattern};
 
 pub fn run(
     pattern: &str,
@@ -43,6 +43,28 @@ pub fn run(
     }
     let mut json_rewrites: Vec<RewriteRecord> = Vec::new();
 
+    // Pre-resolve language and compile pattern once when --lang is specified,
+    // so we avoid redundant parsing on every file in the loop.
+    let fixed_lang = lang_override.and_then(|l| match parse_lang(l) {
+        Some(l) => Some(l),
+        None => {
+            eprintln!("# note: unknown language '{}'", l);
+            None
+        }
+    });
+    let compiled_pattern: Option<ast_grep_core::Pattern> =
+        if let Some(lang) = fixed_lang {
+            match ast_grep_core::Pattern::try_new(pattern, lang) {
+                Ok(p) => Some(p),
+                Err(e) => {
+                    eprintln!("# note: invalid pattern: {}", e);
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
     for path in &files {
         let source = match std::fs::read_to_string(path) {
             Ok(s) => s,
@@ -51,15 +73,8 @@ pub fn run(
                 continue;
             },
         };
-        let lang = if let Some(l) = lang_override {
-            match parse_lang(l) {
-                Some(l) => l,
-                None => {
-                    eprintln!("# note: unknown language '{}'", l);
-                    error_count += 1;
-                    continue;
-                }
-            }
+        let lang = if let Some(l) = fixed_lang {
+            l
         } else {
             match detect_lang(path) {
                 Some(l) => l,
@@ -130,7 +145,12 @@ pub fn run(
                 },
             }
         } else {
-            match search(&source, lang, pattern) {
+            let result = if let Some(ref compiled) = compiled_pattern {
+                search_with_pattern(&source, lang, compiled)
+            } else {
+                search(&source, lang, pattern)
+            };
+            match result {
                 Ok(matches) => {
                     match_count += matches.len();
                     for mut m in matches {

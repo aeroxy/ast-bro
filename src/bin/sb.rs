@@ -25,7 +25,7 @@ fn main() {
             eprintln!("Please install 'ast-bro' to continue:");
             eprintln!("  - cargo install ast-bro");
             eprintln!("  - npm install -g ast-bro");
-            eprintln!("  - pip install ast-bro-cli");
+            eprintln!("  - pip install ast-bro");
             eprintln!("  - brew install aeroxy/tap/ast-bro");
             std::process::exit(1);
         }

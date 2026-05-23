@@ -24,6 +24,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use std::time::Duration;
 
 const HF_BASE: &str = "https://huggingface.co";
@@ -110,13 +111,18 @@ pub fn cache_root() -> io::Result<PathBuf> {
     let new_dir = base.join("ast-bro");
     let old_dir = base.join("ast-outline");
 
-    if old_dir.exists() && !new_dir.exists() {
-        if let Err(e) = std::fs::rename(&old_dir, &new_dir) {
-            eprintln!("warning: could not rename {} -> {}: {e}", old_dir.display(), new_dir.display());
-        } else {
-            eprintln!("info: auto-renamed {} -> {}", old_dir.display(), new_dir.display());
+    // Guard with OnceLock so concurrent callers (e.g. parallel MCP tool calls)
+    // don't race on the fs::rename.
+    static MIGRATED: OnceLock<()> = OnceLock::new();
+    MIGRATED.get_or_init(|| {
+        if old_dir.exists() && !new_dir.exists() {
+            if let Err(e) = std::fs::rename(&old_dir, &new_dir) {
+                eprintln!("warning: could not rename {} -> {}: {e}", old_dir.display(), new_dir.display());
+            } else {
+                eprintln!("info: auto-renamed {} -> {}", old_dir.display(), new_dir.display());
+            }
         }
-    }
+    });
 
     Ok(new_dir.join("models"))
 }

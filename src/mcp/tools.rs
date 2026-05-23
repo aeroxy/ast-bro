@@ -760,10 +760,12 @@ fn run_run(args: Value) -> CallResult {
     // Validate pattern upfront when language is known, so an invalid
     // pattern fails fast instead of after walking every file.
     if let Some(ref l) = a.lang {
-        if let Some(lang) = crate::run::cli::parse_lang(l) {
-            if let Err(e) = ast_grep_core::Pattern::try_new(&a.pattern, lang) {
-                return CallResult::Error(format!("invalid pattern: {}", e));
-            }
+        let lang = match crate::run::cli::parse_lang(l) {
+            Some(l) => l,
+            None => return CallResult::Error(format!("unsupported language '{}'", l)),
+        };
+        if let Err(e) = ast_grep_core::Pattern::try_new(&a.pattern, lang) {
+            return CallResult::Error(format!("invalid pattern: {}", e));
         }
     }
 

@@ -36,15 +36,24 @@ pub fn search(
     pattern: &str,
 ) -> Result<Vec<RunMatch>, String> {
     use ast_grep_core::Pattern;
-    let ast = lang.ast_grep(source.to_string());
-    
-    // Validate pattern first to avoid panic in find_all
     let compiled = Pattern::try_new(pattern, lang.clone())
         .map_err(|e| format!("invalid pattern: {}", e))?;
+    search_with_pattern(source, lang, &compiled)
+}
 
+/// Search for pattern matches using a pre-compiled pattern.
+///
+/// Use this variant in loops where the same pattern is applied to many files
+/// with the same language — compile once, clone per file.
+pub fn search_with_pattern(
+    source: &str,
+    lang: SupportLang,
+    pattern: &ast_grep_core::Pattern,
+) -> Result<Vec<RunMatch>, String> {
+    let ast = lang.ast_grep(source.to_string());
     let matches: Vec<RunMatch> = ast
         .root()
-        .find_all(compiled)
+        .find_all(pattern.clone())
         .map(|m| {
             let start = m.start_pos();
             let end = m.end_pos();
