@@ -264,6 +264,17 @@ pub fn run(
         }
     }
 
+    // Distinguish "walked nothing" from "walked some, matched nothing" for
+    // the user — exit code stays at 1 either way (matches ripgrep/grep
+    // convention), but the hint surfaces a likely path/glob/--lang
+    // misconfiguration. Suppressed in JSON mode so machine consumers get a
+    // clean stream.
+    if attempted_files == 0 && !json {
+        eprintln!(
+            "ast-bro run: no source files processed (check paths, --glob, or --lang)"
+        );
+    }
+
     // Exit code semantics:
     // 0 = success (matches found, or rewrites applied)
     // 1 = no matches found (search mode) or no rewrites possible (rewrite mode)

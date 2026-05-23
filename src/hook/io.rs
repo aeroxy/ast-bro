@@ -41,8 +41,19 @@ pub fn dispatch(event: ToolCallEvent, opts: &DecideOpts) -> i32 {
 
 pub fn emit_pass_through() -> i32 {
     let r = PassThroughResponse { cont: true };
-    let _ = writeln!(io::stdout(), "{}", serde_json::to_string(&r).unwrap());
-    0
+    match serde_json::to_string(&r) {
+        Ok(json) => match writeln!(io::stdout(), "{}", json) {
+            Ok(_) => 0,
+            Err(e) => {
+                let _ = writeln!(io::stderr(), "hook: stdout write failed: {}", e);
+                1
+            }
+        },
+        Err(e) => {
+            let _ = writeln!(io::stderr(), "hook: serialization failed: {}", e);
+            1
+        }
+    }
 }
 
 pub fn emit_substitute(content: String) -> i32 {
@@ -50,8 +61,19 @@ pub fn emit_substitute(content: String) -> i32 {
         decision: "block",
         reason: content,
     };
-    let _ = writeln!(io::stdout(), "{}", serde_json::to_string(&r).unwrap());
-    0
+    match serde_json::to_string(&r) {
+        Ok(json) => match writeln!(io::stdout(), "{}", json) {
+            Ok(_) => 0,
+            Err(e) => {
+                let _ = writeln!(io::stderr(), "hook: stdout write failed: {}", e);
+                1
+            }
+        },
+        Err(e) => {
+            let _ = writeln!(io::stderr(), "hook: serialization failed: {}", e);
+            1
+        }
+    }
 }
 
 #[cfg(test)]

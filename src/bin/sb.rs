@@ -6,7 +6,7 @@ fn main() {
     // Try same directory first (e.g. ./target/release/ast-bro), then fall back to PATH.
     let exe_dir = std::env::current_exe()
         .ok()
-        .and_then(|p| p.parent().map(|d| d.join("ast-bro")));
+        .and_then(|p| p.parent().map(|d| d.join(format!("ast-bro{}", std::env::consts::EXE_SUFFIX))));
     let program = exe_dir
         .filter(|p| p.exists())
         .unwrap_or_else(|| "ast-bro".into());

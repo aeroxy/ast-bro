@@ -126,8 +126,22 @@ pub fn atomic_write(path: &Path, contents: &[u8]) -> std::io::Result<()> {
 
     let orig_perms = std::fs::metadata(path).map(|m| m.permissions()).ok();
 
+    // Open the temp file restrictively on Unix so a permissive umask can't
+    // briefly expose contents that the original kept private (e.g.,
+    // rewriting a 0o600 file under umask 0o022). The final mode is set
+    // below — before the rename — to match the original.
+    // `create_new` also guards against clobbering an unrelated file with
+    // our temp name and against simple symlink-target races.
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+
     let write_result = (|| -> std::io::Result<()> {
-        let mut f = std::fs::File::create(&tmp_path)?;
+        let mut f = opts.open(&tmp_path)?;
         f.write_all(contents)?;
         f.sync_all()
     })();

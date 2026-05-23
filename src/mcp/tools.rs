@@ -738,6 +738,11 @@ const MCP_REWRITE_MAX_FILES: usize = 50;
 /// Prevents broad patterns from producing unbounded response sizes.
 const MCP_SEARCH_MAX_MATCHES: usize = 1000;
 
+/// Safety cap: per-file byte limit before reading source into memory.
+/// The walker filters by extension only, so a minified bundle or generated
+/// data file under a source extension would otherwise be slurped whole.
+const MCP_MAX_FILE_BYTES: u64 = 5 * 1024 * 1024;
+
 #[derive(Deserialize, Default)]
 struct RunArgs {
     pattern: String,
@@ -820,6 +825,36 @@ fn run_run(args: Value) -> CallResult {
                 None => continue,
             }
         };
+        // Cap file size before slurping into memory. Same error-reporting
+        // shape as read_to_string failures so the consumer sees a uniform
+        // skipped-file record.
+        if let Ok(meta) = std::fs::metadata(path) {
+            if meta.len() > MCP_MAX_FILE_BYTES {
+                let msg = format!(
+                    "{}: skipped (size {} > cap {})",
+                    path.display(),
+                    meta.len(),
+                    MCP_MAX_FILE_BYTES
+                );
+                if a.rewrite.is_some() {
+                    rewrite_records.push(RewriteRecord {
+                        file: path.display().to_string(),
+                        status: "skipped_oversize",
+                        diff: None,
+                        error: Some(format!(
+                            "size {} bytes exceeds cap {} bytes",
+                            meta.len(),
+                            MCP_MAX_FILE_BYTES
+                        )),
+                    });
+                    output.push_str(&format!("{}\n", msg));
+                } else {
+                    search_errors.push(msg);
+                }
+                error_count += 1;
+                continue;
+            }
+        }
         let source = match std::fs::read_to_string(path) {
             Ok(s) => s,
             Err(e) => {
