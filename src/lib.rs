@@ -422,11 +422,11 @@ fn parse_file_line(s: &str) -> Option<(String, u32)> {
     Some((file.to_string(), line.parse().ok()?))
 }
 
-pub(crate) fn walk_paths(paths: &[PathBuf], glob_str: Option<&str>) -> Vec<PathBuf> {
-    let (tx, rx) = std::sync::mpsc::channel();
-
+/// Filter out non-existent paths, build a WalkBuilder with filters and glob overrides,
+/// and return (builder, existing_paths). Returns None if no paths exist.
+fn build_filtered_walker(paths: &[PathBuf], glob_str: Option<&str>) -> Option<(WalkBuilder, Vec<PathBuf>)> {
     if paths.is_empty() {
-        return Vec::new();
+        return None;
     }
 
     let existing: Vec<PathBuf> = paths
@@ -442,7 +442,7 @@ pub(crate) fn walk_paths(paths: &[PathBuf], glob_str: Option<&str>) -> Vec<PathB
         .cloned()
         .collect();
     if existing.is_empty() {
-        return Vec::new();
+        return None;
     }
 
     let mut builder = WalkBuilder::new(&existing[0]);
@@ -461,6 +461,14 @@ pub(crate) fn walk_paths(paths: &[PathBuf], glob_str: Option<&str>) -> Vec<PathB
         }
     }
 
+    Some((builder, existing))
+}
+
+pub(crate) fn walk_paths(paths: &[PathBuf], glob_str: Option<&str>) -> Vec<PathBuf> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let Some((builder, existing)) = build_filtered_walker(paths, glob_str) else {
+        return Vec::new();
+    };
     let walker = builder.build_parallel();
     let root = existing[0].clone();
 
@@ -487,51 +495,10 @@ pub(crate) fn walk_paths(paths: &[PathBuf], glob_str: Option<&str>) -> Vec<PathB
 
 pub(crate) fn walk_and_parse(paths: &[PathBuf], glob_str: Option<&str>) -> Vec<ParseResult> {
     let (tx, rx) = std::sync::mpsc::channel();
-
-    if paths.is_empty() {
+    let Some((builder, existing)) = build_filtered_walker(paths, glob_str) else {
         return Vec::new();
-    }
-
-    // Filter out paths that don't exist — emit a `# note:` so an agent
-    // can tell a typo apart from a genuinely empty directory.
-    let existing: Vec<PathBuf> = paths
-        .iter()
-        .filter(|p| {
-            if p.exists() {
-                true
-            } else {
-                println!("# note: path not found: {}", p.display());
-                false
-            }
-        })
-        .cloned()
-        .collect();
-    if existing.is_empty() {
-        return Vec::new();
-    }
-
-    let mut builder = WalkBuilder::new(&existing[0]);
-    for p in existing.iter().skip(1) {
-        builder.add(p);
-    }
-
-    builder.hidden(false); // don't ignore hidden files automatically if they match
-    file_filter::add_filters(&mut builder, &existing[0]); // honour .ast-bro-ignore
-
-    if let Some(g) = glob_str {
-        if let Ok(override_builder) = ignore::overrides::OverrideBuilder::new("").add(g) {
-            if let Ok(over) = override_builder.build() {
-                builder.overrides(over);
-            }
-        }
-    }
-
+    };
     let walker = builder.build_parallel();
-
-    // Pre-compute the (single) root used to check the hardcoded denylist —
-    // when multiple roots are passed, fall back to the first; users who do
-    // that are typically scoping ast-bro at a sub-tree, where the denylist
-    // semantics still hold (e.g. `node_modules` under any of them).
     let root = existing[0].clone();
 
     walker.run(|| {

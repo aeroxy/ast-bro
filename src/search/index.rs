@@ -308,7 +308,7 @@ impl Index {
         //    file_paths are stored relative to `home` (paths.root) so search
         //    can post-filter by query_scope without remapping.
         let (file_paths, chunks_per_file): (Vec<PathBuf>, Vec<Vec<Chunk>>) =
-            walk_and_chunk(&walk_dir, &paths.root);
+            walk_and_chunk(&walk_dir, &paths.root, &paths.root);
 
         // 2. Build flat chunks vec + per-file chunk_range.
         let mut chunks = Vec::new();
@@ -983,11 +983,11 @@ fn enrich_for_bm25(chunk: &Chunk) -> String {
 /// Chunk `file_path` strings are stored relative to `strip_root` so that a
 /// corpus-narrowed walk still produces stable paths relative to the index
 /// home (used by `query_scope` filtering at search time).
-fn walk_and_chunk(walk_root: &Path, strip_root: &Path) -> (Vec<PathBuf>, Vec<Vec<Chunk>>) {
+fn walk_and_chunk(walk_root: &Path, strip_root: &Path, repo_root: &Path) -> (Vec<PathBuf>, Vec<Vec<Chunk>>) {
     // Collect indexable paths first so chunking can run in parallel.
     let mut paths: Vec<PathBuf> = Vec::new();
     let mut builder = WalkBuilder::new(walk_root);
-    add_filters(&mut builder, walk_root);
+    add_filters(&mut builder, repo_root);
     let walker = builder.build();
     for entry in walker.flatten() {
         let p = entry.path();

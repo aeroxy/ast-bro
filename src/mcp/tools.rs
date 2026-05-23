@@ -807,8 +807,8 @@ fn run_run(args: Value) -> CallResult {
     let mut search_capped = false;
     // Cache compiled patterns per language when lang is auto-detected,
     // so files of the same language reuse the compiled pattern.
-    // Stores Option<Pattern> — None when the pattern is invalid for that language.
-    let mut pattern_cache: std::collections::HashMap<ast_grep_language::SupportLang, Option<ast_grep_core::Pattern>> = std::collections::HashMap::new();
+    // Stores Result<Pattern, String> — Err when the pattern is invalid for that language.
+    let mut pattern_cache: std::collections::HashMap<ast_grep_language::SupportLang, Result<ast_grep_core::Pattern, String>> = std::collections::HashMap::new();
 
     for path in &files {
         // Detect language first to avoid reading non-source files.
@@ -846,12 +846,16 @@ fn run_run(args: Value) -> CallResult {
                 crate::run::search_with_pattern(&source, lang, compiled)
             } else {
                 let compiled = pattern_cache.entry(lang).or_insert_with(|| {
-                    ast_grep_core::Pattern::try_new(&a.pattern, lang).ok()
+                    ast_grep_core::Pattern::try_new(&a.pattern, lang)
+                        .map_err(|e| format!("invalid pattern for {}: {}", lang, e))
                 });
-                if let Some(p) = compiled {
-                    crate::run::search_with_pattern(&source, lang, p)
-                } else {
-                    Ok(Vec::new())
+                match compiled {
+                    Ok(p) => crate::run::search_with_pattern(&source, lang, p),
+                    Err(e) => {
+                        search_errors.push(format!("{}: {}", path.display(), e));
+                        error_count += 1;
+                        continue;
+                    }
                 }
             };
             match result {
@@ -896,12 +900,23 @@ fn run_run(args: Value) -> CallResult {
             crate::run::rewrite_with_pattern(&source, lang, compiled, replacement)
         } else {
             let compiled = pattern_cache.entry(lang).or_insert_with(|| {
-                ast_grep_core::Pattern::try_new(&a.pattern, lang).ok()
+                ast_grep_core::Pattern::try_new(&a.pattern, lang)
+                    .map_err(|e| format!("invalid pattern for {}: {}", lang, e))
             });
-            if let Some(p) = compiled {
-                crate::run::rewrite_with_pattern(&source, lang, p, replacement)
-            } else {
-                Ok(None)
+            match compiled {
+                Ok(p) => crate::run::rewrite_with_pattern(&source, lang, p, replacement),
+                Err(e) => {
+                    let file_str = path.display().to_string();
+                    output.push_str(&format!("{}: {}\n", file_str, e));
+                    error_count += 1;
+                    rewrite_records.push(RewriteRecord {
+                        file: file_str,
+                        status: "rewrite_error",
+                        diff: None,
+                        error: Some(e.clone()),
+                    });
+                    continue;
+                }
             }
         };
         match result {
@@ -1001,7 +1016,22 @@ fn run_run(args: Value) -> CallResult {
 
     // Search-only mode
     if a.json {
-        CallResult::Text(serde_json::to_string_pretty(&all_matches).unwrap_or_default())
+        #[derive(serde::Serialize)]
+        struct SearchDoc<'a> {
+            matches: &'a [crate::run::RunMatch],
+            errors: &'a [String],
+            error_count: usize,
+            capped: bool,
+            cap_limit: usize,
+        }
+        let doc = SearchDoc {
+            matches: &all_matches,
+            errors: &search_errors,
+            error_count,
+            capped: search_capped,
+            cap_limit: MCP_SEARCH_MAX_MATCHES,
+        };
+        CallResult::Text(serde_json::to_string_pretty(&doc).unwrap_or_default())
     } else {
         if all_matches.is_empty() {
             output.push_str("No matches found.");

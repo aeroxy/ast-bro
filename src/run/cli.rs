@@ -5,7 +5,7 @@ use std::str::FromStr;
 
 use ast_grep_language::SupportLang;
 
-use super::{detect_lang, rewrite, search, search_with_pattern};
+use super::{detect_lang, search_with_pattern};
 
 pub fn run(
     pattern: &str,
@@ -65,6 +65,8 @@ pub fn run(
     } else {
         (None, None)
     };
+    // Cache compiled patterns per language when lang is auto-detected.
+    let mut pattern_cache: std::collections::HashMap<ast_grep_language::SupportLang, Result<ast_grep_core::Pattern, String>> = std::collections::HashMap::new();
 
     for path in &files {
         // Detect language first to avoid reading non-source files.
@@ -90,7 +92,18 @@ pub fn run(
             let result = if let Some(ref compiled) = compiled_pattern {
                 super::rewrite_with_pattern(&source, lang, compiled, replacement)
             } else {
-                rewrite(&source, lang, pattern, replacement)
+                let compiled = pattern_cache.entry(lang).or_insert_with(|| {
+                    ast_grep_core::Pattern::try_new(pattern, lang)
+                        .map_err(|e| format!("invalid pattern for {}: {}", lang, e))
+                });
+                match compiled {
+                    Ok(p) => super::rewrite_with_pattern(&source, lang, p, replacement),
+                    Err(e) => {
+                        eprintln!("{}: {}", path.display(), e);
+                        error_count += 1;
+                        continue;
+                    }
+                }
             };
             match result {
                 Ok(Some(new_source)) => {
@@ -157,7 +170,18 @@ pub fn run(
             let result = if let Some(ref compiled) = compiled_pattern {
                 search_with_pattern(&source, lang, compiled)
             } else {
-                search(&source, lang, pattern)
+                let compiled = pattern_cache.entry(lang).or_insert_with(|| {
+                    ast_grep_core::Pattern::try_new(pattern, lang)
+                        .map_err(|e| format!("invalid pattern for {}: {}", lang, e))
+                });
+                match compiled {
+                    Ok(p) => search_with_pattern(&source, lang, p),
+                    Err(e) => {
+                        eprintln!("{}: {}", path.display(), e);
+                        error_count += 1;
+                        continue;
+                    }
+                }
             };
             match result {
                 Ok(matches) => {

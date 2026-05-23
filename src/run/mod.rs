@@ -30,6 +30,7 @@ pub fn detect_lang(path: &Path) -> Option<SupportLang> {
 }
 
 /// Search for pattern matches in source.
+#[allow(dead_code)] // public API; prefer search_with_pattern in loops
 pub fn search(
     source: &str,
     lang: SupportLang,
@@ -90,6 +91,7 @@ pub fn rewrite_with_pattern(
 }
 
 /// Rewrite matches in source. Returns the new source if any replacements were made.
+#[allow(dead_code)] // public API; prefer rewrite_with_pattern in loops
 pub fn rewrite(
     source: &str,
     lang: SupportLang,
