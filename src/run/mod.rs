@@ -70,6 +70,25 @@ pub fn search_with_pattern(
     Ok(matches)
 }
 
+/// Rewrite matches in source using a pre-compiled pattern.
+///
+/// Use this variant in loops where the same pattern is applied to many files
+/// with the same language — compile once, clone per file.
+pub fn rewrite_with_pattern(
+    source: &str,
+    lang: SupportLang,
+    pattern: &ast_grep_core::Pattern,
+    replacement: &str,
+) -> Result<Option<String>, String> {
+    let mut ast = lang.ast_grep(source.to_string());
+    let replaced = ast.replace(pattern.clone(), replacement)?;
+    if replaced {
+        Ok(Some(ast.generate()))
+    } else {
+        Ok(None)
+    }
+}
+
 /// Rewrite matches in source. Returns the new source if any replacements were made.
 pub fn rewrite(
     source: &str,
@@ -77,11 +96,8 @@ pub fn rewrite(
     pattern: &str,
     replacement: &str,
 ) -> Result<Option<String>, String> {
-    let mut ast = lang.ast_grep(source.to_string());
-    let replaced = ast.replace(pattern, replacement)?;
-    if replaced {
-        Ok(Some(ast.generate()))
-    } else {
-        Ok(None)
-    }
+    use ast_grep_core::Pattern;
+    let compiled = Pattern::try_new(pattern, lang.clone())
+        .map_err(|e| format!("invalid pattern: {}", e))?;
+    rewrite_with_pattern(source, lang, &compiled, replacement)
 }

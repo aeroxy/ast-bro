@@ -734,6 +734,10 @@ fn run_graph(args: Value) -> CallResult {
 /// Prevents a broad pattern from destroying an entire repo.
 const MCP_REWRITE_MAX_FILES: usize = 50;
 
+/// Safety cap: MCP search returns at most this many matches in a single call.
+/// Prevents broad patterns from producing unbounded response sizes.
+const MCP_SEARCH_MAX_MATCHES: usize = 1000;
+
 #[derive(Deserialize, Default)]
 struct RunArgs {
     pattern: String,
@@ -800,6 +804,7 @@ fn run_run(args: Value) -> CallResult {
     let mut rewrite_count: usize = 0;
     let mut error_count: usize = 0;
     let mut rewrite_capped = false;
+    let mut search_capped = false;
 
     for path in &files {
         let source = match std::fs::read_to_string(path) {
@@ -834,6 +839,11 @@ fn run_run(args: Value) -> CallResult {
                         }
                         all_matches.extend(matches);
                     }
+                    if all_matches.len() >= MCP_SEARCH_MAX_MATCHES {
+                        all_matches.truncate(MCP_SEARCH_MAX_MATCHES);
+                        search_capped = true;
+                        break;
+                    }
                 }
                 Err(e) => {
                     search_errors.push(format!(
@@ -851,33 +861,37 @@ fn run_run(args: Value) -> CallResult {
 
         // Rewrite mode (dry-run or write)
         let replacement = a.rewrite.as_deref().unwrap_or("");
-        match crate::run::rewrite(&source, lang, &a.pattern, replacement) {
+        let result = if let Some(ref compiled) = compiled_pattern {
+            crate::run::rewrite_with_pattern(&source, lang, compiled, replacement)
+        } else {
+            crate::run::rewrite(&source, lang, &a.pattern, replacement)
+        };
+        match result {
             Ok(Some(new_source)) => {
                 let file_str = path.to_string_lossy().to_string();
+                if rewrite_count >= MCP_REWRITE_MAX_FILES {
+                    rewrite_capped = true;
+                    break;
+                }
                 if a.write {
-                    if rewrite_count < MCP_REWRITE_MAX_FILES {
-                        if let Err(e) = std::fs::write(path, &new_source) {
-                            output.push_str(&format!("{}: write failed: {}\n", file_str, e));
-                            error_count += 1;
-                            rewrite_records.push(RewriteRecord {
-                                file: file_str,
-                                status: "write_failed",
-                                diff: None,
-                                error: Some(e.to_string()),
-                            });
-                        } else {
-                            output.push_str(&format!("{}: rewritten\n", file_str));
-                            rewrite_count += 1;
-                            rewrite_records.push(RewriteRecord {
-                                file: file_str,
-                                status: "rewritten",
-                                diff: None,
-                                error: None,
-                            });
-                        }
+                    if let Err(e) = std::fs::write(path, &new_source) {
+                        output.push_str(&format!("{}: write failed: {}\n", file_str, e));
+                        error_count += 1;
+                        rewrite_records.push(RewriteRecord {
+                            file: file_str,
+                            status: "write_failed",
+                            diff: None,
+                            error: Some(e.to_string()),
+                        });
                     } else {
-                        rewrite_capped = true;
-                        break;
+                        output.push_str(&format!("{}: rewritten\n", file_str));
+                        rewrite_count += 1;
+                        rewrite_records.push(RewriteRecord {
+                            file: file_str,
+                            status: "rewritten",
+                            diff: None,
+                            error: None,
+                        });
                     }
                 } else {
                     // Dry-run: show unified diff
@@ -952,7 +966,9 @@ fn run_run(args: Value) -> CallResult {
         if all_matches.is_empty() {
             output.push_str("No matches found.");
         } else {
-            output.push_str(&format!("Found {} matches in {} files:\n", all_matches.len(), files.len()));
+            let matched_files: std::collections::HashSet<&str> =
+                all_matches.iter().map(|m| m.file.as_str()).collect();
+            output.push_str(&format!("Found {} matches in {} files:\n", all_matches.len(), matched_files.len()));
             for m in all_matches {
                 let first_line = m.matched_text.lines().next().unwrap_or("");
                 output.push_str(&format!("{}:{}:{}-{}:{}: {}\n", m.file, m.start_line, m.start_col, m.end_line, m.end_col, first_line));
@@ -967,6 +983,9 @@ fn run_run(args: Value) -> CallResult {
         }
         if error_count > 0 {
             output.push_str(&format!("\n(Skipped {} files due to errors)", error_count));
+        }
+        if search_capped {
+            output.push_str(&format!("\n# warning: reached safety cap of {} matches; remaining files were not processed.", MCP_SEARCH_MAX_MATCHES));
         }
         CallResult::Text(output)
     }

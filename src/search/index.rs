@@ -72,8 +72,11 @@ impl IndexPaths {
         let new_dir = repo_root.join(".ast-bro");
         let old_dir = repo_root.join(".ast-outline");
 
-        // Guard with OnceLock so concurrent callers (e.g. parallel MCP tool calls)
-        // don't race on the fs::rename.
+        // Process-wide guard via OnceLock so concurrent threads (e.g. parallel
+        // MCP tool calls) don't race on std::fs::rename within the same
+        // process. Inter-process races are not covered — fs::rename is
+        // atomic on most platforms so the loser simply gets an error, but a
+        // filesystem-level lock would be needed for full cross-process safety.
         static MIGRATED: OnceLock<()> = OnceLock::new();
         MIGRATED.get_or_init(|| {
             if old_dir.exists() && !new_dir.exists() {
