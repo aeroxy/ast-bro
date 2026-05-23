@@ -18,7 +18,7 @@ pub fn decide(event: &ToolCallEvent, opts: &DecideOpts) -> Decision {
     if event.has_offset_or_limit {
         return Decision::PassThrough;
     }
-    if !is_supported_extension(path) {
+    if !crate::main_helpers::can_parse_for_hook(path) {
         return Decision::PassThrough;
     }
     if !opts.always {
@@ -36,36 +36,6 @@ pub fn decide(event: &ToolCallEvent, opts: &DecideOpts) -> Decision {
         },
         None => Decision::PassThrough,
     }
-}
-
-fn is_supported_extension(path: &Path) -> bool {
-    let ext = path
-        .extension()
-        .and_then(|o| o.to_str())
-        .unwrap_or("")
-        .to_ascii_lowercase();
-    matches!(
-        ext.as_str(),
-        "rs" | "cs"
-            | "py"
-            | "pyi"
-            | "ts"
-            | "tsx"
-            | "js"
-            | "jsx"
-            | "mjs"
-            | "cjs"
-            | "java"
-            | "kt"
-            | "kts"
-            | "scala"
-            | "sc"
-            | "go"
-            | "md"
-            | "markdown"
-            | "mdx"
-            | "mdown"
-    )
 }
 
 fn line_count_at_least(path: &Path, threshold: usize) -> std::io::Result<bool> {

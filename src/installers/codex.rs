@@ -207,7 +207,7 @@ mod tests {
         .unwrap();
         assert!(contents.starts_with("---\n"));
         assert!(contents.contains("name: ast-bro"));
-        assert!(contents.contains("## Use `ast-bro` to explore the code"));
+        assert!(contents.contains("## Use `sb` (the `ast-bro` toolkit) to explore the code"));
     }
 
     #[test]

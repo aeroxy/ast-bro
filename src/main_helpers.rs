@@ -17,6 +17,25 @@ use crate::adapters::scala::ScalaAdapter;
 use crate::adapters::typescript::TypeScriptAdapter;
 use crate::core::ParseResult;
 
+/// Cheap extension-only check: would `parse_file_for_hook` accept this path?
+/// Lets the hook skip files we can't render without reading them.
+/// False positives (extension recognized but no wired adapter) fall through
+/// to `PassThrough` when `parse_file_for_hook` returns `None`.
+pub fn can_parse_for_hook(path: &Path) -> bool {
+    let ext = path
+        .extension()
+        .and_then(|o| o.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if matches!(
+        ext.as_str(),
+        "sql" | "ddl" | "dml" | "md" | "markdown" | "mdx" | "mdown"
+    ) {
+        return true;
+    }
+    SupportLang::from_path(path).is_some()
+}
+
 pub fn parse_file_for_hook(path: &Path) -> Option<ParseResult> {
     let source = std::fs::read_to_string(path).ok()?;
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");

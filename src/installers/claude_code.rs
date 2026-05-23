@@ -372,7 +372,12 @@ mod tests {
         let contents = std::fs::read_to_string(&agent_path).unwrap();
         assert!(contents.contains("<!-- ast-bro:begin"));
         // Body is wrapped exactly once — the legacy bare snippet is gone.
-        assert_eq!(contents.matches("## Use `ast-bro` to explore the code").count(), 1);
+        assert_eq!(
+            contents
+                .matches("## Use `sb` (the `ast-bro` toolkit) to explore the code")
+                .count(),
+            1
+        );
     }
 
     #[test]
@@ -518,7 +523,7 @@ mod tests {
         assert!(contents.starts_with("---\n"));
         assert!(contents.contains("name: ast-bro"));
         assert!(contents.contains("user-invocable: true"));
-        assert!(contents.contains("## Use `ast-bro` to explore the code"));
+        assert!(contents.contains("## Use `sb` (the `ast-bro` toolkit) to explore the code"));
     }
 
     #[test]
@@ -543,7 +548,7 @@ mod tests {
             .unwrap();
         assert!(matches!(change, Change::Updated(_)));
         let contents = std::fs::read_to_string(&skill_path).unwrap();
-        assert!(contents.contains("Use `ast-bro`"));
+        assert!(contents.contains("Use `sb` (the `ast-bro` toolkit)"));
         assert!(!contents.contains("old body"));
     }
 

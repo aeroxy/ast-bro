@@ -1,5 +1,6 @@
 pub mod event;
 pub mod decide;
+pub mod io;
 pub mod claude_code;
 pub mod gemini;
 
