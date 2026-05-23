@@ -805,8 +805,20 @@ fn run_run(args: Value) -> CallResult {
     let mut error_count: usize = 0;
     let mut rewrite_capped = false;
     let mut search_capped = false;
+    // Cache compiled patterns per language when lang is auto-detected,
+    // so files of the same language reuse the compiled pattern.
+    let mut pattern_cache: std::collections::HashMap<ast_grep_language::SupportLang, ast_grep_core::Pattern> = std::collections::HashMap::new();
 
     for path in &files {
+        // Detect language first to avoid reading non-source files.
+        let lang = if let Some(l) = fixed_lang {
+            l
+        } else {
+            match crate::run::detect_lang(path) {
+                Some(l) => l,
+                None => continue,
+            }
+        };
         let source = match std::fs::read_to_string(path) {
             Ok(s) => s,
             Err(e) => {
@@ -826,21 +838,16 @@ fn run_run(args: Value) -> CallResult {
                 continue;
             },
         };
-        let lang = if let Some(l) = fixed_lang {
-            l
-        } else {
-            match crate::run::detect_lang(path) {
-                Some(l) => l,
-                None => continue, // Silently skip non-source files in directory walk
-            }
-        };
 
         // Search-only mode (no rewrite template)
         if a.rewrite.is_none() {
             let result = if let Some(ref compiled) = compiled_pattern {
                 crate::run::search_with_pattern(&source, lang, compiled)
             } else {
-                crate::run::search(&source, lang, &a.pattern)
+                let compiled = pattern_cache.entry(lang).or_insert_with(|| {
+                    ast_grep_core::Pattern::try_new(&a.pattern, lang).expect("pattern validated")
+                });
+                crate::run::search_with_pattern(&source, lang, compiled)
             };
             match result {
                 Ok(mut matches) => {
@@ -883,7 +890,10 @@ fn run_run(args: Value) -> CallResult {
         let result = if let Some(ref compiled) = compiled_pattern {
             crate::run::rewrite_with_pattern(&source, lang, compiled, replacement)
         } else {
-            crate::run::rewrite(&source, lang, &a.pattern, replacement)
+            let compiled = pattern_cache.entry(lang).or_insert_with(|| {
+                ast_grep_core::Pattern::try_new(&a.pattern, lang).expect("pattern validated")
+            });
+            crate::run::rewrite_with_pattern(&source, lang, compiled, replacement)
         };
         match result {
             Ok(Some(new_source)) => {

@@ -66,13 +66,7 @@ pub fn run(
     };
 
     for path in &files {
-        let source = match std::fs::read_to_string(path) {
-            Ok(s) => s,
-            Err(_) => {
-                error_count += 1;
-                continue;
-            },
-        };
+        // Detect language first to avoid reading non-source files.
         let lang = if let Some(l) = fixed_lang {
             l
         } else {
@@ -80,6 +74,14 @@ pub fn run(
                 Some(l) => l,
                 None => continue,
             }
+        };
+        let source = match std::fs::read_to_string(path) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("{}: read failed: {}", path.display(), e);
+                error_count += 1;
+                continue;
+            },
         };
 
         if let Some(replacement) = rewrite_template {
