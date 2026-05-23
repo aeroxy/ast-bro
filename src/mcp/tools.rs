@@ -807,7 +807,8 @@ fn run_run(args: Value) -> CallResult {
     let mut search_capped = false;
     // Cache compiled patterns per language when lang is auto-detected,
     // so files of the same language reuse the compiled pattern.
-    let mut pattern_cache: std::collections::HashMap<ast_grep_language::SupportLang, ast_grep_core::Pattern> = std::collections::HashMap::new();
+    // Stores Option<Pattern> — None when the pattern is invalid for that language.
+    let mut pattern_cache: std::collections::HashMap<ast_grep_language::SupportLang, Option<ast_grep_core::Pattern>> = std::collections::HashMap::new();
 
     for path in &files {
         // Detect language first to avoid reading non-source files.
@@ -845,9 +846,13 @@ fn run_run(args: Value) -> CallResult {
                 crate::run::search_with_pattern(&source, lang, compiled)
             } else {
                 let compiled = pattern_cache.entry(lang).or_insert_with(|| {
-                    ast_grep_core::Pattern::try_new(&a.pattern, lang).expect("pattern validated")
+                    ast_grep_core::Pattern::try_new(&a.pattern, lang).ok()
                 });
-                crate::run::search_with_pattern(&source, lang, compiled)
+                if let Some(p) = compiled {
+                    crate::run::search_with_pattern(&source, lang, p)
+                } else {
+                    Ok(Vec::new())
+                }
             };
             match result {
                 Ok(mut matches) => {
@@ -891,9 +896,13 @@ fn run_run(args: Value) -> CallResult {
             crate::run::rewrite_with_pattern(&source, lang, compiled, replacement)
         } else {
             let compiled = pattern_cache.entry(lang).or_insert_with(|| {
-                ast_grep_core::Pattern::try_new(&a.pattern, lang).expect("pattern validated")
+                ast_grep_core::Pattern::try_new(&a.pattern, lang).ok()
             });
-            crate::run::rewrite_with_pattern(&source, lang, compiled, replacement)
+            if let Some(p) = compiled {
+                crate::run::rewrite_with_pattern(&source, lang, p, replacement)
+            } else {
+                Ok(None)
+            }
         };
         match result {
             Ok(Some(new_source)) => {

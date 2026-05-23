@@ -72,21 +72,22 @@ impl IndexPaths {
         let new_dir = repo_root.join(".ast-bro");
         let old_dir = repo_root.join(".ast-outline");
 
-        // Process-wide guard via OnceLock so concurrent threads (e.g. parallel
-        // MCP tool calls) don't race on std::fs::rename within the same
-        // process. Inter-process races are not covered — fs::rename is
-        // atomic on most platforms so the loser simply gets an error, but a
-        // filesystem-level lock would be needed for full cross-process safety.
-        static MIGRATED: OnceLock<()> = OnceLock::new();
-        MIGRATED.get_or_init(|| {
-            if old_dir.exists() && !new_dir.exists() {
-                if let Err(e) = std::fs::rename(&old_dir, &new_dir) {
-                    eprintln!("warning: could not rename .ast-outline -> .ast-bro: {e}");
-                } else {
-                    eprintln!("info: auto-renamed .ast-outline -> .ast-bro");
-                }
+        // Process-wide guard via OnceLock<Mutex<HashSet>> so concurrent threads
+        // (e.g. parallel MCP tool calls) don't race on std::fs::rename within
+        // the same process, and multiple repos are each migrated at most once.
+        // Inter-process races are not covered — fs::rename is atomic on most
+        // platforms so the loser simply gets an error, but a filesystem-level
+        // lock would be needed for full cross-process safety.
+        static MIGRATED: OnceLock<std::sync::Mutex<std::collections::HashSet<PathBuf>>> = OnceLock::new();
+        let set = MIGRATED.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()));
+        let mut guard = set.lock().unwrap();
+        if guard.insert(repo_root.to_path_buf()) && old_dir.exists() && !new_dir.exists() {
+            if let Err(e) = std::fs::rename(&old_dir, &new_dir) {
+                eprintln!("warning: could not rename .ast-outline -> .ast-bro: {e}");
+            } else {
+                eprintln!("info: auto-renamed .ast-outline -> .ast-bro");
             }
-        });
+        }
 
         let index_dir = new_dir.join("index");
         Self {

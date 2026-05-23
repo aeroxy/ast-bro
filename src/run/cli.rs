@@ -27,6 +27,7 @@ pub fn run(
     let mut match_count: usize = 0;
     let mut rewrite_count: usize = 0;
     let mut error_count: usize = 0;
+    let mut attempted_files: usize = 0;
     // Collect search matches when emitting JSON so the whole run produces
     // one valid JSON array (consistent with `map` / `show` / etc.) rather
     // than newline-delimited objects.
@@ -75,6 +76,7 @@ pub fn run(
                 None => continue,
             }
         };
+        attempted_files += 1;
         let source = match std::fs::read_to_string(path) {
             Ok(s) => s,
             Err(e) => {
@@ -226,8 +228,8 @@ pub fn run(
     // Exit code semantics:
     // 0 = success (matches found, or rewrites applied)
     // 1 = no matches found (search mode) or no rewrites possible (rewrite mode)
-    // 2 = all files errored (and at least one file was attempted)
-    if !files.is_empty() && error_count == files.len() {
+    // 2 = all attempted files errored (and at least one file was attempted)
+    if attempted_files > 0 && error_count == attempted_files {
         2
     } else if rewrite_template.is_some() && rewrite_count == 0 {
         1
