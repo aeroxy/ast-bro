@@ -45,25 +45,25 @@ pub fn run(
 
     // Pre-resolve language and compile pattern once when --lang is specified,
     // so we avoid redundant parsing on every file in the loop.
-    let fixed_lang = lang_override.and_then(|l| match parse_lang(l) {
-        Some(l) => Some(l),
-        None => {
-            eprintln!("# note: unknown language '{}'", l);
-            None
-        }
-    });
-    let compiled_pattern: Option<ast_grep_core::Pattern> =
-        if let Some(lang) = fixed_lang {
-            match ast_grep_core::Pattern::try_new(pattern, lang) {
-                Ok(p) => Some(p),
-                Err(e) => {
-                    eprintln!("# note: invalid pattern: {}", e);
-                    None
-                }
+    let (fixed_lang, compiled_pattern) = if let Some(l) = lang_override {
+        let lang = match parse_lang(l) {
+            Some(l) => l,
+            None => {
+                eprintln!("error: unsupported language '{}'", l);
+                return 2;
             }
-        } else {
-            None
         };
+        let pat = match ast_grep_core::Pattern::try_new(pattern, lang) {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("error: invalid pattern: {}", e);
+                return 2;
+            }
+        };
+        (Some(lang), Some(pat))
+    } else {
+        (None, None)
+    };
 
     for path in &files {
         let source = match std::fs::read_to_string(path) {

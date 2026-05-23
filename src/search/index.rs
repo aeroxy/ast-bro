@@ -43,7 +43,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::SystemTime;
 
 /// Current schema version written by all new builds.
@@ -72,14 +72,18 @@ impl IndexPaths {
         let new_dir = repo_root.join(".ast-bro");
         let old_dir = repo_root.join(".ast-outline");
 
-        // Auto-rename .ast-outline/ -> .ast-bro/ on first access
-        if old_dir.exists() && !new_dir.exists() {
-            if let Err(e) = std::fs::rename(&old_dir, &new_dir) {
-                eprintln!("warning: could not rename .ast-outline -> .ast-bro: {e}");
-            } else {
-                eprintln!("info: auto-renamed .ast-outline -> .ast-bro");
+        // Guard with OnceLock so concurrent callers (e.g. parallel MCP tool calls)
+        // don't race on the fs::rename.
+        static MIGRATED: OnceLock<()> = OnceLock::new();
+        MIGRATED.get_or_init(|| {
+            if old_dir.exists() && !new_dir.exists() {
+                if let Err(e) = std::fs::rename(&old_dir, &new_dir) {
+                    eprintln!("warning: could not rename .ast-outline -> .ast-bro: {e}");
+                } else {
+                    eprintln!("info: auto-renamed .ast-outline -> .ast-bro");
+                }
             }
-        }
+        });
 
         let index_dir = new_dir.join("index");
         Self {

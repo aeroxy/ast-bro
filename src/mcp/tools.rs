@@ -759,15 +759,19 @@ fn run_run(args: Value) -> CallResult {
 
     // Validate pattern upfront when language is known, so an invalid
     // pattern fails fast instead of after walking every file.
-    if let Some(ref l) = a.lang {
+    let (fixed_lang, compiled_pattern) = if let Some(ref l) = a.lang {
         let lang = match crate::run::cli::parse_lang(l) {
             Some(l) => l,
             None => return CallResult::Error(format!("unsupported language '{}'", l)),
         };
-        if let Err(e) = ast_grep_core::Pattern::try_new(&a.pattern, lang) {
-            return CallResult::Error(format!("invalid pattern: {}", e));
-        }
-    }
+        let pat = match ast_grep_core::Pattern::try_new(&a.pattern, lang) {
+            Ok(p) => p,
+            Err(e) => return CallResult::Error(format!("invalid pattern: {}", e)),
+        };
+        (Some(lang), Some(pat))
+    } else {
+        (None, None)
+    };
 
     let search_paths = if a.paths.is_empty() {
         vec![PathBuf::from(".")]
@@ -805,15 +809,8 @@ fn run_run(args: Value) -> CallResult {
                 continue;
             },
         };
-        let lang = if let Some(ref l) = a.lang {
-            match crate::run::cli::parse_lang(l) {
-                Some(l) => l,
-                None => {
-                    // Only count as error if explicitly requested
-                    error_count += 1;
-                    continue;
-                },
-            }
+        let lang = if let Some(l) = fixed_lang {
+            l
         } else {
             match crate::run::detect_lang(path) {
                 Some(l) => l,
@@ -823,7 +820,12 @@ fn run_run(args: Value) -> CallResult {
 
         // Search-only mode (no rewrite template)
         if a.rewrite.is_none() {
-            match crate::run::search(&source, lang, &a.pattern) {
+            let result = if let Some(ref compiled) = compiled_pattern {
+                crate::run::search_with_pattern(&source, lang, compiled)
+            } else {
+                crate::run::search(&source, lang, &a.pattern)
+            };
+            match result {
                 Ok(mut matches) => {
                     if !matches.is_empty() {
                         let file_str = path.to_string_lossy().to_string();
@@ -935,7 +937,7 @@ fn run_run(args: Value) -> CallResult {
             output.push_str("No matches found for rewrite.");
         }
         if rewrite_capped {
-            output.push_str(&format!("\n# warning: reached safety cap of {} files; remaining matches were not rewritten.", MCP_REWRITE_MAX_FILES));
+            output.push_str(&format!("\n# warning: reached safety cap of {} files; remaining files were not processed.", MCP_REWRITE_MAX_FILES));
         }
         if error_count > 0 {
             output.push_str(&format!("\n({} files had errors)", error_count));
