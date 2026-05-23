@@ -109,7 +109,7 @@ pub fn run(
                 Ok(Some(new_source)) => {
                     let file_str = path.display().to_string();
                     if write_changes {
-                        match std::fs::write(path, &new_source) {
+                        match super::atomic_write(path, new_source.as_bytes()) {
                             Err(e) => {
                                 if json {
                                     json_rewrites.push(RewriteRecord {

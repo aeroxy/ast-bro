@@ -927,7 +927,7 @@ fn run_run(args: Value) -> CallResult {
                     break;
                 }
                 if a.write {
-                    if let Err(e) = std::fs::write(path, &new_source) {
+                    if let Err(e) = crate::run::atomic_write(path, new_source.as_bytes()) {
                         output.push_str(&format!("{}: write failed: {}\n", file_str, e));
                         error_count += 1;
                         rewrite_records.push(RewriteRecord {
