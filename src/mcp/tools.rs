@@ -1018,6 +1018,7 @@ fn run_run(args: Value) -> CallResult {
     if a.json {
         #[derive(serde::Serialize)]
         struct SearchDoc<'a> {
+            schema: &'static str,
             matches: &'a [crate::run::RunMatch],
             errors: &'a [String],
             error_count: usize,
@@ -1025,6 +1026,7 @@ fn run_run(args: Value) -> CallResult {
             cap_limit: usize,
         }
         let doc = SearchDoc {
+            schema: crate::core::JSON_SCHEMA_RUN,
             matches: &all_matches,
             errors: &search_errors,
             error_count,

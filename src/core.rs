@@ -14,6 +14,7 @@ pub const JSON_SCHEMA_GRAPH: &str = "ast-bro.graph.v1";
 pub const JSON_SCHEMA_DEPS_INDEX: &str = "ast-bro.deps-index.v1";
 pub const JSON_SCHEMA_CALLERS: &str = "ast-bro.callers.v1";
 pub const JSON_SCHEMA_CALLEES: &str = "ast-bro.callees.v1";
+pub const JSON_SCHEMA_RUN: &str = "ast-bro.run.v1";
 /// Unified on-disk cache holding both the file-level dep graph and (lazily)
 /// the symbol-level call graph. Bumped from `graph-index.v1` to `v2` after
 /// the per-file-invalidation work removed `skip_serializing_if` from

@@ -217,6 +217,7 @@ pub fn run(
         let serialized = if rewrite_template.is_some() {
             #[derive(serde::Serialize)]
             struct RewriteDoc<'a> {
+                schema: &'static str,
                 mode: &'static str,
                 dry_run: bool,
                 rewrite_count: usize,
@@ -224,6 +225,7 @@ pub fn run(
                 files: &'a [RewriteRecord],
             }
             let doc = RewriteDoc {
+                schema: crate::core::JSON_SCHEMA_RUN,
                 mode: "rewrite",
                 dry_run: !write_changes,
                 rewrite_count,
@@ -235,10 +237,23 @@ pub fn run(
             } else {
                 serde_json::to_string(&doc)
             }
-        } else if pretty {
-            serde_json::to_string_pretty(&json_matches)
         } else {
-            serde_json::to_string(&json_matches)
+            #[derive(serde::Serialize)]
+            struct SearchDoc<'a> {
+                schema: &'static str,
+                matches: &'a [super::RunMatch],
+                error_count: usize,
+            }
+            let doc = SearchDoc {
+                schema: crate::core::JSON_SCHEMA_RUN,
+                matches: &json_matches,
+                error_count,
+            };
+            if pretty {
+                serde_json::to_string_pretty(&doc)
+            } else {
+                serde_json::to_string(&doc)
+            }
         };
         match serialized {
             Ok(s) => println!("{}", s),
@@ -306,13 +321,17 @@ pub fn line_change_report(path: &Path, old: &str, new: &str) -> String {
                 .or_else(|| change.new_index())
                 .unwrap_or(0)
                 + 1;
+            let line_content = change.to_string();
             out.push_str(&format!(
                 "{}:{}: {}{}",
                 path.display(),
                 display_idx,
                 sign,
-                change
+                line_content
             ));
+            if !line_content.ends_with('\n') {
+                out.push('\n');
+            }
         }
     }
     out

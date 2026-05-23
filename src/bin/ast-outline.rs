@@ -3,7 +3,15 @@ fn main() {
     use std::io::ErrorKind;
     use std::process::{Command, Stdio};
 
-    let res = Command::new("ast-bro")
+    // Try same directory first (e.g. ./target/release/ast-bro), then fall back to PATH.
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.join("ast-bro")));
+    let program = exe_dir
+        .filter(|p| p.exists())
+        .unwrap_or_else(|| "ast-bro".into());
+
+    let res = Command::new(&program)
         .args(args().skip(1))
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
