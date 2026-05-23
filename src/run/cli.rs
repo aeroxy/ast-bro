@@ -79,6 +79,20 @@ pub fn run(
             }
         };
         attempted_files += 1;
+        // Mirror the MCP cap so both run paths refuse to slurp pathological
+        // files (minified bundles, generated data) under source extensions.
+        if let Ok(meta) = std::fs::metadata(path) {
+            if meta.len() > super::RUN_MAX_FILE_BYTES {
+                eprintln!(
+                    "{}: skipped (size {} > cap {})",
+                    path.display(),
+                    meta.len(),
+                    super::RUN_MAX_FILE_BYTES
+                );
+                error_count += 1;
+                continue;
+            }
+        }
         let source = match std::fs::read_to_string(path) {
             Ok(s) => s,
             Err(e) => {

@@ -90,16 +90,33 @@ pub fn rewrite_with_pattern(
     }
 }
 
+/// Per-file byte cap for `ast-bro run` (CLI and MCP). The walker filters
+/// by extension only, so a minified bundle or generated data file under a
+/// source extension would otherwise be read whole into memory. 5 MiB is
+/// generous for real source files and defensive against pathological ones.
+pub const RUN_MAX_FILE_BYTES: u64 = 5 * 1024 * 1024;
+
 /// Crash-safe in-place file replacement: writes to a sibling temp file,
-/// fsyncs it, then renames over the target. On POSIX the rename is atomic;
-/// on Windows std::fs::rename uses `MOVEFILE_REPLACE_EXISTING`. Either way,
-/// an interrupted write can no longer truncate or corrupt the original.
+/// fsyncs it, renames over the target, then fsyncs the parent directory.
+/// On POSIX the rename is atomic; on Windows std::fs::rename uses
+/// `MOVEFILE_REPLACE_EXISTING`. Either way, an interrupted write can no
+/// longer truncate or corrupt the original. The parent-dir fsync (Unix
+/// only) ensures the rename's directory entry survives a crash.
+///
+/// If `path` is a symlink, the symlink's target is rewritten rather than
+/// the link being replaced with a regular file.
 ///
 /// Permissions are best-effort copied from the original before the rename,
 /// since the rename swaps the inode.
 pub fn atomic_write(path: &Path, contents: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
     use std::sync::atomic::{AtomicU64, Ordering};
+
+    // Resolve symlinks so we rewrite the real file rather than destroying
+    // the link with a regular-file rename. If the target doesn't exist yet
+    // (new-file case), canonicalize fails — fall back to the original path.
+    let canonical = std::fs::canonicalize(path).ok();
+    let path: &Path = canonical.as_deref().unwrap_or(path);
 
     let dir = path.parent().ok_or_else(|| {
         std::io::Error::new(
@@ -158,6 +175,19 @@ pub fn atomic_write(path: &Path, contents: &[u8]) -> std::io::Result<()> {
         let _ = std::fs::remove_file(&tmp_path);
         return Err(e);
     }
+
+    // Persist the directory entry so the rename survives a crash. fsync on
+    // a directory FD is the POSIX recipe; on Windows the std API doesn't
+    // expose a portable equivalent and NTFS journals provide implicit
+    // durability for atomic renames. Errors here are non-fatal — the
+    // rename already succeeded.
+    #[cfg(unix)]
+    {
+        if let Ok(dir_file) = std::fs::OpenOptions::new().read(true).open(dir) {
+            let _ = dir_file.sync_all();
+        }
+    }
+
     Ok(())
 }
 
@@ -202,5 +232,24 @@ mod tests {
         let p = dir.path().join("fresh.rs");
         atomic_write(&p, b"hello\n").unwrap();
         assert_eq!(std::fs::read_to_string(&p).unwrap(), "hello\n");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn atomic_write_updates_symlink_target_not_the_link() {
+        let dir = TempDir::new().unwrap();
+        let target = dir.path().join("target.rs");
+        let link = dir.path().join("link.rs");
+        std::fs::write(&target, "old\n").unwrap();
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        atomic_write(&link, b"new\n").unwrap();
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "new\n");
+        assert!(
+            std::fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "symlink should be preserved, not replaced with a regular file",
+        );
     }
 }

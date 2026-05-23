@@ -738,10 +738,9 @@ const MCP_REWRITE_MAX_FILES: usize = 50;
 /// Prevents broad patterns from producing unbounded response sizes.
 const MCP_SEARCH_MAX_MATCHES: usize = 1000;
 
-/// Safety cap: per-file byte limit before reading source into memory.
-/// The walker filters by extension only, so a minified bundle or generated
-/// data file under a source extension would otherwise be slurped whole.
-const MCP_MAX_FILE_BYTES: u64 = 5 * 1024 * 1024;
+/// Per-file byte cap, shared with the CLI path so both enforce the same
+/// 5 MiB ceiling. Source of truth is `crate::run::RUN_MAX_FILE_BYTES`.
+const MCP_MAX_FILE_BYTES: u64 = crate::run::RUN_MAX_FILE_BYTES;
 
 #[derive(Deserialize, Default)]
 struct RunArgs {

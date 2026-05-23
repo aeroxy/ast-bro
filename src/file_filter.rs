@@ -66,6 +66,13 @@ pub fn add_filters(builder: &mut WalkBuilder, repo_root: &Path) {
 /// previous (or current) attempt left the legacy file in place, so the
 /// caller should keep the legacy filename registered as a fallback.
 fn migrate_legacy_ignore_file(repo_root: &Path, new_name: &str, old_name: &str) -> bool {
+    // The walker accepts file paths too (e.g. `ast-bro run -p X a.rs b.rs`);
+    // those flow in here as `repo_root`. `repo_root.join(".ast-bro-ignore")`
+    // on a file path is nonsensical, so skip the migration attempt entirely
+    // — and don't cache the file-path key, since it can't represent a repo.
+    if !repo_root.is_dir() {
+        return false;
+    }
     static STATE: OnceLock<Mutex<HashMap<PathBuf, bool>>> = OnceLock::new();
     let map = STATE.get_or_init(|| Mutex::new(HashMap::new()));
     let mut guard = map.lock().unwrap();
