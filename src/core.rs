@@ -667,6 +667,16 @@ fn _collect_counts(decls: &[Declaration]) -> std::collections::HashMap<&'static 
 fn _render_decl(decl: &Declaration, opts: &MapOptions, indent: usize, out: &mut Vec<String>) {
     use DeclarationKind::*;
 
+    let push_docs = |prefix: &str, lines_out: &mut Vec<String>| {
+        for d in _clip_docs(&decl.docs, opts.max_doc_lines) {
+            lines_out.push(format!(
+                "{}{}",
+                prefix,
+                d.trim_end_matches(&['\r', '\n'][..])
+            ));
+        }
+    };
+
     let is_field = matches!(decl.kind, Field | Property | Event | Indexer);
     if is_field && !opts.include_fields {
         return;
@@ -678,9 +688,7 @@ fn _render_decl(decl: &Declaration, opts: &MapOptions, indent: usize, out: &mut 
     let prefix = "    ".repeat(indent);
 
     if opts.include_docs && !decl.docs.is_empty() && !decl.docs_inside {
-        for d in _clip_docs(&decl.docs, opts.max_doc_lines) {
-            out.push(format!("{}{}", prefix, d));
-        }
+        push_docs(&prefix, out);
     }
 
     let attrs_prefix = if opts.include_attributes && !decl.attrs.is_empty() {
@@ -710,9 +718,7 @@ fn _render_decl(decl: &Declaration, opts: &MapOptions, indent: usize, out: &mut 
 
     if opts.include_docs && !decl.docs.is_empty() && decl.docs_inside {
         let inner_prefix = "    ".repeat(indent + 1);
-        for d in _clip_docs(&decl.docs, opts.max_doc_lines) {
-            out.push(format!("{}{}", inner_prefix, d));
-        }
+        push_docs(&inner_prefix, out);
     }
 
     for child in &decl.children {
