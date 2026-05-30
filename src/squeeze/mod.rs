@@ -62,7 +62,7 @@ static RE_TS: LazyLock<Regex> =
 static RE_COMP: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\[[A-Za-z0-9_-]+\]").unwrap());
 static RE_KEYS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\b[A-Za-z0-9_]+={1,2}").unwrap());
 static RE_NO_TIME: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^#T#\d{2}\.\d{3}\s*").unwrap());
+    LazyLock::new(|| Regex::new(r"^#T#\d{2}(?:\.\d+)?\s*").unwrap());
 
 /// Result of compressing a chunk of log/text.
 pub struct Squeezed {
