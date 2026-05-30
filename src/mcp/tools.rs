@@ -1129,6 +1129,11 @@ fn run_squeeze(args: Value) -> CallResult {
         Ok(v) => v,
         Err(e) => return CallResult::Error(format!("invalid arguments: {}", e)),
     };
+    // Match the CLI's 1-indexed line-number validation even if an MCP client
+    // bypasses the JSON schema's `minimum: 1` constraint.
+    if a.start == Some(0) || a.end == Some(0) {
+        return CallResult::Error("line numbers are 1-indexed (got 0)".to_string());
+    }
     // Explicit single file → read directly, no walk / no file_filter.
     // Non-UTF8 (read_to_string err) surfaces as a tool error rather than
     // squeezing raw bytes.

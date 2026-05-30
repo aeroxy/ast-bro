@@ -741,8 +741,12 @@ pub fn run() {
                 }
                 let text = match std::fs::read_to_string(path) {
                     Ok(t) => t,
-                    Err(_) => {
-                        println!("# note: not valid UTF-8: {}", path.display());
+                    Err(e) => {
+                        if path.is_dir() {
+                            println!("# note: path is a directory: {}", path.display());
+                        } else {
+                            println!("# note: could not read {}: {}", path.display(), e);
+                        }
                         return;
                     }
                 };

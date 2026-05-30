@@ -281,7 +281,7 @@ pub fn render_json(r: &SqueezeReport, pretty: bool) -> String {
     } else {
         serde_json::to_string(&doc)
     };
-    res.unwrap_or_else(|err| format!("{{\"error\":\"{}\"}}", err))
+    res.unwrap_or_else(|err| serde_json::json!({ "error": err.to_string() }).to_string())
 }
 
 #[cfg(test)]

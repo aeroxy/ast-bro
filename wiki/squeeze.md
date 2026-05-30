@@ -35,7 +35,7 @@ The comparison unit is **chars/bytes**, matching `logs-tokenizer` and this repo'
 
 There is exactly one fallback. If the squeezed **body + legend** ends up **larger** than the raw input (tiny inputs, all-unique lines), `squeeze` falls back to emitting the raw text and notes it:
 
-```
+```text
 # app.log  [raw 412B; squeeze would be larger, emitting original]
 ---
 <raw body>
@@ -47,7 +47,7 @@ There is no dual-render, no "show both," no pick-smaller feature: the user ran `
 
 ## Usage
 
-```
+```bash
 sb squeeze <file> [from:to] [--raw] [--json] [--compact]
 ```
 
@@ -58,7 +58,7 @@ sb squeeze <file> [from:to] [--raw] [--json] [--compact]
 
 ### Text output (normal case)
 
-```
+```text
 # app.log  [squeezed 45.0KB → 10.2KB, -77.3%]
 # legend:
 #   #T# = 2026-05-30T11:54:
@@ -71,6 +71,6 @@ sb squeeze <file> [from:to] [--raw] [--json] [--compact]
 
 ### Edge cases
 
-- **Non-UTF8 file** — `read_to_string` fails, so `squeeze` notes `not valid UTF-8` and bails rather than squeezing raw bytes.
+- **Unreadable file** — `read_to_string` failures are surfaced directly: directories note `path is a directory`, and other I/O failures print `could not read ...`.
 - **Range out of bounds** — clamped; a start past EOF yields an empty body plus a note.
 - **Empty / tiny slice** — legend overhead guarantees a loss, so the degenerate floor emits raw.
