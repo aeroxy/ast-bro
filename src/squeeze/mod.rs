@@ -119,8 +119,7 @@ fn to_base62(mut n: usize) -> String {
         n /= RADIX;
     }
     res.reverse();
-    // SAFETY: BASE62 is ASCII, so every pushed byte is valid UTF-8.
-    unsafe { String::from_utf8_unchecked(res) }
+    String::from_utf8(res).expect("BASE62 is valid ASCII")
 }
 
 #[inline]
@@ -426,8 +425,9 @@ impl Compressor {
                         best_savings = savings;
                         best_slice = *slice;
                     } else if savings == best_savings && savings >= BPE_MIN_SAVINGS {
-                        let cand_bytes = slice.iter().flat_map(|&id| id_to_str[id as usize].as_bytes());
-                        let best_bytes = best_slice.iter().flat_map(|&id| id_to_str[id as usize].as_bytes());
+                        let to_bytes = |&id: &u32| id_to_str[id as usize].as_bytes();
+                        let cand_bytes = slice.iter().flat_map(to_bytes);
+                        let best_bytes = best_slice.iter().flat_map(to_bytes);
                         if cand_bytes.cmp(best_bytes) == std::cmp::Ordering::Less {
                             best_slice = *slice;
                         }
