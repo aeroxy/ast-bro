@@ -7,7 +7,7 @@
 3. **`src/deps/`** — file-level dependency graph (`deps`, `reverse-deps`, `cycles`, `graph`) for nine languages. See [deps.md](deps.md).
 4. **`src/calls/`** — symbol-level call graph (`callers`, `callees`) for all 14 languages, with a three-pass resolver (same-file → global symbol table → dep-graph disambiguation). See [calls.md](calls.md).
 5. **`src/search/`** — hybrid BM25 + dense semantic search, plus `find-related`. Cached at `.ast-bro/index/`. See [search.md](search.md).
-6. **`src/squeeze/`** — reversible token compression for **logs/text** (`squeeze`): a ported `logs-tokenizer` pipeline that shrinks repetitive lines and emits a legend so the output round-trips back to the original. Not a code tool — for code, the "compression" is `map` / `digest` / `show`. See [squeeze.md](squeeze.md).
+6. **`src/squeeze/`** — reversible token compression for **logs/text** (`squeeze`): a multi-stage pipeline that shrinks repetitive lines and emits a legend so the output round-trips back to the original. Not a code tool — for code, the "compression" is `map` / `digest` / `show`. See [squeeze.md](squeeze.md).
 
 The dep graph and call graph share one on-disk cache at `.ast-bro/deps/graph.bin` (`UnifiedGraph { deps, calls: Option<CallGraph> }`) and one process-wide `Arc<UnifiedGraph>` registry in `src/graph_cache/` so MCP `tools/call`s reuse a single parsed copy across the whole session.
 

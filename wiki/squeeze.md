@@ -1,10 +1,10 @@
 # Squeeze (log/text compression)
 
-`sb squeeze` compresses repetitive **log/text** content with a *reversible* legend and emits the squeezed form directly. It ports the pure `Compressor` pipeline from `../logs-tokenizer` (`src/core/mod.rs`) verbatim — same stages, same tuning constants — and wraps it in this repo's CLI/MCP conventions. For internals and the design rationale see [refs/plan_tokenizer.md](../refs/plan_tokenizer.md).
+`sb squeeze` compresses repetitive **log/text** content with a *reversible* legend and emits the squeezed form directly. The engine is a self-contained, multi-stage token compressor (`src/squeeze/`) wrapped in this repo's CLI/MCP conventions. (An earlier design had a 7th "tag-sequence macro" stage, but its matcher relies on a `\1` backreference the `regex` crate rejects, so it never fired and was dropped.)
 
 ## When to use it (and when not to)
 
-This is a tool for **logs and text**, not code. `squeeze` keeps the full `logs-tokenizer` pipeline because the user invokes it intentionally on log-like input, where 70–80% of the content is genuinely repetitive (timestamps, component tags, near-identical lines).
+This is a tool for **logs and text**, not code. `squeeze` runs the full compression pipeline because the user invokes it intentionally on log-like input, where 70–80% of the content is genuinely repetitive (timestamps, component tags, near-identical lines).
 
 For **code**, the "compression" is already structural and lives elsewhere — reach for `map` / `digest` / `show` (drop bodies, keep shapes) instead. `squeeze` makes no attempt to compress source code.
 
@@ -18,8 +18,7 @@ The engine runs an ordered set of stages, each replacing a recurring substring o
 4. **Base62 tag names** — `#10#` → `#a#` to shrink tag width.
 5. **BPE** — repeated token sequences → `#n#` (normal) and repeated sequences *of tags* → `!n!` (meta).
 6. **Macro templating** — lines differing by a single tag → `&1=…`, referenced as `&1:C`.
-7. **Tag-sequence macros** — repeated multi-tag runs → macros.
-8. **Dedup** — identical consecutive lines → `… xN`.
+7. **Dedup** — identical consecutive lines → `… xN`.
 
 Tag assignment is **deterministic** (sort by savings, then first-seen), so output is stable and testable.
 
@@ -29,7 +28,7 @@ The **legend** is printed (comment-prefixed) *before* the body so a consumer rea
 
 ## Size proxy: chars/bytes, not tokens
 
-The comparison unit is **chars/bytes**, matching `logs-tokenizer` and this repo's stance (see `src/core.rs`) that token estimates mislead because tokenizers vary. The savings line is always printed — `# squeezed 45.0KB → 10.2KB (-77.3%)` — purely because the number is the satisfying/auditable part, not because any decision depends on it.
+The comparison unit is **chars/bytes**, matching this repo's stance (see `src/core.rs`) that token estimates mislead because tokenizers vary. The savings line is always printed — `# squeezed 45.0KB → 10.2KB (-77.3%)` — purely because the number is the satisfying/auditable part, not because any decision depends on it.
 
 ## The one fallback: the degenerate floor
 

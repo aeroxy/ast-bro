@@ -74,17 +74,17 @@ fn repetitive_log_is_squeezed_with_legend() {
 
     let out = run_ok(&["squeeze", path_str]);
 
-    // §4 text format: a legend block must be present for the squeezed case.
+    // Text format: a legend block must be present for the squeezed case.
     assert!(
         out.contains("# legend:"),
         "expected a legend block in squeezed output:\n{out}"
     );
-    // §4: header advertises the squeezed transition with a savings figure.
+    // Header advertises the squeezed transition with a savings figure.
     assert!(
         out.contains("[squeezed"),
         "expected '[squeezed ...]' header marker:\n{out}"
     );
-    // §4: body is separated from the header/legend by a `---` rule.
+    // Body is separated from the header/legend by a `---` rule.
     assert!(out.contains("---"), "expected '---' separator:\n{out}");
 
     // The whole point: the squeezed emission is smaller than a raw `--raw`
@@ -103,7 +103,7 @@ fn tiny_nonrepetitive_file_falls_back_to_raw() {
     let tmp = tempfile::tempdir().unwrap();
     let path = tmp.path().join("notes.txt");
     // Short, all-unique content: legend overhead would make a squeeze larger,
-    // so the degenerate safety floor (§0, §7) must emit raw instead.
+    // so the degenerate safety floor must emit raw instead.
     let content = "alpha one\nbeta two\ngamma three\n";
     write(&path, content);
     let path_str = path.to_str().unwrap();
@@ -136,7 +136,7 @@ fn json_output_matches_squeeze_schema() {
 
     let out = run_ok(&["squeeze", path_str, "--json"]);
 
-    // §5: must carry the versioned schema id and an `emitted` discriminator.
+    // JSON must carry the versioned schema id and an `emitted` discriminator.
     assert!(
         out.contains("ast-bro.squeeze.v1"),
         "missing JSON schema id:\n{out}"
@@ -195,7 +195,7 @@ fn raw_flag_emits_original_without_legend() {
 
     let out = run_ok(&["squeeze", path_str, "--raw"]);
 
-    // §4: --raw prints a `[raw ...]` header and NO legend / no squeeze claim.
+    // --raw prints a `[raw ...]` header and NO legend / no squeeze claim.
     assert!(out.contains("[raw"), "expected '[raw ...]' header:\n{}", &out[..out.len().min(200)]);
     assert!(
         !out.contains("# legend:"),

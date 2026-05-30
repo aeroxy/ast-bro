@@ -1,9 +1,9 @@
 //! Log/text token compressor — the pure engine behind `sb squeeze`.
 //!
-//! Ported from `../logs-tokenizer/src/core/mod.rs` (a clipboard tool). The
-//! algorithm is unchanged; this module just exposes it as a dependency-light,
-//! I/O-free function and returns the legend as structured `(tag, value)` pairs
-//! instead of a pre-rendered string blob.
+//! A dependency-light, I/O-free function that collapses the repetitive structure
+//! of logs (timestamps, component tags, repeated token and tag runs) into short
+//! tags, returning the legend as structured `(tag, value)` pairs so the output
+//! round-trips back to the original.
 //!
 //! Pipeline (all stages kept — the input is logs, where most content is real):
 //! ```text
@@ -14,19 +14,18 @@
 //!   5a. BPE (normal)              repeated token runs       -> #n#
 //!   5b. BPE (meta)                repeated runs *of tags*   -> !n!
 //!   6. Macro templating           lines differing by 1 tag  -> &n + &n:val
-//!   7. Tag-sequence macros        repeated multi-tag runs   -> &n  (inert*)
 //!   dedup                         identical lines collapse  -> ... xN (lossy)
 //! ```
-//! \* Stage 7 never fires: its matcher relies on a `\1` backreference, which the
-//! `regex` crate rejects — upstream has the identical dead branch. Kept for port
-//! fidelity (see `run_tag_sequence_macro_templating`).
+//! (An earlier design had a 7th "tag-sequence macro" stage, but its matcher
+//! needs a `\1` backreference the `regex` crate rejects, so it never fired and
+//! was dropped rather than carried as dead code.)
 //!
-//! `regex` is the only external crate (already a dependency of this repo). The
-//! upstream tool used `once_cell::Lazy`; here we use `std::sync::LazyLock`.
+//! `regex` is the only external crate (already a dependency of this repo);
+//! `std::sync::LazyLock` holds the one-off compiled patterns.
 //!
 //! ## Determinism
 //! Tag assignment is fully deterministic so output is stable and testable.
-//! Wherever the upstream relied on `HashMap` iteration order to break ties
+//! Anywhere a tie could otherwise fall to `HashMap` iteration order
 //! (frequent-pattern ordering, BPE best-phrase selection, template ordering)
 //! we add an explicit, content-derived tie-breaker. Equal-savings candidates
 //! are resolved by their text (lexicographic), never by hash seed or clock.
@@ -41,7 +40,7 @@ use std::sync::LazyLock;
 const BASE62: &[u8] = b"0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
 const RADIX: usize = 62;
 
-// Tuning parameters for compression (ported verbatim).
+// Tuning parameters for compression.
 const BPE_MAX_ITERATIONS: usize = 100;
 const BPE_MIN_SAVINGS: i32 = 5;
 const MACRO_MIN_COUNT: usize = 4;
@@ -313,7 +312,7 @@ impl Compressor {
 
         let mut sorted: Vec<_> = counts.into_iter().filter(|&(_, c)| c > 1).collect();
         // Deterministic: most-frequent first, ties broken by the pattern text
-        // (the upstream left ties to HashMap order, which is non-deterministic).
+        // (a plain HashMap-order pick would be non-deterministic).
         sorted.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
 
         let mut replacements: HashMap<String, String> = HashMap::with_capacity(sorted.len());
@@ -406,9 +405,9 @@ impl Compressor {
                 }
             }
 
-            // Pick the highest-savings candidate. Determinism: the upstream
-            // iterated `counts` (a HashMap) and kept the first strict maximum,
-            // so equal-savings ties depended on hash order. We instead resolve
+            // Pick the highest-savings candidate. Determinism: iterating `counts`
+            // (a HashMap) and keeping the first strict maximum would make
+            // equal-savings ties depend on hash order, so we instead resolve
             // ties by the candidate's rendered phrase (lexicographic), which is
             // stable across runs.
             let mut best_slice: &[u32] = &[];
@@ -504,7 +503,7 @@ impl Compressor {
             .collect();
 
         // Deterministic: longest template first, then most matches, then the
-        // template text (final tie-break the upstream lacked).
+        // template text (a final, fully-deterministic tie-break).
         scores.sort_by(|a, b| {
             b.0.len()
                 .cmp(&a.0.len())
@@ -553,65 +552,6 @@ impl Compressor {
         lines.join("\n")
     }
 
-    /// NOTE: this stage is currently **inert** — faithfully so, matching upstream.
-    /// The per-template matcher (`re_str` below) uses a `\1` backreference, which
-    /// the standard `regex` crate does not support, so `Regex::new` returns `Err`
-    /// and the `if let Ok(re)` swallows it: no `&n` macro is ever emitted here.
-    /// `../logs-tokenizer` has the identical dead branch. Kept for port fidelity;
-    /// making it fire would require a backreference-free rewrite of `re_str`.
-    fn run_tag_sequence_macro_templating(&mut self, mut text: String) -> String {
-        let re_seq =
-            Regex::new(r"(?:(?:#(?:T|[0-9a-zA-Z]+)#|![0-9a-zA-Z]+!)[ \t]*){2,}").unwrap();
-        let mut templates: HashMap<String, usize> = HashMap::new();
-
-        for mat in re_seq.find_iter(&text) {
-            let seq = mat.as_str().trim_end();
-            for tag_mat in RE_TAGS.find_iter(seq) {
-                let mut template = seq.to_string();
-                template.replace_range(tag_mat.start()..tag_mat.end(), "@");
-                *templates.entry(template).or_insert(0) += 1;
-            }
-        }
-
-        let mut scores: Vec<_> = templates
-            .iter()
-            .map(|(t, &c)| (t.clone(), c, calc_savings(c, t.len())))
-            .filter(|&(_, count, sav)| sav > 0 || count >= MACRO_MIN_COUNT)
-            .collect();
-
-        // Deterministic: longest template, then count, then text.
-        scores.sort_by(|a, b| {
-            b.0.len()
-                .cmp(&a.0.len())
-                .then(b.1.cmp(&a.1))
-                .then_with(|| a.0.cmp(&b.0))
-        });
-
-        for (template, _, _) in scores {
-            let parts: Vec<&str> = template.split('@').collect();
-            if parts.len() != 2 {
-                continue;
-            }
-
-            let re_str = format!(
-                r"{}([#!])([0-9a-zA-Z]+)\1{}",
-                regex::escape(parts[0]),
-                regex::escape(parts[1])
-            );
-            if let Ok(re) = Regex::new(&re_str) {
-                let count = re.find_iter(&text).count();
-                if calc_savings(count, template.len()) > 0 || count >= MACRO_MIN_COUNT {
-                    let macro_tag = self.get_macro_token();
-                    self.legend.push(format!("{} = {}", macro_tag, template));
-                    text = re
-                        .replace_all(&text, format!("{}:$1$2$1", macro_tag).as_str())
-                        .into_owned();
-                }
-            }
-        }
-        text
-    }
-
     fn deduplicate_lines(&self, text: &str) -> Vec<String> {
         let (mut final_lines, mut dup_count) = (Vec::new(), 0);
         let mut last_line: Cow<'_, str> = Cow::Borrowed("");
@@ -641,7 +581,7 @@ impl Compressor {
 
     /// Run the full pipeline. Returns the compressed *body* only — the legend is
     /// accumulated on `self.legend` and exposed separately by `squeeze()`.
-    /// (The upstream prepended a `--- LEGEND ---` / `--- LOGS ---` block; here
+    /// (Rather than prepending a `--- LEGEND ---` / `--- LOGS ---` text block,
     /// the caller decides how to present the legend.)
     fn compress(&mut self, mut text: String) -> String {
         if text.trim().is_empty() {
@@ -654,8 +594,8 @@ impl Compressor {
         text = RE_ZEROS_4.replace_all(&text, "${1}${2}").into_owned();
 
         // Most-frequent ISO8601 prefix -> #T#. Determinism: when two prefixes
-        // tie on frequency, prefer the lexicographically smaller (the upstream
-        // `max_by_key` kept an arbitrary one).
+        // tie on frequency, prefer the lexicographically smaller (a bare
+        // `max_by_key` would keep an arbitrary one).
         if let Some(best_ts) = RE_TS
             .find_iter(&text)
             .fold(HashMap::new(), |mut acc, m| {
@@ -676,7 +616,6 @@ impl Compressor {
         text = self.run_bpe(text, BPE_MAX_ITERATIONS, NormalBpe);
         text = self.run_bpe(text, BPE_MAX_ITERATIONS, MetaBpe);
         text = self.run_macro_templating(text);
-        text = self.run_tag_sequence_macro_templating(text);
 
         self.deduplicate_lines(&text).join("\n")
     }
@@ -692,7 +631,7 @@ mod tests {
     /// entries are template-based (`@` placeholder + `&n:val` reference); all
     /// others are plain string substitutions.
     ///
-    /// This reverses stages 2-7. It cannot recover the two intentionally lossy
+    /// This reverses stages 2-6. It cannot recover the two intentionally lossy
     /// stages (leading-zero trim, line dedup), so the round-trip samples below
     /// are constructed to avoid triggering those.
     fn expand(body: &str, legend: &[(String, String)]) -> String {
@@ -700,11 +639,10 @@ mod tests {
         for (tag, value) in legend.iter().rev() {
             if tag.starts_with('&') {
                 // Macro: `&n:CAPTURE` -> `value` with `@` substituted by CAPTURE.
-                // Both macro stages emit a single tag as the capture
-                // (`process_templates` replaces the whole line with `&n:<tag>`;
-                // the tag-sequence stage emits `&n:#X#` inline). So CAPTURE is
-                // exactly one `#…#` or `!…!` token. We match the macro tag plus
-                // its colon plus that one token.
+                // The macro-templating stage (`process_templates`) replaces a
+                // whole line with `&n:<tag>`, so CAPTURE is exactly one `#…#` or
+                // `!…!` token. We match the macro tag plus its colon plus that
+                // one token.
                 let re = Regex::new(&format!(
                     r"{}:(#(?:T|[0-9a-zA-Z]+)#|![0-9a-zA-Z]+!)",
                     regex::escape(tag)

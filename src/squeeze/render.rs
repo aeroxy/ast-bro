@@ -5,11 +5,11 @@
 //!
 //! 1. Call [`crate::squeeze::squeeze`] on the (already line-sliced) `raw` text.
 //! 2. Assemble the squeezed output as `legend block + body` and measure it in bytes.
-//! 3. Apply the **degenerate floor** (§7 of the plan): if `--raw` was requested, OR
-//!    the squeezed total (legend block **and** its `# legend:` marker **included**)
-//!    is `>=` the raw byte length, emit the raw input instead. Every squeezed-only
-//!    byte MUST be counted or the floor lies about being smaller.
-//! 4. Format as text (§4) or JSON (§5).
+//! 3. Apply the **degenerate floor**: if `--raw` was requested, OR the squeezed
+//!    total (legend block **and** its `# legend:` marker **included**) is `>=` the
+//!    raw byte length, emit the raw input instead. Every squeezed-only byte MUST
+//!    be counted or the floor lies about being smaller.
+//! 4. Format as text or JSON.
 
 use colored::Colorize;
 use serde::Serialize;
@@ -116,7 +116,7 @@ fn decide(r: &SqueezeReport) -> Emit {
 }
 
 /// Human-readable byte size: `412B`, `45.0KB`, `1.2MB`. Decimal (1000) units,
-/// matching the plan's examples (`45.0KB → 10.2KB`).
+/// e.g. `45.0KB → 10.2KB`.
 fn fmt_bytes(n: usize) -> String {
     const KB: f64 = 1000.0;
     const MB: f64 = 1000.0 * 1000.0;
@@ -152,37 +152,18 @@ pub fn slice_lines(text: &str, range: Option<(usize, usize)>) -> String {
         None => return text.to_string(),
         Some(r) => r,
     };
-    // Normalize: clamp start to >= 1; ensure start <= end.
     let start = start.max(1);
     if end < start {
         return String::new();
     }
 
-    let total = text.len();
-    let mut out = String::new();
-    let mut line_no = 0usize;
-    let mut idx = 0usize;
-
-    // Walk the byte offsets of each line (content + its '\n' if present).
-    while idx < total {
-        line_no += 1;
-        let rel = text[idx..].find('\n');
-        let line_end = match rel {
-            Some(off) => idx + off + 1, // include the '\n'
-            None => total,              // last line, no trailing newline
-        };
-        if line_no >= start && line_no <= end {
-            out.push_str(&text[idx..line_end]);
-        }
-        if line_no > end {
-            break;
-        }
-        idx = line_end;
-    }
-    out
+    text.split_inclusive('\n')
+        .skip(start - 1)
+        .take(end - start + 1)
+        .collect()
 }
 
-/// Text rendering (§4): muted-truecolor header, then the comment-prefixed
+/// Text rendering: muted-truecolor header, then the comment-prefixed
 /// legend, then a `---` separator, then the body.
 pub fn render_text(r: &SqueezeReport) -> String {
     let e = decide(r);
@@ -228,7 +209,7 @@ pub fn render_text(r: &SqueezeReport) -> String {
     out
 }
 
-/// JSON document for `ast-bro.squeeze.v1` (§5).
+/// JSON document for `ast-bro.squeeze.v1`.
 #[derive(Serialize)]
 struct JsonSqueezeDoc<'a> {
     schema: &'static str,
@@ -254,7 +235,7 @@ struct JsonLegendEntry<'a> {
     value: &'a str,
 }
 
-/// JSON rendering (§5). `pretty = !compact`. Legend always present (empty when
+/// JSON rendering. `pretty = !compact`. Legend always present (empty when
 /// emitting raw). `savings_pct` rounded to one decimal to match the text line.
 pub fn render_json(r: &SqueezeReport, pretty: bool) -> String {
     let e = decide(r);
