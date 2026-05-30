@@ -16,6 +16,7 @@ mod mcp;
 mod project_root;
 mod search;
 mod run;
+mod squeeze;
 mod surface;
 
 use crate::core::{DigestOptions, MapOptions, ParseResult};
@@ -62,6 +63,28 @@ enum Commands {
         symbol: String,
         #[arg(num_args = 0..)]
         others: Vec<String>,
+        /// Emit output as JSON instead of text
+        #[arg(long)]
+        json: bool,
+        /// With --json: emit compact (single-line) JSON
+        #[arg(long)]
+        compact: bool,
+    },
+    /// Compress repetitive log/text into a smaller, reversible form with a legend.
+    ///
+    /// For **logs and text**, not code — for code use `map` / `digest` / `show`.
+    /// Shrinks repeated lines, tags, timestamps and token sequences; prints a legend
+    /// so the original is recoverable. Falls back to the raw input when squeezing
+    /// would make it larger.
+    Squeeze {
+        /// Path to the log/text file to read.
+        path: PathBuf,
+        /// Optional 1-indexed inclusive line range: `N`, `A:B`, `A:`, or `:B`.
+        #[arg(value_parser = parse_line_range)]
+        range: Option<LineRange>,
+        /// Skip compression — emit the raw text with a header (for diffing/inspecting).
+        #[arg(long)]
+        raw: bool,
         /// Emit output as JSON instead of text
         #[arg(long)]
         json: bool,
@@ -412,6 +435,61 @@ pub(crate) fn parse_file(path: &Path) -> Option<ParseResult> {
     crate::main_helpers::parse_file_for_hook(path)
 }
 
+/// A 1-indexed, inclusive line range for `squeeze`. Either bound may be open:
+/// `start` defaults to line 1, `end` defaults to EOF. Maps cleanly to the
+/// `Option<(usize, usize)>` the squeeze renderer expects via [`LineRange::resolve`].
+#[derive(Clone, Debug)]
+pub struct LineRange {
+    pub start: Option<usize>,
+    pub end: Option<usize>,
+}
+
+impl LineRange {
+    /// Collapse to the `(start, end)` pair the report uses, filling open bounds
+    /// with line 1 / `usize::MAX` (the slicer clamps `end` to the real EOF).
+    fn resolve(&self) -> (usize, usize) {
+        (self.start.unwrap_or(1), self.end.unwrap_or(usize::MAX))
+    }
+}
+
+/// Clap value parser for `squeeze`'s optional range argument. Accepts:
+/// `N` (single line), `A:B` (inclusive), `A:` (A to EOF), `:B` (start to B).
+/// All bounds are 1-indexed; `0` and `A > B` are rejected. Clamping to the
+/// file's real line count happens later in the slicer.
+fn parse_line_range(s: &str) -> Result<LineRange, String> {
+    let parse_bound = |part: &str| -> Result<Option<usize>, String> {
+        if part.is_empty() {
+            return Ok(None);
+        }
+        match part.parse::<usize>() {
+            Ok(0) => Err("line numbers are 1-indexed (got 0)".to_string()),
+            Ok(n) => Ok(Some(n)),
+            Err(_) => Err(format!("invalid line number: {part:?}")),
+        }
+    };
+
+    let range = match s.split_once(':') {
+        // `A:B`, `A:`, `:B`, or `:`
+        Some((a, b)) => LineRange {
+            start: parse_bound(a)?,
+            end: parse_bound(b)?,
+        },
+        // `N` — single line, both bounds equal
+        None => {
+            let n = parse_bound(s)?;
+            LineRange { start: n, end: n }
+        }
+    };
+
+    if let (Some(start), Some(end)) = (range.start, range.end) {
+        if start > end {
+            return Err(format!("range start {start} is after end {end}"));
+        }
+    }
+
+    Ok(range)
+}
+
 /// Parse `<FILE>:<LINE>` into the two parts. Returns `None` if there's no
 /// colon or the suffix doesn't parse as a u32. Used by `find-related`.
 fn parse_file_line(s: &str) -> Option<(String, u32)> {
@@ -648,6 +726,39 @@ pub fn run() {
                         "# note: unsupported file type for `show`: {}",
                         path.display()
                     );
+                }
+            }
+            Commands::Squeeze {
+                path,
+                range,
+                raw,
+                json,
+                compact,
+            } => {
+                if !path.exists() {
+                    println!("# note: path not found: {}", path.display());
+                    return;
+                }
+                let text = match std::fs::read_to_string(path) {
+                    Ok(t) => t,
+                    Err(_) => {
+                        println!("# note: not valid UTF-8: {}", path.display());
+                        return;
+                    }
+                };
+                let resolved: Option<(usize, usize)> = range.as_ref().map(LineRange::resolve);
+                let sliced = crate::squeeze::render::slice_lines(&text, resolved);
+                let path_str = path.display().to_string();
+                let report = crate::squeeze::render::SqueezeReport {
+                    path: &path_str,
+                    range: resolved,
+                    raw: &sliced,
+                    raw_requested: *raw,
+                };
+                if *json {
+                    println!("{}", crate::squeeze::render::render_json(&report, !(*compact)));
+                } else {
+                    println!("{}", crate::squeeze::render::render_text(&report));
                 }
             }
             Commands::Digest {

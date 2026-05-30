@@ -21,6 +21,7 @@ Commands:
   search        Hybrid BM25 + dense semantic search over the repo
   find-related  Find chunks semantically similar to a given file:line
   surface       True public API surface — resolves `pub use` / `__all__` re-exports
+  squeeze       Compress repetitive log/text with a reversible legend
   deps          Forward import-graph traversal: what does this file import (transitively)?
   reverse-deps  Reverse import-graph: who imports this file (transitively)?
   cycles        Find import cycles via Tarjan SCC

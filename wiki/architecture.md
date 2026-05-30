@@ -1,16 +1,17 @@
 # Architecture
 
-`ast-bro` is a fast, structurally-aware code-navigation toolkit. It started as a "shape extractor" (signatures with line ranges, no method bodies) and has grown into five orthogonal subsystems sharing one binary, one filter pipeline, and one walk infrastructure:
+`ast-bro` is a fast, structurally-aware code-navigation toolkit. It started as a "shape extractor" (signatures with line ranges, no method bodies) and has grown into six orthogonal subsystems sharing one binary, one filter pipeline, and one walk infrastructure:
 
 1. **`src/adapters/` + `src/core.rs`** — language adapters parse files into a shared `Declaration` IR; renderers turn that into `map` / `digest` / `show` / `implements` output.
 2. **`src/surface/`** — resolves the *true public API* of a package (`pub use`, `__all__`, TypeScript barrels, Scala `export`) instead of just listing every public item per file.
 3. **`src/deps/`** — file-level dependency graph (`deps`, `reverse-deps`, `cycles`, `graph`) for nine languages. See [deps.md](deps.md).
 4. **`src/calls/`** — symbol-level call graph (`callers`, `callees`) for all 14 languages, with a three-pass resolver (same-file → global symbol table → dep-graph disambiguation). See [calls.md](calls.md).
 5. **`src/search/`** — hybrid BM25 + dense semantic search, plus `find-related`. Cached at `.ast-bro/index/`. See [search.md](search.md).
+6. **`src/squeeze/`** — reversible token compression for **logs/text** (`squeeze`): a ported `logs-tokenizer` pipeline that shrinks repetitive lines and emits a legend so the output round-trips back to the original. Not a code tool — for code, the "compression" is `map` / `digest` / `show`. See [squeeze.md](squeeze.md).
 
 The dep graph and call graph share one on-disk cache at `.ast-bro/deps/graph.bin` (`UnifiedGraph { deps, calls: Option<CallGraph> }`) and one process-wide `Arc<UnifiedGraph>` registry in `src/graph_cache/` so MCP `tools/call`s reuse a single parsed copy across the whole session.
 
-It is written natively in Rust, relying heavily on the [tree-sitter](https://tree-sitter.github.io/tree-sitter/) parsing framework via the excellent [`ast-grep`](https://ast-grep.github.io/) ecosystem bindings, achieving incredibly fast speeds while still taking advantage of `rayon` for massive multithreading across directories. The five subsystems all share `src/file_filter.rs` for what gets walked (see [file-filtering.md](file-filtering.md)) — adding a feature in one subsystem doesn't change what files the others see.
+It is written natively in Rust, relying heavily on the [tree-sitter](https://tree-sitter.github.io/tree-sitter/) parsing framework via the excellent [`ast-grep`](https://ast-grep.github.io/) ecosystem bindings, achieving incredibly fast speeds while still taking advantage of `rayon` for massive multithreading across directories. The five walking subsystems all share `src/file_filter.rs` for what gets walked (see [file-filtering.md](file-filtering.md)) — adding a feature in one subsystem doesn't change what files the others see. (`squeeze` is the exception: it reads one explicit file path directly, so it neither walks nor touches the filter pipeline.)
 
 ## Core Flow (shape commands)
 
@@ -36,7 +37,7 @@ Every operation is an explicit subcommand — there's no implicit-default form. 
 
 - **Transport**: line-delimited JSON-RPC 2.0 on stdin/stdout, fully synchronous — no tokio, no extra dependencies. The cost is ~600 KB of binary (~1%) and zero overhead on the regular CLI commands, since none of the MCP code runs unless you invoke the `mcp` subcommand.
 - **`src/mcp/protocol.rs`**: serde types for `Request`/`Response`/`RpcError` and the standard JSON-RPC error codes.
-- **`src/mcp/tools.rs`**: declares fourteen tool schemas (`map`, `digest`, `show`, `implements`, `callers`, `callees`, `surface`, `deps`, `reverse_deps`, `cycles`, `graph`, `search`, `find_related`, `index`) and dispatches `tools/call` into the existing `core::render_*` / `calls::*` / `surface::*` / `deps::*` / `search::*` functions. Each tool maps 1:1 to a CLI subcommand and reuses its render logic byte-for-byte, so the JSON schemas are shared with the CLI's `--json` output.
+- **`src/mcp/tools.rs`**: declares fifteen tool schemas (`map`, `digest`, `show`, `implements`, `callers`, `callees`, `surface`, `squeeze`, `deps`, `reverse_deps`, `cycles`, `graph`, `search`, `find_related`, `index`) and dispatches `tools/call` into the existing `core::render_*` / `calls::*` / `surface::*` / `deps::*` / `search::*` functions. Each tool maps 1:1 to a CLI subcommand and reuses its render logic byte-for-byte, so the JSON schemas are shared with the CLI's `--json` output.
 - **`src/mcp/mod.rs`**: read loop, method routing (`initialize`, `ping`, `tools/list`, `tools/call`, `resources/list`, `prompts/list`), and panic-safe tool dispatch (panics are surfaced as `-32603 internal error` instead of taking the server down).
 
 Tools are exposed in their text form by default — that's what the agent prompt is built around — with `json: true` available for any client that wants the structured payload.

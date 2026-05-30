@@ -257,6 +257,21 @@ pub fn list() -> Value {
                     },
                     "required": ["pattern"]
                 }
+            },
+            {
+                "name": "squeeze",
+                "description": "Compress repetitive log/text with a reversible legend (logs, not code).",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "path":  { "type": "string",  "description": "Path to the log/text file to read." },
+                        "start": { "type": "integer", "description": "1-indexed inclusive start line of the slice.", "minimum": 1 },
+                        "end":   { "type": "integer", "description": "1-indexed inclusive end line of the slice.", "minimum": 1 },
+                        "raw":   { "type": "boolean", "description": "Skip compression and emit the raw text." },
+                        "json":  { "type": "boolean", "description": "Return JSON (schema `ast-bro.squeeze.v1`) instead of text." }
+                    },
+                    "required": ["path"]
+                }
             }
         ]
     })
@@ -286,6 +301,7 @@ pub fn call(name: &str, args: Value) -> CallResult {
         "callers"      => run_callers(args),
         "callees"      => run_callees(args),
         "run"          => run_run(args),
+        "squeeze"      => run_squeeze(args),
         other => CallResult::Error(format!("unknown tool: {}", other)),
     }
 }
@@ -1094,5 +1110,57 @@ fn run_run(args: Value) -> CallResult {
             output.push_str(&format!("\n# warning: reached safety cap of {} matches; remaining files were not processed.", MCP_SEARCH_MAX_MATCHES));
         }
         CallResult::Text(output)
+    }
+}
+
+// ---- squeeze (log/text compression with a reversible legend) ----
+
+#[derive(Deserialize)]
+struct SqueezeArgs {
+    path: PathBuf,
+    #[serde(default)] start: Option<usize>,
+    #[serde(default)] end: Option<usize>,
+    #[serde(default)] raw: bool,
+    #[serde(default)] json: bool,
+}
+
+fn run_squeeze(args: Value) -> CallResult {
+    let a: SqueezeArgs = match serde_json::from_value(args) {
+        Ok(v) => v,
+        Err(e) => return CallResult::Error(format!("invalid arguments: {}", e)),
+    };
+    // Explicit single file → read directly, no walk / no file_filter.
+    // Non-UTF8 (read_to_string err) surfaces as a tool error rather than
+    // squeezing raw bytes.
+    let text = match std::fs::read_to_string(&a.path) {
+        Ok(s) => s,
+        Err(e) => return CallResult::Error(format!("could not read {}: {}", a.path.display(), e)),
+    };
+    // Build the 1-indexed inclusive range. Both bounds absent → None (whole
+    // file). A partial bound defaults the other end to the file's natural
+    // extent (start→1, end→usize::MAX), letting slice_lines clamp.
+    let range: Option<(usize, usize)> = match (a.start, a.end) {
+        (None, None) => None,
+        (s, e) => Some((s.unwrap_or(1), e.unwrap_or(usize::MAX))),
+    };
+    // Match the CLI's `parse_line_range` validation so both front-ends agree on
+    // what an invalid range is (rather than silently returning an empty slice).
+    if let (Some(s), Some(e)) = (a.start, a.end) {
+        if s > e {
+            return CallResult::Error(format!("range start {} is after end {}", s, e));
+        }
+    }
+    let sliced = crate::squeeze::render::slice_lines(&text, range);
+    let path_str = a.path.to_string_lossy();
+    let report = crate::squeeze::render::SqueezeReport {
+        path: &path_str,
+        range,
+        raw: &sliced,
+        raw_requested: a.raw,
+    };
+    if a.json {
+        CallResult::Text(crate::squeeze::render::render_json(&report, true))
+    } else {
+        CallResult::Text(crate::squeeze::render::render_text(&report))
     }
 }

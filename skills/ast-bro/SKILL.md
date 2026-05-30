@@ -1,6 +1,6 @@
 ---
 name: ast-bro
-description: AST-based code-navigation toolkit for source files. Surface the shape of a file (signatures with line numbers, no method bodies), the true public API of a package, the dependency graph between files, the call graph between symbols, and search the repo by symbol or behaviour.
+description: AST-based code-navigation toolkit for source files. Surface the shape of a file (signatures with line numbers, no method bodies), the true public API of a package, the dependency graph between files, the call graph between symbols, search the repo by symbol or behaviour, and squeeze repetitive logs/text into a smaller, reversible form.
 user-invocable: true
 ---
 
@@ -30,6 +30,7 @@ Commands:
   callees       What does this symbol call? — AST-accurate forward call traversal
   index         Build, refresh, or inspect the per-repo search index
   run           AST-aware search and rewrite using pattern matching with metavariables
+  squeeze       Compress repetitive log/text with a reversible legend
 
 Each command has `--json` for stable schemas and `--compact` for single-line JSON. Pass an unknown flag or no command and the help text prints automatically — there's no "default" command, every operation is explicit.
 
@@ -64,8 +65,11 @@ Stop at the step that answers the question:
 
 10. Find or rewrite by AST pattern — `sb run -p '<pattern>'`: structural search with metavariables (`$VAR`, `$$$` for splats). Add `-r '<rewrite>'` for a dry-run diff, or `-r '<rewrite>' --write` to apply in-place. Pass `--lang <lang>` to pre-compile the pattern (faster across many files; also fails fast on an invalid pattern). Use when you need a structural shape (`foo($$$)` regardless of args) rather than a text match.
 
+11. Compress a repetitive **log/text** file — `sb squeeze <file> [from:to]`: replaces repeated timestamps, tags, and token runs with short tags and prints a reversible legend, so a noisy log costs far fewer tokens to paste. This is for **logs/text, not code** — for code use `map` / `digest` / `show`. Auto-falls back to the raw text when squeezing would be larger. `--raw` skips compression; `--json` emits `ast-bro.squeeze.v1`.
+
 Path / argument expectations:
 - `deps`, `reverse-deps` → expect a file path
 - `graph`, `cycles` → expect a directory (repo root)
 - `callers`, `callees` → expect a symbol name (function or type), not a path
 - `run` → expects a `-p <pattern>` flag, optionally `-r <rewrite>` and `--write`
+- `squeeze` → expects a file path, optionally a `from:to` line range
