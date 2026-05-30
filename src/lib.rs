@@ -446,10 +446,21 @@ pub struct LineRange {
 
 impl LineRange {
     /// Collapse to the `(start, end)` pair the report uses, filling open bounds
-    /// with line 1 / `usize::MAX` (the slicer clamps `end` to the real EOF).
-    fn resolve(&self) -> (usize, usize) {
-        (self.start.unwrap_or(1), self.end.unwrap_or(usize::MAX))
+    /// with line 1 / EOF and clamping `end` to the real line count so JSON
+    /// consumers never see an out-of-range sentinel like `usize::MAX`.
+    fn resolve(&self, line_count: usize) -> (usize, usize) {
+        clamp_line_range(self.start.unwrap_or(1), self.end, line_count)
     }
+}
+
+/// Clamp a 1-indexed inclusive line range to a file's real line count.
+pub(crate) fn clamp_line_range(
+    start: usize,
+    end: Option<usize>,
+    line_count: usize,
+) -> (usize, usize) {
+    let end = end.unwrap_or(line_count).min(line_count).max(start);
+    (start, end)
 }
 
 /// Clap value parser for `squeeze`'s optional range argument. Accepts:
@@ -750,7 +761,9 @@ pub fn run() {
                         return;
                     }
                 };
-                let resolved: Option<(usize, usize)> = range.as_ref().map(LineRange::resolve);
+                let line_count = text.lines().count();
+                let resolved: Option<(usize, usize)> =
+                    range.as_ref().map(|r| r.resolve(line_count));
                 let sliced = crate::squeeze::render::slice_lines(&text, resolved);
                 let path_str = path.display().to_string();
                 let report = crate::squeeze::render::SqueezeReport {

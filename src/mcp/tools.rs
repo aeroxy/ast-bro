@@ -1141,12 +1141,13 @@ fn run_squeeze(args: Value) -> CallResult {
         Ok(s) => s,
         Err(e) => return CallResult::Error(format!("could not read {}: {}", a.path.display(), e)),
     };
+    let line_count = text.lines().count();
     // Build the 1-indexed inclusive range. Both bounds absent → None (whole
     // file). A partial bound defaults the other end to the file's natural
-    // extent (start→1, end→usize::MAX), letting slice_lines clamp.
+    // extent (start→1, end→EOF), clamped before we serialize the report.
     let range: Option<(usize, usize)> = match (a.start, a.end) {
         (None, None) => None,
-        (s, e) => Some((s.unwrap_or(1), e.unwrap_or(usize::MAX))),
+        (s, e) => Some(crate::clamp_line_range(s.unwrap_or(1), e, line_count)),
     };
     // Match the CLI's `parse_line_range` validation so both front-ends agree on
     // what an invalid range is (rather than silently returning an empty slice).

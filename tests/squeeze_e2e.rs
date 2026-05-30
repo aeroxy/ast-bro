@@ -237,3 +237,22 @@ fn line_range_limits_considered_lines() {
     assert!(!out.contains("LINE_ALPHA"), "line 1 should be excluded by range 2:4:\n{out}");
     assert!(!out.contains("LINE_ECHO"), "line 5 should be excluded by range 2:4:\n{out}");
 }
+
+#[test]
+fn open_ended_json_range_clamps_end_to_eof() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("open-ended.log");
+    write(&path, "ONE\nTWO\nTHREE\n");
+    let path_str = path.to_str().unwrap();
+
+    let out = run_ok(&["squeeze", path_str, "2:", "--json"]);
+    let v: serde_json::Value =
+        serde_json::from_str(&out).unwrap_or_else(|e| panic!("stdout is not valid JSON: {e}\n{out}"));
+    let range = v
+        .get("range")
+        .and_then(|r| r.as_object())
+        .unwrap_or_else(|| panic!("expected object range in JSON:\n{out}"));
+
+    assert_eq!(range.get("start").and_then(|n| n.as_u64()), Some(2));
+    assert_eq!(range.get("end").and_then(|n| n.as_u64()), Some(3));
+}

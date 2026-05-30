@@ -34,6 +34,7 @@
 pub mod render;
 
 use regex::Regex;
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::LazyLock;
 
@@ -316,11 +317,27 @@ impl Compressor {
         // (the upstream left ties to HashMap order, which is non-deterministic).
         sorted.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
 
-        for (pat, _) in sorted {
+        let mut replacements: HashMap<String, String> = HashMap::with_capacity(sorted.len());
+        for (pat, _) in &sorted {
             let token = self.get_var_token();
-            *text = text.replace(&pat, &token);
             self.legend.push(format!("{} = {}", token, pat));
+            replacements.insert(pat.clone(), token);
         }
+
+        let mut rewritten = String::with_capacity(text.len());
+        let mut last_end = 0;
+        for mat in re.find_iter(text) {
+            rewritten.push_str(&text[last_end..mat.start()]);
+            let matched = mat.as_str();
+            if let Some(token) = replacements.get(matched) {
+                rewritten.push_str(token);
+            } else {
+                rewritten.push_str(matched);
+            }
+            last_end = mat.end();
+        }
+        rewritten.push_str(&text[last_end..]);
+        *text = rewritten;
     }
 
     fn run_bpe<S: BpeStrategy>(&mut self, text: String, max_iter: usize, strategy: S) -> String {
@@ -395,8 +412,8 @@ impl Compressor {
             // so equal-savings ties depended on hash order. We instead resolve
             // ties by the candidate's rendered phrase (lexicographic), which is
             // stable across runs.
-            let (mut best_slice, mut best_savings): (&[u32], i32) = (&[][..], 0);
-            let mut best_phrase: Option<String> = None;
+            let mut best_slice: &[u32] = &[];
+            let mut best_savings = 0;
             for (slice, &count) in &counts {
                 if count > 1 {
                     let phrase_len: usize =
@@ -408,18 +425,10 @@ impl Compressor {
                     if savings > best_savings {
                         best_savings = savings;
                         best_slice = *slice;
-                        best_phrase = None; // recomputed lazily on tie below
                     } else if savings == best_savings && savings >= BPE_MIN_SAVINGS {
-                        let cand: String =
-                            slice.iter().map(|&id| id_to_str[id as usize].as_str()).collect();
-                        let cur = best_phrase.get_or_insert_with(|| {
-                            best_slice
-                                .iter()
-                                .map(|&id| id_to_str[id as usize].as_str())
-                                .collect()
-                        });
-                        if &cand < cur {
-                            *cur = cand;
+                        let cand_bytes = slice.iter().flat_map(|&id| id_to_str[id as usize].as_bytes());
+                        let best_bytes = best_slice.iter().flat_map(|&id| id_to_str[id as usize].as_bytes());
+                        if cand_bytes.cmp(best_bytes) == std::cmp::Ordering::Less {
                             best_slice = *slice;
                         }
                     }
@@ -604,13 +613,14 @@ impl Compressor {
     }
 
     fn deduplicate_lines(&self, text: &str) -> Vec<String> {
-        let (mut final_lines, mut dup_count, mut last_line) = (Vec::new(), 0, String::new());
+        let (mut final_lines, mut dup_count) = (Vec::new(), 0);
+        let mut last_line: Cow<'_, str> = Cow::Borrowed("");
         for line in text.lines() {
             if line.trim().is_empty() {
                 continue;
             }
 
-            let line_no_time = RE_NO_TIME.replace(line, "").into_owned();
+            let line_no_time = RE_NO_TIME.replace(line, "");
             if line_no_time == last_line && !line_no_time.is_empty() {
                 dup_count += 1;
                 continue;
@@ -785,5 +795,23 @@ mod tests {
         let (tag, val) = split_legend_entry("#0# = a = b".to_string());
         assert_eq!(tag, "#0#");
         assert_eq!(val, "a = b");
+    }
+
+    #[test]
+    fn replace_frequent_does_not_corrupt_substring_patterns() {
+        let input = "\
+[WinFocus] changed
+[WinFocusMonitor] changed
+[WinFocus] changed
+[WinFocusMonitor] changed";
+        let mut text = input.to_string();
+        let mut c = Compressor::new();
+
+        c.replace_frequent(&mut text, &RE_COMP);
+
+        let legend: Vec<_> = c.legend.into_iter().map(split_legend_entry).collect();
+        let restored = expand(&text, &legend);
+        assert_eq!(restored, input);
+        assert_eq!(legend.len(), 2, "both component names should be replaced");
     }
 }
