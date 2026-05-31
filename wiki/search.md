@@ -119,12 +119,12 @@ Loader refuses if `meta.json.schema != "ast-bro.search-index.v1"`, model id mism
 
 `embeddings.f32` is row-major so a single chunk's vector is one cache-friendly slice — friendly to both the in-memory and future-mmap paths.
 
-The format reserves fields for incremental updates that v1 doesn't yet exercise:
+The format carries the fields incremental updates need:
 
-- `meta.json.tombstones: Vec<u32>` — chunk ids logically deleted but not yet compacted.
-- `FileRecord.chunk_range: (u32, u32)` — per-file `[start, end)` into `chunks.bin` so a partial rebuild can patch one file's range without rewriting the rest.
+- `meta.json.tombstones: Vec<u32>` — chunk ids logically deleted (a removed or modified file's old chunks) but not yet compacted away.
+- `FileRecord.chunk_start` / `chunk_end` — per-file `[start, end)` into `chunks.bin` so a delta can drop one file's chunks without rewriting the rest.
 
-v1's update strategy is simpler: any non-empty delta triggers a full rebuild. The cheap detection path (mtime + size, only hashing on mismatch) keeps this affordable.
+On `Index::open`, a non-empty delta is applied incrementally (`apply_delta`): the changed files' old chunks are tombstoned, the added/modified files are re-chunked, re-embedded, and appended, and BM25 is rebuilt over the live set — the untouched corpus is never re-embedded. A full rebuild happens only as a fallback when `apply_delta` errors, or as compaction once tombstones exceed `AST_BRO_COMPACTION_RATIO` (default 30%) of all chunk slots. The cheap detection path (mtime + size, only hashing on mismatch) keeps the per-open check affordable.
 
 ## Concurrency
 

@@ -18,4 +18,5 @@ pub mod fusion;
 pub mod index;
 pub mod mcp;
 pub mod ranking;
+pub mod shared;
 pub mod tokens;

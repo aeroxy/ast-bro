@@ -252,6 +252,17 @@ mod tests {
     }
 
     #[test]
+    fn related_json_not_found_is_empty_results_envelope() {
+        // The not-found path renders this exact document in JSON mode.
+        let v: Value =
+            serde_json::from_str(&render_related_json("missing.rs", 7, &[], false)).unwrap();
+        assert_eq!(v["schema"], JSON_SCHEMA_RELATED);
+        assert_eq!(v["source"]["path"], "missing.rs");
+        assert_eq!(v["source"]["line"], 7);
+        assert_eq!(v["results"].as_array().unwrap().len(), 0);
+    }
+
+    #[test]
     fn index_stats_json() {
         let meta = Meta {
             schema: "ast-bro.search-index.v1".to_string(),

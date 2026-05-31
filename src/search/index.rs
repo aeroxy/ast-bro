@@ -19,16 +19,18 @@
 //! v1 metas are read transparently as having `indexed_corpus = ""` (whole
 //! home).
 //!
-//! Phase-7 simplification: any non-empty delta (added / modified / removed)
-//! triggers a full rebuild. The on-disk format reserves the fields needed
-//! for a v2 partial-rebuild path (per-file `chunk_range` + a tombstones
-//! vector in `meta.json`) so swapping in incremental updates later doesn't
-//! invalidate caches.
+//! A non-empty delta (added / modified / removed) is applied incrementally by
+//! `apply_delta`: the changed files' old chunks are tombstoned, the added /
+//! modified files are re-chunked, re-embedded, and appended, and BM25 is
+//! rebuilt over the live set (the per-file `chunk_start..chunk_end` range plus
+//! the `meta.json` tombstones vector make this possible). A full rebuild is
+//! the fallback when `apply_delta` fails, and compaction triggers one once
+//! tombstones exceed `AST_BRO_COMPACTION_RATIO` of all chunk slots.
 
 use crate::file_filter::{add_filters, should_skip_path};
 use crate::project_root::{relative_posix, resolve_home, Marker};
 use crate::search::bm25::Bm25Index;
-use crate::search::cache::{compute_delta, hash_file, FileRecord};
+use crate::search::cache::{compute_delta, hash_file, FileRecord, MAX_INDEX_FILE_BYTES};
 use crate::search::chunker::{chunk_file, is_indexable, Chunk};
 use crate::search::download::{ensure_model, ModelInfo};
 use crate::search::embed::{cosine_topk, Embedder, DIM};
@@ -600,6 +602,22 @@ impl Index {
                 format!("model dim {} != {DIM}", meta.model.dim),
             ));
         }
+        // Reject an index embedded by a different model, even when the
+        // dimension happens to match (e.g. a future same-dim model swap).
+        // Returning an error here routes `Index::open` to a full rebuild
+        // rather than silently mixing query vectors from one model with chunk
+        // vectors from another. Checked before the binaries/model load so a
+        // mismatch costs only the meta read.
+        let active_model_id = ModelInfo::potion_code_16m().id;
+        if meta.model.id != active_model_id {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "model id {} != active {active_model_id} — reindex required",
+                    meta.model.id
+                ),
+            ));
+        }
 
         let chunks: Vec<Chunk> = read_bincode(&paths.chunks_bin)?;
         let files: Vec<FileRecord> = read_bincode(&paths.files_bin)?;
@@ -649,6 +667,25 @@ impl Index {
     #[allow(dead_code)] // public for embedders + future --stats wiring
     pub fn tombstone_count(&self) -> usize {
         self.meta.tombstones.len()
+    }
+
+    /// Number of indexed files (FileRecords). Lets callers report index stats
+    /// without re-reading and deserialising `files.bin` from disk.
+    pub fn file_count(&self) -> usize {
+        self.files.len()
+    }
+
+    /// True when this in-memory index still matches the working tree: a
+    /// `compute_delta` against the recorded corpus finds no added / modified /
+    /// removed files and no mtime-only touches. Used by the process-wide
+    /// shared registry (`shared::open_shared`) to decide whether a cached
+    /// `Arc<Index>` can be reused as-is or must be reloaded from disk. The
+    /// walk is stat-only in the steady state (hashing only on mtime/size
+    /// mismatch), so this is cheap to call per request.
+    pub fn is_fresh(&self) -> bool {
+        let corpus_dir = corpus_walk_dir(&self.paths.root, &self.meta.indexed_corpus);
+        let delta = compute_delta(&corpus_dir, &self.paths.root, &self.files);
+        !delta.requires_rebuild() && delta.mtime_only.is_empty()
     }
 
     /// Hybrid BM25 + dense search with full ranking pipeline.
@@ -1000,6 +1037,13 @@ fn walk_and_chunk(walk_root: &Path, strip_root: &Path, repo_root: &Path) -> (Vec
         if should_skip_path(p, walk_root) {
             continue;
         }
+        // Skip oversized files — must match the guard in `compute_delta` so
+        // the build and delta walks agree on the file set (see
+        // MAX_INDEX_FILE_BYTES). On a metadata error we fall through and let
+        // the per-file FileRecord stat below drop it.
+        if fs::metadata(p).map(|m| m.len()).unwrap_or(0) > MAX_INDEX_FILE_BYTES {
+            continue;
+        }
         paths.push(p.to_path_buf());
     }
     paths.sort(); // deterministic order
@@ -1255,6 +1299,38 @@ mod tests {
         assert_eq!(chunks2, chunks);
         assert_eq!(files2, files);
         assert_eq!(emb2, embeddings);
+    }
+
+    /// A meta whose model id differs from the active model must be rejected
+    /// (forcing a rebuild) even when the dimension matches. The id check runs
+    /// before the model load, so this needs no network.
+    #[test]
+    fn load_rejects_model_id_mismatch() {
+        let dir = tmp_repo();
+        let paths = IndexPaths::from_repo(dir.path());
+        fs::create_dir_all(&paths.index_dir).unwrap();
+        let meta = Meta {
+            schema: SCHEMA.to_string(),
+            ast_bro_version: "0.0.0".to_string(),
+            model: ModelMeta {
+                id: "someone/other-model".to_string(),
+                dim: DIM as u32,
+            },
+            created_unix: 0,
+            chunk_count: 0,
+            embedding_dtype: "f32_le".to_string(),
+            tombstones: Vec::new(),
+            indexed_corpus: String::new(),
+        };
+        write_meta(&paths.meta_json, &meta).unwrap();
+
+        // `Index` isn't `Debug`, so destructure rather than `expect_err`.
+        let err = match Index::load_unlocked(&paths) {
+            Ok(_) => panic!("mismatched model id must error"),
+            Err(e) => e,
+        };
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        assert!(err.to_string().contains("model id"), "got: {err}");
     }
 
     /// Full end-to-end: build, search, find_related against a tiny tmp repo.

@@ -6,9 +6,10 @@
 //! an xxhash3 of the file bytes. This keeps the steady-state "no changes"
 //! cost dominated by stat syscalls (~30 ms on a 10k-file repo).
 //!
-//! Phase-7 simplification: any non-empty delta triggers a full rebuild rather
-//! than a partial update. The on-disk format is forward-compatible — adding
-//! tombstones + per-file chunk-range patching is a v2 swap-in.
+//! A non-empty delta is applied incrementally by `Index::apply_delta` (the
+//! per-file `chunk_start..chunk_end` range plus the `meta.json` tombstones
+//! vector let it patch only the changed files); a full rebuild is the
+//! fallback path when that errors or when compaction kicks in.
 
 use crate::file_filter::{add_filters, should_skip_path};
 use crate::search::chunker::is_indexable;
@@ -18,6 +19,16 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
+
+/// Files larger than this are skipped during indexing. Above a couple of MB a
+/// file is almost always generated/minified/vendored output: it bloats both
+/// the chunk store and the embedding pass while adding little searchable
+/// signal, and a single such file read whole into memory on every
+/// `Index::open` is a needless cost. The same guard is applied at both walk
+/// sites — `compute_delta` here and `walk_and_chunk` in `index.rs` — so the
+/// two never disagree on the file set (a mismatch would make `compute_delta`
+/// report a perpetual delta against files the build never chunked).
+pub const MAX_INDEX_FILE_BYTES: u64 = 2_000_000;
 
 /// Cached metadata for one indexed file.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -100,6 +111,18 @@ pub fn compute_delta(
         if is_indexable(path).is_none() {
             continue;
         }
+        let meta = match fs::metadata(path) {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        let size = meta.len();
+        // Oversized files are not indexed — see MAX_INDEX_FILE_BYTES. Skipping
+        // before `seen` means a file that grows past the cap is treated as
+        // removed on the next open (and dropped from the index), matching the
+        // build-side walk which won't chunk it either.
+        if size > MAX_INDEX_FILE_BYTES {
+            continue;
+        }
         delta.seen_count += 1;
 
         let rel = match path.strip_prefix(strip_root) {
@@ -108,11 +131,6 @@ pub fn compute_delta(
         };
         seen.insert(rel.clone());
 
-        let meta = match fs::metadata(path) {
-            Ok(m) => m,
-            Err(_) => continue,
-        };
-        let size = meta.len();
         let mtime_ns = mtime_nanos(&meta);
 
         match cached.get(rel.as_str()) {
@@ -288,6 +306,20 @@ mod tests {
         let delta = compute_delta(dir.path(), dir.path(), &[record]);
         assert_eq!(delta.removed.len(), 1);
         assert_eq!(delta.removed[0], "ghost.rs");
+    }
+
+    #[test]
+    fn delta_skips_oversized_file() {
+        let dir = tmp_repo();
+        touch(dir.path(), "small.rs", "fn small() {}");
+        // One indexable file just over the cap.
+        let big = "x".repeat((MAX_INDEX_FILE_BYTES as usize) + 1);
+        touch(dir.path(), "big.rs", &big);
+
+        let delta = compute_delta(dir.path(), dir.path(), &[]);
+        assert_eq!(delta.added.len(), 1, "oversized file must be skipped");
+        assert_eq!(delta.seen_count, 1);
+        assert!(delta.added[0].ends_with("small.rs"));
     }
 
     #[test]

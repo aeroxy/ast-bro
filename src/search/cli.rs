@@ -70,6 +70,13 @@ pub fn run_find_related(
     let hits = match index.find_related(&key, line, top_k) {
         Some(h) => h,
         None => {
+            // In JSON mode print a parseable empty-results envelope to stdout
+            // (exit 0) so consumers always get the same schema; text mode keeps
+            // the human-readable hint on stderr and the exit-2 not-found signal.
+            if json {
+                println!("{}", render_related_json(file_path, line, &[], pretty));
+                return 0;
+            }
             eprintln!(
                 "ast-bro: no chunk at {file_path}:{line} (was the file indexed?)"
             );

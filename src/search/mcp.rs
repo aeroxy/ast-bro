@@ -27,6 +27,7 @@ use crate::search::format::{
 };
 use crate::search::fusion::resolve_alpha;
 use crate::search::index::{Index, SearchOptions};
+use crate::search::shared;
 use serde::Deserialize;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
@@ -86,8 +87,9 @@ pub fn run_search(args: Value) -> CallResult {
     if args.query.trim().is_empty() {
         return CallResult::Error("query is required".to_string());
     }
-    // MCP: cwd = path (no walk-up, path is authoritative).
-    let index = match Index::open(&args.path, &args.path) {
+    // MCP: cwd = path (no walk-up, path is authoritative). Reuse a cached
+    // in-memory index across calls when the tree is unchanged.
+    let index = match shared::open_shared(&args.path, &args.path) {
         Ok(i) => i,
         Err(e) => return CallResult::Error(format!("failed to open index: {e}")),
     };
@@ -117,7 +119,7 @@ pub fn run_find_related(args: Value) -> CallResult {
     if args.path.is_empty() || args.line == 0 {
         return CallResult::Error("path and line (1-indexed) are required".to_string());
     }
-    let index = match Index::open(&args.root, &args.root) {
+    let index = match shared::open_shared(&args.root, &args.root) {
         Ok(i) => i,
         Err(e) => return CallResult::Error(format!("failed to open index: {e}")),
     };
@@ -125,6 +127,11 @@ pub fn run_find_related(args: Value) -> CallResult {
     let hits = match index.find_related(&key, args.line, args.top_k) {
         Some(h) => h,
         None => {
+            // In JSON mode return a parseable empty-results envelope rather
+            // than an error string, so callers get the same schema either way.
+            if args.json {
+                return CallResult::Text(render_related_json(&args.path, args.line, &[], false));
+            }
             return CallResult::Error(format!(
                 "no chunk at {}:{} (was the file indexed?)",
                 args.path, args.line
@@ -144,27 +151,26 @@ pub fn run_index(args: Value) -> CallResult {
         Ok(a) => a,
         Err(e) => return CallResult::Error(format!("invalid args: {e}")),
     };
-    let result = if args.rebuild {
-        Index::build(&args.path, &args.path)
+    // Rebuild always hits disk; otherwise reuse the shared registry. Either
+    // way we (re)store the result so a later `search` / `find_related` in this
+    // session sees the fresh index instead of a stale cached `Arc`.
+    let index = if args.rebuild {
+        match Index::build(&args.path, &args.path) {
+            Ok(i) => {
+                let arc = std::sync::Arc::new(i);
+                shared::store(arc.clone());
+                arc
+            }
+            Err(e) => return CallResult::Error(format!("index build failed: {e}")),
+        }
     } else {
-        Index::open(&args.path, &args.path)
-    };
-    let index = match result {
-        Ok(i) => i,
-        Err(e) => return CallResult::Error(format!("index build failed: {e}")),
+        match shared::open_shared(&args.path, &args.path) {
+            Ok(i) => i,
+            Err(e) => return CallResult::Error(format!("index build failed: {e}")),
+        }
     };
     if args.stats || args.json {
-        let cfg = bincode::config::standard();
-        let file_count = std::fs::read(&index.paths.files_bin)
-            .ok()
-            .and_then(|b| {
-                bincode::serde::decode_from_slice::<Vec<crate::search::cache::FileRecord>, _>(
-                    &b, cfg,
-                )
-                .ok()
-                .map(|(v, _)| v.len())
-            })
-            .unwrap_or(0);
+        let file_count = index.file_count();
         let out = if args.json {
             render_index_stats_json(&index.meta, file_count, &index.paths.root, false)
         } else {
