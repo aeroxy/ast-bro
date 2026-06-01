@@ -232,7 +232,13 @@ pub fn collect_file_records(root: &Path) -> std::io::Result<Vec<FileRecord>> {
     let delta = compute_delta(root, root, &[]);
     let mut out = Vec::with_capacity(delta.added.len());
     for path in delta.added {
-        let meta = std::fs::metadata(&path)?;
+        // Skip a file that vanished or became unreadable between the delta walk
+        // and this stat (TOCTOU, broken symlink) instead of failing the whole
+        // build — mirrors `compute_delta` and `refresh_records`. A skipped file
+        // just resurfaces as `added` on the next re-validation.
+        let Ok(meta) = std::fs::metadata(&path) else {
+            continue;
+        };
         let mtime = meta.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH);
         let mtime_ns = match mtime.duration_since(std::time::SystemTime::UNIX_EPOCH) {
             Ok(d) => d.as_nanos() as i128,

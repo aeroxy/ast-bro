@@ -167,8 +167,16 @@ where
         calls: Some(calls),
     });
     let key = root_for(root);
-    // Reuse the fingerprints the just-run `get_or_init` stored for this key so
-    // the promoted entry stays re-validatable without re-walking.
+    // The entry `get_or_init` just stored for this key pairs `current` with the
+    // fingerprints it was validated against, so reuse those rather than re-walk:
+    // they describe `current.deps == promoted.deps`. promote_calls always runs
+    // right after `get_or_init` on the same thread (MCP is single-threaded, the
+    // CLI is one-shot), so the entry is still `current` here and the records
+    // match. Deliberately NOT re-collecting fresh records on a hypothetical Arc
+    // swap: records describing the *live tree* would mask stale `promoted.deps`
+    // and defeat the next re-validation. The `collect` fallback only covers an
+    // evicted slot. (A cross-thread promote would need the CAS-retry the
+    // `get_or_init` TOCTOU lock uses; not reachable today, so not paid for.)
     let records = registry()
         .read()
         .unwrap()
