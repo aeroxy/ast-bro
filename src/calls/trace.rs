@@ -153,8 +153,9 @@ fn truncate_body(src: &str) -> String {
     if src.len() <= MAX_BODY_CHARS {
         return src.to_string();
     }
-    // Cut on a char boundary at the last newline before the cap.
-    let mut cut = MAX_BODY_CHARS.min(src.len());
+    // Cut on a char boundary at the last newline before the cap. The early
+    // return above guarantees `src.len() > MAX_BODY_CHARS`, so no `.min` needed.
+    let mut cut = MAX_BODY_CHARS;
     while !src.is_char_boundary(cut) {
         cut -= 1;
     }
