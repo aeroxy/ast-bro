@@ -900,12 +900,18 @@ fn build_combined_mask(
                 };
                 let scope_ok = scope_matches(query_scope, &c.file_path);
                 let live_ok = live_mask.is_none_or(|m| m[i]);
-                let path_ok = path_contains.is_empty() || {
-                    let p = c.file_path.to_ascii_lowercase();
+                // `path:`/`name:` both match case-insensitively against the file
+                // path; lowercase it once and reuse (basename is a substring of
+                // the path), instead of allocating separately per filter.
+                let lower_path =
+                    (path_active || name_active).then(|| c.file_path.to_ascii_lowercase());
+                let path_ok = !path_active || {
+                    let p = lower_path.as_deref().unwrap_or(&c.file_path);
                     path_contains.iter().any(|s| p.contains(s.as_str()))
                 };
-                let name_ok = name_contains.is_empty() || {
-                    let name = file_name_lower(&c.file_path);
+                let name_ok = !name_active || {
+                    let p = lower_path.as_deref().unwrap_or(&c.file_path);
+                    let name = file_name_of(p);
                     name_contains.iter().any(|s| name.contains(s.as_str()))
                 };
                 lang_ok && scope_ok && live_ok && path_ok && name_ok
@@ -914,13 +920,12 @@ fn build_combined_mask(
     )
 }
 
-/// Lowercased file name (basename) for `name:` substring matching.
-fn file_name_lower(file_path: &str) -> String {
+/// Basename of an (already-lowercased) path, for `name:` substring matching.
+fn file_name_of(file_path: &str) -> &str {
     Path::new(file_path)
         .file_name()
         .and_then(|s| s.to_str())
         .unwrap_or(file_path)
-        .to_ascii_lowercase()
 }
 
 /// Build a `live[i] == !is_tombstoned(i)` mask, or `None` when there are no
@@ -1069,10 +1074,17 @@ fn walk_and_chunk(walk_root: &Path, strip_root: &Path, repo_root: &Path) -> (Vec
         }
         // Skip oversized files — must match the guard in `compute_delta` so
         // the build and delta walks agree on the file set (see
-        // MAX_INDEX_FILE_BYTES). Reuse the walker's cached metadata; on an
-        // error we fall through and let the per-file FileRecord stat below
-        // drop it.
-        if entry.metadata().map(|m| m.len()).unwrap_or(0) > MAX_INDEX_FILE_BYTES {
+        // MAX_INDEX_FILE_BYTES). Reuse the walker's cached metadata. On a
+        // metadata error, skip (matching `compute_delta`) rather than
+        // defaulting to size 0: the FileRecord stat below drops unreadable
+        // files but does *not* re-check the size cap, so defaulting-to-0 could
+        // let a transient error slip an oversized file past this guard and into
+        // the index — one `compute_delta` then wants removed, a rebuild loop.
+        let meta = match entry.metadata() {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        if meta.len() > MAX_INDEX_FILE_BYTES {
             continue;
         }
         paths.push(p.to_path_buf());
