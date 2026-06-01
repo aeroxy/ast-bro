@@ -28,6 +28,7 @@ Commands:
   graph         Emit the dep graph (text or JSON)
   callers       Find callers of a symbol — AST-accurate, no grep noise
   callees       What does this symbol call? — AST-accurate forward call traversal
+  trace         Shortest call path between two symbols, each hop's body inlined
   index         Build, refresh, or inspect the per-repo search index
   run           AST-aware search and rewrite using pattern matching with metavariables
   squeeze       Compress repetitive log/text with a reversible legend
@@ -61,6 +62,7 @@ Stop at the step that answers the question:
 9. Who calls X / what does X call? — symbol-level call graph (shares the dep-graph cache).
    - `sb callers <Symbol>`: AST-accurate callers, no `grep` false positives on overloaded names, comments, or string literals. Kind-aware: a function gets call-sites; a type gets implementors / constructions / ancestors.
    - `sb callees <Symbol>`: forward — what `<Symbol>` itself calls.
+   - `sb trace <FROM> <TO>`: shortest static call path from `<FROM>` to `<TO>`, each hop's body inlined — answers "how does `<FROM>` reach `<TO>`?" in one call instead of chaining `callees`. `--depth N` caps hops (default 12); when no path exists it falls back to both endpoints plus the target file's sibling callables.
    - Edges are tagged `Exact` / `Inferred` / `Ambiguous` by a three-pass resolver (same-file → global symbol table → dep-graph disambiguation); filter by precision when the resolver isn't sure.
 
 10. Find or rewrite by AST pattern — `sb run -p '<pattern>'`: structural search with metavariables (`$VAR`, `$$$` for splats). Add `-r '<rewrite>'` for a dry-run diff, or `-r '<rewrite>' --write` to apply in-place. Pass `--lang <lang>` to pre-compile the pattern (faster across many files; also fails fast on an invalid pattern). Use when you need a structural shape (`foo($$$)` regardless of args) rather than a text match.
@@ -71,5 +73,6 @@ Path / argument expectations:
 - `deps`, `reverse-deps` → expect a file path
 - `graph`, `cycles` → expect a directory (repo root)
 - `callers`, `callees` → expect a symbol name (function or type), not a path
+- `trace` → expects two symbol names (FROM then TO), optional repo root
 - `run` → expects a `-p <pattern>` flag, optionally `-r <rewrite>` and `--write`
 - `squeeze` → expects a file path, optionally a `from:to` line range

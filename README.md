@@ -1,6 +1,6 @@
 # ast-bro
 
-Fast, AST-based **code-navigation toolkit** for source files — surface the *shape* of a file (signatures with line numbers, no method bodies), the *true public API* of a package, the *dependency graph* between files, the *call graph* between symbols, search the repo by *symbol* or *behaviour*, and *squeeze* repetitive logs into a smaller, reversible form. Fifteen subcommands, one binary, built for LLM coding agents and humans who’d rather not waste tokens reading every file just to understand a codebase.
+Fast, AST-based **code-navigation toolkit** for source files — surface the *shape* of a file (signatures with line numbers, no method bodies), the *true public API* of a package, the *dependency graph* between files, the *call graph* between symbols, search the repo by *symbol* or *behaviour*, and *squeeze* repetitive logs into a smaller, reversible form. Seventeen subcommands, one binary, built for LLM coding agents and humans who’d rather not waste tokens reading every file just to understand a codebase.
 
 [ast-bro](https://github.com/aeroxy/ast-bro) is written in Rust and uses [ast-grep](https://github.com/ast-grep/ast-grep)’s incredibly fast [tree-sitter](https://github.com/tree-sitter/tree-sitter) bindings. Thanks to [rayon](https://github.com/rayon-rs/rayon), it parses your entire workspace concurrently—often in milliseconds. For Google- or ByteDance-scale monorepos, [ast-bro](https://github.com/aeroxy/ast-bro) benefits from the additional abstraction layer provided by [repolayer](https://github.com/zhousiyao03-cyber/repolayer).
 
@@ -28,10 +28,10 @@ Modern agentic coding tools explore codebases by reading files directly. That's 
 1. **Shape over bytes.** `map` / `digest` / `show` give you signatures and line ranges instead of method bodies — typically a **95% token saving** vs reading the file. `implements` finds subclasses with AST accuracy, no `grep` false positives.
 2. **Published API in one call.** `surface` resolves `pub use` re-exports (Rust), `__all__` (Python), barrel files (TypeScript), `export` clauses (Scala) so you see the surface a downstream user actually sees — not the union of every public item per file.
 3. **Dependency graph for free.** `deps` / `reverse-deps` / `cycles` / `graph` build a file-level import graph (Rust, Python, TS/JS, Java, C#, Kotlin, Scala, Go) cached at `.ast-bro/graph/`. Use `reverse-deps` before refactoring to know the blast radius. `cycles` exits non-zero — wire it into a CI gate. `graph` emits the full dependency graph (text by default, `--json` for JSON).
-4. **Symbol-level call graph.** `callers` / `callees` answer "who calls X" and "what does X call" with AST accuracy across all 14 languages — no `grep` false positives on overloaded names, comments, or string literals. Both are kind-aware: ask for a function and you get call-sites; ask for a type and you get implementors / constructions / ancestors. A three-pass resolver (same-file → global symbol table → dep-graph disambiguation) tags every edge `Exact` / `Inferred` / `Ambiguous` so you can filter by precision. Same on-disk cache as the dep graph.
+4. **Symbol-level call graph.** `callers` / `callees` answer "who calls X" and "what does X call" with AST accuracy across all 14 languages — no `grep` false positives on overloaded names, comments, or string literals. Both are kind-aware: ask for a function and you get call-sites; ask for a type and you get implementors / constructions / ancestors. A three-pass resolver (same-file → global symbol table → dep-graph disambiguation) tags every edge `Exact` / `Inferred` / `Ambiguous` so you can filter by precision. `trace <FROM> <TO>` walks the shortest static call path between two symbols, inlining each hop's body — "how does X reach Y?" answered in one call instead of chaining `callees`. Same on-disk cache as the dep graph.
 5. **Hybrid semantic search.** `search` runs BM25 + dense embeddings via [`potion-code-16M`](https://huggingface.co/minishlab/potion-code-16M) (a static, no-inference model — ~64 MB, runs on CPU in microseconds). `find-related` returns chunks structurally similar to one you already have, with a dep-graph-aware boost when a graph cache exists.
 6. **Squeeze logs, not just code.** `squeeze` compresses a repetitive log/text file into a smaller, reversible form (a legend plus short tags) so a noisy log costs far fewer tokens to hand to an agent — and falls back to the raw text when squeezing wouldn't help. This is for *logs/text*, not code (for code, `map` / `digest` / `show` are the token win).
-7. **Fifteen native MCP tools.** Every CLI command is also exposed as an MCP tool — `ast-bro install --mcp <agent>` wires it into Claude Code, Cursor, Gemini, Codex, or VS Code Copilot in one line.
+7. **Seventeen native MCP tools.** Every CLI command is also exposed as an MCP tool — `ast-bro install --mcp <agent>` wires it into Claude Code, Cursor, Gemini, Codex, or VS Code Copilot in one line.
 
 ### The workflow
 
@@ -202,6 +202,7 @@ ast-bro callers Player                  # type: implementors + constructions
 ast-bro callees Player.TakeDamage       # function/method: out-edges
 ast-bro callees Player --depth 2        # type: ancestor walk (transitive)
 ast-bro callers src/Player.cs:TakeDamage --include-ambiguous
+ast-bro trace handle_request render     # shortest static call path, each hop inlined
 
 # Hybrid BM25 + dense semantic search (builds an index on first call)
 ast-bro search "how does login work"
@@ -408,9 +409,11 @@ changes, so downstream tooling can guard on it:
 | `ast-bro.graph.v1` | `graph --json` |
 | `ast-bro.callers.v1` | `callers --json` |
 | `ast-bro.callees.v1` | `callees --json` |
+| `ast-bro.trace.v1` | `trace --json` |
 | `ast-bro.search.v1` | `search --json` |
 | `ast-bro.related.v1` | `find-related --json` |
 | `ast-bro.index-stats.v1` | `index --stats --json` |
+| `ast-bro.run.v1` | `run --json` |
 | `ast-bro.squeeze.v1` | `squeeze --json` |
 
 ---
@@ -425,7 +428,7 @@ as native tools — no shell parsing required:
 ast-bro mcp
 ```
 
-The server speaks line-delimited JSON-RPC 2.0 on stdin/stdout and exposes fifteen
+The server speaks line-delimited JSON-RPC 2.0 on stdin/stdout and exposes seventeen
 tools that map 1:1 to the CLI commands:
 
 | Tool | Equivalent CLI | Returns |
@@ -436,6 +439,7 @@ tools that map 1:1 to the CLI commands:
 | `implements`   | `ast-bro implements <type> <paths>`  | text, or `ast-bro.implements.v1` with `json: true` |
 | `callers`      | `ast-bro callers <symbol>`           | text, or `ast-bro.callers.v1` with `json: true` |
 | `callees`      | `ast-bro callees <symbol>`           | text, or `ast-bro.callees.v1` with `json: true` |
+| `trace`        | `ast-bro trace <from> <to>`          | text, or `ast-bro.trace.v1` with `json: true` |
 | `surface`      | `ast-bro surface [path]`             | text, or `ast-bro.surface.v1` with `json: true` |
 | `deps`         | `ast-bro deps <file>`                | text, or `ast-bro.deps.v1` with `json: true` |
 | `reverse_deps` | `ast-bro reverse-deps <file>`        | text, or `ast-bro.reverse-deps.v1` with `json: true` |
@@ -444,6 +448,7 @@ tools that map 1:1 to the CLI commands:
 | `search`       | `ast-bro search "<query>"`           | text, or `ast-bro.search.v1` with `json: true` |
 | `find_related` | `ast-bro find-related <file>:<line>` | text, or `ast-bro.related.v1` with `json: true` |
 | `index`        | `ast-bro index`                      | text, or `ast-bro.index-stats.v1` with `json: true` |
+| `run`          | `ast-bro run -p <pattern>`           | text diff, or `ast-bro.run.v1` with `json: true` |
 | `squeeze`      | `ast-bro squeeze <file>`             | text, or `ast-bro.squeeze.v1` with `json: true` |
 
 Wire it into a client by pointing at the binary:

@@ -11,6 +11,7 @@ Commands:
   implements    Find subclasses / implementations
   callers       Who calls this function/method, or constructs/implements this type
   callees       What does this function/method call, or which ancestors does this type extend
+  trace         Shortest call path between two symbols, each hop's body inlined
   run           AST-aware search and rewrite with metavariable patterns
   prompt        Print the agent prompt snippet
   install       Install ast-bro into a coding-agent CLI
@@ -48,9 +49,10 @@ Stop at the step that answers the question:
 
 7. **The actual published API of a package** — `sb surface <dir>`: resolves `pub use` re-exports (Rust) and `__all__` (Python) so you see exactly what a downstream user can reach, not the union of every `pub`/non-underscore item. Falls back to visibility-filtered output for Java/C#/Go/Kotlin (no real re-export concept). Use `--tree` for hierarchy, `--include-chain` to see the re-export path each entry took.
 
-8. **Who calls / what does this call?** — symbol-level call graph, AST-accurate, no `grep` noise. Backed by the unified graph cache at `.ast-bro/graph/index.bin` (built lazily, per-file invalidated, shared across MCP `tools/call`s).
+8. **Who calls / what does this call?** — symbol-level call graph, AST-accurate, no `grep` noise. Backed by the unified graph cache at `.ast-bro/deps/graph.bin` (built lazily, per-file invalidated, shared across MCP `tools/call`s).
    - `sb callers <Symbol> [<dir>]`: in-edges. For a function/method: the call sites that invoke it. For a type: implementors and constructions (covers `Foo()`, `new Foo()`, `Foo {}`, `Foo::new()`).
    - `sb callees <Symbol> [<dir>]`: out-edges. For a function/method: what it calls. For a type: ancestor types and the methods they declare (use `--depth N` for transitive).
+   - `sb trace <FROM> <TO> [<dir>]`: shortest static call path from `<FROM>` to `<TO>` over the call graph, each hop's source inlined — answers "how does `<FROM>` reach `<TO>`?" in one call instead of chaining `callees`. `--depth N` caps hops (default 12); no path falls back to both endpoints plus the target's file-siblings.
    - Symbol forms: bare suffix (`TakeDamage`), dotted (`Player.TakeDamage`), file-scoped (`src/Player.cs:TakeDamage`), or flag form (`--file src/Player.cs --symbol TakeDamage`).
    - Edges carry `Exact` / `Inferred` / `Ambiguous` confidence. Add `--include-ambiguous` (callers) or `--external` (callees) when you want the noisier bucket.
 
@@ -69,6 +71,7 @@ Stop at the step that answers the question:
 - `deps`, `reverse-deps` → expect a **file** path
 - `graph`, `cycles` → expect a **directory** (repo root)
 - `callers`, `callees` → symbol first, optional **directory** (defaults to `.`)
+- `trace` → two symbols (FROM then TO), optional **directory** (defaults to `.`)
 - `run` → optional **file** or **directory** paths (defaults to `.`)
 "#;
 
