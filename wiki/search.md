@@ -34,7 +34,7 @@ find-related <file>:<line>:
 before retrieval, so an agent can narrow a search inline instead of via
 separate flags. Given:
 
-```
+```text
 lang:rust path:src/auth name:login how is the token refreshed
 ```
 

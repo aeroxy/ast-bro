@@ -96,7 +96,7 @@ pub fn get_or_init(root: &Path) -> std::io::Result<Arc<UnifiedGraph>> {
         // Stale: patch the in-memory graph and swap. On patch failure, fall
         // through to a disk reload / full rebuild.
         if let Some((graph, records)) =
-            patch_in_memory(&entry.graph, entry.records.as_slice(), root, &delta)
+            patch_in_memory(&entry.graph, entry.records.as_slice(), root, &key, &delta)
         {
             let arc = Arc::new(graph);
             store(key, arc.clone(), records);
@@ -114,10 +114,15 @@ pub fn get_or_init(root: &Path) -> std::io::Result<Arc<UnifiedGraph>> {
 /// patchers the cold load uses, persist best-effort, and return the new
 /// graph + refreshed fingerprints. `None` signals the deps patch failed and
 /// the caller should fall back to a full rebuild.
+///
+/// `root` is the working-tree base the delta was computed against; `key` is
+/// the canonicalised registry key used as the persist target so the on-disk
+/// write matches every other save site (cold load / `rebuild` / `promote_calls`).
 fn patch_in_memory(
     graph: &UnifiedGraph,
     prev_records: &[FileRecord],
     root: &Path,
+    key: &Path,
     delta: &Delta,
 ) -> Option<(UnifiedGraph, Arc<Vec<FileRecord>>)> {
     let mut g = graph.clone();
@@ -131,7 +136,7 @@ fn patch_in_memory(
         }
     }
     let new_records = refresh_records(prev_records.to_vec(), root, delta);
-    let _ = cache::save(root, &g, &new_records);
+    let _ = cache::save(key, &g, &new_records);
     Some((g, Arc::new(new_records)))
 }
 
@@ -234,8 +239,10 @@ mod tests {
         let files_before = first.deps.forward.len();
 
         // Add a second file → the graph must reload into a fresh Arc that
-        // knows about the new file.
-        std::thread::sleep(std::time::Duration::from_millis(10));
+        // knows about the new file. No mtime fiddling needed: `compute_delta`
+        // classifies a brand-new path as `added` by membership alone (mtime is
+        // only consulted for paths already in the cache), so detection here is
+        // mtime-independent.
         write(&root.join("src/b.rs"), "pub fn b() {}\n");
         let third = get_or_init(root).expect("revalidate after add");
         assert!(

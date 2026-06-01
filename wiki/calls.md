@@ -1,6 +1,6 @@
 # Call graph
 
-Three subcommands — `callers`, `callees`, and `trace` — and a per-repo persistent call-graph cache that rides inside the same on-disk file as the dep graph. This page documents the internal architecture. For the user-facing surface see the README. For the file-level import graph that the call-graph resolver leans on for disambiguation see [deps.md](deps.md). For what gets walked see [file-filtering.md](file-filtering.md).
+Three subcommands — `callers`, `callees`, and `trace` — and a per-repo persistent call-graph cache that rides inside the same on-disk file as the dep graph. This page documents the internal architecture. See the README for the user-facing surface. The file-level import graph that the call-graph resolver leans on for disambiguation is covered in [deps.md](deps.md). For what gets walked see [file-filtering.md](file-filtering.md).
 
 ## What it answers
 
@@ -228,7 +228,7 @@ The call graph does **not** get its own cache file. It rides inside a unified `U
 
 ### Disk layout
 
-```
+```text
 .ast-bro/
 ├── .gitignore             # auto-written: "*"
 ├── deps/
