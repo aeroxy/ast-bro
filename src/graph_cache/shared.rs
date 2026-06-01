@@ -129,11 +129,10 @@ fn patch_in_memory(
     if apply_delta_to_deps(&mut g.deps, root, delta).is_err() {
         return None;
     }
-    if g.calls.is_some() {
-        let deps_snapshot = g.deps.clone();
-        if let Some(calls) = g.calls.as_mut() {
-            apply_delta_to_calls(calls, &deps_snapshot, root, delta);
-        }
+    // Disjoint field borrow: `&mut g.calls` and `&g.deps` are different fields,
+    // so no snapshot clone of the (post-delta) dep graph is needed.
+    if let Some(calls) = g.calls.as_mut() {
+        apply_delta_to_calls(calls, &g.deps, root, delta);
     }
     let new_records = refresh_records(prev_records.to_vec(), root, delta);
     let _ = cache::save(key, &g, &new_records);
