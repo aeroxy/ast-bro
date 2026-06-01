@@ -143,7 +143,7 @@ impl<'a> BodyCache<'a> {
             return None;
         }
         let chosen = meta_line
-            .and_then(|ln| matches.iter().find(|m| m.start_line as u32 == ln))
+            .and_then(|ln| matches.iter().find(|m| m.start_line == ln as usize))
             .unwrap_or(&matches[0]);
         Some(truncate_body(&chosen.source))
     }
