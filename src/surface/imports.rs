@@ -58,7 +58,7 @@ pub struct RustImports {
 
 pub fn extract_rust_imports(src: &str) -> RustImports {
     let lang = SupportLang::Rust;
-    let ast = lang.ast_grep(src.to_string());
+    let ast = lang.ast_grep(src);
     let root = ast.root();
     let mut out = RustImports::default();
     _walk_rust(&root, src, &mut out);
@@ -285,7 +285,7 @@ pub struct ImportedName {
 
 pub fn extract_python_imports(src: &str) -> PythonImports {
     let lang = SupportLang::Python;
-    let ast = lang.ast_grep(src.to_string());
+    let ast = lang.ast_grep(src);
     let root = ast.root();
     let mut out = PythonImports::default();
     _walk_python(&root, src, &mut out);
@@ -451,7 +451,7 @@ pub fn extract_ts_exports(src: &str, ts_kind: TsKind) -> TsExports {
         TsKind::Tsx => SupportLang::Tsx,
         TsKind::JavaScript => SupportLang::JavaScript,
     };
-    let ast = lang.ast_grep(src.to_string());
+    let ast = lang.ast_grep(src);
     let root = ast.root();
     let mut items = Vec::new();
     for child in root.children() {
@@ -693,7 +693,7 @@ pub enum ScalaExportKind {
 
 pub fn extract_scala_exports(src: &str) -> ScalaExports {
     let lang = SupportLang::Scala;
-    let ast = lang.ast_grep(src.to_string());
+    let ast = lang.ast_grep(src);
     let root = ast.root();
     let mut items = Vec::new();
     let mut package = None;

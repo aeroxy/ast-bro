@@ -331,11 +331,7 @@ fn _unquote(v: &str) -> Option<String> {
     let v = v.trim();
     if let Some(s) = v.strip_prefix('"').and_then(|s| s.strip_suffix('"')) {
         Some(s.to_string())
-    } else if let Some(s) = v.strip_prefix('\'').and_then(|s| s.strip_suffix('\'')) {
-        Some(s.to_string())
-    } else {
-        None
-    }
+    } else { v.strip_prefix('\'').and_then(|s| s.strip_suffix('\'')).map(|s| s.to_string()) }
 }
 
 fn _parse_string_array(v: &str) -> Vec<String> {

@@ -37,7 +37,7 @@ pub fn resolve(
     };
 
     // Walk every Scala file under root using the existing infrastructure.
-    let results = walk_and_parse(&[root.clone()], None);
+    let results = walk_and_parse(std::slice::from_ref(&root), None);
 
     // Index decls by qualified path (package.Decl) for `export` resolution.
     let mut by_qpath: HashMap<String, (Declaration, PathBuf)> = HashMap::new();

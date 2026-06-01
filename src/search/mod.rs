@@ -17,6 +17,7 @@ pub mod format;
 pub mod fusion;
 pub mod index;
 pub mod mcp;
+pub mod query;
 pub mod ranking;
 pub mod shared;
 pub mod tokens;

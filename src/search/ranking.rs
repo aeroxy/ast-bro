@@ -126,6 +126,40 @@ fn type_defs_re() -> &'static Regex {
     RE.get_or_init(|| Regex::new(r"\.d\.ts$").unwrap())
 }
 
+/// Machine-generated files (protobuf/gRPC stubs, Dart/codegen output,
+/// minified bundles, gomock files, files under a `generated/` dir). These
+/// are almost never the symbol an agent is looking for, yet a query like
+/// `Send` against a protobuf-heavy repo otherwise surfaces a dozen `.pb.go`
+/// stubs ahead of the hand-written implementation. Matched on the path so a
+/// strong penalty pushes them below real source. Suffixes are anchored to
+/// `$` and the directory marker requires an exact path component, so normal
+/// names like `general.rs` / `genesis.rs` never match.
+fn generated_file_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(concat!(
+            "(?:",
+            // protobuf / gRPC across languages
+            r"\.pb\.go$|_grpc\.pb\.go$|\.pb\.cc$|\.pb\.h$|\.pb\.dart$|\.pb\.ts$",
+            r"|_pb2\.pyi?$|_pb2_grpc\.py$|_pb\.rb$|\.pbobjc\.[hm]$",
+            // Dart / Flutter codegen
+            r"|\.g\.dart$|\.freezed\.dart$|\.gr\.dart$",
+            // C# designer / generated
+            r"|\.Designer\.cs$|\.g\.cs$|\.g\.i\.cs$",
+            // generic generated markers
+            r"|\.generated\.[A-Za-z0-9]+$|_generated\.[A-Za-z0-9]+$|\.gen\.(?:go|ts|tsx|js|rs)$",
+            // gomock / mockgen output
+            r"|_mocks?\.go$|(?:^|/)mock_[^/]+\.go$",
+            // minified / bundled JS/CSS
+            r"|\.min\.js$|\.min\.css$|\.bundle\.js$",
+            // directory markers (exact component)
+            r"|(?:^|/)(?:generated|__generated__|\.gen)/",
+            ")"
+        ))
+        .expect("generated_file_re")
+    })
+}
+
 // ────────────────────────────────────────────────────────────────────────────
 // Definition pattern cache
 // ────────────────────────────────────────────────────────────────────────────
@@ -472,6 +506,9 @@ fn file_path_penalty(file_path: &str) -> f32 {
     if type_defs_re().is_match(&normalised) {
         penalty *= MILD_PENALTY;
     }
+    if generated_file_re().is_match(&normalised) {
+        penalty *= STRONG_PENALTY;
+    }
     penalty
 }
 
@@ -640,6 +677,29 @@ mod tests {
     #[test]
     fn penalty_normal_file() {
         assert_eq!(file_path_penalty("src/main.rs"), 1.0);
+    }
+
+    #[test]
+    fn penalty_generated_files() {
+        for p in [
+            "api/user.pb.go",
+            "proto/user_grpc.pb.go",
+            "gen/user_pb2.py",
+            "lib/models/user.g.dart",
+            "service/user_mocks.go",
+            "internal/mock_store.go",
+            "static/app.min.js",
+            "generated/client.ts",
+        ] {
+            assert!(
+                (file_path_penalty(p) - STRONG_PENALTY).abs() < 1e-6,
+                "{p} should get the generated-file penalty"
+            );
+        }
+        // Look-alikes that must NOT be penalised.
+        for p in ["src/general.rs", "src/genesis.rs", "src/codegen.rs"] {
+            assert_eq!(file_path_penalty(p), 1.0, "{p} must not be penalised");
+        }
     }
 
     // ── boost_multi_chunk_files ───────────────────────────────────────────

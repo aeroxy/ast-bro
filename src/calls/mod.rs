@@ -29,5 +29,6 @@ pub mod mcp;
 pub mod pass;
 pub mod render;
 pub mod resolve;
+pub mod trace;
 pub mod traverse;
 

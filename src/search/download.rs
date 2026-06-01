@@ -242,13 +242,12 @@ fn build_client(timeout: Duration) -> io::Result<reqwest::blocking::Client> {
         .or_else(|_| std::env::var("AST_OUTLINE_CA_BUNDLE"));
     if let Ok(bundle) = ca_bundle {
         let pem = fs::read(&bundle).map_err(|e| {
-            io::Error::new(
-                io::ErrorKind::Other,
+            io::Error::other(
                 format!("AST_BRO_CA_BUNDLE={bundle}: {e}"),
             )
         })?;
         for cert in reqwest::Certificate::from_pem_bundle(&pem)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("invalid CA bundle: {e}")))?
+            .map_err(|e| io::Error::other(format!("invalid CA bundle: {e}")))?
         {
             builder = builder.add_root_certificate(cert);
         }
@@ -268,7 +267,7 @@ fn build_client(timeout: Duration) -> io::Result<reqwest::blocking::Client> {
 
     builder
         .build()
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))
+        .map_err(io::Error::other)
 }
 
 /// Check whether TLS strict mode is enabled via `AST_BRO_TLS_STRICT` or
@@ -277,7 +276,7 @@ fn tls_strict() -> bool {
     std::env::var("AST_BRO_TLS_STRICT")
         .or_else(|_| std::env::var("AST_OUTLINE_TLS_STRICT"))
         .ok()
-        .filter(|v| !v.is_empty() && v != "0" && v.to_ascii_lowercase() != "false")
+        .filter(|v| !v.is_empty() && v != "0" && !v.eq_ignore_ascii_case("false"))
         .is_some()
 }
 
@@ -306,11 +305,10 @@ fn download_to(client: &reqwest::blocking::Client, url: &str, dest: &Path) -> io
             msg.push_str(&format!(" → {s}"));
             src = s.source();
         }
-        io::Error::new(io::ErrorKind::Other, msg)
+        io::Error::other(msg)
     })?;
     if !resp.status().is_success() {
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
+        return Err(io::Error::other(
             format!("GET {url} returned HTTP {}", resp.status()),
         ));
     }
@@ -324,7 +322,7 @@ fn download_to(client: &reqwest::blocking::Client, url: &str, dest: &Path) -> io
     loop {
         let n = reader
             .read(&mut buf)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            .map_err(io::Error::other)?;
         if n == 0 {
             break;
         }
@@ -353,13 +351,13 @@ fn manifest_path(dir: &Path) -> PathBuf {
 
 fn write_manifest(dir: &Path, manifest: &Manifest) -> io::Result<()> {
     let json = serde_json::to_vec_pretty(manifest)
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        .map_err(io::Error::other)?;
     fs::write(manifest_path(dir), json)
 }
 
 fn read_manifest(dir: &Path) -> io::Result<Manifest> {
     let bytes = fs::read(manifest_path(dir))?;
-    serde_json::from_slice(&bytes).map_err(|e| io::Error::new(io::ErrorKind::Other, e))
+    serde_json::from_slice(&bytes).map_err(io::Error::other)
 }
 
 fn sha256_file(path: &Path) -> io::Result<String> {

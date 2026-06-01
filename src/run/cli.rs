@@ -7,6 +7,7 @@ use ast_grep_language::SupportLang;
 
 use super::{detect_lang, search_with_pattern};
 
+#[allow(clippy::too_many_arguments)] // mirrors the `run` CLI flag surface 1:1
 pub fn run(
     pattern: &str,
     rewrite_template: Option<&str>,
@@ -295,9 +296,9 @@ pub fn run(
     // 2 = all attempted files errored (and at least one file was attempted)
     if attempted_files > 0 && error_count == attempted_files {
         2
-    } else if rewrite_template.is_some() && rewrite_count == 0 {
-        1
-    } else if rewrite_template.is_none() && match_count == 0 {
+    } else if (rewrite_template.is_some() && rewrite_count == 0)
+        || (rewrite_template.is_none() && match_count == 0)
+    {
         1
     } else {
         0

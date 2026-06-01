@@ -50,8 +50,28 @@ pub fn open_shared(path_arg: &Path, cwd: &Path) -> std::io::Result<Arc<Index>> {
     let (home, _) = resolve_home(path_arg, cwd, Marker::SearchIndex);
     let key = key_for(&home);
 
-    // Drop the read guard before the (FS-walking) freshness check so a
-    // concurrent `store` never blocks behind it.
+    // Fast path: cached + still fresh. Drop the read guard before the
+    // (FS-walking) freshness check so a concurrent `store` never blocks behind
+    // it.
+    let cached = registry().read().unwrap().get(&key).cloned();
+    if let Some(cached) = cached {
+        if cached.is_fresh() {
+            return Ok(cached);
+        }
+    }
+
+    // Slow path: serialize concurrent loads/rebuilds. Without this, two threads
+    // that both saw the entry stale would each run `Index::open` and race on
+    // the on-disk write — a torn multi-file read forces a redundant full
+    // rebuild, and a lost update only self-heals on the next call. The MCP
+    // server is single-threaded today, but the registry is process-wide and
+    // concurrency-designed, so close the TOCTOU properly. A single global lock
+    // (vs per-root) is fine: the slow path is rare and single-threaded in
+    // practice, so cross-repo contention is moot.
+    static LOAD_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _guard = LOAD_LOCK.lock().unwrap();
+
+    // Double-check: another thread may have refreshed the entry while we waited.
     let cached = registry().read().unwrap().get(&key).cloned();
     if let Some(cached) = cached {
         if cached.is_fresh() {

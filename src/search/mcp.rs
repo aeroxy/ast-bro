@@ -94,15 +94,22 @@ pub fn run_search(args: Value) -> CallResult {
         Err(e) => return CallResult::Error(format!("failed to open index: {e}")),
     };
     let scope = relative_posix(&args.path, &index.paths.root);
+    // Peel field-qualified filters (lang:/path:/name:) out of the query; lang:
+    // unions with the `languages` arg.
+    let parsed = crate::search::query::parse_query(&args.query);
+    let mut langs = args.languages;
+    langs.extend(parsed.languages);
     let opts = SearchOptions {
         top_k: args.top_k,
         alpha: args.alpha,
-        languages: if args.languages.is_empty() { None } else { Some(args.languages) },
+        languages: if langs.is_empty() { None } else { Some(langs) },
         query_scope: scope,
+        path_contains: parsed.paths,
+        name_contains: parsed.names,
     };
-    let hits = index.search(&args.query, &opts);
+    let hits = index.search(&parsed.text, &opts);
     let out = if args.json {
-        let alpha_used = resolve_alpha(&args.query, args.alpha);
+        let alpha_used = resolve_alpha(&parsed.text, args.alpha);
         // MCP clients typically parse JSON, so default to compact form.
         render_search_json(&args.query, alpha_used, &hits, /* pretty */ false)
     } else {

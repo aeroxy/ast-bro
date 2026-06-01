@@ -813,12 +813,8 @@ fn _extract_calls<'a, D: Doc>(node: &Node<'a, D>, src: &[u8]) -> Vec<CallSite> {
 }
 
 fn _callable_body<'a, D: Doc>(node: &Node<'a, D>) -> Option<Node<'a, D>> {
-    for c in node.children() {
-        if c.kind() == "function_body" || c.kind() == "block" {
-            return Some(c);
-        }
-    }
-    None
+    node.children()
+        .find(|c| c.kind() == "function_body" || c.kind() == "block")
 }
 
 fn _walk_calls_in_body<'a, D: Doc>(node: &Node<'a, D>, src: &[u8], out: &mut Vec<CallSite>) {

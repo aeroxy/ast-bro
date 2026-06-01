@@ -28,7 +28,7 @@ fn main() {
         },
         Err(e) if e.kind() == ErrorKind::NotFound => {
             eprintln!("error: 'ast-bro' binary not found.");
-            eprintln!("");
+            eprintln!();
             eprintln!("'ast-outline' is now a compatibility alias for 'ast-bro'.");
             eprintln!("Please install 'ast-bro' to continue:");
             eprintln!("  - cargo install ast-bro");

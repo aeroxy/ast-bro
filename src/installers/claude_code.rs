@@ -38,7 +38,7 @@ impl ClaudeCode {
     fn subagent_path(&self, scope: &Scope, name: &str) -> Result<PathBuf, String> {
         match scope {
             Scope::Local(root) => Ok(root.join(".claude/agents").join(format!("{}.md", name))),
-            Scope::Global => paths::under_home(&format!(".claude/agents/{}.md", name)),
+            Scope::Global => paths::under_home(format!(".claude/agents/{}.md", name)),
         }
     }
     fn mcp_path(&self, scope: &Scope) -> Result<PathBuf, String> {

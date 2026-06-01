@@ -215,6 +215,7 @@ impl Walker {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn _chase_indirect(
         &mut self,
         from_file: &Path,

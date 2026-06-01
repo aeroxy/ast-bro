@@ -391,9 +391,13 @@ fn sort_dedup(calls: &mut CallGraph) {
 
 fn recompute_call_stats(calls: &mut CallGraph) {
     use crate::calls::graph::{CallTarget, GraphStats};
-    let mut stats = GraphStats::default();
-    stats.function_count = calls.forward.len();
-    stats.type_count = calls.types.len();
+    let mut stats = GraphStats {
+        function_count: calls.forward.len(),
+        type_count: calls.types.len(),
+        // Preserve the original build_ms — incremental updates don't reset it.
+        build_ms: calls.stats.build_ms,
+        ..Default::default()
+    };
     for edges in calls.forward.values() {
         for e in edges {
             stats.edge_count += 1;
@@ -404,7 +408,5 @@ fn recompute_call_stats(calls: &mut CallGraph) {
             }
         }
     }
-    // Preserve the original build_ms — incremental updates don't reset it.
-    stats.build_ms = calls.stats.build_ms;
     calls.stats = stats;
 }

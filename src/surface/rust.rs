@@ -369,6 +369,7 @@ impl SurfaceWalker {
     /// Republish an item from `target_module::item` under
     /// `from_segments::alias`. If the item is itself a `pub use`, follow it
     /// transitively. If it's a real declaration, emit one entry.
+    #[allow(clippy::too_many_arguments, clippy::only_used_in_recursion)]
     fn _republish(
         &mut self,
         from_segments: &[String],
@@ -442,7 +443,7 @@ impl SurfaceWalker {
                 }
                 UseSegmentKind::Glob => {
                     self._republish(
-                        &from_segments.to_vec(),
+                        from_segments,
                         &nested_resolved,
                         item,
                         alias,
@@ -543,9 +544,7 @@ fn _resolve_path(
             out.extend(from.iter().cloned());
             while iter.peek().map(|s| s.as_str()) == Some("super") {
                 iter.next();
-                if out.pop().is_none() {
-                    return None;
-                }
+                out.pop()?;
             }
         }
         other => {
@@ -565,7 +564,7 @@ fn _resolve_path(
             }
         }
     }
-    while let Some(seg) = iter.next() {
+    for seg in iter {
         out.push(seg.clone());
     }
     Some(out)

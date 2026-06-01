@@ -6,9 +6,11 @@ Two new subcommands — `search` and `find-related` — and a per-repo persisten
 
 ```
 search "<query>":
-  tokenize(query)
+  parse_query(query)                   peel lang:/path:/name: filters; rest = text
+    → mask = language ∧ path-substring ∧ name-substring ∧ query_scope ∧ live
+  tokenize(text)
     ├─ BM25.get_scores(tokens, mask)  → top_k × 5 candidates
-    └─ encode_one(query) → cosine_topk(embeddings, mask)  → top_k × 5 candidates
+    └─ encode_one(text) → cosine_topk(embeddings, mask)  → top_k × 5 candidates
   RRF normalize each (k = 60)
   combine(alpha-weighted)              alpha auto: 0.3 symbol query, 0.5 NL
   boost_multi_chunk_files(...)         file coherence (+20% × file_sum/max_file_sum)
@@ -16,8 +18,8 @@ search "<query>":
                                        file-stem matches for NL queries
   rerank_topk(top_k, penalise_paths=True)
                                        test files 0.3×, compat dirs 0.3×,
-                                       __init__.py 0.5×, .d.ts 0.7×,
-                                       file-saturation decay (0.5^extra)
+                                       generated files 0.3×, __init__.py 0.5×,
+                                       .d.ts 0.7×, file-saturation decay (0.5^extra)
 
 find-related <file>:<line>:
   resolve_chunk(file, line)             prefer chunks where start ≤ line < end
@@ -25,6 +27,34 @@ find-related <file>:<line>:
   cosine_topk(embeddings, mask)         mask: same language, exclude self
   return top_k
 ```
+
+## Field-qualified queries
+
+`parse_query` (in `query.rs`) peels structured filters out of the raw query
+before retrieval, so an agent can narrow a search inline instead of via
+separate flags. Given:
+
+```
+lang:rust path:src/auth name:login how is the token refreshed
+```
+
+it splits into `lang=rust`, path-substring `src/auth`, name-substring
+`login`, and the free text `how is the token refreshed`. The filters become a
+post-filter mask (composed with the existing `--lang` flag and the
+path-derived `query_scope`); the free text is what BM25 + the embedder
+actually score, over the narrowed set.
+
+- `lang:` / `language:` — chunk language; **unions** with the `--lang` flag.
+- `path:` — case-insensitive substring of the chunk's repo-relative path.
+- `name:` — case-insensitive substring of the file's name. The index is
+  chunk-based (no per-symbol name), so `name:` matches the *file*, not a
+  symbol.
+
+Repeated fields OR together (`lang:rust lang:go` → either). Quoted values
+keep spaces (`path:"src/some path"`). An unknown prefix (`TODO:`,
+`http://x`) falls through to the free text, so a literal colon still
+searches. Filters are applied in `build_combined_mask` (`index.rs`) — the
+same masking path as language/scope/tombstone filtering.
 
 ## Module layout
 
@@ -38,6 +68,7 @@ src/search/
 ├── fusion.rs      RRF (k=60) + alpha resolver
 ├── ranking.rs     boosting + penalties + greedy top-k
 ├── cache.rs       mtime + xxhash3 delta detection
+├── query.rs       field-qualified query parser (lang:/path:/name:)
 ├── index.rs       orchestrator: build / open / search / find_related / persist
 ├── format.rs      text + JSON renderers (shared by CLI and MCP)
 ├── cli.rs         clap-side handlers — called from main.rs
@@ -99,7 +130,9 @@ Then four boosting / penalty passes:
 1. **`boost_multi_chunk_files`** — files with multiple high-scoring chunks get their top chunk lifted by `0.2 × max_score × (file_sum / max_file_sum)`.
 2. **Symbol queries** trigger `_boost_symbol_definitions`: chunks that *define* the queried name get `3× max_score` (1.5× multiplier if the file stem matches the symbol). Also scans non-candidate chunks whose file stem matches.
 3. **NL queries** trigger `_boost_stem_matches` (file/dir name overlap with query keywords) + `_boost_embedded_symbols` (PascalCase / camelCase identifiers in the query, half-strength definition boost).
-4. **`rerank_topk`** applies multiplicative path penalties (test files 0.3×, compat/legacy dirs 0.3×, examples 0.3×, `.d.ts` 0.7×, `__init__.py` / `package-info.java` 0.5×) and greedy file-saturation decay (2nd chunk from the same file × 0.5, 3rd × 0.25, ...).
+4. **`rerank_topk`** applies multiplicative path penalties (test files 0.3×, compat/legacy dirs 0.3×, examples 0.3×, generated files 0.3×, `.d.ts` 0.7×, `__init__.py` / `package-info.java` 0.5×) and greedy file-saturation decay (2nd chunk from the same file × 0.5, 3rd × 0.25, ...).
+
+**Generated-file down-ranking.** `generated_file_re` (`ranking.rs`) classifies machine-generated paths by suffix/marker: protobuf & gRPC stubs (`.pb.go`, `_grpc.pb.go`, `_pb2.py`, `.pb.{cc,h,dart,ts}`, …), Dart/Flutter codegen (`.g.dart`, `.freezed.dart`), C# designer output (`.Designer.cs`, `.g.cs`), gomock files (`_mock(s).go`, `mock_*.go`), minified bundles (`.min.js`, `.bundle.js`), and anything under a `generated/` / `__generated__/` directory. Suffixes are anchored to `$` and the directory marker requires an exact path component, so look-alikes (`general.rs`, `genesis.rs`, `codegen.rs`) never match. This stops a query like `Send` against a protobuf-heavy repo from burying the hand-written implementation under a dozen generated stubs.
 
 ## On-disk format
 

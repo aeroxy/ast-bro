@@ -19,6 +19,7 @@ use crate::calls::{render, traverse};
 use crate::deps::cli::find_root_for;
 use crate::graph_cache;
 
+#[allow(clippy::too_many_arguments)]
 pub fn run_callers(
     target: &str,
     path: &Path,
@@ -474,6 +475,54 @@ fn resolve_root(path: &Path) -> Result<PathBuf, String> {
         return Err(format!("path not found: {}", path.display()));
     }
     find_root_for(path)
+}
+
+/// `ast-bro trace <FROM> <TO>` — shortest static call path between two
+/// symbols, with each hop's body inlined. Reuses the same root resolution +
+/// lazy call-graph build as `callers`/`callees`.
+pub fn run_trace(
+    from: &str,
+    to: &str,
+    path: &Path,
+    depth: usize,
+    rebuild: bool,
+    json: bool,
+    pretty: bool,
+) -> i32 {
+    use crate::calls::trace::{render_trace, TraceOutcome};
+    let root = match resolve_root(path) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("# note: {}", e);
+            return 2;
+        }
+    };
+    let graph = match ensure_graph(&root, rebuild) {
+        Ok(g) => g,
+        Err(e) => {
+            eprintln!("# note: {}", e);
+            return 1;
+        }
+    };
+    let calls = match &graph.calls {
+        Some(c) => c,
+        None => {
+            eprintln!("# note: call graph is empty");
+            return 1;
+        }
+    };
+    let (out, outcome) = render_trace(calls, &root, from, to, depth, json, pretty);
+    print!("{}", out);
+    if !out.ends_with('\n') {
+        println!();
+    }
+    match outcome {
+        // Found a path, or both symbols resolved but no static path exists
+        // (the graceful response is the answer) → success.
+        TraceOutcome::Found | TraceOutcome::NoPath => 0,
+        // `<from>` or `<to>` matched no symbol → bad input.
+        TraceOutcome::Unresolved => 2,
+    }
 }
 
 fn ensure_graph(

@@ -1,6 +1,6 @@
 # Call graph
 
-Two subcommands — `callers` and `callees` — and a per-repo persistent call-graph cache that rides inside the same on-disk file as the dep graph (`.ast-bro/graph/index.bin`). This page documents the internal architecture. For the user-facing surface see the README. For the file-level import graph that the call-graph resolver leans on for disambiguation see [deps.md](deps.md). For what gets walked see [file-filtering.md](file-filtering.md).
+Three subcommands — `callers`, `callees`, and `trace` — and a per-repo persistent call-graph cache that rides inside the same on-disk file as the dep graph. This page documents the internal architecture. For the user-facing surface see the README. For the file-level import graph that the call-graph resolver leans on for disambiguation see [deps.md](deps.md). For what gets walked see [file-filtering.md](file-filtering.md).
 
 ## What it answers
 
@@ -64,6 +64,37 @@ callees <Sym>:                              # kind-aware:
   if type:     ancestor walk on `types[*].bases`, depth-limited
 ```
 
+## Tracing call paths (`trace`)
+
+`trace <FROM> <TO>` answers "how does `<from>` reach `<to>`?" — the chain of
+calls between two symbols, with each hop's source body inlined so a flow
+question (request→handler, update→render) is answered in **one** call instead
+of the agent manually chaining `callees`.
+
+- **Search**: a multi-source / multi-target BFS over `forward` (the callees
+  direction), following only `Resolved` edges, from any qn matching `<from>`
+  to any qn matching `<to>`. Returns the shortest path; `--depth N` caps the
+  hop count (default 12). Targets are suffix-matched exactly like `callers`
+  (`run`, `Type.method`, `src/f.rs:name`).
+- **Bodies inlined**: each node on the path is rendered with its source,
+  extracted via the same `core::find_symbols` path `show` uses (parsed files
+  are cached, so a path through one file parses it once). Output is
+  size-capped — `MAX_BODY_CHARS` per symbol, `MAX_TOTAL_CHARS` total — beyond
+  which remaining hops are listed header-only.
+- **Graceful failure**: when no static path exists — the chain broke at a
+  dynamic-dispatch / framework boundary (a callback, trait object, or route
+  handler ast-bro's precise resolver won't invent an edge for) — the response
+  still inlines both endpoints plus the target file's sibling callables, so
+  the agent has somewhere to look. A found path and a resolved-but-no-path are
+  both exit 0 (the output is the answer); only an unresolved `<from>` / `<to>`
+  is exit 2.
+- **JSON** (`--json`): `ast-bro.trace.v1` — `{from, to, found, hop_count,
+  hops: [{qn, file, line, kind, via, via_line, confidence, body}]}`, or
+  `{found: false, endpoints, siblings}` on the no-path branch.
+
+Lives in `src/calls/trace.rs` — a thin layer over the same `CallGraph.forward`
+map `callees` walks; it needs no new IR or cache state.
+
 ## Module layout
 
 ```
@@ -81,8 +112,9 @@ src/calls/
 ├── graph.rs        Qn, CallEdge, CallTarget, Confidence, CallableMeta,
 │                   TypeMeta, CallGraph, GraphStats
 ├── traverse.rs     forward / reverse BFS
+├── trace.rs        shortest-path BFS between two symbols, bodies inlined
 ├── render.rs       text + JSON renderers (palette matches core/surface)
-├── cli.rs          run_callers / run_callees + type-aware paths
+├── cli.rs          run_callers / run_callees / run_trace + type-aware paths
 ├── cli_helpers.rs  kind-aware target resolution (Callable vs Type)
 └── mcp.rs          MCP server wrappers
 ```
@@ -192,15 +224,15 @@ Languages still emitting empty `Declaration::calls`: **none.** JavaScript is ser
 
 ## Unified graph cache
 
-The call graph does **not** get its own cache file. It rides inside a unified `UnifiedGraph { deps, calls: Option<CallGraph> }` at `.ast-bro/graph/index.bin`. The schema constant is `JSON_SCHEMA_GRAPH_INDEX = "ast-bro.graph-index.v1"`.
+The call graph does **not** get its own cache file. It rides inside a unified `UnifiedGraph { deps, calls: Option<CallGraph> }` at `.ast-bro/deps/graph.bin`. The schema constant is `JSON_SCHEMA_GRAPH_INDEX = "ast-bro.graph-index.v1"`. (The directory keeps its `deps/` name even though it now holds the call graph too — renaming would force every existing user to rebuild from a new path for no benefit.)
 
 ### Disk layout
 
 ```
 .ast-bro/
 ├── .gitignore             # auto-written: "*"
-├── graph/
-│   ├── index.bin          # bincode UnifiedCacheFile { schema, graph, files }
+├── deps/
+│   ├── graph.bin          # bincode CacheFile { schema, graph, files }
 │   └── lock               # fs2 advisory exclusive lock during writes
 └── index/                 # see search.md
     └── ...
@@ -212,13 +244,31 @@ The call graph does **not** get its own cache file. It rides inside a unified `U
 
 ### Process-wide sharing
 
-`src/graph_cache/shared.rs` holds a `OnceLock<RwLock<HashMap<root, Arc<UnifiedGraph>>>>`. Within a single process — the `ast-bro mcp` long-running server is the case that matters — every `tools/call` reuses the same parsed `Arc<UnifiedGraph>`. Zero re-deserialisation, zero re-parse on warm hits. `Arc` swap on promotion means existing readers keep their pre-promotion view safely.
+`src/graph_cache/shared.rs` holds a process-wide
+`OnceLock<RwLock<HashMap<root, Entry>>>`, where each `Entry` pairs the parsed
+`Arc<UnifiedGraph>` with the `FileRecord` fingerprints it was built from.
+Within a single process — the `ast-bro mcp` long-running server is the case
+that matters — every `tools/call` goes through `get_or_init`, which:
 
-For one-shot CLI invocations the registry initialises, work happens, the process exits — equivalent to today.
+- **re-validates** the cached graph against the working tree on every call (a
+  stat-only `compute_delta` against the in-memory fingerprints in the steady
+  state — no `graph.bin` re-read); an unchanged tree returns the memoised
+  `Arc` with zero re-parse,
+- on a detected edit, patches the in-memory graph via the same
+  `apply_delta_*` machinery the cold load uses and swaps the `Arc`, so a
+  long-lived session reflects edits **without** `--rebuild` (this is the fix
+  for the prior "graph frozen after first query" behaviour), and
+- serialises the slow load / patch / rebuild path behind a process-wide load
+  lock with a double-check, so concurrent callers can't both load a stale
+  graph and race on the on-disk write.
+
+`Arc` swap on promotion or refresh means existing readers keep their prior
+view safely. For one-shot CLI invocations the registry initialises, work
+happens, the process exits.
 
 ### Schema migration
 
-The legacy `.ast-bro/deps/graph.bin` (`deps-index.v1`) was deleted in the v2.1.0 cut. Users with an old cache hit the schema-mismatch branch in `cache::load_with_delta`, the loader returns `LoadOutcome::Missing`, and `load_or_build` rebuilds into `.ast-bro/graph/index.bin`. One-time, transparent.
+The legacy `deps-index.v1` cache (at `.ast-bro/deps/graph.bin`) was retired in the v2.1.0 cut. Users with an old cache hit the schema-mismatch branch in `cache::load_with_delta`, the loader returns `LoadOutcome::Missing`, and `load_or_build` rebuilds in place at `.ast-bro/deps/graph.bin` — the schema bumped (`deps-index.v1` → `graph-index.v1`), the path stayed. One-time, transparent.
 
 The schema bump from `graph-index.v1` to `v2` happened mid-development to fix a silent bincode round-trip bug — `#[serde(skip_serializing_if)]` on `DepEdge::local_name` / `raw_path` and `CallEdge::receiver` / `candidates` corrupts bincode's positional encoding (a skipped Option/Vec field shifts every byte that follows). The skip annotations were a JSON-output ergonomics holdover that never applied to the cache; binary positional formats *require* every field to be encoded. Removed the annotations, bumped the schema, and any v1 cache files (which were all corrupt and silently re-cold-built every invocation) get a clean rebuild.
 
@@ -267,7 +317,7 @@ For `ast-bro mcp`, where the in-process `Arc<UnifiedGraph>` already shared parse
 
 ### Concurrency
 
-Same pattern as the search index and the legacy deps cache: `fs2` advisory exclusive lock at `.ast-bro/graph/lock` during writes; atomic `.tmp` + rename so a SIGKILL mid-write leaves the previous cache intact. Reads use the in-memory `Arc` and don't touch the lock.
+Same pattern as the search index: `fs2` advisory exclusive lock at `.ast-bro/deps/lock` during writes; atomic `.tmp` + rename so a SIGKILL mid-write leaves the previous cache intact. Reads use the in-memory `Arc` and don't touch the lock.
 
 ## Known gaps
 

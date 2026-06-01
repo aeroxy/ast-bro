@@ -199,7 +199,7 @@ fn unknown_lang_errors_cleanly() {
     // Unknown --lang is a handled CLI error: stay rc=0, print a `# note:`
     // on stdout so agentic harnesses don't abort the surrounding bash batch.
     let out = Command::new(bin())
-        .args(&["surface", ".", "--lang", "cobol"])
+        .args(["surface", ".", "--lang", "cobol"])
         .env("NO_COLOR", "1")
         .output()
         .expect("run");

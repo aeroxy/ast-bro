@@ -3,8 +3,8 @@
 //! `ast-bro run -p 'pattern'` finds AST nodes matching the pattern.
 //! `ast-bro run -p 'pattern' -r 'replacement'` rewrites matched nodes.
 //!
-//! Uses ast-grep-core's `Root::find_all()` for search and `Root::replace()`
-//! + `Root::generate()` for rewrite. Meta-variables ($A, $$$ARGS, $_) work
+//! Uses ast-grep-core's `Root::find_all()` for search and `Root::replace()` +
+//! `Root::generate()` for rewrite. Meta-variables ($A, $$$ARGS, $_) work
 //! exactly like ast-grep.
 
 pub mod cli;
@@ -37,7 +37,7 @@ pub fn search(
     pattern: &str,
 ) -> Result<Vec<RunMatch>, String> {
     use ast_grep_core::Pattern;
-    let compiled = Pattern::try_new(pattern, lang.clone())
+    let compiled = Pattern::try_new(pattern, lang)
         .map_err(|e| format!("invalid pattern: {}", e))?;
     search_with_pattern(source, lang, &compiled)
 }
@@ -51,7 +51,7 @@ pub fn search_with_pattern(
     lang: SupportLang,
     pattern: &ast_grep_core::Pattern,
 ) -> Result<Vec<RunMatch>, String> {
-    let ast = lang.ast_grep(source.to_string());
+    let ast = lang.ast_grep(source);
     let matches: Vec<RunMatch> = ast
         .root()
         .find_all(pattern.clone())
@@ -81,7 +81,7 @@ pub fn rewrite_with_pattern(
     pattern: &ast_grep_core::Pattern,
     replacement: &str,
 ) -> Result<Option<String>, String> {
-    let mut ast = lang.ast_grep(source.to_string());
+    let mut ast = lang.ast_grep(source);
     let replaced = ast.replace(pattern.clone(), replacement)?;
     if replaced {
         Ok(Some(ast.generate()))
@@ -200,7 +200,7 @@ pub fn rewrite(
     replacement: &str,
 ) -> Result<Option<String>, String> {
     use ast_grep_core::Pattern;
-    let compiled = Pattern::try_new(pattern, lang.clone())
+    let compiled = Pattern::try_new(pattern, lang)
         .map_err(|e| format!("invalid pattern: {}", e))?;
     rewrite_with_pattern(source, lang, &compiled, replacement)
 }

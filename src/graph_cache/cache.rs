@@ -73,8 +73,12 @@ pub fn lock_path(root: &Path) -> PathBuf {
 /// enough state for an incremental update — caller can choose to apply the
 /// delta in place rather than rebuilding from scratch.
 pub enum LoadOutcome {
-    /// Cache exists, schema matches, no files changed.
-    Fresh(UnifiedGraph),
+    /// Cache exists, schema matches, no files changed. Carries the persisted
+    /// fingerprints so callers can keep them in memory for cheap re-validation.
+    Fresh {
+        graph: UnifiedGraph,
+        records: Vec<FileRecord>,
+    },
     /// Cache exists and schema matches, but files changed on disk. The
     /// `delta` distinguishes added / modified / removed / mtime_only so a
     /// per-file patcher can apply only the diff.
@@ -105,7 +109,10 @@ pub fn load_with_delta(root: &Path) -> LoadOutcome {
     }
     let delta = compute_delta(root, root, &cf.files);
     if !delta.requires_rebuild() {
-        return LoadOutcome::Fresh(cf.graph);
+        return LoadOutcome::Fresh {
+            graph: cf.graph,
+            records: cf.files,
+        };
     }
     LoadOutcome::Stale {
         graph: cf.graph,
@@ -115,24 +122,29 @@ pub fn load_with_delta(root: &Path) -> LoadOutcome {
 }
 
 /// Build a fresh `UnifiedGraph` (deps half only — call graph is materialised
-/// later via `promote_calls`) and persist it.
-pub fn build_and_save(root: &Path) -> std::io::Result<UnifiedGraph> {
+/// later via `promote_calls`), persist it, and return it with the file
+/// fingerprints captured during the build.
+fn build_with_records(root: &Path) -> std::io::Result<(UnifiedGraph, Vec<FileRecord>)> {
     let deps = build_graph(root).map_err(std::io::Error::other)?;
     let graph = UnifiedGraph::from_deps(deps);
     let records = collect_file_records(root)?;
     let _ = save(root, &graph, &records);
-    Ok(graph)
+    Ok((graph, records))
 }
 
-/// Load from cache when possible; on a stale cache try a per-file patch
-/// (covering both halves), only falling back to a full rebuild when the
-/// patch fails. `force_rebuild` skips the cache entirely.
-pub fn load_or_build(root: &Path, force_rebuild: bool) -> std::io::Result<UnifiedGraph> {
+/// Build a fresh `UnifiedGraph` + fingerprints and persist them, returning
+/// the graph with the file records it reflects. The shared registry holds
+/// the records in memory so it can re-validate against the working tree
+/// later without re-reading `graph.bin`.
+pub fn load_or_build_with_records(
+    root: &Path,
+    force_rebuild: bool,
+) -> std::io::Result<(UnifiedGraph, Vec<FileRecord>)> {
     if force_rebuild {
-        return build_and_save(root);
+        return build_with_records(root);
     }
     match load_with_delta(root) {
-        LoadOutcome::Fresh(g) => Ok(g),
+        LoadOutcome::Fresh { graph, records } => Ok((graph, records)),
         LoadOutcome::Stale {
             mut graph,
             delta,
@@ -141,7 +153,7 @@ pub fn load_or_build(root: &Path, force_rebuild: bool) -> std::io::Result<Unifie
             // Deps half: per-file patch. Failure (e.g. an extractor erroring)
             // falls back to a full rebuild so the user's query still succeeds.
             if apply_delta_to_deps(&mut graph.deps, root, &delta).is_err() {
-                return build_and_save(root);
+                return build_with_records(root);
             }
             // Calls half: only patch when the on-disk cache had it. A
             // None calls field stays None; the next callers/callees query
@@ -158,9 +170,9 @@ pub fn load_or_build(root: &Path, force_rebuild: bool) -> std::io::Result<Unifie
             // re-detect the same delta and re-patch).
             let new_records = refresh_records(prev_records, root, &delta);
             let _ = save(root, &graph, &new_records);
-            Ok(graph)
+            Ok((graph, new_records))
         }
-        LoadOutcome::Missing => build_and_save(root),
+        LoadOutcome::Missing => build_with_records(root),
     }
 }
 
@@ -201,6 +213,51 @@ pub fn save(
 
     fs2::FileExt::unlock(&lock).ok();
     Ok(())
+}
+
+fn write_gitignore(dir: &Path) -> std::io::Result<()> {
+    let p = dir.parent().map(|d| d.join(".gitignore"));
+    if let Some(p) = p {
+        if !p.exists() {
+            fs::write(&p, "*\n")?;
+        }
+    }
+    Ok(())
+}
+
+/// Build a `Vec<FileRecord>` describing the current state of every
+/// indexable file in `root`. Reuses search's `compute_delta` against an
+/// empty cache to populate hashes.
+pub fn collect_file_records(root: &Path) -> std::io::Result<Vec<FileRecord>> {
+    let delta = compute_delta(root, root, &[]);
+    let mut out = Vec::with_capacity(delta.added.len());
+    for path in delta.added {
+        let meta = std::fs::metadata(&path)?;
+        let mtime = meta.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+        let mtime_ns = match mtime.duration_since(std::time::SystemTime::UNIX_EPOCH) {
+            Ok(d) => d.as_nanos() as i128,
+            Err(e) => -(e.duration().as_nanos() as i128),
+        };
+        let rel = path
+            .strip_prefix(root)
+            .map(|r| {
+                r.components()
+                    .map(|c| c.as_os_str().to_string_lossy().into_owned())
+                    .collect::<Vec<_>>()
+                    .join("/")
+            })
+            .unwrap_or_else(|_| path.display().to_string());
+        let hash = hash_file(&path).unwrap_or(0);
+        out.push(FileRecord {
+            path: rel,
+            mtime_ns,
+            size: meta.len(),
+            content_hash: hash,
+            chunk_start: 0,
+            chunk_end: 0,
+        });
+    }
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -272,49 +329,4 @@ mod tests {
             "reload from disk must see promoted calls"
         );
     }
-}
-
-fn write_gitignore(dir: &Path) -> std::io::Result<()> {
-    let p = dir.parent().map(|d| d.join(".gitignore"));
-    if let Some(p) = p {
-        if !p.exists() {
-            fs::write(&p, "*\n")?;
-        }
-    }
-    Ok(())
-}
-
-/// Build a `Vec<FileRecord>` describing the current state of every
-/// indexable file in `root`. Reuses search's `compute_delta` against an
-/// empty cache to populate hashes.
-pub fn collect_file_records(root: &Path) -> std::io::Result<Vec<FileRecord>> {
-    let delta = compute_delta(root, root, &[]);
-    let mut out = Vec::with_capacity(delta.added.len());
-    for path in delta.added {
-        let meta = std::fs::metadata(&path)?;
-        let mtime = meta.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-        let mtime_ns = match mtime.duration_since(std::time::SystemTime::UNIX_EPOCH) {
-            Ok(d) => d.as_nanos() as i128,
-            Err(e) => -(e.duration().as_nanos() as i128),
-        };
-        let rel = path
-            .strip_prefix(root)
-            .map(|r| {
-                r.components()
-                    .map(|c| c.as_os_str().to_string_lossy().into_owned())
-                    .collect::<Vec<_>>()
-                    .join("/")
-            })
-            .unwrap_or_else(|_| path.display().to_string());
-        let hash = hash_file(&path).unwrap_or(0);
-        out.push(FileRecord {
-            path: rel,
-            mtime_ns,
-            size: meta.len(),
-            content_hash: hash,
-            chunk_start: 0,
-            chunk_end: 0,
-        });
-    }
-    Ok(out)
 }

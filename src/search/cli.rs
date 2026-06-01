@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 /// Run `ast-bro search <QUERY> [PATH]`. Returns process exit code.
 pub fn run_search(
     query: &str,
-    path: &PathBuf,
+    path: &Path,
     top_k: usize,
     alpha: Option<f32>,
     languages: Vec<String>,
@@ -31,15 +31,22 @@ pub fn run_search(
         }
     };
     let scope = derive_query_scope(path, &index.paths.root);
+    // Peel field-qualified filters (lang:/path:/name:) out of the query; the
+    // remainder is the actual retrieval text. lang: filters union with --lang.
+    let parsed = crate::search::query::parse_query(query);
+    let mut langs = languages;
+    langs.extend(parsed.languages);
     let opts = SearchOptions {
         top_k,
         alpha,
-        languages: if languages.is_empty() { None } else { Some(languages) },
+        languages: if langs.is_empty() { None } else { Some(langs) },
         query_scope: scope,
+        path_contains: parsed.paths,
+        name_contains: parsed.names,
     };
-    let hits = index.search(query, &opts);
+    let hits = index.search(&parsed.text, &opts);
     if json {
-        let alpha_used = resolve_alpha(query, alpha);
+        let alpha_used = resolve_alpha(&parsed.text, alpha);
         println!("{}", render_search_json(query, alpha_used, &hits, pretty));
     } else {
         print!("{}", render_search_text(query, &hits));
@@ -51,7 +58,7 @@ pub fn run_search(
 pub fn run_find_related(
     file_path: &str,
     line: u32,
-    path: &PathBuf,
+    path: &Path,
     top_k: usize,
     json: bool,
     pretty: bool,
@@ -94,7 +101,7 @@ pub fn run_find_related(
 /// Run `ast-bro index [PATH]`. With `--rebuild`, drops any existing
 /// cache and rebuilds from scratch. With `--stats`, just prints stats and
 /// exits 0 if an index exists, 2 if not.
-pub fn run_index(path: &PathBuf, rebuild: bool, stats: bool, json: bool, pretty: bool) -> i32 {
+pub fn run_index(path: &Path, rebuild: bool, stats: bool, json: bool, pretty: bool) -> i32 {
     let cwd = current_dir_or_dot();
 
     if stats {
@@ -224,7 +231,7 @@ fn peek_recorded_corpus(home: &Path) -> Option<String> {
 /// `Some("")` (no filter) when path == home, `Some("packages/x")` when path
 /// is a subdir, and `None` when path doesn't fall under home.
 fn derive_query_scope(path_arg: &Path, home: &Path) -> Option<String> {
-    relative_posix(path_arg, home).map(|s| s)
+    relative_posix(path_arg, home)
 }
 
 /// Best-effort canonicalize for find-related's chunk lookup.

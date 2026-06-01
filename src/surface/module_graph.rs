@@ -34,10 +34,5 @@ pub fn resolve_mod_file(containing_file: &Path, m: &ModRef) -> Option<PathBuf> {
         parent.join(&m.name).join("mod.rs"),
         parent.join(&m.name).join(format!("{}.rs", m.name)),
     ];
-    for c in candidates {
-        if c.is_file() {
-            return Some(c);
-        }
-    }
-    None
+    candidates.into_iter().find(|c| c.is_file())
 }

@@ -111,7 +111,11 @@ pub fn compute_delta(
         if is_indexable(path).is_none() {
             continue;
         }
-        let meta = match fs::metadata(path) {
+        // Reuse the walker's metadata (cached from the directory scan on most
+        // platforms) instead of a fresh `fs::metadata` syscall. Safe here: the
+        // `is_file()` check above already excluded symlinks/dirs, so this is a
+        // regular file and matches what `fs::metadata` would return.
+        let meta = match entry.metadata() {
             Ok(m) => m,
             Err(_) => continue,
         };

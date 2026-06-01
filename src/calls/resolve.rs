@@ -216,6 +216,7 @@ pub fn run_with_table(
 /// to a project file via the suffix index, then qualifying `name` inside it.
 /// Returns `None` when the module isn't resolvable to a project file
 /// (likely an external dep — we leave that to pass-B/C).
+#[allow(clippy::too_many_arguments)] // resolution context is genuinely wide
 fn resolve_via_imports(
     spec: &str,
     bare_name: &str,

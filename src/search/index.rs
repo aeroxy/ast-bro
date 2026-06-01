@@ -152,6 +152,12 @@ pub struct SearchOptions {
     /// If set, restrict to chunks whose `file_path` starts with this POSIX
     /// prefix (relative to home). `""` or `None` = no filter.
     pub query_scope: Option<String>,
+    /// `path:` filters — keep only chunks whose `file_path` (lowercased)
+    /// contains ANY of these substrings. Empty = no filter.
+    pub path_contains: Vec<String>,
+    /// `name:` filters — keep only chunks whose file name/stem (lowercased)
+    /// contains ANY of these substrings. Empty = no filter.
+    pub name_contains: Vec<String>,
 }
 
 impl SearchOptions {
@@ -421,8 +427,8 @@ impl Index {
 
     /// Apply a delta in place: tombstone removed/modified files' old
     /// chunks, re-chunk + re-embed modified/added files, append new chunks
-    /// + embedding rows, rebuild BM25 over the live set, refresh mtime-only
-    /// records, and persist the four binaries + meta.
+    /// plus embedding rows, rebuild BM25 over the live set, refresh
+    /// mtime-only records, and persist the four binaries + meta.
     ///
     /// On any I/O failure during persistence, the in-memory state may be
     /// partially updated; the caller (Index::open) treats this as a hard
@@ -696,12 +702,15 @@ impl Index {
         let alpha = resolve_alpha(query, opts.alpha);
         let candidate_count = opts.top_k * 5;
 
-        // Build combined mask: language ∧ query_scope ∧ live. Any may be None.
+        // Build combined mask: language ∧ query_scope ∧ live ∧ path: ∧ name:.
+        // Any may be inactive.
         let mask = build_combined_mask(
             &self.chunks,
             opts.languages.as_deref(),
             opts.query_scope.as_deref(),
             self.live_mask.as_deref(),
+            &opts.path_contains,
+            &opts.name_contains,
         );
 
         // Coverage-gap warning: if query_scope is set and points outside the
@@ -869,11 +878,15 @@ fn build_combined_mask(
     languages: Option<&[String]>,
     query_scope: Option<&str>,
     live_mask: Option<&[bool]>,
+    path_contains: &[String],
+    name_contains: &[String],
 ) -> Option<Vec<bool>> {
     let lang_active = languages.is_some_and(|l| !l.is_empty());
     let scope_active = query_scope.is_some_and(|s| !s.is_empty());
     let live_active = live_mask.is_some();
-    if !lang_active && !scope_active && !live_active {
+    let path_active = !path_contains.is_empty();
+    let name_active = !name_contains.is_empty();
+    if !lang_active && !scope_active && !live_active && !path_active && !name_active {
         return None;
     }
     Some(
@@ -887,10 +900,27 @@ fn build_combined_mask(
                 };
                 let scope_ok = scope_matches(query_scope, &c.file_path);
                 let live_ok = live_mask.is_none_or(|m| m[i]);
-                lang_ok && scope_ok && live_ok
+                let path_ok = path_contains.is_empty() || {
+                    let p = c.file_path.to_ascii_lowercase();
+                    path_contains.iter().any(|s| p.contains(s.as_str()))
+                };
+                let name_ok = name_contains.is_empty() || {
+                    let name = file_name_lower(&c.file_path);
+                    name_contains.iter().any(|s| name.contains(s.as_str()))
+                };
+                lang_ok && scope_ok && live_ok && path_ok && name_ok
             })
             .collect(),
     )
+}
+
+/// Lowercased file name (basename) for `name:` substring matching.
+fn file_name_lower(file_path: &str) -> String {
+    Path::new(file_path)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or(file_path)
+        .to_ascii_lowercase()
 }
 
 /// Build a `live[i] == !is_tombstoned(i)` mask, or `None` when there are no
@@ -913,7 +943,7 @@ fn build_live_mask(chunk_count: usize, tombstones: &[u32]) -> Option<Vec<bool>> 
 fn scope_matches(query_scope: Option<&str>, file_path: &str) -> bool {
     match query_scope {
         None => true,
-        Some(s) if s.is_empty() => true,
+        Some("") => true,
         Some(s) => path_starts_with(file_path, s),
     }
 }
@@ -1039,9 +1069,10 @@ fn walk_and_chunk(walk_root: &Path, strip_root: &Path, repo_root: &Path) -> (Vec
         }
         // Skip oversized files — must match the guard in `compute_delta` so
         // the build and delta walks agree on the file set (see
-        // MAX_INDEX_FILE_BYTES). On a metadata error we fall through and let
-        // the per-file FileRecord stat below drop it.
-        if fs::metadata(p).map(|m| m.len()).unwrap_or(0) > MAX_INDEX_FILE_BYTES {
+        // MAX_INDEX_FILE_BYTES). Reuse the walker's cached metadata; on an
+        // error we fall through and let the per-file FileRecord stat below
+        // drop it.
+        if entry.metadata().map(|m| m.len()).unwrap_or(0) > MAX_INDEX_FILE_BYTES {
             continue;
         }
         paths.push(p.to_path_buf());
@@ -1081,8 +1112,7 @@ fn acquire_lock(paths: &IndexPaths) -> io::Result<fs::File> {
         .truncate(false)
         .open(&paths.lock)?;
     lock_file.lock_exclusive().map_err(|e| {
-        io::Error::new(
-            io::ErrorKind::Other,
+        io::Error::other(
             format!("could not acquire index lock: {e}"),
         )
     })?;
@@ -1091,7 +1121,7 @@ fn acquire_lock(paths: &IndexPaths) -> io::Result<fs::File> {
 
 fn write_meta(path: &Path, meta: &Meta) -> io::Result<()> {
     let json = serde_json::to_vec_pretty(meta)
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        .map_err(io::Error::other)?;
     write_atomic(path, &json)
 }
 
@@ -1102,7 +1132,7 @@ fn read_meta(path: &Path) -> io::Result<Meta> {
 
 fn write_bincode<T: Serialize>(path: &Path, value: &T) -> io::Result<()> {
     let bytes = bincode::serde::encode_to_vec(value, bincode::config::standard())
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        .map_err(io::Error::other)?;
     write_atomic(path, &bytes)
 }
 
@@ -1411,8 +1441,8 @@ mod tests {
             language: "rust".to_string(),
         };
         let chunks = vec![mk()];
-        assert!(build_combined_mask(&chunks, None, None, None).is_none());
-        assert!(build_combined_mask(&chunks, None, Some(""), None).is_none());
+        assert!(build_combined_mask(&chunks, None, None, None, &[], &[]).is_none());
+        assert!(build_combined_mask(&chunks, None, Some(""), None, &[], &[]).is_none());
     }
 
     #[test]
@@ -1437,6 +1467,8 @@ mod tests {
             Some(&["rust".to_string()]),
             Some("src"),
             None,
+            &[],
+            &[],
         )
         .expect("filters active → some mask");
         assert_eq!(mask, vec![true, false, false, true]);
@@ -1448,9 +1480,39 @@ mod tests {
             Some(&["rust".to_string()]),
             Some("src"),
             Some(&live),
+            &[],
+            &[],
         )
         .expect("filters active");
         assert_eq!(mask, vec![true, false, false, false]);
+    }
+
+    #[test]
+    fn build_combined_mask_path_and_name_filters() {
+        let mk = |p: &str| Chunk {
+            content: String::new(),
+            file_path: p.to_string(),
+            start_line: 0,
+            end_line: 0,
+            start_byte: 0,
+            end_byte: 0,
+            language: "rust".to_string(),
+        };
+        let chunks = vec![
+            mk("src/auth/login.rs"),
+            mk("src/http/handler.rs"),
+            mk("src/auth/logout.rs"),
+        ];
+        // path: keeps only the auth dir.
+        let mask =
+            build_combined_mask(&chunks, None, None, None, &["auth".to_string()], &[])
+                .expect("path filter active");
+        assert_eq!(mask, vec![true, false, true]);
+        // name: matches the file basename only (not the dir).
+        let mask =
+            build_combined_mask(&chunks, None, None, None, &[], &["login".to_string()])
+                .expect("name filter active");
+        assert_eq!(mask, vec![true, false, false]);
     }
 
     #[test]

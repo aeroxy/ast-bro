@@ -243,7 +243,7 @@ mod tests {
     #[test]
     fn related_text_and_json() {
         let h = hit("b.rs", 0.7, "y");
-        let txt = render_related_text("a.rs", 12, &[h.clone()]);
+        let txt = render_related_text("a.rs", 12, std::slice::from_ref(&h));
         assert!(txt.contains("a.rs:12"));
         let v: Value = serde_json::from_str(&render_related_json("a.rs", 12, &[h], true)).unwrap();
         assert_eq!(v["schema"], JSON_SCHEMA_RELATED);

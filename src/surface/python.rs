@@ -149,6 +149,7 @@ impl Walker {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn _follow_from_import(
         &mut self,
         from_segments: &[String],

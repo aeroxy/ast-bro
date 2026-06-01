@@ -242,6 +242,22 @@ pub fn list() -> Value {
                 }
             },
             {
+                "name": "trace",
+                "description": "Trace the static call path between two symbols — \"how does <from> reach <to>?\". Shortest-path BFS over the call graph with each hop's source body inlined, so a flow question (e.g. request→handler, update→render) is answered in ONE call instead of chaining `callers`/`callees`. If no static path exists the chain broke at dynamic dispatch — the response inlines both endpoints plus the target file's sibling callables. Targets are suffix-matched like `callers`. Returns text by default; set `json: true` for `ast-bro.trace.v1`.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "from":    { "type": "string",  "description": "Source symbol — where the path starts." },
+                        "to":      { "type": "string",  "description": "Destination symbol — where the path should reach." },
+                        "path":    { "type": "string",  "description": "Repo root (default \".\")." },
+                        "depth":   { "type": "integer", "description": "Max path length in hops (default 12).", "minimum": 1 },
+                        "rebuild": { "type": "boolean" },
+                        "json":    { "type": "boolean" }
+                    },
+                    "required": ["from", "to"]
+                }
+            },
+            {
                 "name": "run",
                 "description": "AST-aware pattern search and rewrite. Use metavariables like $FUNC, $ARG, $$$BODY for structural matching. Search-only without rewrite; transform code with rewrite and write. WARNING: `write: true` mutates files on disk — a broad pattern can touch many files at once (capped at 50 per call). Always preview with the default dry-run first and confirm the diff before re-running with `write: true`. Returns text by default; set `json: true` for `ast-bro.run.v1`.",
                 "inputSchema": {
@@ -300,6 +316,7 @@ pub fn call(name: &str, args: Value) -> CallResult {
         "index"        => crate::search::mcp::run_index(args),
         "callers"      => run_callers(args),
         "callees"      => run_callees(args),
+        "trace"        => run_trace(args),
         "run"          => run_run(args),
         "squeeze"      => run_squeeze(args),
         other => CallResult::Error(format!("unknown tool: {}", other)),
@@ -370,6 +387,33 @@ fn run_callees(args: Value) -> CallResult {
         Err(e) => return CallResult::Error(e),
     };
     let out = crate::calls::mcp::run_callees_text(&a.target, &root, a.depth, a.external, a.json);
+    CallResult::Text(out)
+}
+
+#[derive(serde::Deserialize)]
+struct TraceArgs {
+    from: String,
+    to: String,
+    #[serde(default = "default_dot")]
+    path: PathBuf,
+    #[serde(default = "default_trace_depth")]
+    depth: usize,
+    #[serde(default)]
+    json: bool,
+}
+
+fn default_trace_depth() -> usize { 12 }
+
+fn run_trace(args: Value) -> CallResult {
+    let a: TraceArgs = match serde_json::from_value(args) {
+        Ok(a) => a,
+        Err(e) => return CallResult::Error(format!("bad args: {}", e)),
+    };
+    let root = match resolve_root(&a.path) {
+        Ok(r) => r,
+        Err(e) => return CallResult::Error(e),
+    };
+    let out = crate::calls::mcp::run_trace_text(&a.from, &a.to, &root, a.depth, a.json);
     CallResult::Text(out)
 }
 

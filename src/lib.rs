@@ -378,6 +378,33 @@ enum Commands {
         #[arg(long)]
         compact: bool,
     },
+    /// Trace the static call path between two symbols — "how does <FROM> reach <TO>?"
+    ///
+    /// Shortest-path BFS over the call graph, with each hop's source body
+    /// inlined so a flow question is answered in one call instead of chaining
+    /// `callees`. When no static path exists (the chain broke at dynamic
+    /// dispatch), both endpoints + the target file's siblings are shown.
+    /// Targets are suffix-matched like `callers` (`run`, `Type.method`, or
+    /// `src/f.rs:name`).
+    Trace {
+        /// Source symbol — where the call path starts.
+        from: String,
+        /// Destination symbol — where the call path should reach.
+        to: String,
+        /// Repository root (default: ".").
+        #[arg(default_value = ".")]
+        path: PathBuf,
+        /// Max path length in hops.
+        #[arg(long, default_value_t = 12)]
+        depth: usize,
+        /// Force a fresh call-graph build.
+        #[arg(long)]
+        rebuild: bool,
+        #[arg(long)]
+        json: bool,
+        #[arg(long)]
+        compact: bool,
+    },
     /// Build, refresh, or inspect the per-repo search index
     Index {
         /// Repository root (default: ".")
@@ -1142,6 +1169,26 @@ pub fn run() {
                     path,
                     *depth,
                     *external,
+                    *rebuild,
+                    *json,
+                    !(*compact),
+                );
+                std::process::exit(exit);
+            }
+            Commands::Trace {
+                from,
+                to,
+                path,
+                depth,
+                rebuild,
+                json,
+                compact,
+            } => {
+                let exit = crate::calls::cli::run_trace(
+                    from,
+                    to,
+                    path,
+                    *depth,
                     *rebuild,
                     *json,
                     !(*compact),

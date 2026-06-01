@@ -194,7 +194,7 @@ fn discover_rust(root: &Path) -> Result<EntryPoint, SurfaceError> {
 
     let manifest = manifest::parse_cargo_toml(&manifest_path).ok_or_else(|| SurfaceError::Io {
         path: manifest_path.clone(),
-        source: std::io::Error::new(std::io::ErrorKind::Other, "cannot read Cargo.toml"),
+        source: std::io::Error::other("cannot read Cargo.toml"),
     })?;
 
     // Workspace?

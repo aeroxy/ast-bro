@@ -43,6 +43,31 @@ pub fn run_callers_text(target: &str, root: &Path, depth: usize, limit: usize, i
     }
 }
 
+pub fn run_trace_text(from: &str, to: &str, root: &Path, depth: usize, json: bool) -> String {
+    use crate::calls::build::build_call_graph;
+    use crate::calls::trace::render_trace;
+    use crate::graph_cache;
+
+    let unified = match graph_cache::get_or_init(root) {
+        Ok(u) => u,
+        Err(e) => return format!("# error: {}", e),
+    };
+    let promoted = if unified.calls.is_some() {
+        unified
+    } else {
+        match graph_cache::promote_calls(root, |g| build_call_graph(root, &g.deps)) {
+            Ok(p) => p,
+            Err(e) => return format!("# error: {}", e),
+        }
+    };
+    let calls = match &promoted.calls {
+        Some(c) => c,
+        None => return "# error: call graph unavailable".to_string(),
+    };
+    let (out, _outcome) = render_trace(calls, root, from, to, depth.max(1), json, false);
+    out
+}
+
 pub fn run_callees_text(target: &str, root: &Path, depth: usize, external: bool, json: bool) -> String {
     use crate::calls::build::build_call_graph;
     use crate::calls::graph::Qn;
