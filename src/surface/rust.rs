@@ -314,10 +314,6 @@ impl SurfaceWalker {
                 }
                 let item = resolved.last().unwrap().clone();
                 let target_module = resolved[..resolved.len() - 1].to_vec();
-                let cycle_key = (target_module.join("::"), item.clone());
-                if !self.visited.insert(cycle_key) {
-                    return;
-                }
                 let alias = u.alias.clone().unwrap_or_else(|| item.clone());
                 self._republish(
                     from_segments,
@@ -334,19 +330,30 @@ impl SurfaceWalker {
                 let target_module = resolved.clone();
                 let key = ModuleGraph::key(&target_module);
                 let target_data = match self.graph.modules.get(&key) {
-                    Some(m) => (
-                        m.file.clone(),
-                        m.parse.declarations.clone(),
-                        m.imports.uses.clone(),
-                    ),
+                    Some(m) => {
+                        let decls: Vec<Declaration> = m
+                            .parse
+                            .declarations
+                            .iter()
+                            .filter(|d| {
+                                _is_public(d) && !matches!(d.kind, DeclarationKind::Namespace)
+                            })
+                            .cloned()
+                            .collect();
+                        let uses: Vec<UseItem> = m
+                            .imports
+                            .uses
+                            .iter()
+                            .filter(|u| _vis_is_public(&u.visibility))
+                            .cloned()
+                            .collect();
+                        (m.file.clone(), decls, uses)
+                    }
                     None => return,
                 };
                 let (target_file, target_decls, target_uses) = target_data;
 
                 for d in &target_decls {
-                    if !_is_public(d) || matches!(d.kind, DeclarationKind::Namespace) {
-                        continue;
-                    }
                     let cycle_key = (key.clone(), d.name.clone());
                     if !self.visited.insert(cycle_key) {
                         continue;
@@ -362,9 +369,6 @@ impl SurfaceWalker {
                 }
                 // Transitive globs: target's own pub uses become reachable too.
                 for tu in target_uses {
-                    if !_vis_is_public(&tu.visibility) {
-                        continue;
-                    }
                     let mut next_chain = chain.clone();
                     next_chain.push(ReExportHop {
                         file: target_file.clone(),
@@ -401,40 +405,51 @@ impl SurfaceWalker {
         if depth > self.max_depth {
             return;
         }
+        let cycle_key = (ModuleGraph::key(target_module), item.to_string());
+        if !self.visited.insert(cycle_key) {
+            return;
+        }
         let key = ModuleGraph::key(target_module);
         let target_data = match self.graph.modules.get(&key) {
-            Some(m) => (
-                m.file.clone(),
-                m.parse.declarations.clone(),
-                m.imports.uses.clone(),
-            ),
+            Some(m) => {
+                let decl = m
+                    .parse
+                    .declarations
+                    .iter()
+                    .find(|d| d.name == item && _is_public(d))
+                    .cloned();
+                let uses: Vec<UseItem> = m
+                    .imports
+                    .uses
+                    .iter()
+                    .filter(|tu| {
+                        if !_vis_is_public(&tu.visibility) {
+                            return false;
+                        }
+                        let local_name = tu
+                            .alias
+                            .as_deref()
+                            .unwrap_or_else(|| _last_segment(&tu.path));
+                        match tu.kind {
+                            UseSegmentKind::Item => local_name == item,
+                            UseSegmentKind::Glob => true,
+                        }
+                    })
+                    .cloned()
+                    .collect();
+                (m.file.clone(), decl, uses)
+            }
             None => return,
         };
-        let (target_file, target_decls, target_uses) = target_data;
+        let (target_file, target_decl, target_uses) = target_data;
 
         // Is `item` an actual declaration in `target_module`?
-        for d in &target_decls {
-            if d.name == item && _is_public(d) {
-                self._emit_renamed(from_segments, alias, d, &target_file, chain, via_glob);
-                return;
-            }
+        if let Some(d) = target_decl {
+            self._emit_renamed(from_segments, alias, &d, &target_file, chain, via_glob);
+            return;
         }
         // Is `item` re-exported from inside `target_module`?
         for tu in target_uses {
-            if !_vis_is_public(&tu.visibility) {
-                continue;
-            }
-            let local_name = tu
-                .alias
-                .clone()
-                .unwrap_or_else(|| _last_segment(&tu.path).to_string());
-            let matches_item = match tu.kind {
-                UseSegmentKind::Item => local_name == item,
-                UseSegmentKind::Glob => true,
-            };
-            if !matches_item {
-                continue;
-            }
             let mut next_chain = chain.clone();
             next_chain.push(ReExportHop {
                 file: target_file.clone(),
@@ -519,24 +534,26 @@ impl SurfaceWalker {
                 let target_module = resolved.clone();
                 let key = ModuleGraph::key(&target_module);
                 let snap = match self.graph.modules.get(&key) {
-                    Some(m) => (m.file.clone(), m.parse.declarations.clone()),
+                    Some(m) => {
+                        let decls: Vec<Declaration> = m
+                            .parse
+                            .declarations
+                            .iter()
+                            .filter(|d| {
+                                _is_public(d) && !matches!(d.kind, DeclarationKind::Namespace)
+                            })
+                            .cloned()
+                            .collect();
+                        (m.file.clone(), decls)
+                    }
                     None => return,
                 };
                 for d in snap.1 {
-                    if _is_public(&d) && !matches!(d.kind, DeclarationKind::Namespace) {
-                        let cycle_key = (key.clone(), d.name.clone());
-                        if !self.visited.insert(cycle_key) {
-                            continue;
-                        }
-                        self._emit_renamed(
-                            from_segments,
-                            &d.name,
-                            &d,
-                            &snap.0,
-                            chain.clone(),
-                            true,
-                        );
+                    let cycle_key = (key.clone(), d.name.clone());
+                    if !self.visited.insert(cycle_key) {
+                        continue;
                     }
+                    self._emit_renamed(from_segments, &d.name, &d, &snap.0, chain.clone(), true);
                 }
             }
         }
