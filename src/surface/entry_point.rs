@@ -10,6 +10,7 @@
 
 use crate::surface::manifest::{self, CargoManifest};
 use crate::surface::options::{LangOverride, SurfaceError};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone)]
@@ -185,6 +186,13 @@ fn _has_scala_file(dir: &Path) -> bool {
 }
 
 fn discover_rust(root: &Path) -> Result<EntryPoint, SurfaceError> {
+    discover_rust_inner(root, &mut HashSet::new())
+}
+
+fn discover_rust_inner(
+    root: &Path,
+    seen: &mut HashSet<PathBuf>,
+) -> Result<EntryPoint, SurfaceError> {
     let manifest_path = if root.join("Cargo.toml").is_file() {
         root.join("Cargo.toml")
     } else if root.is_file() && root.file_name().and_then(|s| s.to_str()) == Some("Cargo.toml") {
@@ -201,6 +209,16 @@ fn discover_rust(root: &Path) -> Result<EntryPoint, SurfaceError> {
         path: manifest_path.clone(),
         source: std::io::Error::other("cannot read Cargo.toml"),
     })?;
+    let manifest_dir = manifest
+        .manifest_dir
+        .canonicalize()
+        .unwrap_or_else(|_| manifest.manifest_dir.clone());
+    if !seen.insert(manifest_dir) {
+        return Err(SurfaceError::NoEntryPoint {
+            path: manifest.manifest_dir.clone(),
+            hint: "Cargo workspace member cycle detected".into(),
+        });
+    }
 
     // Workspace?
     if !manifest.workspace_members.is_empty() {
@@ -210,7 +228,7 @@ fn discover_rust(root: &Path) -> Result<EntryPoint, SurfaceError> {
             .iter()
             .flat_map(|m| _expand_workspace_member(&manifest.manifest_dir, m))
         {
-            if let Ok(ep) = discover_rust(&member_root) {
+            if let Ok(ep) = discover_rust_inner(&member_root, seen) {
                 members.push(ep);
             }
         }

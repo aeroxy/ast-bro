@@ -319,14 +319,26 @@ impl SurfaceWalker {
                     return;
                 }
                 let alias = u.alias.clone().unwrap_or_else(|| item.clone());
-                self._republish(from_segments, &target_module, &item, &alias, chain, false, depth);
+                self._republish(
+                    from_segments,
+                    &target_module,
+                    &item,
+                    &alias,
+                    chain,
+                    false,
+                    depth,
+                );
             }
             UseSegmentKind::Glob => {
                 // `resolved` IS the target module here (no item segment).
                 let target_module = resolved.clone();
                 let key = ModuleGraph::key(&target_module);
                 let target_data = match self.graph.modules.get(&key) {
-                    Some(m) => (m.file.clone(), m.parse.declarations.clone(), m.imports.uses.clone()),
+                    Some(m) => (
+                        m.file.clone(),
+                        m.parse.declarations.clone(),
+                        m.imports.uses.clone(),
+                    ),
                     None => return,
                 };
                 let (target_file, target_decls, target_uses) = target_data;
@@ -360,7 +372,13 @@ impl SurfaceWalker {
                         module_path: key.clone(),
                         statement: tu.statement.clone(),
                     });
-                    self._republish_via_use(from_segments, &target_module, &tu, next_chain, depth + 1);
+                    self._republish_via_use(
+                        from_segments,
+                        &target_module,
+                        &tu,
+                        next_chain,
+                        depth + 1,
+                    );
                 }
             }
         }
@@ -380,9 +398,16 @@ impl SurfaceWalker {
         via_glob: bool,
         depth: usize,
     ) {
+        if depth > self.max_depth {
+            return;
+        }
         let key = ModuleGraph::key(target_module);
         let target_data = match self.graph.modules.get(&key) {
-            Some(m) => (m.file.clone(), m.parse.declarations.clone(), m.imports.uses.clone()),
+            Some(m) => (
+                m.file.clone(),
+                m.parse.declarations.clone(),
+                m.imports.uses.clone(),
+            ),
             None => return,
         };
         let (target_file, target_decls, target_uses) = target_data;
@@ -468,11 +493,10 @@ impl SurfaceWalker {
             return;
         }
         let path_segments: Vec<String> = u.path.split("::").map(|s| s.to_string()).collect();
-        let resolved =
-            match _resolve_path(&self.crate_name, upstream_module, &path_segments) {
-                Some(r) => r,
-                None => return,
-            };
+        let resolved = match _resolve_path(&self.crate_name, upstream_module, &path_segments) {
+            Some(r) => r,
+            None => return,
+        };
         match u.kind {
             UseSegmentKind::Item => {
                 if resolved.is_empty() {
@@ -504,7 +528,14 @@ impl SurfaceWalker {
                         if !self.visited.insert(cycle_key) {
                             continue;
                         }
-                        self._emit_renamed(from_segments, &d.name, &d, &snap.0, chain.clone(), true);
+                        self._emit_renamed(
+                            from_segments,
+                            &d.name,
+                            &d,
+                            &snap.0,
+                            chain.clone(),
+                            true,
+                        );
                     }
                 }
             }
@@ -518,11 +549,7 @@ impl SurfaceWalker {
 /// Resolve a `use`-path written in `from_segments` against the module
 /// graph. Returns the absolute module path (segments) the user is
 /// referring to, or `None` if it leaves the crate.
-fn _resolve_path(
-    crate_name: &str,
-    from: &[String],
-    path: &[String],
-) -> Option<Vec<String>> {
+fn _resolve_path(crate_name: &str, from: &[String], path: &[String]) -> Option<Vec<String>> {
     if path.is_empty() {
         return None;
     }
@@ -604,17 +631,13 @@ fn _is_type_with_methods(d: &Declaration) -> bool {
 fn _is_method_like(d: &Declaration) -> bool {
     matches!(
         d.kind,
-        DeclarationKind::Method
-            | DeclarationKind::Function
-            | DeclarationKind::Constructor
+        DeclarationKind::Method | DeclarationKind::Function | DeclarationKind::Constructor
     )
 }
 
 fn _vis_is_public(v: &str) -> bool {
     let v = v.trim();
-    v == "pub"
-        || v.starts_with("pub ")
-        || v.starts_with("pub(")
+    v == "pub" || v.starts_with("pub ") || v.starts_with("pub(")
 }
 
 fn _last_segment(path: &str) -> &str {
