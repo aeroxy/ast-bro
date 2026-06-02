@@ -128,9 +128,9 @@ struct SurfaceWalker {
     crate_name: String,
     graph: ModuleGraph,
     max_depth: usize,
-    /// Per-walk visited set keyed by `(module_path, item_name)` — breaks
-    /// cycles in `pub use` chains.
-    visited: HashSet<(String, String)>,
+    /// Active recursion stack keyed by `(module_path, item_name)` — breaks
+    /// cycles in `pub use` chains without suppressing later re-exports.
+    reexport_stack: HashSet<(String, String)>,
     /// Final emitted entries, dedup'd by qualified_path.
     entries: Vec<SurfaceEntry>,
     seen_qualified: HashSet<String>,
@@ -142,7 +142,7 @@ impl SurfaceWalker {
             crate_name,
             graph,
             max_depth,
-            visited: HashSet::new(),
+            reexport_stack: HashSet::new(),
             entries: Vec::new(),
             seen_qualified: HashSet::new(),
         }
@@ -354,10 +354,6 @@ impl SurfaceWalker {
                 let (target_file, target_decls, target_uses) = target_data;
 
                 for d in &target_decls {
-                    let cycle_key = (key.clone(), d.name.clone());
-                    if !self.visited.insert(cycle_key) {
-                        continue;
-                    }
                     self._emit_renamed(
                         from_segments,
                         &d.name,
@@ -406,7 +402,7 @@ impl SurfaceWalker {
             return;
         }
         let cycle_key = (ModuleGraph::key(target_module), item.to_string());
-        if !self.visited.insert(cycle_key) {
+        if !self.reexport_stack.insert(cycle_key.clone()) {
             return;
         }
         let key = ModuleGraph::key(target_module);
@@ -439,13 +435,17 @@ impl SurfaceWalker {
                     .collect();
                 (m.file.clone(), decl, uses)
             }
-            None => return,
+            None => {
+                self.reexport_stack.remove(&cycle_key);
+                return;
+            }
         };
         let (target_file, target_decl, target_uses) = target_data;
 
         // Is `item` an actual declaration in `target_module`?
         if let Some(d) = target_decl {
             self._emit_renamed(from_segments, alias, &d, &target_file, chain, via_glob);
+            self.reexport_stack.remove(&cycle_key);
             return;
         }
         // Is `item` re-exported from inside `target_module`?
@@ -494,6 +494,7 @@ impl SurfaceWalker {
                 }
             }
         }
+        self.reexport_stack.remove(&cycle_key);
     }
 
     fn _republish_via_use(
@@ -549,10 +550,6 @@ impl SurfaceWalker {
                     None => return,
                 };
                 for d in snap.1 {
-                    let cycle_key = (key.clone(), d.name.clone());
-                    if !self.visited.insert(cycle_key) {
-                        continue;
-                    }
                     self._emit_renamed(from_segments, &d.name, &d, &snap.0, chain.clone(), true);
                 }
             }
