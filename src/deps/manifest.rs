@@ -174,7 +174,9 @@ pub fn parse_composer_psr4(path: &Path) -> Vec<(String, String)> {
     };
     let mut out = Vec::new();
     for section in ["autoload", "autoload-dev"] {
-        let Some(autoload) = v.get(section) else { continue };
+        let Some(autoload) = v.get(section) else {
+            continue;
+        };
         let Some(psr4) = autoload.get("psr-4").and_then(|x| x.as_object()) else {
             continue;
         };
@@ -238,5 +240,9 @@ pub fn cargo_workspace_members(root: &Path) -> Vec<PathBuf> {
             }
         }
     }
-    members.into_iter().map(|m| root.join(m)).collect()
+    members
+        .into_iter()
+        .flat_map(|m| crate::path_glob::expand_pattern(&root.join(m)))
+        .filter(|p| p.join("Cargo.toml").is_file())
+        .collect()
 }

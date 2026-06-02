@@ -8,14 +8,15 @@ mod core;
 mod deps;
 mod file_filter;
 mod graph_cache;
-mod prompt;
-mod installers;
 mod hook;
+mod installers;
 mod main_helpers;
 mod mcp;
+mod path_glob;
 mod project_root;
-mod search;
+mod prompt;
 mod run;
+mod search;
 mod squeeze;
 mod surface;
 
@@ -540,22 +541,23 @@ fn parse_file_line(s: &str) -> Option<(String, u32)> {
 
 /// Filter out non-existent paths, build a WalkBuilder with filters and glob overrides,
 /// and return (builder, existing_paths). Returns None if no paths exist.
-fn build_filtered_walker(paths: &[PathBuf], glob_str: Option<&str>) -> Option<(WalkBuilder, Vec<PathBuf>)> {
+fn build_filtered_walker(
+    paths: &[PathBuf],
+    glob_str: Option<&str>,
+) -> Option<(WalkBuilder, Vec<PathBuf>)> {
     if paths.is_empty() {
         return None;
     }
 
     let existing: Vec<PathBuf> = paths
         .iter()
-        .filter(|p| {
-            if p.exists() {
-                true
-            } else {
+        .flat_map(|p| {
+            let expanded = path_glob::expand_existing(p);
+            if expanded.is_empty() {
                 println!("# note: path not found: {}", p.display());
-                false
             }
+            expanded
         })
-        .cloned()
         .collect();
     if existing.is_empty() {
         return None;
@@ -641,8 +643,8 @@ pub(crate) fn walk_and_parse(paths: &[PathBuf], glob_str: Option<&str>) -> Vec<P
 }
 
 pub fn run() {
-    use clap::CommandFactory;
     use clap::error::ErrorKind;
+    use clap::CommandFactory;
 
     // Agent-friendly arg handling: instead of dying on a typo or unknown
     // flag, print the help text so the calling agent can self-correct
@@ -659,564 +661,540 @@ pub fn run() {
                 let mut cmd = Cli::command();
                 let _ = cmd.print_help();
                 println!();
-                println!("# note: could not parse args ({}). Showing help instead.", e.kind());
+                println!(
+                    "# note: could not parse args ({}). Showing help instead.",
+                    e.kind()
+                );
                 std::process::exit(0);
             }
         },
     };
 
     match &cli.command {
-            Commands::Map {
-                paths,
-                no_private,
-                no_fields,
-                no_docs,
-                no_attrs,
-                no_lines,
-                glob,
-                json,
-                compact,
-            } => {
-                let results = walk_and_parse(paths, glob.as_deref());
-                let opts = MapOptions {
-                    include_private: !(*no_private),
-                    include_fields: !(*no_fields),
-                    include_docs: !(*no_docs),
-                    include_attributes: !(*no_attrs),
-                    include_line_numbers: !(*no_lines),
-                    max_doc_lines: 6,
-                    max_members: None,
-                };
-                let json_on = *json;
-                let pretty = !(*compact);
-                if json_on {
-                    println!("{}", crate::core::render_json_map(&results, &opts, pretty));
-                } else {
-                    for res in results {
-                        println!("{}", crate::core::render_map(&res, &opts));
-                        println!();
-                    }
+        Commands::Map {
+            paths,
+            no_private,
+            no_fields,
+            no_docs,
+            no_attrs,
+            no_lines,
+            glob,
+            json,
+            compact,
+        } => {
+            let results = walk_and_parse(paths, glob.as_deref());
+            let opts = MapOptions {
+                include_private: !(*no_private),
+                include_fields: !(*no_fields),
+                include_docs: !(*no_docs),
+                include_attributes: !(*no_attrs),
+                include_line_numbers: !(*no_lines),
+                max_doc_lines: 6,
+                max_members: None,
+            };
+            let json_on = *json;
+            let pretty = !(*compact);
+            if json_on {
+                println!("{}", crate::core::render_json_map(&results, &opts, pretty));
+            } else {
+                for res in results {
+                    println!("{}", crate::core::render_map(&res, &opts));
+                    println!();
                 }
             }
-            Commands::Show {
-                path,
-                symbol,
-                others,
-                json,
-                compact,
-            } => {
-                if !path.exists() {
-                    println!("# note: path not found: {}", path.display());
-                } else if let Some(res) = parse_file(path) {
-                    let mut symbols = vec![symbol.as_str()];
-                    symbols.extend(others.iter().map(|s| s.as_str()));
-                    if *json {
-                        let mut seen = std::collections::HashSet::new();
-                        let mut all_matches = Vec::new();
-                        for sym in &symbols {
-                            for m in crate::core::find_symbols(&res, sym) {
-                                let key = (m.start_line, m.end_line, m.qualified_name.clone());
-                                if seen.insert(key) {
-                                    all_matches.push(m);
-                                }
+        }
+        Commands::Show {
+            path,
+            symbol,
+            others,
+            json,
+            compact,
+        } => {
+            if !path.exists() {
+                println!("# note: path not found: {}", path.display());
+            } else if let Some(res) = parse_file(path) {
+                let mut symbols = vec![symbol.as_str()];
+                symbols.extend(others.iter().map(|s| s.as_str()));
+                if *json {
+                    let mut seen = std::collections::HashSet::new();
+                    let mut all_matches = Vec::new();
+                    for sym in &symbols {
+                        for m in crate::core::find_symbols(&res, sym) {
+                            let key = (m.start_line, m.end_line, m.qualified_name.clone());
+                            if seen.insert(key) {
+                                all_matches.push(m);
                             }
-                        }
-                        println!(
-                            "{}",
-                            crate::core::render_json_show(&res, &all_matches, !(*compact))
-                        );
-                        if all_matches.is_empty() {
-                            // JSON consumers see [] in the payload; humans/agents
-                            // glancing at stderr-free output get a hint too.
-                            println!("# note: no symbol matching {:?} in {}", symbol, path.display());
-                        }
-                    } else {
-                        let mut any_match = false;
-                        for sym in &symbols {
-                            let matches = crate::core::find_symbols(&res, sym);
-                            for m in matches {
-                                any_match = true;
-                                println!(
-                                    "# {}:{}-{} {} ({})",
-                                    res.path.display(),
-                                    m.start_line,
-                                    m.end_line,
-                                    m.qualified_name,
-                                    m.kind
-                                );
-                                if !m.ancestor_signatures.is_empty() {
-                                    println!("# in: {}", m.ancestor_signatures.join(" → "));
-                                }
-                                println!("{}", m.source);
-                            }
-                        }
-                        if !any_match {
-                            let joined = symbols.join(", ");
-                            println!(
-                                "# note: no symbol matching '{}' in {}",
-                                joined,
-                                path.display()
-                            );
                         }
                     }
-                } else {
                     println!(
-                        "# note: unsupported file type for `show`: {}",
-                        path.display()
+                        "{}",
+                        crate::core::render_json_show(&res, &all_matches, !(*compact))
                     );
+                    if all_matches.is_empty() {
+                        // JSON consumers see [] in the payload; humans/agents
+                        // glancing at stderr-free output get a hint too.
+                        println!(
+                            "# note: no symbol matching {:?} in {}",
+                            symbol,
+                            path.display()
+                        );
+                    }
+                } else {
+                    let mut any_match = false;
+                    for sym in &symbols {
+                        let matches = crate::core::find_symbols(&res, sym);
+                        for m in matches {
+                            any_match = true;
+                            println!(
+                                "# {}:{}-{} {} ({})",
+                                res.path.display(),
+                                m.start_line,
+                                m.end_line,
+                                m.qualified_name,
+                                m.kind
+                            );
+                            if !m.ancestor_signatures.is_empty() {
+                                println!("# in: {}", m.ancestor_signatures.join(" → "));
+                            }
+                            println!("{}", m.source);
+                        }
+                    }
+                    if !any_match {
+                        let joined = symbols.join(", ");
+                        println!(
+                            "# note: no symbol matching '{}' in {}",
+                            joined,
+                            path.display()
+                        );
+                    }
                 }
+            } else {
+                println!(
+                    "# note: unsupported file type for `show`: {}",
+                    path.display()
+                );
             }
-            Commands::Squeeze {
-                path,
-                range,
-                raw,
-                json,
-                compact,
-            } => {
-                if !path.exists() {
-                    println!("# note: path not found: {}", path.display());
+        }
+        Commands::Squeeze {
+            path,
+            range,
+            raw,
+            json,
+            compact,
+        } => {
+            if !path.exists() {
+                println!("# note: path not found: {}", path.display());
+                return;
+            }
+            let text = match std::fs::read_to_string(path) {
+                Ok(t) => t,
+                Err(e) => {
+                    if path.is_dir() {
+                        println!("# note: path is a directory: {}", path.display());
+                    } else {
+                        println!("# note: could not read {}: {}", path.display(), e);
+                    }
                     return;
                 }
-                let text = match std::fs::read_to_string(path) {
-                    Ok(t) => t,
-                    Err(e) => {
-                        if path.is_dir() {
-                            println!("# note: path is a directory: {}", path.display());
-                        } else {
-                            println!("# note: could not read {}: {}", path.display(), e);
-                        }
-                        return;
-                    }
-                };
-                let line_count = text.lines().count();
-                let resolved: Option<(usize, usize)> =
-                    range.as_ref().map(|r| r.resolve(line_count));
-                let sliced = crate::squeeze::render::slice_lines(&text, resolved);
-                let path_str = path.display().to_string();
-                let report = crate::squeeze::render::SqueezeReport {
-                    path: &path_str,
-                    range: resolved,
-                    raw: &sliced,
-                    raw_requested: *raw,
-                };
-                if *json {
-                    println!("{}", crate::squeeze::render::render_json(&report, !(*compact)));
-                } else {
-                    println!("{}", crate::squeeze::render::render_text(&report));
-                }
+            };
+            let line_count = text.lines().count();
+            let resolved: Option<(usize, usize)> = range.as_ref().map(|r| r.resolve(line_count));
+            let sliced = crate::squeeze::render::slice_lines(&text, resolved);
+            let path_str = path.display().to_string();
+            let report = crate::squeeze::render::SqueezeReport {
+                path: &path_str,
+                range: resolved,
+                raw: &sliced,
+                raw_requested: *raw,
+            };
+            if *json {
+                println!(
+                    "{}",
+                    crate::squeeze::render::render_json(&report, !(*compact))
+                );
+            } else {
+                println!("{}", crate::squeeze::render::render_text(&report));
             }
-            Commands::Digest {
-                paths,
-                include_private,
-                include_fields,
-                max_members,
-                json,
-                compact,
-            } => {
-                let results = walk_and_parse(paths, None);
-                if *json {
-                    let opts = MapOptions {
-                        include_private: *include_private,
-                        include_fields: *include_fields,
-                        include_docs: true,
-                        include_attributes: true,
-                        include_line_numbers: true,
-                        max_doc_lines: 6,
-                        max_members: Some(*max_members),
-                    };
-                    println!(
-                        "{}",
-                        crate::core::render_json_map(&results, &opts, !(*compact))
-                    );
+        }
+        Commands::Digest {
+            paths,
+            include_private,
+            include_fields,
+            max_members,
+            json,
+            compact,
+        } => {
+            let results = walk_and_parse(paths, None);
+            if *json {
+                let opts = MapOptions {
+                    include_private: *include_private,
+                    include_fields: *include_fields,
+                    include_docs: true,
+                    include_attributes: true,
+                    include_line_numbers: true,
+                    max_doc_lines: 6,
+                    max_members: Some(*max_members),
+                };
+                println!(
+                    "{}",
+                    crate::core::render_json_map(&results, &opts, !(*compact))
+                );
+            } else {
+                let opts = DigestOptions {
+                    include_private: *include_private,
+                    include_fields: *include_fields,
+                    max_members_per_type: *max_members,
+                    max_heading_depth: 3,
+                };
+                let root = if paths.len() == 1 && paths[0].is_dir() {
+                    Some(paths[0].as_path())
                 } else {
-                    let opts = DigestOptions {
-                        include_private: *include_private,
-                        include_fields: *include_fields,
-                        max_members_per_type: *max_members,
-                        max_heading_depth: 3,
-                    };
-                    let root = if paths.len() == 1 && paths[0].is_dir() {
-                        Some(paths[0].as_path())
+                    None
+                };
+                println!("{}", crate::core::render_digest(&results, &opts, root));
+            }
+        }
+        Commands::Implements {
+            target,
+            paths,
+            direct,
+            json,
+            compact,
+        } => {
+            let results = walk_and_parse(paths, None);
+            let transitive = !direct;
+            let matches = crate::core::find_implementations(&results, target, transitive);
+            if *json {
+                println!(
+                    "{}",
+                    crate::core::render_json_implements(target, &matches, transitive, !(*compact),)
+                );
+            } else {
+                println!(
+                    "# {} match(es) for '{}' (incl. transitive):",
+                    matches.len(),
+                    target
+                );
+                for m in matches {
+                    let via = if m.via.is_empty() {
+                        String::new()
                     } else {
-                        None
+                        format!(" [via {}]", m.via.last().unwrap())
                     };
-                    println!("{}", crate::core::render_digest(&results, &opts, root));
+                    println!("{}:{}  {} {}{}", m.path, m.start_line, m.kind, m.name, via);
                 }
             }
-            Commands::Implements {
-                target,
-                paths,
-                direct,
-                json,
-                compact,
-            } => {
-                let results = walk_and_parse(paths, None);
-                let transitive = !direct;
-                let matches = crate::core::find_implementations(&results, target, transitive);
-                if *json {
-                    println!(
-                        "{}",
-                        crate::core::render_json_implements(
-                            target,
-                            &matches,
-                            transitive,
-                            !(*compact),
-                        )
-                    );
-                } else {
-                    println!(
-                        "# {} match(es) for '{}' (incl. transitive):",
-                        matches.len(),
-                        target
-                    );
-                    for m in matches {
-                        let via = if m.via.is_empty() {
-                            String::new()
-                        } else {
-                            format!(" [via {}]", m.via.last().unwrap())
-                        };
-                        println!("{}:{}  {} {}{}", m.path, m.start_line, m.kind, m.name, via);
-                    }
+        }
+        Commands::Prompt => {
+            println!("{}", crate::prompt::AGENT_PROMPT);
+        }
+        Commands::Install {
+            target,
+            all,
+            local,
+            global,
+            always,
+            min_lines,
+            dry_run,
+            force,
+            mcp,
+            skills,
+        } => {
+            let scope = resolve_scope(*local, *global);
+            let opts = installers::InstallOpts {
+                min_lines: *min_lines,
+                always: *always,
+                dry_run: *dry_run,
+                force: *force,
+            };
+            let exit = run_install(target.as_deref(), *all, *mcp, *skills, &scope, &opts);
+            std::process::exit(exit);
+        }
+        Commands::Uninstall {
+            target,
+            all,
+            local,
+            global,
+            dry_run,
+        } => {
+            let scope = resolve_scope(*local, *global);
+            let opts = installers::InstallOpts {
+                dry_run: *dry_run,
+                ..installers::InstallOpts::default()
+            };
+            let exit = run_uninstall(target.as_deref(), *all, &scope, &opts);
+            std::process::exit(exit);
+        }
+        Commands::Status { local, global } => {
+            let scope = resolve_scope(*local, *global);
+            run_status(&scope);
+        }
+        Commands::Hook {
+            protocol,
+            min_lines,
+            always,
+        } => {
+            let exit = hook::run(protocol, *min_lines, *always);
+            std::process::exit(exit);
+        }
+        Commands::Mcp => {
+            let exit = mcp::run();
+            std::process::exit(exit);
+        }
+        Commands::Search {
+            query,
+            path,
+            top_k,
+            alpha,
+            languages,
+            rebuild,
+            json,
+            compact,
+        } => {
+            if *rebuild {
+                let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+                if let Err(e) = crate::search::index::Index::build(path, &cwd) {
+                    eprintln!("ast-bro: rebuild failed: {e}");
+                    std::process::exit(1);
                 }
             }
-            Commands::Prompt => {
-                println!("{}", crate::prompt::AGENT_PROMPT);
-            }
-            Commands::Install {
-                target,
-                all,
-                local,
-                global,
-                always,
-                min_lines,
-                dry_run,
-                force,
-                mcp,
-                skills,
-            } => {
-                let scope = resolve_scope(*local, *global);
-                let opts = installers::InstallOpts {
-                    min_lines: *min_lines,
-                    always: *always,
-                    dry_run: *dry_run,
-                    force: *force,
-                };
-                let exit = run_install(target.as_deref(), *all, *mcp, *skills, &scope, &opts);
-                std::process::exit(exit);
-            }
-            Commands::Uninstall {
-                target,
-                all,
-                local,
-                global,
-                dry_run,
-            } => {
-                let scope = resolve_scope(*local, *global);
-                let opts = installers::InstallOpts {
-                    dry_run: *dry_run,
-                    ..installers::InstallOpts::default()
-                };
-                let exit = run_uninstall(target.as_deref(), *all, &scope, &opts);
-                std::process::exit(exit);
-            }
-            Commands::Status { local, global } => {
-                let scope = resolve_scope(*local, *global);
-                run_status(&scope);
-            }
-            Commands::Hook {
-                protocol,
-                min_lines,
-                always,
-            } => {
-                let exit = hook::run(protocol, *min_lines, *always);
-                std::process::exit(exit);
-            }
-            Commands::Mcp => {
-                let exit = mcp::run();
-                std::process::exit(exit);
-            }
-            Commands::Search {
+            let exit = crate::search::cli::run_search(
                 query,
                 path,
-                top_k,
-                alpha,
-                languages,
-                rebuild,
-                json,
-                compact,
-            } => {
-                if *rebuild {
-                    let cwd = std::env::current_dir()
-                        .unwrap_or_else(|_| std::path::PathBuf::from("."));
-                    if let Err(e) = crate::search::index::Index::build(path, &cwd) {
-                        eprintln!("ast-bro: rebuild failed: {e}");
-                        std::process::exit(1);
-                    }
-                }
-                let exit = crate::search::cli::run_search(
-                    query,
-                    path,
-                    *top_k,
-                    *alpha,
-                    languages.clone(),
-                    *json,
-                    !(*compact),
-                );
-                std::process::exit(exit);
-            }
-            Commands::FindRelated {
-                target,
-                path,
-                file,
-                line,
-                top_k,
-                json,
-                compact,
-            } => {
-                // Clap guarantees one of: (target alone) or (file + line).
-                let (file_path, line_num) = match (target, file, line) {
-                    (Some(t), _, _) => match parse_file_line(t) {
-                        Some(parsed) => parsed,
-                        None => {
-                            println!(
-                                "# note: expected <FILE>:<LINE>, got {t:?} \
+                *top_k,
+                *alpha,
+                languages.clone(),
+                *json,
+                !(*compact),
+            );
+            std::process::exit(exit);
+        }
+        Commands::FindRelated {
+            target,
+            path,
+            file,
+            line,
+            top_k,
+            json,
+            compact,
+        } => {
+            // Clap guarantees one of: (target alone) or (file + line).
+            let (file_path, line_num) = match (target, file, line) {
+                (Some(t), _, _) => match parse_file_line(t) {
+                    Some(parsed) => parsed,
+                    None => {
+                        println!(
+                            "# note: expected <FILE>:<LINE>, got {t:?} \
                                  (or use --file FILE --line N instead)"
-                            );
-                            return;
-                        }
-                    },
-                    (None, Some(f), Some(l)) => (f.clone(), *l),
-                    _ => unreachable!("clap should have rejected this argument combination"),
-                };
-                let exit = crate::search::cli::run_find_related(
-                    &file_path,
-                    line_num,
-                    path,
-                    *top_k,
-                    *json,
-                    !(*compact),
-                );
-                std::process::exit(exit);
-            }
-            Commands::Surface {
+                        );
+                        return;
+                    }
+                },
+                (None, Some(f), Some(l)) => (f.clone(), *l),
+                _ => unreachable!("clap should have rejected this argument combination"),
+            };
+            let exit = crate::search::cli::run_find_related(
+                &file_path,
+                line_num,
                 path,
-                tree,
-                include_chain,
-                max_depth,
-                include_private,
-                lang,
-                json,
-                compact,
-            } => {
-                let lang_override = match lang {
-                    Some(s) => match crate::surface::LangOverride::parse(s) {
-                        Some(l) => Some(l),
-                        None => {
-                            println!("# note: unknown --lang value '{}'. Expected rust|python|fallback.", s);
-                            return;
-                        }
-                    },
-                    None => None,
-                };
-                let json_on = *json;
-                let pretty = !(*compact);
-                let output = if json_on {
-                    crate::surface::OutputMode::Json { compact: !pretty }
-                } else if *tree {
-                    crate::surface::OutputMode::Tree
-                } else {
-                    crate::surface::OutputMode::Flat
-                };
-                let opts = crate::surface::SurfaceOptions {
-                    output,
-                    include_private: *include_private,
-                    max_depth: *max_depth,
-                    include_chain: *include_chain,
-                    lang_override,
-                };
-                match crate::surface::resolve_surface(path, &opts) {
-                    Ok(entries) => {
-                        let rendered =
-                            crate::surface::render::render(&entries, opts.output, opts.include_chain);
-                        print!("{}", rendered);
+                *top_k,
+                *json,
+                !(*compact),
+            );
+            std::process::exit(exit);
+        }
+        Commands::Surface {
+            path,
+            tree,
+            include_chain,
+            max_depth,
+            include_private,
+            lang,
+            json,
+            compact,
+        } => {
+            let lang_override = match lang {
+                Some(s) => match crate::surface::LangOverride::parse(s) {
+                    Some(l) => Some(l),
+                    None => {
+                        println!(
+                            "# note: unknown --lang value '{}'. Expected rust|python|fallback.",
+                            s
+                        );
+                        return;
                     }
-                    Err(e) => {
-                        println!("# note: {e}");
-                    }
+                },
+                None => None,
+            };
+            let json_on = *json;
+            let pretty = !(*compact);
+            let output = if json_on {
+                crate::surface::OutputMode::Json { compact: !pretty }
+            } else if *tree {
+                crate::surface::OutputMode::Tree
+            } else {
+                crate::surface::OutputMode::Flat
+            };
+            let opts = crate::surface::SurfaceOptions {
+                output,
+                include_private: *include_private,
+                max_depth: *max_depth,
+                include_chain: *include_chain,
+                lang_override,
+            };
+            match crate::surface::resolve_surface(path, &opts) {
+                Ok(entries) => {
+                    let rendered =
+                        crate::surface::render::render(&entries, opts.output, opts.include_chain);
+                    print!("{}", rendered);
+                }
+                Err(e) => {
+                    println!("# note: {e}");
                 }
             }
-            Commands::Deps {
+        }
+        Commands::Deps {
+            file,
+            depth,
+            rebuild,
+            json,
+            compact,
+        } => {
+            let exit = crate::deps::cli::run_deps(file, *depth, *json, !(*compact), *rebuild);
+            std::process::exit(exit);
+        }
+        Commands::ReverseDeps {
+            file,
+            depth,
+            limit,
+            rebuild,
+            json,
+            compact,
+        } => {
+            let exit = crate::deps::cli::run_reverse_deps(
                 file,
-                depth,
-                rebuild,
-                json,
-                compact,
-            } => {
-                let exit = crate::deps::cli::run_deps(
-                    file,
-                    *depth,
-                    *json,
-                    !(*compact),
-                    *rebuild,
-                );
-                std::process::exit(exit);
-            }
-            Commands::ReverseDeps {
-                file,
-                depth,
-                limit,
-                rebuild,
-                json,
-                compact,
-            } => {
-                let exit = crate::deps::cli::run_reverse_deps(
-                    file,
-                    *depth,
-                    *limit,
-                    *json,
-                    !(*compact),
-                    *rebuild,
-                );
-                std::process::exit(exit);
-            }
-            Commands::Cycles {
+                *depth,
+                *limit,
+                *json,
+                !(*compact),
+                *rebuild,
+            );
+            std::process::exit(exit);
+        }
+        Commands::Cycles {
+            path,
+            min_size,
+            rebuild,
+            json,
+            compact,
+        } => {
+            let exit = crate::deps::cli::run_cycles(path, *min_size, *json, !(*compact), *rebuild);
+            std::process::exit(exit);
+        }
+        Commands::Graph {
+            path,
+            json,
+            include_external,
+            rebuild,
+            compact,
+        } => {
+            let exit =
+                crate::deps::cli::run_graph(path, *json, *include_external, !(*compact), *rebuild);
+            std::process::exit(exit);
+        }
+        Commands::Index {
+            path,
+            rebuild,
+            stats,
+            json,
+            compact,
+        } => {
+            let exit = crate::search::cli::run_index(path, *rebuild, *stats, *json, !(*compact));
+            std::process::exit(exit);
+        }
+        Commands::Callers {
+            target,
+            path,
+            file,
+            symbol,
+            depth,
+            limit,
+            include_ambiguous,
+            rebuild,
+            json,
+            compact,
+        } => {
+            let resolved = compose_target(target.as_deref(), file.as_deref(), symbol.as_deref());
+            let exit = crate::calls::cli::run_callers(
+                &resolved,
                 path,
-                min_size,
-                rebuild,
-                json,
-                compact,
-            } => {
-                let exit = crate::deps::cli::run_cycles(
-                    path,
-                    *min_size,
-                    *json,
-                    !(*compact),
-                    *rebuild,
-                );
-                std::process::exit(exit);
-            }
-            Commands::Graph {
+                *depth,
+                *limit,
+                *include_ambiguous,
+                *rebuild,
+                *json,
+                !(*compact),
+            );
+            std::process::exit(exit);
+        }
+        Commands::Callees {
+            target,
+            path,
+            file,
+            symbol,
+            depth,
+            external,
+            rebuild,
+            json,
+            compact,
+        } => {
+            let resolved = compose_target(target.as_deref(), file.as_deref(), symbol.as_deref());
+            let exit = crate::calls::cli::run_callees(
+                &resolved,
                 path,
-                json,
-                include_external,
-                rebuild,
-                compact,
-            } => {
-                let exit = crate::deps::cli::run_graph(
-                    path,
-                    *json,
-                    *include_external,
-                    !(*compact),
-                    *rebuild,
-                );
-                std::process::exit(exit);
-            }
-            Commands::Index {
-                path,
-                rebuild,
-                stats,
-                json,
-                compact,
-            } => {
-                let exit = crate::search::cli::run_index(
-                    path,
-                    *rebuild,
-                    *stats,
-                    *json,
-                    !(*compact),
-                );
-                std::process::exit(exit);
-            }
-            Commands::Callers {
-                target,
-                path,
-                file,
-                symbol,
-                depth,
-                limit,
-                include_ambiguous,
-                rebuild,
-                json,
-                compact,
-            } => {
-                let resolved = compose_target(target.as_deref(), file.as_deref(), symbol.as_deref());
-                let exit = crate::calls::cli::run_callers(
-                    &resolved,
-                    path,
-                    *depth,
-                    *limit,
-                    *include_ambiguous,
-                    *rebuild,
-                    *json,
-                    !(*compact),
-                );
-                std::process::exit(exit);
-            }
-            Commands::Callees {
-                target,
-                path,
-                file,
-                symbol,
-                depth,
-                external,
-                rebuild,
-                json,
-                compact,
-            } => {
-                let resolved = compose_target(target.as_deref(), file.as_deref(), symbol.as_deref());
-                let exit = crate::calls::cli::run_callees(
-                    &resolved,
-                    path,
-                    *depth,
-                    *external,
-                    *rebuild,
-                    *json,
-                    !(*compact),
-                );
-                std::process::exit(exit);
-            }
-            Commands::Trace {
-                from,
-                to,
-                path,
-                depth,
-                rebuild,
-                json,
-                compact,
-            } => {
-                let exit = crate::calls::cli::run_trace(
-                    from,
-                    to,
-                    path,
-                    *depth,
-                    *rebuild,
-                    *json,
-                    !(*compact),
-                );
-                std::process::exit(exit);
-            }
-            Commands::Run {
+                *depth,
+                *external,
+                *rebuild,
+                *json,
+                !(*compact),
+            );
+            std::process::exit(exit);
+        }
+        Commands::Trace {
+            from,
+            to,
+            path,
+            depth,
+            rebuild,
+            json,
+            compact,
+        } => {
+            let exit =
+                crate::calls::cli::run_trace(from, to, path, *depth, *rebuild, *json, !(*compact));
+            std::process::exit(exit);
+        }
+        Commands::Run {
+            pattern,
+            rewrite,
+            lang,
+            paths,
+            glob,
+            write,
+            json,
+            compact,
+        } => {
+            let exit = crate::run::cli::run(
                 pattern,
-                rewrite,
-                lang,
+                rewrite.as_deref(),
+                lang.as_deref(),
                 paths,
-                glob,
-                write,
-                json,
-                compact,
-            } => {
-                let exit = crate::run::cli::run(
-                    pattern,
-                    rewrite.as_deref(),
-                    lang.as_deref(),
-                    paths,
-                    glob.as_deref(),
-                    *write,
-                    *json,
-                    !(*compact),
-                );
-                std::process::exit(exit);
-            }
+                glob.as_deref(),
+                *write,
+                *json,
+                !(*compact),
+            );
+            std::process::exit(exit);
+        }
     }
 }
 
@@ -1256,11 +1234,7 @@ fn run_install(
         match registry.iter().find(|i| i.name() == name) {
             Some(i) => vec![i],
             None => {
-                eprintln!(
-                    "unknown --target '{}'. Known: {}",
-                    name,
-                    names(&registry)
-                );
+                eprintln!("unknown --target '{}'. Known: {}", name, names(&registry));
                 return 2;
             }
         }
@@ -1385,11 +1359,7 @@ fn run_uninstall(
         match registry.iter().find(|i| i.name() == name) {
             Some(i) => vec![i],
             None => {
-                eprintln!(
-                    "unknown --target '{}'. Known: {}",
-                    name,
-                    names(&registry)
-                );
+                eprintln!("unknown --target '{}'. Known: {}", name, names(&registry));
                 return 2;
             }
         }
@@ -1430,9 +1400,17 @@ fn run_status(scope: &installers::Scope) {
         } else {
             "prompt -".to_string()
         };
-        let hook = if s.hook_installed { "hook ✓" } else { "hook -" };
+        let hook = if s.hook_installed {
+            "hook ✓"
+        } else {
+            "hook -"
+        };
         let mcp = if s.mcp_installed { "mcp ✓" } else { "mcp -" };
-        let skills = if s.skills_installed { "skills ✓" } else { "skills -" };
+        let skills = if s.skills_installed {
+            "skills ✓"
+        } else {
+            "skills -"
+        };
         println!(
             "{:<14} {:<14} {:<8} {:<8} {}",
             inst.name(),
@@ -1470,7 +1448,11 @@ fn select_all<'a>(
             }
             let d = inst.detect(scope);
             if !d.present {
-                println!("{:<14} {:<10} skipped  (not detected on this system)", inst.name(), "detect");
+                println!(
+                    "{:<14} {:<10} skipped  (not detected on this system)",
+                    inst.name(),
+                    "detect"
+                );
             }
             d.present
         })

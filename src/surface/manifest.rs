@@ -105,16 +105,14 @@ pub fn parse_cargo_toml(path: &Path) -> Option<CargoManifest> {
         };
 
         match section.as_str() {
-            "[package]" => {
-                if key == "name" {
+            "[package]"
+                if key == "name" => {
                     m.package_name = _unquote(value);
                 }
-            }
-            "[lib]" => {
-                if key == "path" {
+            "[lib]"
+                if key == "path" => {
                     m.lib_path = _unquote(value).map(PathBuf::from);
                 }
-            }
             "[[bin]]" => {
                 if let Some(b) = current_bin.as_mut() {
                     if key == "name" {
@@ -124,11 +122,10 @@ pub fn parse_cargo_toml(path: &Path) -> Option<CargoManifest> {
                     }
                 }
             }
-            "[workspace]" => {
-                if key == "members" {
+            "[workspace]"
+                if key == "members" => {
                     m.workspace_members = _parse_string_array(value);
                 }
-            }
             _ => {}
         }
     }
