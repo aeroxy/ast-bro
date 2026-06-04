@@ -227,6 +227,9 @@ fn discover_rust_inner(
             .workspace_members
             .iter()
             .flat_map(|m| _expand_workspace_member(&manifest.manifest_dir, m))
+            .filter(|p| {
+                !_workspace_member_excluded(&manifest.manifest_dir, p, &manifest.workspace_exclude)
+            })
         {
             if let Ok(ep) = discover_rust_inner(&member_root, seen) {
                 members.push(ep);
@@ -343,6 +346,24 @@ fn _expand_workspace_member(manifest_dir: &Path, member: &str) -> Vec<PathBuf> {
         .into_iter()
         .filter(|p| p.join("Cargo.toml").is_file())
         .collect()
+}
+
+fn _workspace_member_excluded(
+    manifest_dir: &Path,
+    member_root: &Path,
+    excludes: &[String],
+) -> bool {
+    excludes.iter().any(|exclude| {
+        crate::path_glob::expand_pattern(&manifest_dir.join(exclude))
+            .into_iter()
+            .any(|p| _same_path(&p, member_root))
+    })
+}
+
+fn _same_path(a: &Path, b: &Path) -> bool {
+    let a = a.canonicalize().unwrap_or_else(|_| a.to_path_buf());
+    let b = b.canonicalize().unwrap_or_else(|_| b.to_path_buf());
+    a == b
 }
 
 fn _resolve_rust_root(m: &CargoManifest) -> Option<PathBuf> {

@@ -5,7 +5,7 @@
 //! - `[package].name` for the crate name
 //! - `[lib].path` for an explicit lib root
 //! - `[[bin]].path` (and the matching `name`) for binary roots
-//! - `[workspace].members` for workspace fan-out
+//! - `[workspace].members` / `[workspace].exclude` for workspace fan-out
 //! - `[project].name` for Python pkg name
 //!
 //! The parser is strict-enough-for-our-needs: it understands sections,
@@ -22,6 +22,7 @@ pub struct CargoManifest {
     pub lib_path: Option<PathBuf>,
     pub bins: Vec<BinTarget>,
     pub workspace_members: Vec<String>,
+    pub workspace_exclude: Vec<String>,
     pub manifest_dir: PathBuf,
 }
 
@@ -123,11 +124,11 @@ pub fn parse_cargo_toml(path: &Path) -> Option<CargoManifest> {
                     }
                 }
             }
-            "[workspace]" => {
-                if key == "members" {
-                    m.workspace_members = _parse_string_array(value);
-                }
-            }
+            "[workspace]" => match key {
+                "members" => m.workspace_members = _parse_string_array(value),
+                "exclude" => m.workspace_exclude = _parse_string_array(value),
+                _ => {}
+            },
             _ => {}
         }
     }
