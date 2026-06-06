@@ -194,10 +194,12 @@ fn typescript_callees_descends_into_anonymous_closures() {
          // block body returning an anonymous closure\n\
          const returns = () => { return () => beta(); };\n\
          // inline callback inside a plain function declaration\n\
-         function withCallback(): void { [1].forEach(() => beta()); }\n",
+         function withCallback(): void { [1].forEach(() => beta()); }\n\
+         // inline `function` expression callback (legacy `function` node kind)\n\
+         function withFnExpr(): void { [1].forEach(function () { beta(); }); }\n",
     );
 
-    for sym in ["curried", "returns", "withCallback"] {
+    for sym in ["curried", "returns", "withCallback", "withFnExpr"] {
         let (out, code) = run_in(root, &["callees", sym, ".", "--rebuild"]);
         assert_eq!(code, 0, "callees {} exited non-zero: {}", sym, out);
         assert!(
@@ -207,6 +209,32 @@ fn typescript_callees_descends_into_anonymous_closures() {
             out
         );
     }
+}
+
+#[test]
+fn typescript_callees_bubbles_block_local_const_closure() {
+    // A const-bound closure declared *inside* a function body is not extracted
+    // as its own declaration, so — like an inline callback — its calls are
+    // attributed to the enclosing function. (Intentionally the opposite of the
+    // named-nested-function case below.)
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(
+        &root.join("package.json"),
+        r#"{"name":"smoke","version":"0.0.0"}"#,
+    );
+    write(
+        &root.join("src/main.ts"),
+        "function beta(): void {}\n\
+         function outer(): void { const inner = () => beta(); inner(); }\n",
+    );
+    let (out, code) = run_in(root, &["callees", "outer", ".", "--rebuild"]);
+    assert_eq!(code, 0, "callees exited non-zero: {}", out);
+    assert!(
+        out.contains("beta"),
+        "expected `beta` to bubble up to outer from the const closure, got:\n{}",
+        out
+    );
 }
 
 #[test]

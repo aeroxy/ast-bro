@@ -780,13 +780,15 @@ fn _walk_calls_in_body<'a, D: Doc>(node: &Node<'a, D>, src: &[u8], out: &mut Vec
     // (`.map(x => f(x))`) show up in the call graph. Anonymous closures are
     // never extracted as separate declarations, so there is no double-count.
     //
-    // `arrow_function` and `function_expression` are intentionally NOT in this
+    // `arrow_function`, `function_expression`, and `function` (the legacy
+    // grammar name for a function expression) are intentionally NOT in this
     // list — see _walk_calls_in_body's callers, which pass a body node, so the
-    // root of a walk is never one of these for its own declaration.
+    // root of a walk is never one of these for its own declaration. They are
+    // also what `_lexical_to_decl` treats as expression-like initializers, so
+    // the two sites must agree on the set.
     if matches!(
         kind,
         "function_declaration"
-            | "function"
             | "method_definition"
             | "class_declaration"
             | "class"
