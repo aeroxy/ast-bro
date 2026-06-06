@@ -535,9 +535,14 @@ fn _lexical_to_decl<'a, D: Doc>(node: &Node<'a, D>, src: &[u8]) -> Option<Declar
             "arrow_function" | "function_expression" | "function"
         ) {
             let body = v.field("body");
-            let end = body.map(|b| b.range().start).unwrap_or(v.range().end);
+            let end = body.as_ref().map(|b| b.range().start).unwrap_or(v.range().end);
             let text = String::from_utf8_lossy(&src[node.range().start..end]).to_string();
             let sig = collapse_ws(&text).trim_end_matches('{').trim().to_string();
+
+            let mut calls = Vec::new();
+            if let Some(body) = &body {
+                _walk_calls_in_body(body, src, &mut calls);
+            }
 
             let range = node.range();
             return Some(Declaration {
@@ -558,7 +563,7 @@ fn _lexical_to_decl<'a, D: Doc>(node: &Node<'a, D>, src: &[u8]) -> Option<Declar
                 modifiers: Vec::new(),
                 deprecated: false,
                 children: Vec::new(),
-                calls: Vec::new(),
+                calls,
             });
         }
     }

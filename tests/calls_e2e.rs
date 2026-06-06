@@ -142,6 +142,69 @@ fn typescript_callers_finds_cross_file_caller() {
 }
 
 #[test]
+fn typescript_callees_from_arrow_const() {
+    // Regression: arrow functions / function expressions bound to a const
+    // had their bodies skipped, so the call graph saw zero calls from them.
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(
+        &root.join("package.json"),
+        r#"{"name":"smoke","version":"0.0.0"}"#,
+    );
+    write(
+        &root.join("src/main.ts"),
+        "function beta(): void {}\n\
+         // block-body arrow\n\
+         const gamma = (): void => { beta(); };\n\
+         // async block-body arrow\n\
+         const delta = async (): Promise<void> => { beta(); };\n\
+         // concise expression-body arrow\n\
+         const epsilon = (): void => beta();\n\
+         // function expression\n\
+         const zeta = function (): void { beta(); };\n",
+    );
+
+    for sym in ["gamma", "delta", "epsilon", "zeta"] {
+        let (out, code) = run_in(root, &["callees", sym, ".", "--rebuild"]);
+        assert_eq!(code, 0, "callees {} exited non-zero: {}", sym, out);
+        assert!(
+            out.contains("beta"),
+            "expected `beta` in callees of {}, got:\n{}",
+            sym,
+            out
+        );
+    }
+}
+
+#[test]
+fn typescript_callers_includes_arrow_const() {
+    // The flip side: `beta`'s callers must include the arrow-const callers.
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(
+        &root.join("package.json"),
+        r#"{"name":"smoke","version":"0.0.0"}"#,
+    );
+    write(
+        &root.join("src/main.ts"),
+        "function beta(): void {}\n\
+         function alpha(): void { beta(); }\n\
+         const gamma = (): void => { beta(); };\n\
+         const epsilon = (): void => beta();\n",
+    );
+    let (out, code) = run_in(root, &["callers", "beta", ".", "--rebuild"]);
+    assert_eq!(code, 0, "callers exited non-zero: {}", out);
+    for caller in ["alpha", "gamma", "epsilon"] {
+        assert!(
+            out.contains(caller),
+            "expected `{}` in callers of beta, got:\n{}",
+            caller,
+            out
+        );
+    }
+}
+
+#[test]
 fn callers_with_file_filter_narrows_match() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path();
