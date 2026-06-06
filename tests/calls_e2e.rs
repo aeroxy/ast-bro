@@ -177,6 +177,65 @@ fn typescript_callees_from_arrow_const() {
 }
 
 #[test]
+fn typescript_callees_descends_into_anonymous_closures() {
+    // Calls inside anonymous closures — curried arrows, returned closures,
+    // and inline callbacks — are attributed to the enclosing declaration.
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(
+        &root.join("package.json"),
+        r#"{"name":"smoke","version":"0.0.0"}"#,
+    );
+    write(
+        &root.join("src/main.ts"),
+        "function beta(): void {}\n\
+         // curried arrow: outer body IS the inner arrow\n\
+         const curried = (x: number) => (y: number) => beta();\n\
+         // block body returning an anonymous closure\n\
+         const returns = () => { return () => beta(); };\n\
+         // inline callback inside a plain function declaration\n\
+         function withCallback(): void { [1].forEach(() => beta()); }\n",
+    );
+
+    for sym in ["curried", "returns", "withCallback"] {
+        let (out, code) = run_in(root, &["callees", sym, ".", "--rebuild"]);
+        assert_eq!(code, 0, "callees {} exited non-zero: {}", sym, out);
+        assert!(
+            out.contains("beta"),
+            "expected `beta` in callees of {}, got:\n{}",
+            sym,
+            out
+        );
+    }
+}
+
+#[test]
+fn typescript_callees_still_stops_at_named_nested_scope() {
+    // A *named* nested function is its own scope: calls inside it must NOT
+    // bubble up to the enclosing declaration.
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(
+        &root.join("package.json"),
+        r#"{"name":"smoke","version":"0.0.0"}"#,
+    );
+    write(
+        &root.join("src/main.ts"),
+        "function beta(): void {}\n\
+         function outer(): void {\n\
+           function nested(): void { beta(); }\n\
+         }\n",
+    );
+    let (out, code) = run_in(root, &["callees", "outer", ".", "--rebuild"]);
+    assert_eq!(code, 0, "callees exited non-zero: {}", out);
+    assert!(
+        !out.contains("beta"),
+        "beta should NOT be a callee of outer (it is inside named `nested`), got:\n{}",
+        out
+    );
+}
+
+#[test]
 fn typescript_callers_includes_arrow_const() {
     // The flip side: `beta`'s callers must include the arrow-const callers.
     let tmp = tempfile::tempdir().unwrap();

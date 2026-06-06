@@ -773,12 +773,20 @@ fn _leading_doc_start_byte<'a, D: Doc>(node: &Node<'a, D>) -> Option<usize> {
 fn _walk_calls_in_body<'a, D: Doc>(node: &Node<'a, D>, src: &[u8], out: &mut Vec<CallSite>) {
     let kind = node.kind();
     let kind: &str = kind.as_ref();
+    // Stop at *named* nested scopes (they are — or should be — their own graph
+    // nodes), but descend *through* anonymous closures so their calls are
+    // attributed to the enclosing declaration. This is what makes curried
+    // arrows (`a => b => f()`), returned closures, and inline callbacks
+    // (`.map(x => f(x))`) show up in the call graph. Anonymous closures are
+    // never extracted as separate declarations, so there is no double-count.
+    //
+    // `arrow_function` and `function_expression` are intentionally NOT in this
+    // list — see _walk_calls_in_body's callers, which pass a body node, so the
+    // root of a walk is never one of these for its own declaration.
     if matches!(
         kind,
         "function_declaration"
-            | "function_expression"
             | "function"
-            | "arrow_function"
             | "method_definition"
             | "class_declaration"
             | "class"
