@@ -17,10 +17,10 @@ use crate::adapters::scala::ScalaAdapter;
 use crate::adapters::typescript::TypeScriptAdapter;
 use crate::core::ParseResult;
 
-/// Cheap extension-only check: would `parse_file_for_hook` accept this path?
+/// Cheap check: would `parse_file_for_hook` accept this path?
 /// Lets the hook skip files we can't render without reading them.
-/// False positives (extension recognized but no wired adapter) fall through
-/// to `PassThrough` when `parse_file_for_hook` returns `None`.
+/// For extensionless files, peeks at the shebang line before reading the
+/// full content — so scripts (#!/usr/bin/env python3, etc.) are detected.
 pub fn can_parse_for_hook(path: &Path) -> bool {
     let ext = path
         .extension()
@@ -33,7 +33,14 @@ pub fn can_parse_for_hook(path: &Path) -> bool {
     ) {
         return true;
     }
-    SupportLang::from_path(path).is_some()
+    if SupportLang::from_path(path).is_some() {
+        return true;
+    }
+    // Extensionless file — check shebang
+    if path.extension().is_none() {
+        return crate::file_filter::detect_language(path).is_some();
+    }
+    false
 }
 
 pub fn parse_file_for_hook(path: &Path) -> Option<ParseResult> {
@@ -54,7 +61,14 @@ pub fn parse_file_for_hook(path: &Path) -> Option<ParseResult> {
         return Some(r);
     }
 
-    let lang = SupportLang::from_path(path)?;
+    // Try extension first; for extensionless files, fall back to shebang.
+    let lang = SupportLang::from_path(path).or_else(|| {
+        if path.extension().is_none() {
+            crate::file_filter::detect_language(path)
+        } else {
+            None
+        }
+    })?;
     let mut result = match lang {
         SupportLang::Rust => RustAdapter.parse(
             path,

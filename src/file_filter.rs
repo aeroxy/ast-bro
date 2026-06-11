@@ -116,6 +116,107 @@ pub fn should_skip_path(path: &Path, repo_root: &Path) -> bool {
     })
 }
 
+/// Path components that denote a test directory (case-insensitive).
+const TEST_DIR_TOKENS: &[&str] = &[
+    "test", "tests", "__tests__", "e2e", "cypress", "playwright",
+    "integration", "integration-tests", "test-fixtures", "fixtures",
+    "spec", "specs", "mocha", "jest",
+];
+
+/// File-stem suffixes (before the final extension) that mark test files.
+/// Checked against the lowered stem.
+const TEST_FILE_SUFFIXES: &[&str] = &[
+    "_test", ".test", "_spec", ".spec",
+    "_tests", ".tests", "_specs", ".specs",
+];
+
+/// Return `true` when `path` (relative to `repo_root`) looks like a test
+/// file by path heuristics — covers `tests/`, `__tests__`,
+/// `*.test.ts`, `*_test.go`, `*.spec.js`, `e2e/`, `cypress/`, etc.
+///
+/// Both directory components and the file stem are consulted. Returns
+/// `false` for production-looking paths outside those directories.
+pub fn is_test_file(path: &Path, repo_root: &Path) -> bool {
+    let rel = path.strip_prefix(repo_root).unwrap_or(path);
+    for component in rel.components() {
+        let s = component.as_os_str().to_string_lossy();
+        let lower = s.to_lowercase();
+        if TEST_DIR_TOKENS.iter().any(|t| *t == lower) {
+            return true;
+        }
+    }
+    let stem = rel
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    if TEST_FILE_SUFFIXES.iter().any(|suf| stem.ends_with(suf)) {
+        return true;
+    }
+    false
+}
+
+/// Detect the programming language of `path` by inspecting its shebang line.
+///
+/// This is used as a fallback for extensionless files (e.g. scripts
+/// like `./bin/deploy` with `#!/usr/bin/env python3`).
+pub fn detect_language(path: &Path) -> Option<ast_grep_language::SupportLang> {
+    use ast_grep_language::SupportLang;
+
+    // Read first 256 bytes to check for shebang
+    let Ok(file) = fs::File::open(path) else {
+        return None;
+    };
+    use std::io::{BufRead, BufReader};
+    let reader = BufReader::new(file);
+    let Ok(first_line) = reader.lines().next()? else {
+        return None;
+    };
+
+    // Must start with #!
+    if !first_line.starts_with("#!") {
+        return None;
+    }
+
+    // Parse the shebang line
+    let shebang = &first_line[2..].trim();
+
+    // Handle /usr/bin/env indirection
+    let program = if shebang.ends_with("env") || shebang.contains("/env ") {
+        // Extract the program after env
+        let after_env = shebang.split("env").nth(1)?.trim();
+        // Skip env flags like -S
+        let mut parts = after_env.split_whitespace();
+        let mut program = parts.next()?;
+        while program.starts_with('-') || program.contains('=') {
+            program = parts.next()?;
+        }
+        program
+    } else {
+        // Direct shebang like #!/usr/bin/python3
+        shebang
+            .split_whitespace()
+            .next()?
+            .rsplit('/')
+            .next()?
+    };
+
+    // Normalize program name (strip version suffixes like python3.11 -> python)
+    let program = program
+        .trim_end_matches(|c: char| c.is_ascii_digit() || c == '.')
+        .to_lowercase();
+
+    // Map program to language
+    match program.as_str() {
+        "python" | "python3" | "pypy" | "pypy3" => Some(SupportLang::Python),
+        "ruby" | "rb" => Some(SupportLang::Ruby),
+        "node" | "nodejs" | "bun" | "deno" => Some(SupportLang::TypeScript),
+        "php" => Some(SupportLang::Php),
+        "bash" | "sh" | "zsh" | "ksh" => Some(SupportLang::Bash),
+        "lua" | "luajit" => Some(SupportLang::Lua),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -155,5 +256,110 @@ mod tests {
         let root = PathBuf::from("/r");
         // strip_prefix fails → not skipped (let caller decide).
         assert!(!should_skip_path(&PathBuf::from("/elsewhere/node_modules/x"), &root));
+    }
+
+    #[test]
+    fn test_detection_directory_components() {
+        let root = PathBuf::from("/r");
+        assert!(is_test_file(&root.join("tests/foo.rs"), &root));
+        assert!(is_test_file(&root.join("src/features/__tests__/a.ts"), &root));
+        assert!(is_test_file(&root.join("e2e/signup.spec.ts"), &root));
+        assert!(is_test_file(&root.join("cypress/integration/login.js"), &root));
+    }
+
+    #[test]
+    fn test_detection_file_suffixes() {
+        let root = PathBuf::from("/r");
+        assert!(is_test_file(&root.join("src/foo_test.go"), &root));
+        assert!(is_test_file(&root.join("src/utils.test.ts"), &root));
+        assert!(is_test_file(&root.join("src/auth.spec.js"), &root));
+        assert!(is_test_file(&root.join("src/bar_tests.py"), &root));
+    }
+
+    #[test]
+    fn test_detection_production_paths() {
+        let root = PathBuf::from("/r");
+        assert!(!is_test_file(&root.join("src/foo.rs"), &root));
+        assert!(!is_test_file(&root.join("lib/auth.py"), &root));
+        assert!(!is_test_file(&root.join("src/test_utils.rs"), &root));
+    }
+
+    #[test]
+    fn shebang_python() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("myscript");
+        std::fs::write(&path, "#!/usr/bin/env python3\nprint('hi')\n").unwrap();
+        assert_eq!(
+            detect_language(&path),
+            Some(ast_grep_language::SupportLang::Python)
+        );
+    }
+
+    #[test]
+    fn shebang_with_env_flags() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("deploy");
+        std::fs::write(&path, "#!/usr/bin/env -S python3\n").unwrap();
+        assert_eq!(
+            detect_language(&path),
+            Some(ast_grep_language::SupportLang::Python)
+        );
+    }
+
+    #[test]
+    fn shebang_direct_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tool");
+        std::fs::write(&path, "#!/usr/bin/python3\n").unwrap();
+        assert_eq!(
+            detect_language(&path),
+            Some(ast_grep_language::SupportLang::Python)
+        );
+    }
+
+    #[test]
+    fn shebang_ruby() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("script");
+        std::fs::write(&path, "#!/usr/bin/ruby\nputs 'hi'\n").unwrap();
+        assert_eq!(
+            detect_language(&path),
+            Some(ast_grep_language::SupportLang::Ruby)
+        );
+    }
+
+    #[test]
+    fn shebang_node_resolves_to_typescript() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("server");
+        std::fs::write(&path, "#!/usr/bin/env node\nconsole.log(1);\n").unwrap();
+        assert_eq!(
+            detect_language(&path),
+            Some(ast_grep_language::SupportLang::TypeScript)
+        );
+    }
+
+    #[test]
+    fn no_shebang_returns_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("plain");
+        std::fs::write(&path, "just a plain file\n").unwrap();
+        assert_eq!(detect_language(&path), None);
+    }
+
+    #[test]
+    fn empty_file_returns_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("empty");
+        std::fs::write(&path, "").unwrap();
+        assert_eq!(detect_language(&path), None);
+    }
+
+    #[test]
+    fn shebang_unrecognized_interpreter() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tool");
+        std::fs::write(&path, "#!/usr/bin/env foointerpreter\n").unwrap();
+        assert_eq!(detect_language(&path), None);
     }
 }

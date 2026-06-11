@@ -4,11 +4,13 @@ use std::path::{Path, PathBuf};
 
 mod adapters;
 mod calls;
+mod context;
 mod core;
 mod deps;
 mod file_filter;
 mod graph_cache;
 mod hook;
+mod impact;
 mod installers;
 mod main_helpers;
 mod mcp;
@@ -285,6 +287,12 @@ enum Commands {
         depth: usize,
         #[arg(long, default_value_t = 200)]
         limit: usize,
+        /// Show only importers from test files.
+        #[arg(long)]
+        tests: bool,
+        /// Exclude importers from test files.
+        #[arg(long, conflicts_with = "tests")]
+        exclude_tests: bool,
         #[arg(long)]
         rebuild: bool,
         #[arg(long)]
@@ -311,10 +319,39 @@ enum Commands {
         path: PathBuf,
         #[arg(long)]
         json: bool,
+        /// Hide unresolved external imports from the graph.
+        /// Shown by default (tagged `[external]`); set this flag to drop them.
         #[arg(long)]
+        hide_external: bool,
+        /// (Deprecated — unresolved externals are shown by default now.)
+        #[arg(long, hide = true)]
         include_external: bool,
         #[arg(long)]
         rebuild: bool,
+        #[arg(long)]
+        compact: bool,
+    },
+    /// Token-budgeted context for a symbol — target body + relevant deps/callers in one call.
+    Context {
+        /// Symbol to build context for (same form as callers/callees).
+        #[arg(required_unless_present_all = ["file", "symbol"], conflicts_with_all = ["file", "symbol"])]
+        target: Option<String>,
+        /// Repository root (default: ".").
+        #[arg(default_value = ".")]
+        path: PathBuf,
+        /// Alternative to the positional target.
+        #[arg(long, requires = "symbol")]
+        file: Option<String>,
+        /// Symbol name when using `--file`.
+        #[arg(long, requires = "file")]
+        symbol: Option<String>,
+        /// Token budget (default 8000). Rough estimate: 1 token ≈ 4 bytes.
+        #[arg(long, default_value_t = 8000)]
+        budget: usize,
+        #[arg(long)]
+        rebuild: bool,
+        #[arg(long)]
+        json: bool,
         #[arg(long)]
         compact: bool,
     },
@@ -343,9 +380,19 @@ enum Commands {
         /// Cap result count (mirrors reverse-deps).
         #[arg(long, default_value_t = 200)]
         limit: usize,
-        /// Include callers whose target is `Ambiguous` (off by default — noisy).
+        /// Hide callers whose target is `Ambiguous` (multiple candidates).
+        /// Shown by default (tagged red); set this flag to drop them.
         #[arg(long)]
+        hide_ambiguous: bool,
+        /// (Deprecated — ambiguous matches are shown by default now.)
+        #[arg(long, hide = true)]
         include_ambiguous: bool,
+        /// Show only callers in test files.
+        #[arg(long)]
+        tests: bool,
+        /// Exclude callers from test files.
+        #[arg(long, conflicts_with = "tests")]
+        exclude_tests: bool,
         /// Force a fresh call-graph build.
         #[arg(long)]
         rebuild: bool,
@@ -369,8 +416,12 @@ enum Commands {
         symbol: Option<String>,
         #[arg(long, default_value_t = 1)]
         depth: usize,
-        /// Include unresolved callees (the `Bare`/`External` bucket).
+        /// Hide unresolved callees (the `Bare`/`External` bucket).
+        /// Shown by default (tagged cyan/red); set this flag to drop them.
         #[arg(long)]
+        hide_external: bool,
+        /// (Deprecated — unresolved/external callees are shown by default now.)
+        #[arg(long, hide = true)]
         external: bool,
         #[arg(long)]
         rebuild: bool,
@@ -399,6 +450,46 @@ enum Commands {
         #[arg(long, default_value_t = 12)]
         depth: usize,
         /// Force a fresh call-graph build.
+        #[arg(long)]
+        rebuild: bool,
+        #[arg(long)]
+        json: bool,
+        #[arg(long)]
+        compact: bool,
+    },
+    /// Cross-file impact analysis: callers + callees + file reverse-deps + test detection, one command.
+    Impact {
+        /// Symbol to analyse (same form as callers/callees: `TakeDamage`, `Player.TakeDamage`, `src/Player.cs:TakeDamage`).
+        #[arg(required_unless_present_all = ["file", "symbol"], conflicts_with_all = ["file", "symbol"])]
+        target: Option<String>,
+        /// Repository root (default: ".").
+        #[arg(default_value = ".")]
+        path: PathBuf,
+        /// Alternative to the positional target.
+        #[arg(long, requires = "symbol")]
+        file: Option<String>,
+        /// Symbol name when using `--file`.
+        #[arg(long, requires = "file")]
+        symbol: Option<String>,
+        /// Transitive depth (default 2).
+        #[arg(long, default_value_t = 2)]
+        depth: usize,
+        /// Cap number of results per section.
+        #[arg(long, default_value_t = 200)]
+        limit: usize,
+        /// Section to show: `deps`, `dependents`, `tests`, or `all` (default).
+        #[arg(long, default_value = "all")]
+        mode: String,
+        /// Hide ambiguous call-edge matches from impact output.
+        /// Shown by default (tagged red); set this flag to drop them.
+        #[arg(long)]
+        hide_ambiguous: bool,
+        /// Show only test files.
+        #[arg(long)]
+        tests: bool,
+        /// Exclude test files from the output.
+        #[arg(long, conflicts_with = "tests")]
+        exclude_tests: bool,
         #[arg(long)]
         rebuild: bool,
         #[arg(long)]
@@ -1067,6 +1158,8 @@ pub fn run() {
             file,
             depth,
             limit,
+            tests,
+            exclude_tests,
             rebuild,
             json,
             compact,
@@ -1075,6 +1168,8 @@ pub fn run() {
                 file,
                 *depth,
                 *limit,
+                *tests,
+                *exclude_tests,
                 *json,
                 !(*compact),
                 *rebuild,
@@ -1094,12 +1189,13 @@ pub fn run() {
         Commands::Graph {
             path,
             json,
-            include_external,
+            hide_external,
+            include_external: _,
             rebuild,
             compact,
         } => {
             let exit =
-                crate::deps::cli::run_graph(path, *json, *include_external, !(*compact), *rebuild);
+                crate::deps::cli::run_graph(path, *json, !(*hide_external), !(*compact), *rebuild);
             std::process::exit(exit);
         }
         Commands::Index {
@@ -1119,7 +1215,10 @@ pub fn run() {
             symbol,
             depth,
             limit,
-            include_ambiguous,
+            hide_ambiguous,
+            include_ambiguous: _,
+            tests,
+            exclude_tests,
             rebuild,
             json,
             compact,
@@ -1130,10 +1229,35 @@ pub fn run() {
                 path,
                 *depth,
                 *limit,
-                *include_ambiguous,
+                !(*hide_ambiguous),
+                *tests,
+                *exclude_tests,
                 *rebuild,
                 *json,
                 !(*compact),
+            );
+            std::process::exit(exit);
+        }
+        Commands::Context {
+            target,
+            path,
+            file,
+            symbol,
+            budget,
+            rebuild,
+            json,
+            compact,
+        } => {
+            let resolved = compose_target(target.as_deref(), file.as_deref(), symbol.as_deref());
+            let exit = crate::context::run_context(
+                &resolved,
+                path,
+                &crate::context::ContextOptions {
+                    budget: *budget,
+                    json: *json,
+                    pretty: !(*compact),
+                },
+                *rebuild,
             );
             std::process::exit(exit);
         }
@@ -1143,7 +1267,8 @@ pub fn run() {
             file,
             symbol,
             depth,
-            external,
+            hide_external,
+            external: _,
             rebuild,
             json,
             compact,
@@ -1153,7 +1278,7 @@ pub fn run() {
                 &resolved,
                 path,
                 *depth,
-                *external,
+                !(*hide_external),
                 *rebuild,
                 *json,
                 !(*compact),
@@ -1171,6 +1296,45 @@ pub fn run() {
         } => {
             let exit =
                 crate::calls::cli::run_trace(from, to, path, *depth, *rebuild, *json, !(*compact));
+            std::process::exit(exit);
+        }
+        Commands::Impact {
+            target,
+            path,
+            file,
+            symbol,
+            depth,
+            limit,
+            mode,
+            hide_ambiguous,
+            tests,
+            exclude_tests,
+            rebuild,
+            json,
+            compact,
+        } => {
+            let impact_mode = match crate::impact::ImpactMode::from_str(mode) {
+                Some(m) => m,
+                None => {
+                    eprintln!(
+                        "# note: unknown --mode '{}'. Expected: deps, dependents, tests, all",
+                        mode
+                    );
+                    std::process::exit(2);
+                }
+            };
+            let resolved = compose_target(target.as_deref(), file.as_deref(), symbol.as_deref());
+            let opts = crate::impact::ImpactOptions {
+                depth: *depth,
+                limit: *limit,
+                mode: impact_mode,
+                include_ambiguous: !(*hide_ambiguous),
+                tests: *tests,
+                exclude_tests: *exclude_tests,
+                json: *json,
+                pretty: !(*compact),
+            };
+            let exit = crate::impact::run_impact(&resolved, path, &opts, *rebuild);
             std::process::exit(exit);
         }
         Commands::Run {

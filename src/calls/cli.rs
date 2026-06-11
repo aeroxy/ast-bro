@@ -26,6 +26,8 @@ pub fn run_callers(
     depth: usize,
     limit: usize,
     include_ambiguous: bool,
+    tests: bool,
+    exclude_tests: bool,
     rebuild: bool,
     json: bool,
     pretty: bool,
@@ -61,7 +63,6 @@ pub fn run_callers(
         return 2;
     }
 
-    // Split callables vs types and gather hits from each.
     let mut hits = Vec::new();
     let mut type_groups: Vec<TypeCallersGroup> = Vec::new();
     for c in &candidates {
@@ -77,6 +78,14 @@ pub fn run_callers(
 
     if !include_ambiguous {
         hits.retain(|h| !matches!(h.edge.confidence, Confidence::Ambiguous));
+    }
+    if tests || exclude_tests {
+        hits.retain(|h| {
+            let abs = root.join(&h.edge.file);
+            let is_test = crate::file_filter::is_test_file(&abs, &root);
+            if exclude_tests { !is_test }
+            else { is_test }
+        });
     }
     if hits.len() > limit {
         hits.truncate(limit);

@@ -23,7 +23,7 @@ use crate::deps::traverse::DepHit;
 pub fn render_deps_text(graph: &DepGraph, start: &Path, hits: &[DepHit]) -> String {
     let mut out = String::new();
     let _ = writeln!(out, "{}", graph.rel(start).cyan().bold());
-    if hits.is_empty() {
+    if hits.is_empty() && graph.external.get(start).map_or(true, |v| v.is_empty()) {
         let _ = writeln!(out, "  {}", "(no imports)".dimmed());
         return out;
     }
@@ -42,6 +42,24 @@ pub fn render_deps_text(graph: &DepGraph, start: &Path, hits: &[DepHit]) -> Stri
             format!("({})", h.kind.label()).dimmed(),
             alias
         );
+    }
+    if let Some(externals) = graph.external.get(start) {
+        if !externals.is_empty() {
+            let _ = writeln!(out);
+            let _ = writeln!(
+                out,
+                "# {} {}",
+                externals.len().to_string().bold(),
+                if externals.len() == 1 {
+                    "unresolved import:".dimmed()
+                } else {
+                    "unresolved imports:".dimmed()
+                }
+            );
+            for ext in externals {
+                let _ = writeln!(out, "  {} {}", "[external]".cyan(), ext.dimmed());
+            }
+        }
     }
     out
 }
@@ -130,6 +148,8 @@ struct DepsDoc<'a> {
     schema: &'static str,
     file: String,
     hits: Vec<JsonHit<'a>>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    external: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -143,6 +163,11 @@ struct JsonHit<'a> {
 }
 
 pub fn render_deps_json(graph: &DepGraph, start: &Path, hits: &[DepHit], pretty: bool) -> String {
+    let external = graph
+        .external
+        .get(start)
+        .cloned()
+        .unwrap_or_default();
     let doc = DepsDoc {
         schema: JSON_SCHEMA_DEPS,
         file: graph.rel(start),
@@ -156,6 +181,7 @@ pub fn render_deps_json(graph: &DepGraph, start: &Path, hits: &[DepHit], pretty:
                 local_name: h.local_name.as_deref(),
             })
             .collect(),
+        external,
     };
     if pretty {
         serde_json::to_string_pretty(&doc).unwrap_or_default()

@@ -153,13 +153,13 @@ pub fn list() -> Value {
             },
             {
                 "name": "graph",
-                "description": "Emit the file-level dependency graph. Returns text by default; set `json: true` for `ast-bro.graph.v1`.",
+                "description": "Emit the file-level dependency graph. Unresolved external imports shown by default (tagged `[external]`). Returns text by default; set `json: true` for `ast-bro.graph.v1`.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
                         "path":             { "type": "string",  "description": "Repo root (default \".\")." },
                         "json":             { "type": "boolean", "description": "Return JSON (schema `ast-bro.graph.v1`) instead of text." },
-                        "include_external": { "type": "boolean", "description": "Include unresolved imports in JSON output." },
+                        "hide_external":    { "type": "boolean", "description": "Drop unresolved imports. Default: false (shown with [external] tag)." },
                         "rebuild":          { "type": "boolean" }
                     }
                 }
@@ -210,7 +210,7 @@ pub fn list() -> Value {
             },
             {
                 "name": "callers",
-                "description": "Find callers of a symbol — AST-accurate, no grep noise. Suffix-matches the target like `show`/`implements`: `TakeDamage`, or `Type.method` when ambiguous. Builds a unified deps+calls cache at `.ast-bro/deps/graph.bin` on first call (the call half is built lazily). Returns text by default; set `json: true` for `ast-bro.callers.v1`.",
+                "description": "Find callers of a symbol — AST-accurate, no grep noise. Suffix-matches the target like `show`/`implements`: `TakeDamage`, or `Type.method` when ambiguous. Ambiguous matches shown by default (tagged red). Returns text by default; set `json: true` for `ast-bro.callers.v1`.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -218,7 +218,7 @@ pub fn list() -> Value {
                         "path":              { "type": "string",  "description": "Repo root (default \".\")." },
                         "depth":             { "type": "integer", "description": "Max BFS depth (default 1).", "minimum": 1 },
                         "limit":             { "type": "integer", "description": "Cap result count (default 200).", "minimum": 1 },
-                        "include_ambiguous": { "type": "boolean", "description": "Keep callers whose target is unresolved." },
+                        "hide_ambiguous":    { "type": "boolean", "description": "Drop callers with multiple candidates. Default: false (shown with Ambiguous tag)." },
                         "rebuild":           { "type": "boolean" },
                         "json":              { "type": "boolean" }
                     },
@@ -227,16 +227,16 @@ pub fn list() -> Value {
             },
             {
                 "name": "callees",
-                "description": "What does this symbol call? — AST-accurate forward call traversal. Suffix-matches the target like `callers`. Returns text by default; set `json: true` for `ast-bro.callees.v1`.",
+                "description": "What does this symbol call? — AST-accurate forward call traversal. Suffix-matches the target like `callers`. Unresolved/external callees shown by default (tagged cyan/red). Returns text by default; set `json: true` for `ast-bro.callees.v1`.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "target":   { "type": "string",  "description": "Symbol name to look up." },
-                        "path":     { "type": "string",  "description": "Repo root (default \".\")." },
-                        "depth":    { "type": "integer", "description": "Max BFS depth (default 1).", "minimum": 1 },
-                        "external": { "type": "boolean", "description": "Include unresolved/external callees in output." },
-                        "rebuild":  { "type": "boolean" },
-                        "json":     { "type": "boolean" }
+                        "target":         { "type": "string",  "description": "Symbol name to look up." },
+                        "path":           { "type": "string",  "description": "Repo root (default \".\")." },
+                        "depth":          { "type": "integer", "description": "Max BFS depth (default 1).", "minimum": 1 },
+                        "hide_external":  { "type": "boolean", "description": "Drop unresolved/external callees. Default: false (shown with [unresolved]/[external] tags)." },
+                        "rebuild":        { "type": "boolean" },
+                        "json":           { "type": "boolean" }
                     },
                     "required": ["target"]
                 }
@@ -255,6 +255,39 @@ pub fn list() -> Value {
                         "json":    { "type": "boolean" }
                     },
                     "required": ["from", "to"]
+                }
+            },
+            {
+                "name": "impact",
+                "description": "Cross-file impact analysis: callers + callees + file reverse-deps + test detection in one call. Answers 'what would break if I change X?' and 'how wide is the blast radius?' in one shot. Four modes: `deps` (what it calls/imports), `dependents` (who calls/imports it), `tests` (affected tests only), `all` (default). Returns `ast-bro.impact.v1` JSON.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "target":            { "type": "string",  "description": "Symbol to analyse (e.g. 'handleRequest', 'Player.TakeDamage', 'src/Player.cs:TakeDamage')." },
+                        "path":              { "type": "string",  "description": "Repo root (default \".\")." },
+                        "depth":             { "type": "integer", "description": "Transitive depth (default 2).", "minimum": 1 },
+                        "limit":             { "type": "integer", "description": "Result cap per section (default 200).", "minimum": 1 },
+                        "mode":              { "type": "string",  "description": "Section: 'deps', 'dependents', 'tests', or 'all' (default).", "enum": ["deps", "dependents", "tests", "all"] },
+                        "include_ambiguous": { "type": "boolean", "description": "Include ambiguous call-edge matches." },
+                        "tests":             { "type": "boolean", "description": "Show only test files." },
+                        "exclude_tests":     { "type": "boolean", "description": "Exclude test files from output." },
+                        "json":              { "type": "boolean" }
+                    },
+                    "required": ["target"]
+                }
+            },
+            {
+                "name": "context",
+                "description": "Token-budgeted context for a symbol — target body + direct callees (bodies) + callers/transitive (signatures), greedily packed into a caller-supplied token budget. Replaces chains of 4–5 `show`/`callers`/`callees` calls with ONE context-aware payload. Budget degrades gracefully from full bodies to signatures only. Returns `ast-bro.context.v1` JSON.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "target": { "type": "string",  "description": "Symbol to build context for (same form as callers)." },
+                        "path":   { "type": "string",  "description": "Repo root (default \".\")." },
+                        "budget": { "type": "integer", "description": "Token budget (default 8000). ~4 bytes per token rough.", "minimum": 100 },
+                        "json":   { "type": "boolean" }
+                    },
+                    "required": ["target"]
                 }
             },
             {
@@ -317,6 +350,8 @@ pub fn call(name: &str, args: Value) -> CallResult {
         "callers"      => run_callers(args),
         "callees"      => run_callees(args),
         "trace"        => run_trace(args),
+        "impact"       => crate::impact::mcp::run_impact(args),
+        "context"      => crate::context::mcp::run_context(args),
         "run"          => run_run(args),
         "squeeze"      => run_squeeze(args),
         other => CallResult::Error(format!("unknown tool: {}", other)),
@@ -334,8 +369,9 @@ struct CallersArgs {
     depth: usize,
     #[serde(default = "default_two_hundred")]
     limit: usize,
+    /// Hide ambiguous callers (default: false — show them tagged red).
     #[serde(default)]
-    include_ambiguous: bool,
+    hide_ambiguous: bool,
     #[serde(default)]
     json: bool,
 }
@@ -347,8 +383,9 @@ struct CalleesArgs {
     path: PathBuf,
     #[serde(default = "default_one")]
     depth: usize,
+    /// Hide unresolved/external callees (default: false — show them tagged).
     #[serde(default)]
-    external: bool,
+    hide_external: bool,
     #[serde(default)]
     json: bool,
 }
@@ -371,7 +408,7 @@ fn run_callers(args: Value) -> CallResult {
         &root,
         a.depth,
         a.limit,
-        a.include_ambiguous,
+        !a.hide_ambiguous,
         a.json,
     );
     CallResult::Text(out)
@@ -386,7 +423,7 @@ fn run_callees(args: Value) -> CallResult {
         Ok(r) => r,
         Err(e) => return CallResult::Error(e),
     };
-    let out = crate::calls::mcp::run_callees_text(&a.target, &root, a.depth, a.external, a.json);
+    let out = crate::calls::mcp::run_callees_text(&a.target, &root, a.depth, !a.hide_external, a.json);
     CallResult::Text(out)
 }
 

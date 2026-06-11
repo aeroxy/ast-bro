@@ -115,6 +115,7 @@ fn initialize_result() -> Value {
             • Unfamiliar directory → digest. One file's shape (signatures, no bodies) → map. A specific symbol's source → show.\n\
             • Who implements/extends a type → implements. A package's true public API (re-exports resolved) → surface.\n\
             • Who calls a symbol → callers. What a symbol calls → callees. How does A reach B (call path, bodies inlined) → trace.\n\
+            • Blast radius of changing X (callers + callees + file deps + tests) → impact. Token-budgeted everything-relevant-for-X → context.\n\
             • What a file imports / who imports it / import cycles → deps / reverse_deps / cycles; the whole import graph → graph.\n\
             • Find code by meaning or name (hybrid semantic + BM25) → search. What else resembles a chunk → find_related. Build/inspect the index → index.\n\
             • Structural search-and-rewrite with metavariables ($VAR, $$$) → run (write:true mutates files — preview the dry-run first). Compress a log/text file → squeeze.\n\

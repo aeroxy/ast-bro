@@ -64,6 +64,8 @@ pub fn run_reverse_deps(
     file: &Path,
     depth: usize,
     limit: usize,
+    tests: bool,
+    exclude_tests: bool,
     json: bool,
     pretty: bool,
     rebuild: bool,
@@ -101,15 +103,25 @@ pub fn run_reverse_deps(
         }
     };
     let hits = traverse::reverse(&graph, &canonical, depth.max(1), limit);
+    let filtered: Vec<_> = hits
+        .into_iter()
+        .filter(|h| {
+            if !tests && !exclude_tests {
+                return true;
+            }
+            let is_test = crate::file_filter::is_test_file(&h.file, &root);
+            if exclude_tests { !is_test } else { is_test }
+        })
+        .collect();
     if json {
         println!(
             "{}",
-            render::render_reverse_deps_json(&graph, &canonical, &hits, pretty)
+            render::render_reverse_deps_json(&graph, &canonical, &filtered, pretty)
         );
     } else {
         print!(
             "{}",
-            render::render_reverse_deps_text(&graph, &canonical, &hits)
+            render::render_reverse_deps_text(&graph, &canonical, &filtered)
         );
     }
     0
