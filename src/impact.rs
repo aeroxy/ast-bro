@@ -651,19 +651,17 @@ fn build_file_reverse_deps_section(
     opts: &ImpactOptions,
 ) -> ImpactSection {
     let deps_file = root.join(file);
-    let hits = dep_traverse::reverse(deps, &deps_file, 1, opts.limit, |_| true);
-    let hits: Vec<_> = hits
-        .into_iter()
-        .filter(|h| {
-            if opts.exclude_tests {
-                !is_test_file(&h.file, root)
-            } else if opts.tests {
-                is_test_file(&h.file, root)
-            } else {
-                true
-            }
-        })
-        .collect();
+    // Test filtering happens inside the traversal so excluded importers
+    // don't consume --limit (same pattern as the caller traversals).
+    let hits = dep_traverse::reverse(deps, &deps_file, 1, opts.limit, |e| {
+        if opts.exclude_tests {
+            !is_test_file(&e.target, root)
+        } else if opts.tests {
+            is_test_file(&e.target, root)
+        } else {
+            true
+        }
+    });
     ImpactSection {
         title: format!("← imported by (file, {})", hits.len()),
         entries: hits
