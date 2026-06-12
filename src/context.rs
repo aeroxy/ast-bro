@@ -621,17 +621,18 @@ fn resolve_qn_source(
     root: &Path,
     cache: &mut ParsedFileCache,
 ) -> (Option<String>, Option<String>, String, u32, String) {
-    let file_abs = match calls.callable_meta.get(qn) {
-        Some(m) => root.join(&m.file),
-        None => root.join(qn.file()),
+    // The qn may name a callable (functions, methods) or a type — the
+    // implementor loop in `build_context` passes type qns straight from
+    // `calls.implementors`. Fall back to the type table so types keep
+    // their real declaration line (line-based disambiguation in the match
+    // loop below) and kind label instead of degrading to 0/"function".
+    let (file_abs, line, kind) = if let Some(m) = calls.callable_meta.get(qn) {
+        (root.join(&m.file), m.line, m.kind.clone())
+    } else if let Some(t) = calls.types.get(qn) {
+        (root.join(&t.file), t.line, t.kind.clone())
+    } else {
+        (root.join(qn.file()), 0, "function".to_string())
     };
-    let line = calls.callable_meta.get(qn).map(|m| m.line).unwrap_or(0);
-    let kind = calls
-        .callable_meta
-        .get(qn)
-        .map(|m| m.kind.as_str())
-        .unwrap_or("function")
-        .to_string();
     let rel = crate::project_root::relative_posix(&file_abs, root)
         .unwrap_or_else(|| file_abs.display().to_string());
     let name = qn.name();
