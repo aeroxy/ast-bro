@@ -1660,3 +1660,37 @@ pub fn load_config() -> Config {
         out
     );
 }
+
+#[test]
+fn callers_tests_flag_reaches_tests_through_production_intermediate() {
+    // tests/it_test.rs::t → wrapper (production) → target. With `--tests`
+    // the depth-1 hop fails the filter, but the traversal must still pass
+    // through it so the depth-2 test caller is found: the predicate gates
+    // output, not reachability.
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(&root.join("Cargo.toml"), "[package]\nname=\"x\"\nversion=\"0.0.0\"\nedition=\"2021\"\n");
+    write(
+        &root.join("src/lib.rs"),
+        "pub fn target() {}\npub fn wrapper() { target(); }\n",
+    );
+    write(
+        &root.join("tests/it_test.rs"),
+        "use x::wrapper;\n#[test]\nfn t() { wrapper(); }\n",
+    );
+    let (out, code) = run_in(
+        root,
+        &["callers", "target", ".", "--depth", "2", "--tests", "--rebuild"],
+    );
+    assert_eq!(code, 0, "callers exited non-zero: {}", out);
+    assert!(
+        out.contains("it_test.rs") && out.contains("depth=2"),
+        "expected the depth-2 test caller reached through a non-test intermediate, got:\n{}",
+        out
+    );
+    assert!(
+        !out.contains("wrapper ") || !out.contains("src/lib.rs:"),
+        "wrapper (non-test) must not be reported under --tests, got:\n{}",
+        out
+    );
+}

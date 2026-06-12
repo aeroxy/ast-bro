@@ -74,25 +74,35 @@ where
     P: Fn(&CallEdge) -> bool,
 {
     let mut out = Vec::new();
+    // Two sets with different jobs: `seen` dedups *traversal* (every node is
+    // expanded once, including ones whose edge the predicate rejects — a
+    // test caller at depth 2 must still be reachable through a non-test
+    // intermediate when filtering with --tests). `reported` dedups *output*,
+    // so a node first reached via a rejected edge can still be reported
+    // when a later qualifying edge points at it.
     let mut seen: HashSet<Qn> = HashSet::new();
+    let mut reported: HashSet<Qn> = HashSet::new();
     let mut q: VecDeque<(Qn, usize)> = VecDeque::new();
     q.push_back((start.clone(), 0));
     seen.insert(start.clone());
+    reported.insert(start.clone());
     while let Some((cur, depth)) = q.pop_front() {
         if depth >= max_depth {
             continue;
         }
         for (next, edge) in edges_at(&cur) {
-            if seen.insert(next.clone()) {
-                if predicate(&edge) {
-                    out.push(CallHit {
-                        depth: depth + 1,
-                        edge,
-                    });
-                    if out.len() >= limit {
-                        return out;
-                    }
+            let first_visit = seen.insert(next.clone());
+            if predicate(&edge) && !reported.contains(&next) {
+                reported.insert(next.clone());
+                out.push(CallHit {
+                    depth: depth + 1,
+                    edge,
+                });
+                if out.len() >= limit {
+                    return out;
                 }
+            }
+            if first_visit {
                 q.push_back((next, depth + 1));
             }
         }

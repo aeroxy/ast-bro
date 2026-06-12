@@ -306,7 +306,7 @@ fn build_context(
             if !seen_qns.insert(h.edge.source.as_str().to_string()) {
                 continue;
             }
-            let Some(sig) = signature_from_meta(calls, &h.edge.source, &mut parse_cache) else {
+            let Some(sig) = signature_from_meta(calls, &h.edge.source, root, &mut parse_cache) else {
                 continue;
             };
             let sig_tok = estimate_tokens(sig.len());
@@ -340,7 +340,7 @@ fn build_context(
             if !seen_qns.insert(qn.as_str().to_string()) {
                 continue;
             }
-            let Some(sig) = signature_from_meta(calls, qn, &mut parse_cache) else {
+            let Some(sig) = signature_from_meta(calls, qn, root, &mut parse_cache) else {
                 continue;
             };
             let sig_tok = estimate_tokens(sig.len());
@@ -373,7 +373,7 @@ fn build_context(
             if !seen_qns.insert(h.edge.source.as_str().to_string()) {
                 continue;
             }
-            let Some(sig) = signature_from_meta(calls, &h.edge.source, &mut parse_cache) else {
+            let Some(sig) = signature_from_meta(calls, &h.edge.source, root, &mut parse_cache) else {
                 continue;
             };
             let sig_tok = estimate_tokens(sig.len());
@@ -578,7 +578,7 @@ fn build_context(
                 if !seen_qns.insert(h.edge.source.as_str().to_string()) {
                     continue;
                 }
-                let Some(sig) = signature_from_meta(calls, &h.edge.source, &mut parse_cache)
+                let Some(sig) = signature_from_meta(calls, &h.edge.source, root, &mut parse_cache)
                 else {
                     continue;
                 };
@@ -665,11 +665,15 @@ fn resolve_qn_source(
 fn signature_from_meta(
     calls: &CallGraph,
     qn: &crate::calls::graph::Qn,
+    root: &Path,
     cache: &mut ParsedFileCache,
 ) -> Option<String> {
+    // Join against the freshly-resolved `root`, not `calls.root`: the latter
+    // is an absolute path deserialised from graph.bin and goes stale when
+    // the repository directory is moved or renamed.
     let file_abs = match calls.callable_meta.get(qn) {
-        Some(m) => calls.root.join(&m.file),
-        None => calls.root.join(qn.file()),
+        Some(m) => root.join(&m.file),
+        None => root.join(qn.file()),
     };
     let line = calls.callable_meta.get(qn).map(|m| m.line).unwrap_or(0);
     let name = qn.name();

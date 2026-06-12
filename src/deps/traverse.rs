@@ -61,29 +61,37 @@ where
     P: Fn(&DepEdge) -> bool,
 {
     let mut out = Vec::new();
+    // `seen` dedups traversal (filtered nodes are still expanded so deeper
+    // qualifying hits stay reachable); `reported` dedups output, so a node
+    // first reached via a rejected edge can still be reported when a later
+    // qualifying edge points at it. Mirrors `calls::traverse::bfs`.
     let mut seen: HashSet<PathBuf> = HashSet::new();
+    let mut reported: HashSet<PathBuf> = HashSet::new();
     let mut q: VecDeque<(PathBuf, usize)> = VecDeque::new();
     let start_buf = start.to_path_buf();
     q.push_back((start_buf.clone(), 0));
-    seen.insert(start_buf);
+    seen.insert(start_buf.clone());
+    reported.insert(start_buf);
     while let Some((cur, depth)) = q.pop_front() {
         if depth >= max_depth {
             continue;
         }
         for e in edges_at(&cur) {
-            if seen.insert(e.target.clone()) {
-                if predicate(&e) {
-                    out.push(DepHit {
-                        depth: depth + 1,
-                        file: e.target.clone(),
-                        kind: e.kind,
-                        line: e.line,
-                        local_name: e.local_name,
-                    });
-                    if out.len() >= limit {
-                        return out;
-                    }
+            let first_visit = seen.insert(e.target.clone());
+            if predicate(&e) && !reported.contains(&e.target) {
+                reported.insert(e.target.clone());
+                out.push(DepHit {
+                    depth: depth + 1,
+                    file: e.target.clone(),
+                    kind: e.kind,
+                    line: e.line,
+                    local_name: e.local_name,
+                });
+                if out.len() >= limit {
+                    return out;
                 }
+            }
+            if first_visit {
                 q.push_back((e.target, depth + 1));
             }
         }
