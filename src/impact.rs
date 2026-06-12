@@ -212,6 +212,12 @@ fn compute_impact(
             test_calls.push(h.clone());
         }
         if h.depth > 1 {
+            if opts.exclude_tests && is_test {
+                continue;
+            }
+            if opts.tests && !is_test {
+                continue;
+            }
             let entry = ImpactEntry {
                 qn: h.edge.source.as_str().to_string(),
                 file: h.edge.file.display().to_string(),
@@ -277,6 +283,12 @@ fn compute_impact(
                             let mut h2 = h.clone();
                             h2.depth = total_depth;
                             test_calls.push(h2);
+                        }
+                        if opts.exclude_tests && is_test {
+                            continue;
+                        }
+                        if opts.tests && !is_test {
+                            continue;
                         }
                         let entry = ImpactEntry {
                             qn: h.edge.source.as_str().to_string(),

@@ -116,9 +116,7 @@ pub fn find_root_for(file: &Path) -> Result<PathBuf, String> {
             if cur.join(n).is_file() {
                 // Keep the highest (latest) manifest seen; outer wins over
                 // an inner leaf-package manifest in monorepos / workspaces.
-                if last_seen_manifest.is_none() {
-                    last_seen_manifest = Some(cur.to_path_buf());
-                }
+                last_seen_manifest = Some(cur.to_path_buf());
                 break;
             }
         }

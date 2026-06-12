@@ -222,7 +222,7 @@ pub fn detect_language(path: &Path) -> Option<ast_grep_language::SupportLang> {
 
     // Map program to language
     match program.as_str() {
-        "python" | "python3" | "pypy" | "pypy3" => Some(SupportLang::Python),
+        "python" | "pypy" => Some(SupportLang::Python),
         "ruby" | "rb" => Some(SupportLang::Ruby),
         "node" | "nodejs" | "bun" | "deno" => Some(SupportLang::TypeScript),
         "php" => Some(SupportLang::Php),
