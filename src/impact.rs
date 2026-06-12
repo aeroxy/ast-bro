@@ -317,14 +317,33 @@ fn compute_impact(
             });
         };
 
+        // Same test predicate as the callable traversal above — filtering
+        // inside the BFS keeps excluded edges from consuming --limit.
+        let keep_by_test_flags = |e: &CallEdge| {
+            if !opts.tests && !opts.exclude_tests {
+                return true;
+            }
+            let is_test = is_test_file(&root.join(&e.file), root);
+            if opts.exclude_tests {
+                !is_test
+            } else {
+                is_test
+            }
+        };
+
         // Callers of the callables that construct the target type itself
         // are depth-2 dependents (the construction sites themselves are
         // depth 1 and already shown in the callers section).
         if opts.depth > 1 {
             let group = collect_type_callers(calls, &c.qn);
             for e in &group.constructions {
-                for h in traverse::callers(calls, &e.source, opts.depth - 1, opts.limit, |_| true)
-                {
+                for h in traverse::callers(
+                    calls,
+                    &e.source,
+                    opts.depth - 1,
+                    opts.limit,
+                    keep_by_test_flags,
+                ) {
                     add_transitive(
                         h.depth + 1,
                         &h.edge.source,
@@ -383,7 +402,7 @@ fn compute_impact(
                                 &e.source,
                                 opts.depth - 2,
                                 opts.limit,
-                                |_| true,
+                                keep_by_test_flags,
                             ) {
                                 add_transitive(
                                     h.depth + 2,
