@@ -191,8 +191,8 @@ fn compute_impact(
     let sections = report.sections.as_mut().unwrap();
 
     if matches!(opts.mode, ImpactMode::Deps | ImpactMode::All) {
-        sections.push(build_callees_section(c, calls, opts));
-        sections.push(build_file_deps_section(&file_path, deps, root));
+        sections.push(build_callees_section(c, calls, opts, root));
+        sections.push(build_file_deps_section(&file_path, deps, root, opts));
     }
 
     if matches!(opts.mode, ImpactMode::Dependents | ImpactMode::All) {
@@ -331,12 +331,22 @@ fn compute_impact(
             }
         };
 
-        // Callers of the callables that construct the target type itself
-        // are depth-2 dependents (the construction sites themselves are
-        // depth 1 and already shown in the callers section).
-        if opts.depth > 1 {
-            let group = collect_type_callers(calls, &c.qn);
-            for e in &group.constructions {
+        // Callables that construct the target type itself are depth-1
+        // dependents: shown in the callers section, recorded here for the
+        // affected-tests section, and used as seeds for the deeper walk.
+        let group = collect_type_callers(calls, &c.qn);
+        for e in &group.constructions {
+            if seen_transitive.insert(e.source.clone()) {
+                let is_test = is_test_file(&root.join(&e.file), root);
+                if is_test && !opts.exclude_tests {
+                    test_calls.push(CallHit {
+                        depth: 1,
+                        edge: e.clone(),
+                    });
+                }
+            }
+            // Callers of the constructors are depth-2 dependents.
+            if opts.depth > 1 {
                 for h in traverse::callers(
                     calls,
                     &e.source,
@@ -474,10 +484,24 @@ fn compute_impact(
     report
 }
 
+/// `--tests` / `--exclude-tests` verdict for a repo-relative file path.
+fn passes_test_flags(file: &Path, root: &Path, opts: &ImpactOptions) -> bool {
+    if !opts.tests && !opts.exclude_tests {
+        return true;
+    }
+    let is_test = is_test_file(&root.join(file), root);
+    if opts.exclude_tests {
+        !is_test
+    } else {
+        is_test
+    }
+}
+
 fn build_callees_section(
     c: &ResolvedTarget,
     calls: &CallGraph,
     opts: &ImpactOptions,
+    root: &Path,
 ) -> ImpactSection {
     let mut edges: Vec<CallEdge> = Vec::new();
     if c.kind == SymbolKind::Callable {
@@ -491,11 +515,9 @@ fn build_callees_section(
             edges.push(e);
         }
     }
-    ImpactSection {
-        title: format!("→ calls ({})", edges.len()),
-        entries: edges
-            .into_iter()
-            .map(|e| {
+    let entries: Vec<ImpactEntry> = edges
+        .into_iter()
+        .filter_map(|e| {
                 let (qn, file, line) = match &e.target {
                     CallTarget::Resolved(q) => {
                         let meta = calls.callable_meta.get(q);
@@ -512,16 +534,22 @@ fn build_callees_section(
                         (format!("[unresolved] {s}"), e.file.clone(), e.line)
                     }
                 };
-                ImpactEntry {
+                if !passes_test_flags(&file, root, opts) {
+                    return None;
+                }
+                Some(ImpactEntry {
                     qn,
                     file: file.display().to_string(),
                     line,
                     kind: e.kind.as_str().to_string(),
                     confidence: Some(e.confidence.as_str().to_string()),
                     depth: None,
-                }
+                })
             })
-            .collect(),
+            .collect();
+    ImpactSection {
+        title: format!("→ calls ({})", entries.len()),
+        entries,
     }
 }
 
@@ -621,9 +649,24 @@ fn build_file_deps_section(
     file: &Path,
     deps: &DepGraph,
     root: &Path,
+    opts: &ImpactOptions,
 ) -> ImpactSection {
     let deps_file = root.join(file);
     let hits = dep_traverse::forward(deps, &deps_file, 1);
+    let hits: Vec<_> = hits
+        .into_iter()
+        .filter(|h| {
+            if !opts.tests && !opts.exclude_tests {
+                return true;
+            }
+            let is_test = is_test_file(&h.file, root);
+            if opts.exclude_tests {
+                !is_test
+            } else {
+                is_test
+            }
+        })
+        .collect();
     ImpactSection {
         title: format!("→ imports (file, {})", hits.len()),
         entries: hits
@@ -813,6 +856,10 @@ pub mod mcp {
             tests: bool,
             #[serde(default)]
             exclude_tests: bool,
+            /// Text by default (MCP convention); `true` returns
+            /// `ast-bro.impact.v1` JSON.
+            #[serde(default)]
+            json: bool,
         }
         fn default_dot() -> PathBuf { PathBuf::from(".") }
         fn default_two() -> usize { 2 }
@@ -876,11 +923,11 @@ pub mod mcp {
         for c in &candidates {
             reports.push(compute_impact(c, calls, &graph.deps, &root, &opts));
         }
-        crate::mcp::tools::CallResult::Text(render_json(
-            &a.target,
-            &reports,
-            true,
-            candidates.len(),
-        ))
+        let body = if a.json {
+            render_json(&a.target, &reports, true, candidates.len())
+        } else {
+            render_text(&reports, candidates.len())
+        };
+        crate::mcp::tools::CallResult::Text(body)
     }
 }

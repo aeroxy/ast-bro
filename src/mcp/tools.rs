@@ -259,7 +259,7 @@ pub fn list() -> Value {
             },
             {
                 "name": "impact",
-                "description": "Cross-file impact analysis: callers + callees + file reverse-deps + test detection in one call. Answers 'what would break if I change X?' and 'how wide is the blast radius?' in one shot. Four modes: `deps` (what it calls/imports), `dependents` (who calls/imports it), `tests` (affected tests only), `all` (default). Returns `ast-bro.impact.v1` JSON.",
+                "description": "Cross-file impact analysis: callers + callees + file reverse-deps + test detection in one call. Answers 'what would break if I change X?' and 'how wide is the blast radius?' in one shot. Four modes: `deps` (what it calls/imports), `dependents` (who calls/imports it), `tests` (affected tests only), `all` (default). Returns text by default; set `json: true` for `ast-bro.impact.v1`.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -278,7 +278,7 @@ pub fn list() -> Value {
             },
             {
                 "name": "context",
-                "description": "Token-budgeted context for a symbol — target body + direct callees (bodies) + callers/transitive (signatures), greedily packed into a caller-supplied token budget. Replaces chains of 4–5 `show`/`callers`/`callees` calls with ONE context-aware payload. Budget degrades gracefully from full bodies to signatures only. Returns `ast-bro.context.v1` JSON.",
+                "description": "Token-budgeted context for a symbol — target body + direct callees (bodies) + callers/transitive (signatures), greedily packed into a caller-supplied token budget. Replaces chains of 4–5 `show`/`callers`/`callees` calls with ONE context-aware payload. Budget degrades gracefully from full bodies to signatures only. Returns text by default; set `json: true` for `ast-bro.context.v1`.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {

@@ -61,6 +61,9 @@ where
     P: Fn(&DepEdge) -> bool,
 {
     let mut out = Vec::new();
+    if limit == 0 {
+        return out;
+    }
     // `seen` dedups traversal (filtered nodes are still expanded so deeper
     // qualifying hits stay reachable); `reported` dedups output, so a node
     // first reached via a rejected edge can still be reported when a later

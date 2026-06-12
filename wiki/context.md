@@ -48,7 +48,7 @@ Text mode groups entries under labelled headers (`target`, `direct dependency
 (body)`, `implementor (body)`, `dependent (signature)`, ...), each entry
 preceded by its `qn`, file, line, kind, and per-entry token count.
 
-```
+```text
 context for src/adapters/base.rs::LanguageAdapter (budget: 4000 tokens, used: 167 tokens)
 
   target:
@@ -73,7 +73,7 @@ context for src/adapters/base.rs::LanguageAdapter (budget: 4000 tokens, used: 16
 
 Budget-exhausted runs print two advisory lines at the top:
 
-```
+```text
 # note: target body omitted to fit budget (show only signature)
 # warning: budget exhausted before all transitive context was included
 ```

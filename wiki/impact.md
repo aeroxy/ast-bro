@@ -40,7 +40,7 @@ Text mode is rendered section-by-section. Empty sections are dropped by the
 renderer, so `--mode tests` on a symbol with no test callers is a clean
 single-line target header instead of a noisy report.
 
-```
+```text
 ⊕ function handleRequest (src/handler.ts::42)
 
   → callees (6)

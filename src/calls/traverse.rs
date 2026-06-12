@@ -22,15 +22,15 @@ pub fn callees(graph: &CallGraph, start: &Qn, max_depth: usize) -> Vec<CallHit> 
         |qn| {
             edges_at(qn)
                 .into_iter()
-                .filter_map(|e| {
-                    if let crate::calls::graph::CallTarget::Resolved(t) = &e.target {
-                        let t = t.clone();
-                        Some((t, e))
-                    } else {
-                        // Keep external/bare edges in the output but don't recurse
-                        // into them (no node to traverse).
-                        None
-                    }
+                .map(|e| {
+                    // External/bare edges are emitted but carry no node to
+                    // recurse into (`None`); resolved targets are both
+                    // emitted and expanded.
+                    let next = match &e.target {
+                        crate::calls::graph::CallTarget::Resolved(t) => Some(t.clone()),
+                        _ => None,
+                    };
+                    (next, e)
                 })
                 .collect()
         },
@@ -54,7 +54,7 @@ pub fn callers<F: Fn(&CallEdge) -> bool>(
         |qn| {
             edges_at(qn)
                 .into_iter()
-                .map(|e| (e.source.clone(), e))
+                .map(|e| (Some(e.source.clone()), e))
                 .collect()
         },
         predicate,
@@ -70,10 +70,13 @@ pub fn callees_one_hop(graph: &CallGraph, start: &Qn) -> Vec<CallEdge> {
 
 fn bfs<F, P>(start: &Qn, max_depth: usize, limit: usize, edges_at: F, predicate: P) -> Vec<CallHit>
 where
-    F: Fn(&Qn) -> Vec<(Qn, CallEdge)>,
+    F: Fn(&Qn) -> Vec<(Option<Qn>, CallEdge)>,
     P: Fn(&CallEdge) -> bool,
 {
     let mut out = Vec::new();
+    if limit == 0 {
+        return out;
+    }
     // Two sets with different jobs: `seen` dedups *traversal* (every node is
     // expanded once, including ones whose edge the predicate rejects — a
     // test caller at depth 2 must still be reachable through a non-test
@@ -82,6 +85,9 @@ where
     // when a later qualifying edge points at it.
     let mut seen: HashSet<Qn> = HashSet::new();
     let mut reported: HashSet<Qn> = HashSet::new();
+    // External/bare edges have no qn; dedup them by their raw callee text
+    // so the same external symbol called from many nodes appears once.
+    let mut reported_ext: HashSet<String> = HashSet::new();
     let mut q: VecDeque<(Qn, usize)> = VecDeque::new();
     q.push_back((start.clone(), 0));
     seen.insert(start.clone());
@@ -91,6 +97,19 @@ where
             continue;
         }
         for (next, edge) in edges_at(&cur) {
+            let Some(next) = next else {
+                // Emit-only edge (external/bare callee) — nothing to expand.
+                if predicate(&edge) && reported_ext.insert(edge.target.name_or_raw()) {
+                    out.push(CallHit {
+                        depth: depth + 1,
+                        edge,
+                    });
+                    if out.len() >= limit {
+                        return out;
+                    }
+                }
+                continue;
+            };
             let first_visit = seen.insert(next.clone());
             if predicate(&edge) && !reported.contains(&next) {
                 reported.insert(next.clone());

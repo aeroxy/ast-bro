@@ -313,11 +313,16 @@ fn build_context(
             if sig_tok <= budget_tokens.saturating_sub(used) {
                 used += sig_tok;
                 let meta = calls.callable_meta.get(&h.edge.source);
+                // Signature entries point at the declaration, not the call
+                // site the traversal edge happens to carry.
+                let (decl_file, decl_line) = meta
+                    .map(|m| (m.file.display().to_string(), m.line))
+                    .unwrap_or_else(|| (h.edge.file.display().to_string(), h.edge.line));
                 entries.push(ContextEntry {
                     label: "direct dependent (signature)".into(),
                     qn: h.edge.source.as_str().to_string(),
-                    file: h.edge.file.display().to_string(),
-                    line: h.edge.line,
+                    file: decl_file,
+                    line: decl_line,
                     kind: meta.map(|m| m.kind.clone()),
                     body: None,
                     signature: Some(sig),
@@ -347,11 +352,14 @@ fn build_context(
             if sig_tok <= budget_tokens.saturating_sub(used) {
                 used += sig_tok;
                 let meta = calls.callable_meta.get(qn);
+                let (decl_file, decl_line) = meta
+                    .map(|m| (m.file.display().to_string(), m.line))
+                    .unwrap_or_else(|| (h.edge.file.display().to_string(), h.edge.line));
                 entries.push(ContextEntry {
                     label: "transitive dependency (signature)".into(),
                     qn: qn.as_str().to_string(),
-                    file: h.edge.file.display().to_string(),
-                    line: h.edge.line,
+                    file: decl_file,
+                    line: decl_line,
                     kind: meta.map(|m| m.kind.clone()),
                     body: None,
                     signature: Some(sig),
@@ -380,11 +388,16 @@ fn build_context(
             if sig_tok <= budget_tokens.saturating_sub(used) {
                 used += sig_tok;
                 let meta = calls.callable_meta.get(&h.edge.source);
+                // Signature entries point at the declaration, not the call
+                // site the traversal edge happens to carry.
+                let (decl_file, decl_line) = meta
+                    .map(|m| (m.file.display().to_string(), m.line))
+                    .unwrap_or_else(|| (h.edge.file.display().to_string(), h.edge.line));
                 entries.push(ContextEntry {
                     label: "transitive dependent (signature)".into(),
                     qn: h.edge.source.as_str().to_string(),
-                    file: h.edge.file.display().to_string(),
-                    line: h.edge.line,
+                    file: decl_file,
+                    line: decl_line,
                     kind: meta.map(|m| m.kind.clone()),
                     body: None,
                     signature: Some(sig),
@@ -586,11 +599,16 @@ fn build_context(
                 if sig_tok <= budget_tokens.saturating_sub(used) {
                     used += sig_tok;
                     let meta = calls.callable_meta.get(&h.edge.source);
+                    // Signature entries point at the declaration, not the call
+                    // site the traversal edge happens to carry.
+                    let (decl_file, decl_line) = meta
+                        .map(|m| (m.file.display().to_string(), m.line))
+                        .unwrap_or_else(|| (h.edge.file.display().to_string(), h.edge.line));
                     entries.push(ContextEntry {
                         label: "dependent (signature)".into(),
                         qn: h.edge.source.as_str().to_string(),
-                        file: h.edge.file.display().to_string(),
-                        line: h.edge.line,
+                        file: decl_file,
+                        line: decl_line,
                         kind: meta.map(|m| m.kind.clone()),
                         body: None,
                         signature: Some(sig),
@@ -757,13 +775,14 @@ pub mod mcp {
 
     pub fn run_context(args: Value) -> crate::mcp::tools::CallResult {
         #[derive(serde::Deserialize)]
-        #[allow(dead_code)]
         struct Args {
             target: String,
             #[serde(default = "default_dot")]
             path: PathBuf,
             #[serde(default = "default_budget")]
             budget: usize,
+            /// Text by default (MCP convention); `true` returns
+            /// `ast-bro.context.v1` JSON.
             #[serde(default)]
             json: bool,
         }
@@ -809,12 +828,15 @@ pub mod mcp {
             pretty: true,
         };
         let report = build_context(&candidates[0], calls, &root, &opts);
-        let doc = json!({
-            "schema": "ast-bro.context.v1",
-            "report": report,
-        });
-        crate::mcp::tools::CallResult::Text(
-            serde_json::to_string_pretty(&doc).unwrap_or_default(),
-        )
+        let body = if a.json {
+            let doc = json!({
+                "schema": "ast-bro.context.v1",
+                "report": report,
+            });
+            serde_json::to_string_pretty(&doc).unwrap_or_default()
+        } else {
+            render_text(&report)
+        };
+        crate::mcp::tools::CallResult::Text(body)
     }
 }
