@@ -14,7 +14,7 @@ Read structure with `sb` before opening full contents. Pull method bodies only o
 
 **A typical task done two ways:**
 
-```
+```bash
 # Without ast-bro: 4 file reads + 2 greps to find what calls TakeDamage
 Read Player.cs            # 1200 lines
 Read DamageSystem.cs      # 400 lines
@@ -132,7 +132,7 @@ Path / argument expectations:
 
 Maintenance commands (not usually called directly — use `sb install` once and rely on `sb prompt` / `sb mcp` for ongoing integration):
 
-```
+```bash
 sb index          Build, refresh, or inspect the per-repo search index
 sb prompt         Print the agent prompt snippet (for hand-copying into AGENTS.md)
 sb install        Install ast-bro into a coding-agent CLI
