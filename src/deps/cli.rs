@@ -9,7 +9,7 @@ use crate::deps::scc;
 use crate::deps::traverse;
 use crate::deps::DepGraph;
 use crate::graph_cache;
-use crate::project_root::{relative_posix, resolve_home, Marker};
+use crate::project_root::{find_root_for, relative_posix, resolve_home, Marker};
 use std::sync::Arc;
 
 pub fn run_deps(
@@ -251,51 +251,6 @@ fn find_root_for_with_cache(file: &Path) -> Result<PathBuf, String> {
         return Ok(home);
     }
     find_root_for(file)
-}
-
-/// Look for the project root (containing a known manifest) starting
-/// at the file's directory and walking up. Falls back to current dir.
-pub fn find_root_for(file: &Path) -> Result<PathBuf, String> {
-    if !file.exists() {
-        return Err(format!("file not found: {}", file.display()));
-    }
-    let abs = file
-        .canonicalize()
-        .map_err(|e| format!("cannot resolve {}: {}", file.display(), e))?;
-    let mut cur: &Path = if abs.is_dir() {
-        &abs
-    } else {
-        abs.parent().ok_or("no parent directory")?
-    };
-    let manifest_names = [
-        "Cargo.toml",
-        "go.mod",
-        "package.json",
-        "pyproject.toml",
-        "build.gradle",
-        "build.gradle.kts",
-        "build.sbt",
-        "pom.xml",
-    ];
-    loop {
-        for n in &manifest_names {
-            if cur.join(n).is_file() {
-                return Ok(cur.to_path_buf());
-            }
-        }
-        match cur.parent() {
-            Some(p) => cur = p,
-            None => break,
-        }
-    }
-    // Fall back to file's parent directory.
-    Ok(if abs.is_dir() {
-        abs
-    } else {
-        abs.parent()
-            .ok_or("no parent directory")?
-            .to_path_buf()
-    })
 }
 
 /// Load (or build) the unified graph for `root`, going through the shared

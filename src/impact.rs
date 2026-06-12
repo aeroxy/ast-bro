@@ -107,7 +107,7 @@ pub fn run_impact(
     opts: &ImpactOptions,
     rebuild: bool,
 ) -> i32 {
-    let root = match resolve_root(path) {
+    let root = match crate::project_root::find_root_for(path) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("# note: {}", e);
@@ -151,13 +151,6 @@ pub fn run_impact(
         print!("{}", render_text(target, &reports, opts, candidates.len()));
     }
     0
-}
-
-fn resolve_root(path: &Path) -> Result<PathBuf, String> {
-    if !path.exists() {
-        return Err(format!("path not found: {}", path.display()));
-    }
-    crate::deps::cli::find_root_for(path)
 }
 
 fn compute_impact(
@@ -294,22 +287,20 @@ fn compute_impact(
     }
 
     if matches!(opts.mode, ImpactMode::Tests | ImpactMode::All) {
-        report.test_count = test_calls.len();
+        let excluded = opts.exclude_tests;
+        let count = test_calls.len();
+        let display = if excluded {
+            "affected tests (0, excluded by --exclude-tests)".to_string()
+        } else {
+            format!("affected tests ({})", count)
+        };
+        report.test_count = count;
         if opts.tests || opts.mode == ImpactMode::All {
-            let mut section = ImpactSection {
-                title: format!("affected tests ({})", test_calls.len()),
-                entries: test_calls
+            let entries = if excluded {
+                Vec::new()
+            } else {
+                test_calls
                     .iter()
-                    .filter(|h| {
-                        if opts.exclude_tests {
-                            false
-                        } else if opts.tests {
-                            let abs = root.join(&h.edge.file);
-                            is_test_file(&abs, root)
-                        } else {
-                            true
-                        }
-                    })
                     .map(|h| ImpactEntry {
                         qn: h.edge.source.as_str().to_string(),
                         file: h.edge.file.display().to_string(),
@@ -322,13 +313,12 @@ fn compute_impact(
                         confidence: Some(h.edge.confidence.as_str().to_string()),
                         depth: Some(h.depth),
                     })
-                    .collect(),
+                    .collect()
             };
-            if opts.exclude_tests {
-                section.entries.clear();
-                section.title = "affected tests (0, excluded by --exclude-tests)".to_string();
-            }
-            sections.push(section);
+            sections.push(ImpactSection {
+                title: display,
+                entries,
+            });
         }
     }
 
@@ -466,11 +456,9 @@ fn build_file_reverse_deps_section(
         .into_iter()
         .filter(|h| {
             if opts.exclude_tests {
-                let abs = root.join(&h.file);
-                !is_test_file(&abs, root)
+                !is_test_file(&h.file, root)
             } else if opts.tests {
-                let abs = root.join(&h.file);
-                is_test_file(&abs, root)
+                is_test_file(&h.file, root)
             } else {
                 true
             }
@@ -675,7 +663,7 @@ pub mod mcp {
                 ))
             }
         };
-        let root = match resolve_root(&a.path) {
+        let root = match crate::project_root::find_root_for(&a.path) {
             Ok(r) => r,
             Err(e) => return crate::mcp::tools::CallResult::Error(e),
         };

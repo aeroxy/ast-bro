@@ -161,43 +161,56 @@ pub fn is_test_file(path: &Path, repo_root: &Path) -> bool {
 /// like `./bin/deploy` with `#!/usr/bin/env python3`).
 pub fn detect_language(path: &Path) -> Option<ast_grep_language::SupportLang> {
     use ast_grep_language::SupportLang;
+    use std::io::Read;
 
     // Read first 256 bytes to check for shebang
-    let Ok(file) = fs::File::open(path) else {
-        return None;
-    };
-    use std::io::{BufRead, BufReader};
-    let reader = BufReader::new(file);
-    let Ok(first_line) = reader.lines().next()? else {
-        return None;
-    };
-
-    // Must start with #!
-    if !first_line.starts_with("#!") {
+    let mut file = fs::File::open(path).ok()?;
+    let mut buffer = [0u8; 256];
+    let bytes_read = file.read(&mut buffer).ok()?;
+    
+    if bytes_read < 2 {
         return None;
     }
+    
+    // Must start with #!
+    if buffer[0] != b'#' || buffer[1] != b'!' {
+        return None;
+    }
+    
+    // Find the first newline within the read bytes
+    let newline_pos = buffer[..bytes_read]
+        .iter()
+        .position(|&b| b == b'\n')
+        .unwrap_or(bytes_read);
+    
+    // If no newline in first 256 bytes, it's too long to be a valid shebang
+    if newline_pos == bytes_read {
+        return None;
+    }
+    
+    // Extract the first line as UTF-8
+    let first_line = std::str::from_utf8(&buffer[..newline_pos]).ok()?;
 
     // Parse the shebang line
-    let shebang = &first_line[2..].trim();
+    let shebang = first_line[2..].trim();
 
-    // Handle /usr/bin/env indirection
-    let program = if shebang.ends_with("env") || shebang.contains("/env ") {
-        // Extract the program after env
-        let after_env = shebang.split("env").nth(1)?.trim();
-        // Skip env flags like -S
-        let mut parts = after_env.split_whitespace();
-        let mut program = parts.next()?;
+    let mut tokens = shebang.split_whitespace();
+    let command = tokens.next()?;
+
+    // Check if the command is `env` (basename), e.g. /usr/bin/env or /usr/local/bin/env.
+    // This avoids false positives on paths like /home/envuser/bin/python3.
+    let command_basename = command.rsplit('/').next().unwrap_or(command);
+
+    let program = if command_basename == "env" {
+        // Skip env flags (-S, -i, …) and VAR=value assignments to find the interpreter.
+        let mut program = tokens.next()?;
         while program.starts_with('-') || program.contains('=') {
-            program = parts.next()?;
+            program = tokens.next()?;
         }
-        program
+        program.rsplit('/').next().unwrap_or(program)
     } else {
         // Direct shebang like #!/usr/bin/python3
-        shebang
-            .split_whitespace()
-            .next()?
-            .rsplit('/')
-            .next()?
+        command_basename
     };
 
     // Normalize program name (strip version suffixes like python3.11 -> python)
@@ -360,6 +373,78 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("tool");
         std::fs::write(&path, "#!/usr/bin/env foointerpreter\n").unwrap();
+        assert_eq!(detect_language(&path), None);
+    }
+
+    #[test]
+    fn shebang_env_substring_in_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("script");
+        // "envuser" contains "env" but the command basename is "python3", not "env"
+        std::fs::write(&path, "#!/home/envuser/bin/python3\nprint('hi')\n").unwrap();
+        assert_eq!(
+            detect_language(&path),
+            Some(ast_grep_language::SupportLang::Python)
+        );
+    }
+
+    #[test]
+    fn shebang_env_with_tab_separator() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("script");
+        std::fs::write(&path, "#!/usr/bin/env\tpython3\nprint('hi')\n").unwrap();
+        assert_eq!(
+            detect_language(&path),
+            Some(ast_grep_language::SupportLang::Python)
+        );
+    }
+
+    #[test]
+    fn binary_file_returns_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bin");
+        // Write some random binary bytes, no newline
+        std::fs::write(&path, &[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]).unwrap();
+        assert_eq!(detect_language(&path), None);
+    }
+
+    #[test]
+    fn long_line_without_newline_returns_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("long");
+        // 300 bytes with no newline — longer than our 256-byte limit
+        let content = "!".repeat(300);
+        std::fs::write(&path, content).unwrap();
+        // Should return None without reading the whole file
+        assert_eq!(detect_language(&path), None);
+    }
+
+    #[test]
+    fn shebang_at_boundary_256() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("edge");
+        // Valid shebang with lots of spaces, newline just inside 256 bytes
+        let padding = " ".repeat(230);
+        let content = format!("#!/usr/bin/env python3{}\nprint('hi')\n", padding);
+        assert!(content.as_bytes()[..256].iter().position(|&b| b == b'\n').is_some());
+        std::fs::write(&path, content).unwrap();
+        assert_eq!(
+            detect_language(&path),
+            Some(ast_grep_language::SupportLang::Python)
+        );
+    }
+
+    #[test]
+    fn shebang_newline_beyond_256_returns_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("toolong");
+        // Shebang with no newline within first 256 bytes
+        let padding = " ".repeat(300);
+        let content = format!("#!/usr/bin/env python3{}\nprint('hi')\n", padding);
+        // Confirm newline is at position > 256
+        assert!(content.as_bytes()[..256].iter().position(|&b| b == b'\n').is_none());
+        std::fs::write(&path, content).unwrap();
+        // Should return None since the line is too long to be trusted
         assert_eq!(detect_language(&path), None);
     }
 }

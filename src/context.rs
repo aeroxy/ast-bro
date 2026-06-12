@@ -64,7 +64,7 @@ pub fn run_context(
     opts: &ContextOptions,
     rebuild: bool,
 ) -> i32 {
-    let root = match resolve_root(path) {
+    let root = match crate::project_root::find_root_for(path) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("# note: {}", e);
@@ -114,13 +114,6 @@ pub fn run_context(
     0
 }
 
-fn resolve_root(path: &Path) -> Result<PathBuf, String> {
-    if !path.exists() {
-        return Err(format!("path not found: {}", path.display()));
-    }
-    crate::deps::cli::find_root_for(path)
-}
-
 fn ensure_graph(
     root: &Path,
     force_rebuild: bool,
@@ -149,16 +142,16 @@ fn build_context(
     let mut target_omitted = false;
 
     let mut seen_qns: std::collections::HashSet<String> = std::collections::HashSet::new();
+    seen_qns.insert(c.qn.as_str().to_string());
 
     if c.kind == SymbolKind::Callable {
         let (body, sig, file_abs, line, kind) =
-            resolve_symbol_source(c, calls, root);
+            resolve_qn_source(&c.qn, calls, root);
 
         if let Some(body_text) = &body {
             let tok = estimate_tokens(body_text.len());
             if tok <= budget_tokens.saturating_sub(used) {
                 used += tok;
-                seen_qns.insert(c.qn.as_str().to_string());
                 entries.push(ContextEntry {
                     label: "target".into(),
                     qn: c.qn.as_str().to_string(),
@@ -174,7 +167,6 @@ fn build_context(
                 let sig_tok = sig.as_ref().map(|s| estimate_tokens(s.len())).unwrap_or(0);
                 if sig_tok <= budget_tokens.saturating_sub(used) {
                     used += sig_tok;
-                    seen_qns.insert(c.qn.as_str().to_string());
                     entries.push(ContextEntry {
                         label: "target (signature only — budget)".into(),
                         qn: c.qn.as_str().to_string(),
@@ -203,7 +195,7 @@ fn build_context(
                 continue;
             }
             let (body, sig, file_str, line, kind) =
-                resolve_callee_source(callee_qn, calls, root);
+                resolve_qn_source(callee_qn, calls, root);
             if let Some(b) = body {
                 let tok = estimate_tokens(b.len());
                 if tok <= budget_tokens.saturating_sub(used) {
@@ -341,55 +333,7 @@ fn build_context(
     }
 }
 
-fn resolve_symbol_source(
-    c: &ResolvedTarget,
-    _calls: &CallGraph,
-    root: &Path,
-) -> (Option<String>, Option<String>, String, u32, String) {
-    let file_abs = match _calls.callable_meta.get(&c.qn) {
-        Some(m) => root.join(&m.file),
-        None => root.join(c.qn.file()),
-    };
-    let line = _calls.callable_meta.get(&c.qn).map(|m| m.line).unwrap_or(0);
-    let kind = _calls
-        .callable_meta
-        .get(&c.qn)
-        .map(|m| m.kind.as_str())
-        .unwrap_or("function")
-        .to_string();
-    let rel = crate::project_root::relative_posix(&file_abs, root)
-        .unwrap_or_else(|| file_abs.display().to_string());
-    let name = c.qn.as_str().split("::").last().unwrap_or(c.qn.as_str());
-
-    if let Some(pr) = crate::parse_file(&file_abs) {
-        let matches = crate::core::find_symbols(&pr, name);
-        for m in &matches {
-            if m.start_line == line as usize
-                || m.start_line.abs_diff(line as usize) <= 1
-            {
-                return (
-                    Some(m.source.trim_end().to_string()),
-                    Some(first_line(&m.source).to_string()),
-                    rel,
-                    m.start_line as u32,
-                    kind,
-                );
-            }
-        }
-        if let Some(m) = matches.into_iter().next() {
-            return (
-                Some(m.source.trim_end().to_string()),
-                Some(first_line(&m.source).to_string()),
-                rel,
-                m.start_line as u32,
-                kind,
-            );
-        }
-    }
-    (None, None, rel, line, kind)
-}
-
-fn resolve_callee_source(
+fn resolve_qn_source(
     qn: &crate::calls::graph::Qn,
     calls: &CallGraph,
     root: &Path,
@@ -524,7 +468,7 @@ pub mod mcp {
                 return crate::mcp::tools::CallResult::Error(format!("bad args: {e}"))
             }
         };
-        let root = match resolve_root(&a.path) {
+        let root = match crate::project_root::find_root_for(&a.path) {
             Ok(r) => r,
             Err(e) => return crate::mcp::tools::CallResult::Error(e),
         };

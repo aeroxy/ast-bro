@@ -2,7 +2,7 @@
 
 use serde::Deserialize;
 use serde_json::{json, Value};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use crate::core::{
     self, DigestOptions, MapOptions,
@@ -399,7 +399,7 @@ fn run_callers(args: Value) -> CallResult {
         Ok(a) => a,
         Err(e) => return CallResult::Error(format!("bad args: {}", e)),
     };
-    let root = match resolve_root(&a.path) {
+    let root = match crate::project_root::find_root_for(&a.path) {
         Ok(r) => r,
         Err(e) => return CallResult::Error(e),
     };
@@ -419,7 +419,7 @@ fn run_callees(args: Value) -> CallResult {
         Ok(a) => a,
         Err(e) => return CallResult::Error(format!("bad args: {}", e)),
     };
-    let root = match resolve_root(&a.path) {
+    let root = match crate::project_root::find_root_for(&a.path) {
         Ok(r) => r,
         Err(e) => return CallResult::Error(e),
     };
@@ -446,22 +446,12 @@ fn run_trace(args: Value) -> CallResult {
         Ok(a) => a,
         Err(e) => return CallResult::Error(format!("bad args: {}", e)),
     };
-    let root = match resolve_root(&a.path) {
+    let root = match crate::project_root::find_root_for(&a.path) {
         Ok(r) => r,
         Err(e) => return CallResult::Error(e),
     };
     let out = crate::calls::mcp::run_trace_text(&a.from, &a.to, &root, a.depth, a.json);
     CallResult::Text(out)
-}
-
-fn resolve_root(path: &Path) -> Result<PathBuf, String> {
-    if !path.exists() {
-        return Err(format!("path not found: {}", path.display()));
-    }
-    // Walk up from `path` to the nearest project manifest so qns are
-    // project-relative (`src/foo.rs::bar`, not `foo.rs::bar`). Matches the
-    // CLI's resolve_root.
-    crate::deps::cli::find_root_for(path)
 }
 
 #[derive(Deserialize, Default)]
@@ -737,7 +727,7 @@ fn run_deps(args: Value) -> CallResult {
         Ok(v) => v,
         Err(e) => return CallResult::Error(format!("invalid arguments: {}", e)),
     };
-    let root = match crate::deps::cli::find_root_for(&a.file) {
+    let root = match crate::project_root::find_root_for(&a.file) {
         Ok(r) => r,
         Err(e) => return CallResult::Error(e),
     };
@@ -763,7 +753,7 @@ fn run_reverse_deps(args: Value) -> CallResult {
         Ok(v) => v,
         Err(e) => return CallResult::Error(format!("invalid arguments: {}", e)),
     };
-    let root = match crate::deps::cli::find_root_for(&a.file) {
+    let root = match crate::project_root::find_root_for(&a.file) {
         Ok(r) => r,
         Err(e) => return CallResult::Error(e),
     };

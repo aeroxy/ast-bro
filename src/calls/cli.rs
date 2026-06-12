@@ -16,8 +16,8 @@ use crate::calls::build::build_call_graph;
 use crate::calls::cli_helpers::{resolve_target_full, SymbolKind};
 use crate::calls::graph::{CallEdge, CallGraph, CallKindCompat, CallTarget, Confidence, Qn};
 use crate::calls::{render, traverse};
-use crate::deps::cli::find_root_for;
 use crate::graph_cache;
+use crate::project_root::find_root_for;
 
 #[allow(clippy::too_many_arguments)]
 pub fn run_callers(
@@ -32,7 +32,7 @@ pub fn run_callers(
     json: bool,
     pretty: bool,
 ) -> i32 {
-    let root = match resolve_root(path) {
+    let root = match find_root_for(path) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("# note: {}", e);
@@ -120,7 +120,7 @@ pub fn run_callees(
     json: bool,
     pretty: bool,
 ) -> i32 {
-    let root = match resolve_root(path) {
+    let root = match find_root_for(path) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("# note: {}", e);
@@ -479,12 +479,6 @@ fn normalise_type_name(name: &str) -> String {
 /// `main_helpers.rs::…` instead of `src/main_helpers.rs::…`, and any
 /// `<file>:<symbol>` filter the user wrote against the project-relative path
 /// would silently miss.
-fn resolve_root(path: &Path) -> Result<PathBuf, String> {
-    if !path.exists() {
-        return Err(format!("path not found: {}", path.display()));
-    }
-    find_root_for(path)
-}
 
 /// `ast-bro trace <FROM> <TO>` — shortest static call path between two
 /// symbols, with each hop's body inlined. Reuses the same root resolution +
@@ -499,7 +493,7 @@ pub fn run_trace(
     pretty: bool,
 ) -> i32 {
     use crate::calls::trace::{render_trace, TraceOutcome};
-    let root = match resolve_root(path) {
+    let root = match find_root_for(path) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("# note: {}", e);
