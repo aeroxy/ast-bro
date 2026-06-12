@@ -203,7 +203,20 @@ fn compute_impact(
     let mut transitive = BTreeMap::new();
     let mut test_calls: Vec<CallHit> = Vec::new();
 
-    let all_callers = traverse::callers(calls, &c.qn, opts.depth.max(1), opts.limit, |_| true);
+    // Test filtering happens inside the traversal so excluded edges don't
+    // consume --limit. Ambiguous edges stay subject to include_ambiguous
+    // (default on) at render time.
+    let all_callers = traverse::callers(calls, &c.qn, opts.depth.max(1), opts.limit, |e| {
+        if !opts.tests && !opts.exclude_tests {
+            return true;
+        }
+        let is_test = is_test_file(&root.join(&e.file), root);
+        if opts.exclude_tests {
+            !is_test
+        } else {
+            is_test
+        }
+    });
     for h in &all_callers {
         let abs = root.join(&h.edge.file);
         let is_test = is_test_file(&abs, root);
@@ -497,7 +510,22 @@ fn build_callers_section(
     opts: &ImpactOptions,
     root: &Path,
 ) -> ImpactSection {
-    let mut hits = traverse::callers(calls, &c.qn, 1, opts.limit, |_| true);
+    // Filter inside the traversal so dropped edges don't consume the limit;
+    // the retains below only act on type implementors/constructions, which
+    // are appended after traversal.
+    let mut hits = traverse::callers(calls, &c.qn, 1, opts.limit, |e| {
+        if !opts.include_ambiguous && matches!(e.confidence, Confidence::Ambiguous) {
+            return false;
+        }
+        if opts.tests || opts.exclude_tests {
+            let is_test = is_test_file(&root.join(&e.file), root);
+            if opts.exclude_tests {
+                return !is_test;
+            }
+            return is_test;
+        }
+        true
+    });
     if c.kind == SymbolKind::Type {
         if let Some(impls) = calls.implementors.get(c.qn.name()) {
             for qn in impls {

@@ -292,11 +292,12 @@ fn build_context(
             }
         }
 
-        let direct_callers = traverse::callers(calls, &c.qn, 1, 50, |_| true);
+        // Ambiguous edges are filtered inside the traversal so they don't
+        // consume the result limit.
+        let direct_callers = traverse::callers(calls, &c.qn, 1, 50, |e| {
+            !matches!(e.confidence, Confidence::Ambiguous)
+        });
         for h in &direct_callers {
-            if matches!(h.edge.confidence, Confidence::Ambiguous) {
-                continue;
-            }
             if !seen_qns.insert(h.edge.source.as_str().to_string()) {
                 continue;
             }
@@ -357,9 +358,11 @@ fn build_context(
             }
         }
 
-        let trans_callers = traverse::callers(calls, &c.qn, 2, 50, |_| true);
+        let trans_callers = traverse::callers(calls, &c.qn, 2, 50, |e| {
+            !matches!(e.confidence, Confidence::Ambiguous)
+        });
         for h in &trans_callers {
-            if matches!(h.edge.confidence, Confidence::Ambiguous) || h.depth < 2 {
+            if h.depth < 2 {
                 continue;
             }
             if !seen_qns.insert(h.edge.source.as_str().to_string()) {
@@ -458,11 +461,8 @@ fn build_context(
                     .get(impl_qn)
                     .map(|m| m.kind.clone())
                     .unwrap_or_else(|| "type".into());
-                let rel_file = crate::project_root::relative_posix(
-                    &root.join(&impl_file),
-                    root,
-                )
-                .unwrap_or_else(|| impl_file.clone());
+                // resolve_qn_source already returns a repo-relative path.
+                let rel_file = impl_file;
                 if let Some(b) = impl_body {
                     let tok = estimate_tokens(b.len());
                     if tok <= budget_tokens.saturating_sub(used) {
@@ -518,11 +518,7 @@ fn build_context(
             }
             let (body, sig, meth_file, meth_line, meth_kind) =
                 resolve_qn_source(method_qn, calls, root, &mut parse_cache);
-            let rel_file = crate::project_root::relative_posix(
-                &root.join(&meth_file),
-                root,
-            )
-            .unwrap_or_else(|| meth_file.clone());
+            let rel_file = meth_file;
             if let Some(b) = body {
                 let tok = estimate_tokens(b.len());
                 if tok <= budget_tokens.saturating_sub(used) {
@@ -562,11 +558,10 @@ fn build_context(
 
         // Callers of each method — direct dependents of the type.
         for method_qn in &method_qns {
-            let method_callers = traverse::callers(calls, method_qn, 1, 20, |_| true);
+            let method_callers = traverse::callers(calls, method_qn, 1, 20, |e| {
+                !matches!(e.confidence, Confidence::Ambiguous)
+            });
             for h in &method_callers {
-                if matches!(h.edge.confidence, Confidence::Ambiguous) {
-                    continue;
-                }
                 if !seen_qns.insert(h.edge.source.as_str().to_string()) {
                     continue;
                 }
