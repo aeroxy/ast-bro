@@ -615,24 +615,35 @@ fn build_context(
     }
 }
 
+/// File/line/kind for a qn — callable table first, then the type table
+/// (the implementor loop in `build_context` passes type qns straight from
+/// `calls.implementors`), then the qn's own path component. The declaration
+/// line feeds the ±1-line disambiguation in both source lookups below.
+///
+/// Joins against the freshly-resolved `root`, not `calls.root`: the latter
+/// is an absolute path deserialised from graph.bin and goes stale when the
+/// repository directory is moved or renamed.
+fn meta_location(
+    calls: &CallGraph,
+    qn: &crate::calls::graph::Qn,
+    root: &Path,
+) -> (PathBuf, u32, String) {
+    if let Some(m) = calls.callable_meta.get(qn) {
+        (root.join(&m.file), m.line, m.kind.clone())
+    } else if let Some(t) = calls.types.get(qn) {
+        (root.join(&t.file), t.line, t.kind.clone())
+    } else {
+        (root.join(qn.file()), 0, "function".to_string())
+    }
+}
+
 fn resolve_qn_source(
     qn: &crate::calls::graph::Qn,
     calls: &CallGraph,
     root: &Path,
     cache: &mut ParsedFileCache,
 ) -> (Option<String>, Option<String>, String, u32, String) {
-    // The qn may name a callable (functions, methods) or a type — the
-    // implementor loop in `build_context` passes type qns straight from
-    // `calls.implementors`. Fall back to the type table so types keep
-    // their real declaration line (line-based disambiguation in the match
-    // loop below) and kind label instead of degrading to 0/"function".
-    let (file_abs, line, kind) = if let Some(m) = calls.callable_meta.get(qn) {
-        (root.join(&m.file), m.line, m.kind.clone())
-    } else if let Some(t) = calls.types.get(qn) {
-        (root.join(&t.file), t.line, t.kind.clone())
-    } else {
-        (root.join(qn.file()), 0, "function".to_string())
-    };
+    let (file_abs, line, kind) = meta_location(calls, qn, root);
     let rel = crate::project_root::relative_posix(&file_abs, root)
         .unwrap_or_else(|| file_abs.display().to_string());
     let name = qn.name();
@@ -669,14 +680,7 @@ fn signature_from_meta(
     root: &Path,
     cache: &mut ParsedFileCache,
 ) -> Option<String> {
-    // Join against the freshly-resolved `root`, not `calls.root`: the latter
-    // is an absolute path deserialised from graph.bin and goes stale when
-    // the repository directory is moved or renamed.
-    let file_abs = match calls.callable_meta.get(qn) {
-        Some(m) => root.join(&m.file),
-        None => root.join(qn.file()),
-    };
-    let line = calls.callable_meta.get(qn).map(|m| m.line).unwrap_or(0);
+    let (file_abs, line, _) = meta_location(calls, qn, root);
     let name = qn.name();
     let pr = match parse_file_cached(&file_abs, cache) {
         Some(p) => p,
