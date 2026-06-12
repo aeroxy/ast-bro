@@ -463,6 +463,10 @@ fn _walk_calls_in_body<'a, D: Doc>(node: &Node<'a, D>, src: &[u8], out: &mut Vec
         if let Some(cs) = _call_site_from_call(node, src) {
             out.push(cs);
         }
+    } else if kind == "struct_expression" {
+        if let Some(cs) = _call_site_from_struct(node, src) {
+            out.push(cs);
+        }
     } else if kind == "macro_invocation" {
         if let Some(cs) = _call_site_from_macro(node, src) {
             out.push(cs);
@@ -482,6 +486,17 @@ fn _call_site_from_call<'a, D: Doc>(node: &Node<'a, D>, src: &[u8]) -> Option<Ca
         receiver,
         line: node.start_pos().line() as u32 + 1,
         kind,
+    })
+}
+
+fn _call_site_from_struct<'a, D: Doc>(node: &Node<'a, D>, src: &[u8]) -> Option<CallSite> {
+    let name_node = node.field("name")?;
+    let (name, receiver, _) = _extract_callee_name(&name_node, src)?;
+    Some(CallSite {
+        name,
+        receiver,
+        line: node.start_pos().line() as u32 + 1,
+        kind: CallKind::Construct,
     })
 }
 

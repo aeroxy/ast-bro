@@ -137,6 +137,7 @@ pub enum CallKindCompat {
     Construct,
     Macro,
     Super,
+    Implement,
 }
 
 impl From<CallKind> for CallKindCompat {
@@ -157,6 +158,7 @@ impl CallKindCompat {
             Self::Construct => "construct",
             Self::Macro => "macro",
             Self::Super => "super",
+            Self::Implement => "implement",
         }
     }
 }

@@ -714,7 +714,7 @@ struct CyclesArgs {
 struct GraphArgs {
     #[serde(default = "default_path")] path: PathBuf,
     #[serde(default)] json: bool,
-    #[serde(default)] include_external: bool,
+    #[serde(default)] hide_external: bool,
 }
 
 fn default_depth() -> usize { 3 }
@@ -808,7 +808,7 @@ fn run_graph(args: Value) -> CallResult {
         Err(e) => return CallResult::Error(e.to_string()),
     };
     let body = if a.json {
-        crate::deps::render::render_graph_json(&graph, a.include_external, true)
+        crate::deps::render::render_graph_json(&graph, !a.hide_external, true)
     } else {
         crate::deps::render::render_graph_text(&graph)
     };

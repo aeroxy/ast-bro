@@ -183,8 +183,10 @@ pub fn detect_language(path: &Path) -> Option<ast_grep_language::SupportLang> {
         .position(|&b| b == b'\n')
         .unwrap_or(bytes_read);
     
-    // If no newline in first 256 bytes, it's too long to be a valid shebang
-    if newline_pos == bytes_read {
+    // If the shebang line runs past the scan window, it's too long to be valid.
+    // When the file fit entirely inside the window (`bytes_read < buffer.len()`),
+    // EOF terminates the line just as well as a newline.
+    if newline_pos == bytes_read && bytes_read == buffer.len() {
         return None;
     }
     

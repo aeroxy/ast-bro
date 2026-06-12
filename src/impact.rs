@@ -193,79 +193,110 @@ fn compute_impact(
 
     if matches!(opts.mode, ImpactMode::Deps | ImpactMode::All) {
         sections.push(build_callees_section(c, calls, opts));
-        if c.kind == SymbolKind::Callable {
-            sections.push(build_file_deps_section(&file_path, deps, root));
-        }
+        sections.push(build_file_deps_section(&file_path, deps, root));
     }
 
     if matches!(opts.mode, ImpactMode::Dependents | ImpactMode::All) {
         sections.push(build_callers_section(c, calls, opts, root));
-        if c.kind == SymbolKind::Callable {
-            sections.push(build_file_reverse_deps_section(&file_path, deps, root, opts));
-        }
+        sections.push(build_file_reverse_deps_section(&file_path, deps, root, opts));
     }
 
     let mut transitive = BTreeMap::new();
     let mut test_calls: Vec<CallHit> = Vec::new();
 
-    if c.kind == SymbolKind::Callable {
-        let all_callers = traverse::callers(calls, &c.qn, opts.depth.max(1), opts.limit);
-        for h in &all_callers {
-            let abs = root.join(&h.edge.file);
-            let is_test = is_test_file(&abs, root);
-            if is_test && !opts.exclude_tests {
-                test_calls.push(h.clone());
-            }
-            if h.depth > 1 {
-                let entry = ImpactEntry {
-                    qn: h.edge.source.as_str().to_string(),
-                    file: h.edge.file.display().to_string(),
-                    line: h.edge.line,
-                    kind: calls
+    let all_callers = traverse::callers(calls, &c.qn, opts.depth.max(1), opts.limit);
+    for h in &all_callers {
+        let abs = root.join(&h.edge.file);
+        let is_test = is_test_file(&abs, root);
+        if is_test && !opts.exclude_tests {
+            test_calls.push(h.clone());
+        }
+        if h.depth > 1 {
+            let entry = ImpactEntry {
+                qn: h.edge.source.as_str().to_string(),
+                file: h.edge.file.display().to_string(),
+                line: h.edge.line,
+                kind: if h.edge.kind == crate::calls::graph::CallKindCompat::Implement {
+                    calls
+                        .types
+                        .get(&h.edge.source)
+                        .map(|m| m.kind.clone())
+                        .unwrap_or_else(|| "type".into())
+                } else {
+                    calls
                         .callable_meta
                         .get(&h.edge.source)
                         .map(|m| m.kind.clone())
-                        .unwrap_or_else(|| "function".into()),
-                    confidence: Some(h.edge.confidence.as_str().to_string()),
-                    depth: Some(h.depth),
-                };
-                transitive
-                    .entry(h.depth)
-                    .or_insert_with(Vec::new)
-                    .push(entry);
-            }
-        }
-    } else if let Some(impls) = calls.implementors.get(c.qn.name()) {
-        for qn in impls {
-            let meta = calls.types.get(qn);
-            let file = meta.map(|m| m.file.clone()).unwrap_or_else(|| PathBuf::from(qn.file()));
-            let line = meta.map(|m| m.line).unwrap_or(0);
-            let abs = root.join(&file);
-            let is_test = is_test_file(&abs, root);
-            if is_test && !opts.exclude_tests {
-                test_calls.push(CallHit {
-                    depth: 1,
-                    edge: CallEdge {
-                        source: qn.clone(),
-                        target: CallTarget::Resolved(c.qn.clone()),
-                        kind: crate::calls::graph::CallKindCompat::Construct,
-                        line,
-                        file: file.clone(),
-                        confidence: Confidence::Exact,
-                        receiver: None,
-                        candidates: Vec::new(),
-                    },
-                });
-            }
-            let entry = ImpactEntry {
-                qn: qn.as_str().to_string(),
-                file: file.display().to_string(),
-                line,
-                kind: meta.map(|m| m.kind.clone()).unwrap_or_else(|| "type".into()),
-                confidence: Some("Exact".into()),
-                depth: Some(1),
+                        .unwrap_or_else(|| "function".into())
+                },
+                confidence: Some(h.edge.confidence.as_str().to_string()),
+                depth: Some(h.depth),
             };
-            transitive.entry(1).or_insert_with(Vec::new).push(entry);
+            transitive
+                .entry(h.depth)
+                .or_insert_with(Vec::new)
+                .push(entry);
+        }
+    }
+
+    if c.kind == SymbolKind::Type {
+        if let Some(impls) = calls.implementors.get(c.qn.name()) {
+            for qn in impls {
+                let meta = calls.types.get(qn);
+                let file = meta.map(|m| m.file.clone()).unwrap_or_else(|| PathBuf::from(qn.file()));
+                let line = meta.map(|m| m.line).unwrap_or(0);
+                let abs = root.join(&file);
+                let is_test = is_test_file(&abs, root);
+                if is_test && !opts.exclude_tests {
+                    test_calls.push(CallHit {
+                        depth: 1,
+                        edge: CallEdge {
+                            source: qn.clone(),
+                            target: CallTarget::Resolved(c.qn.clone()),
+                            kind: crate::calls::graph::CallKindCompat::Implement,
+                            line,
+                            file: file.clone(),
+                            confidence: Confidence::Exact,
+                            receiver: None,
+                            candidates: Vec::new(),
+                        },
+                    });
+                }
+                // Implementors (depth 1) are shown in Section 1 (build_callers_section).
+                // We don't add them to the transitive map to avoid duplication.
+
+                // Transitive dependents: anyone who calls the implementor is a 
+                // dependent of the base type at depth 2+.
+                if opts.depth > 1 {
+                    let sub_callers = traverse::callers(calls, qn, opts.depth - 1, opts.limit);
+                    for h in sub_callers {
+                        let total_depth = h.depth + 1;
+                        let abs = root.join(&h.edge.file);
+                        let is_test = is_test_file(&abs, root);
+                        if is_test && !opts.exclude_tests {
+                            let mut h2 = h.clone();
+                            h2.depth = total_depth;
+                            test_calls.push(h2);
+                        }
+                        let entry = ImpactEntry {
+                            qn: h.edge.source.as_str().to_string(),
+                            file: h.edge.file.display().to_string(),
+                            line: h.edge.line,
+                            kind: calls
+                                .callable_meta
+                                .get(&h.edge.source)
+                                .map(|m| m.kind.clone())
+                                .unwrap_or_else(|| "function".into()),
+                            confidence: Some(h.edge.confidence.as_str().to_string()),
+                            depth: Some(total_depth),
+                        };
+                        transitive
+                            .entry(total_depth)
+                            .or_insert_with(Vec::new)
+                            .push(entry);
+                    }
+                }
+            }
         }
     }
 
@@ -286,19 +317,18 @@ fn compute_impact(
         sections.push(section);
     }
 
-    if matches!(opts.mode, ImpactMode::Tests | ImpactMode::All) {
+    if opts.tests || matches!(opts.mode, ImpactMode::Tests | ImpactMode::All) {
         let excluded = opts.exclude_tests;
         let count = test_calls.len();
-        let display = if excluded {
-            "affected tests (0, excluded by --exclude-tests)".to_string()
-        } else {
-            format!("affected tests ({})", count)
-        };
         report.test_count = count;
-        if opts.tests || opts.mode == ImpactMode::All {
-            let entries = if excluded {
-                Vec::new()
-            } else {
+        let (display, entries) = if excluded {
+            (
+                "affected tests (0, excluded by --exclude-tests)".to_string(),
+                Vec::new(),
+            )
+        } else {
+            (
+                format!("affected tests ({})", count),
                 test_calls
                     .iter()
                     .map(|h| ImpactEntry {
@@ -313,13 +343,10 @@ fn compute_impact(
                         confidence: Some(h.edge.confidence.as_str().to_string()),
                         depth: Some(h.depth),
                     })
-                    .collect()
-            };
-            sections.push(ImpactSection {
-                title: display,
-                entries,
-            });
-        }
+                    .collect(),
+            )
+        };
+        sections.push(ImpactSection { title: display, entries });
     }
 
     report
@@ -382,11 +409,28 @@ fn build_callers_section(
     opts: &ImpactOptions,
     root: &Path,
 ) -> ImpactSection {
-    let mut hits = if c.kind == SymbolKind::Callable {
-        traverse::callers(calls, &c.qn, 1, opts.limit)
-    } else {
-        Vec::new()
-    };
+    let mut hits = traverse::callers(calls, &c.qn, 1, opts.limit);
+    if c.kind == SymbolKind::Type {
+        if let Some(impls) = calls.implementors.get(c.qn.name()) {
+            for qn in impls {
+                if let Some(meta) = calls.types.get(qn) {
+                    hits.push(CallHit {
+                        depth: 1,
+                        edge: CallEdge {
+                            source: qn.clone(),
+                            target: CallTarget::Resolved(c.qn.clone()),
+                            kind: crate::calls::graph::CallKindCompat::Implement,
+                            line: meta.line,
+                            file: meta.file.clone(),
+                            confidence: Confidence::Exact,
+                            receiver: None,
+                            candidates: Vec::new(),
+                        },
+                    });
+                }
+            }
+        }
+    }
     if !opts.include_ambiguous {
         hits.retain(|h| !matches!(h.edge.confidence, Confidence::Ambiguous));
     }
@@ -398,18 +442,30 @@ fn build_callers_section(
         else { true }
     });
     ImpactSection {
-        title: format!("← called by ({})", hits.len()),
+        title: if c.kind == SymbolKind::Type {
+            format!("← implemented / called by ({})", hits.len())
+        } else {
+            format!("← called by ({})", hits.len())
+        },
         entries: hits
             .into_iter()
             .map(|h| ImpactEntry {
                 qn: h.edge.source.as_str().to_string(),
                 file: h.edge.file.display().to_string(),
                 line: h.edge.line,
-                kind: calls
-                    .callable_meta
-                    .get(&h.edge.source)
-                    .map(|m| m.kind.clone())
-                    .unwrap_or_else(|| "function".into()),
+                kind: if h.edge.kind == crate::calls::graph::CallKindCompat::Implement {
+                    calls
+                        .types
+                        .get(&h.edge.source)
+                        .map(|m| m.kind.clone())
+                        .unwrap_or_else(|| "type".into())
+                } else {
+                    calls
+                        .callable_meta
+                        .get(&h.edge.source)
+                        .map(|m| m.kind.clone())
+                        .unwrap_or_else(|| "function".into())
+                },
                 confidence: Some(h.edge.confidence.as_str().to_string()),
                 depth: None,
             })

@@ -105,16 +105,30 @@ pub fn find_root_for(file: &Path) -> Result<PathBuf, String> {
         "build.sbt",
         "pom.xml",
     ];
+    let mut last_seen_manifest: Option<PathBuf> = None;
     loop {
+        // .git is a hard repository-root boundary — prefer it over any
+        // manifest found below, since the git root is the true project root.
+        if cur.join(".git").exists() {
+            return Ok(cur.to_path_buf());
+        }
         for n in &manifest_names {
             if cur.join(n).is_file() {
-                return Ok(cur.to_path_buf());
+                // Keep the highest (latest) manifest seen; outer wins over
+                // an inner leaf-package manifest in monorepos / workspaces.
+                if last_seen_manifest.is_none() {
+                    last_seen_manifest = Some(cur.to_path_buf());
+                }
+                break;
             }
         }
         match cur.parent() {
             Some(p) => cur = p,
             None => break,
         }
+    }
+    if let Some(root) = last_seen_manifest {
+        return Ok(root);
     }
     // Fall back to file's parent directory.
     Ok(if abs.is_dir() {

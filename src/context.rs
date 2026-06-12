@@ -24,6 +24,17 @@ use crate::graph_cache::{self, UnifiedGraph};
 
 const BYTES_PER_TOKEN: usize = 4;
 
+type ParsedFileCache = std::collections::HashMap<PathBuf, Option<crate::core::ParseResult>>;
+
+fn parse_file_cached<'a>(
+    path: &Path,
+    cache: &'a mut ParsedFileCache,
+) -> &'a Option<crate::core::ParseResult> {
+    cache
+        .entry(path.to_path_buf())
+        .or_insert_with(|| crate::parse_file(path))
+}
+
 pub struct ContextOptions {
     pub budget: usize,
     pub json: bool,
@@ -52,6 +63,7 @@ pub struct ContextReport {
     pub entries: Vec<ContextEntry>,
     pub truncated: bool,
     pub target_omitted: bool,
+    pub body_unavailable: bool,
 }
 
 fn estimate_tokens(bytes: usize) -> usize {
@@ -140,46 +152,79 @@ fn build_context(
     let mut entries: Vec<ContextEntry> = Vec::new();
     let mut truncated = false;
     let mut target_omitted = false;
+    let mut body_unavailable = false;
 
     let mut seen_qns: std::collections::HashSet<String> = std::collections::HashSet::new();
     seen_qns.insert(c.qn.as_str().to_string());
 
+    let mut parse_cache: ParsedFileCache = std::collections::HashMap::new();
+
     if c.kind == SymbolKind::Callable {
         let (body, sig, file_abs, line, kind) =
-            resolve_qn_source(&c.qn, calls, root);
+            resolve_qn_source(&c.qn, calls, root, &mut parse_cache);
 
-        if let Some(body_text) = &body {
-            let tok = estimate_tokens(body_text.len());
-            if tok <= budget_tokens.saturating_sub(used) {
-                used += tok;
-                entries.push(ContextEntry {
-                    label: "target".into(),
-                    qn: c.qn.as_str().to_string(),
-                    file: file_abs.clone(),
-                    line,
-                    kind: Some(kind.clone()),
-                    body: Some(body_text.clone()),
-                    signature: sig.clone(),
-                    tokens: tok,
-                });
-            } else {
-                target_omitted = true;
-                let sig_tok = sig.as_ref().map(|s| estimate_tokens(s.len())).unwrap_or(0);
+        match (&body, &sig) {
+            (Some(body_text), sig_opt) => {
+                let tok = estimate_tokens(body_text.len());
+                if tok <= budget_tokens.saturating_sub(used) {
+                    used += tok;
+                    entries.push(ContextEntry {
+                        label: "target".into(),
+                        qn: c.qn.as_str().to_string(),
+                        file: file_abs.clone(),
+                        line,
+                        kind: Some(kind.clone()),
+                        body: Some(body_text.clone()),
+                        signature: sig_opt.clone(),
+                        tokens: tok,
+                    });
+                } else {
+                    target_omitted = true;
+                    let sig_tok = sig_opt.as_ref().map(|s| estimate_tokens(s.len())).unwrap_or(0);
+                    if sig_tok <= budget_tokens.saturating_sub(used) {
+                        used += sig_tok;
+                        entries.push(ContextEntry {
+                            label: "target (signature only — budget)".into(),
+                            qn: c.qn.as_str().to_string(),
+                            file: file_abs.clone(),
+                            line,
+                            kind: Some(kind.clone()),
+                            body: None,
+                            signature: sig_opt.clone(),
+                            tokens: sig_tok,
+                        });
+                    }
+                }
+            }
+            (None, Some(sig_text)) => {
+                body_unavailable = true;
+                let sig_tok = estimate_tokens(sig_text.len());
                 if sig_tok <= budget_tokens.saturating_sub(used) {
                     used += sig_tok;
                     entries.push(ContextEntry {
-                        label: "target (signature only — budget)".into(),
+                        label: "target (signature only — unresolved)".into(),
                         qn: c.qn.as_str().to_string(),
                         file: file_abs.clone(),
                         line,
                         kind: Some(kind.clone()),
                         body: None,
-                        signature: sig,
+                        signature: Some(sig_text.clone()),
                         tokens: sig_tok,
                     });
-                } else {
-                    target_omitted = true;
                 }
+            }
+            (None, None) => {
+                body_unavailable = true;
+                entries.push(ContextEntry {
+                    label: "target (metadata only — unresolved)".into(),
+                    qn: c.qn.as_str().to_string(),
+                    file: file_abs.clone(),
+                    line,
+                    kind: Some(kind.clone()),
+                    body: None,
+                    signature: None,
+                    tokens: 0,
+                });
             }
         }
 
@@ -195,7 +240,7 @@ fn build_context(
                 continue;
             }
             let (body, sig, file_str, line, kind) =
-                resolve_qn_source(callee_qn, calls, root);
+                resolve_qn_source(callee_qn, calls, root, &mut parse_cache);
             if let Some(b) = body {
                 let tok = estimate_tokens(b.len());
                 if tok <= budget_tokens.saturating_sub(used) {
@@ -213,7 +258,10 @@ fn build_context(
                     continue;
                 }
             }
-            let sig_tok = sig.as_ref().map(|s| estimate_tokens(s.len())).unwrap_or(0);
+            let Some(ref sig_text) = sig else {
+                continue;
+            };
+            let sig_tok = estimate_tokens(sig_text.len());
             if sig_tok <= budget_tokens.saturating_sub(used) {
                 used += sig_tok;
                 entries.push(ContextEntry {
@@ -240,8 +288,10 @@ fn build_context(
             if !seen_qns.insert(h.edge.source.as_str().to_string()) {
                 continue;
             }
-            let sig = signature_from_meta(calls, &h.edge.source);
-            let sig_tok = sig.as_ref().map(|s| estimate_tokens(s.len())).unwrap_or(0);
+            let Some(sig) = signature_from_meta(calls, &h.edge.source, &mut parse_cache) else {
+                continue;
+            };
+            let sig_tok = estimate_tokens(sig.len());
             if sig_tok <= budget_tokens.saturating_sub(used) {
                 used += sig_tok;
                 let meta = calls.callable_meta.get(&h.edge.source);
@@ -252,7 +302,7 @@ fn build_context(
                     line: h.edge.line,
                     kind: meta.map(|m| m.kind.clone()),
                     body: None,
-                    signature: sig,
+                    signature: Some(sig),
                     tokens: sig_tok,
                 });
             } else {
@@ -272,8 +322,10 @@ fn build_context(
             if !seen_qns.insert(qn.as_str().to_string()) {
                 continue;
             }
-            let sig = signature_from_meta(calls, qn);
-            let sig_tok = sig.as_ref().map(|s| estimate_tokens(s.len())).unwrap_or(0);
+            let Some(sig) = signature_from_meta(calls, qn, &mut parse_cache) else {
+                continue;
+            };
+            let sig_tok = estimate_tokens(sig.len());
             if sig_tok <= budget_tokens.saturating_sub(used) {
                 used += sig_tok;
                 let meta = calls.callable_meta.get(qn);
@@ -284,7 +336,7 @@ fn build_context(
                     line: h.edge.line,
                     kind: meta.map(|m| m.kind.clone()),
                     body: None,
-                    signature: sig,
+                    signature: Some(sig),
                     tokens: sig_tok,
                 });
             } else {
@@ -301,8 +353,10 @@ fn build_context(
             if !seen_qns.insert(h.edge.source.as_str().to_string()) {
                 continue;
             }
-            let sig = signature_from_meta(calls, &h.edge.source);
-            let sig_tok = sig.as_ref().map(|s| estimate_tokens(s.len())).unwrap_or(0);
+            let Some(sig) = signature_from_meta(calls, &h.edge.source, &mut parse_cache) else {
+                continue;
+            };
+            let sig_tok = estimate_tokens(sig.len());
             if sig_tok <= budget_tokens.saturating_sub(used) {
                 used += sig_tok;
                 let meta = calls.callable_meta.get(&h.edge.source);
@@ -313,7 +367,7 @@ fn build_context(
                     line: h.edge.line,
                     kind: meta.map(|m| m.kind.clone()),
                     body: None,
-                    signature: sig,
+                    signature: Some(sig),
                     tokens: sig_tok,
                 });
             } else {
@@ -330,6 +384,7 @@ fn build_context(
         entries,
         truncated,
         target_omitted,
+        body_unavailable,
     }
 }
 
@@ -337,6 +392,7 @@ fn resolve_qn_source(
     qn: &crate::calls::graph::Qn,
     calls: &CallGraph,
     root: &Path,
+    cache: &mut ParsedFileCache,
 ) -> (Option<String>, Option<String>, String, u32, String) {
     let file_abs = match calls.callable_meta.get(qn) {
         Some(m) => root.join(&m.file),
@@ -353,8 +409,8 @@ fn resolve_qn_source(
         .unwrap_or_else(|| file_abs.display().to_string());
     let name = qn.as_str().split("::").last().unwrap_or(qn.as_str());
 
-    if let Some(pr) = crate::parse_file(&file_abs) {
-        let matches = crate::core::find_symbols(&pr, name);
+    if let Some(pr) = parse_file_cached(&file_abs, cache) {
+        let matches = crate::core::find_symbols(pr, name);
         for m in &matches {
             if m.start_line == line as usize || m.start_line.abs_diff(line as usize) <= 1 {
                 return (
@@ -382,14 +438,18 @@ fn resolve_qn_source(
 fn signature_from_meta(
     calls: &CallGraph,
     qn: &crate::calls::graph::Qn,
+    cache: &mut ParsedFileCache,
 ) -> Option<String> {
     let file_abs = match calls.callable_meta.get(qn) {
         Some(m) => calls.root.join(&m.file),
         None => calls.root.join(qn.file()),
     };
     let name = qn.as_str().split("::").last().unwrap_or(qn.as_str());
-    let pr = crate::parse_file(&file_abs)?;
-    let matches = crate::core::find_symbols(&pr, name);
+    let pr = match parse_file_cached(&file_abs, cache) {
+        Some(p) => p,
+        None => return None,
+    };
+    let matches = crate::core::find_symbols(pr, name);
     matches.into_iter().next().map(|m| first_line(&m.source).to_string())
 }
 
@@ -410,6 +470,12 @@ fn render_text(report: &ContextReport) -> String {
         out.push_str(&format!(
             "{}\n",
             "# note: target body omitted to fit budget (show only signature)".dimmed()
+        ));
+    }
+    if report.body_unavailable {
+        out.push_str(&format!(
+            "{}\n",
+            "# note: target body could not be resolved (parse failure or unsupported language)".dimmed()
         ));
     }
     if report.truncated {
@@ -501,8 +567,12 @@ pub mod mcp {
             pretty: true,
         };
         let report = build_context(&candidates[0], calls, &root, &opts);
+        let doc = json!({
+            "schema": "ast-bro.context.v1",
+            "report": report,
+        });
         crate::mcp::tools::CallResult::Text(
-            serde_json::to_string_pretty(&report).unwrap_or_default(),
+            serde_json::to_string_pretty(&doc).unwrap_or_default(),
         )
     }
 }
