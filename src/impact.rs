@@ -277,7 +277,18 @@ fn compute_impact(
                                   seen: &mut std::collections::HashSet<Qn>| {
             let abs = root.join(file);
             let is_test = is_test_file(&abs, root);
-            if is_test && !opts.exclude_tests {
+            if opts.exclude_tests && is_test {
+                return;
+            }
+            if opts.tests && !is_test {
+                return;
+            }
+            // Dedup before the test push too — the same source reached via
+            // several construction sites must appear once in both sections.
+            if !seen.insert(source.clone()) {
+                return;
+            }
+            if is_test {
                 test_calls.push(CallHit {
                     depth,
                     edge: CallEdge {
@@ -291,15 +302,6 @@ fn compute_impact(
                         candidates: Vec::new(),
                     },
                 });
-            }
-            if opts.exclude_tests && is_test {
-                return;
-            }
-            if opts.tests && !is_test {
-                return;
-            }
-            if !seen.insert(source.clone()) {
-                return;
             }
             transitive.entry(depth).or_default().push(ImpactEntry {
                 qn: source.as_str().to_string(),

@@ -253,6 +253,7 @@ fn build_context(
             }
             let (body, sig, file_str, line, kind) =
                 resolve_qn_source(callee_qn, calls, root, &mut parse_cache);
+            let had_body = body.is_some();
             if let Some(b) = body {
                 let tok = estimate_tokens(b.len());
                 if tok <= budget_tokens.saturating_sub(used) {
@@ -271,6 +272,10 @@ fn build_context(
                 }
             }
             let Some(ref sig_text) = sig else {
+                // A body existed but exceeded the budget and there is no
+                // signature to degrade to — that's truncation, not a
+                // resolution failure.
+                truncated |= had_body;
                 continue;
             };
             let sig_tok = estimate_tokens(sig_text.len());
@@ -463,6 +468,7 @@ fn build_context(
                     .unwrap_or_else(|| "type".into());
                 // resolve_qn_source already returns a repo-relative path.
                 let rel_file = impl_file;
+                let had_body = impl_body.is_some();
                 if let Some(b) = impl_body {
                     let tok = estimate_tokens(b.len());
                     if tok <= budget_tokens.saturating_sub(used) {
@@ -480,7 +486,10 @@ fn build_context(
                         continue;
                     }
                 }
-                let Some(ref sig) = impl_sig else { continue };
+                let Some(ref sig) = impl_sig else {
+                    truncated |= had_body;
+                    continue;
+                };
                 let sig_tok = estimate_tokens(sig.len());
                 if sig_tok <= budget_tokens.saturating_sub(used) {
                     used += sig_tok;
@@ -518,6 +527,7 @@ fn build_context(
             }
             let (body, sig, meth_file, meth_line, meth_kind) =
                 resolve_qn_source(method_qn, calls, root, &mut parse_cache);
+            let had_body = body.is_some();
             let rel_file = meth_file;
             if let Some(b) = body {
                 let tok = estimate_tokens(b.len());
@@ -536,7 +546,10 @@ fn build_context(
                     continue;
                 }
             }
-            let Some(ref sig) = sig else { continue };
+            let Some(ref sig) = sig else {
+                truncated |= had_body;
+                continue;
+            };
             let sig_tok = estimate_tokens(sig.len());
             if sig_tok <= budget_tokens.saturating_sub(used) {
                 used += sig_tok;
