@@ -272,6 +272,10 @@ enum Commands {
         file: PathBuf,
         #[arg(long, default_value_t = 3)]
         depth: usize,
+        /// Hide unresolved external imports from the footer.
+        /// Shown by default (tagged `[external]`); set this flag to drop them.
+        #[arg(long)]
+        hide_external: bool,
         /// Force a fresh dep-graph build.
         #[arg(long)]
         rebuild: bool,
@@ -287,10 +291,10 @@ enum Commands {
         depth: usize,
         #[arg(long, default_value_t = 200)]
         limit: usize,
-        /// Show only importers from test files.
+        /// Show only importers from test files (path heuristic: tests/, __tests__/, *_test.*, *.spec.*, …).
         #[arg(long)]
         tests: bool,
-        /// Exclude importers from test files.
+        /// Exclude importers from test files (same path heuristic as --tests).
         #[arg(long, conflicts_with = "tests")]
         exclude_tests: bool,
         #[arg(long)]
@@ -387,10 +391,10 @@ enum Commands {
         /// (Deprecated — ambiguous matches are shown by default now.)
         #[arg(long, hide = true)]
         include_ambiguous: bool,
-        /// Show only callers in test files.
+        /// Show only callers in test files (path heuristic: tests/, __tests__/, *_test.*, *.spec.*, …).
         #[arg(long)]
         tests: bool,
-        /// Exclude callers from test files.
+        /// Exclude callers from test files (same path heuristic as --tests).
         #[arg(long, conflicts_with = "tests")]
         exclude_tests: bool,
         /// Force a fresh call-graph build.
@@ -484,10 +488,10 @@ enum Commands {
         /// Shown by default (tagged red); set this flag to drop them.
         #[arg(long)]
         hide_ambiguous: bool,
-        /// Show only test files.
+        /// Show only test files (path heuristic: tests/, __tests__/, *_test.*, *.spec.*, …).
         #[arg(long)]
         tests: bool,
-        /// Exclude test files from the output.
+        /// Exclude test files from the output (same path heuristic as --tests).
         #[arg(long, conflicts_with = "tests")]
         exclude_tests: bool,
         #[arg(long)]
@@ -977,7 +981,7 @@ pub fn run() {
             }
         }
         Commands::Prompt => {
-            println!("{}", crate::prompt::AGENT_PROMPT);
+            println!("{}", crate::prompt::agent_prompt());
         }
         Commands::Install {
             target,
@@ -1147,11 +1151,19 @@ pub fn run() {
         Commands::Deps {
             file,
             depth,
+            hide_external,
             rebuild,
             json,
             compact,
         } => {
-            let exit = crate::deps::cli::run_deps(file, *depth, *json, !(*compact), *rebuild);
+            let exit = crate::deps::cli::run_deps(
+                file,
+                *depth,
+                !(*hide_external),
+                *json,
+                !(*compact),
+                *rebuild,
+            );
             std::process::exit(exit);
         }
         Commands::ReverseDeps {
@@ -1190,10 +1202,13 @@ pub fn run() {
             path,
             json,
             hide_external,
-            include_external: _,
+            include_external,
             rebuild,
             compact,
         } => {
+            if *include_external {
+                eprintln!("# note: --include-external is deprecated; unresolved imports are shown by default now (use --hide-external to drop them)");
+            }
             let exit =
                 crate::deps::cli::run_graph(path, *json, !(*hide_external), !(*compact), *rebuild);
             std::process::exit(exit);
@@ -1216,13 +1231,16 @@ pub fn run() {
             depth,
             limit,
             hide_ambiguous,
-            include_ambiguous: _,
+            include_ambiguous,
             tests,
             exclude_tests,
             rebuild,
             json,
             compact,
         } => {
+            if *include_ambiguous {
+                eprintln!("# note: --include-ambiguous is deprecated; ambiguous callers are shown by default now (use --hide-ambiguous to drop them)");
+            }
             let resolved = compose_target(target.as_deref(), file.as_deref(), symbol.as_deref());
             let exit = crate::calls::cli::run_callers(
                 &resolved,
@@ -1268,11 +1286,14 @@ pub fn run() {
             symbol,
             depth,
             hide_external,
-            external: _,
+            external,
             rebuild,
             json,
             compact,
         } => {
+            if *external {
+                eprintln!("# note: --external is deprecated; unresolved/external callees are shown by default now (use --hide-external to drop them)");
+            }
             let resolved = compose_target(target.as_deref(), file.as_deref(), symbol.as_deref());
             let exit = crate::calls::cli::run_callees(
                 &resolved,

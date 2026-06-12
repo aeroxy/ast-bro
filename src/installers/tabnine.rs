@@ -5,7 +5,7 @@ use serde_json::{json, Value};
 use super::json_hook::matches_any_marker;
 use super::paths;
 use super::{common, Change, Detection, InstallOpts, Installer, Scope, Status};
-use crate::prompt::AGENT_PROMPT;
+use crate::prompt::agent_prompt;
 
 pub struct Tabnine;
 
@@ -83,7 +83,7 @@ impl Installer for Tabnine {
     }
 
     fn install_prompt(&self, scope: &Scope, opts: &InstallOpts) -> Result<Change, String> {
-        common::install_prompt_in(&self.prompt_path(scope)?, AGENT_PROMPT, opts)
+        common::install_prompt_in(&self.prompt_path(scope)?, agent_prompt(), opts)
     }
 
     fn install_hook(&self, scope: &Scope, opts: &InstallOpts) -> Result<Change, String> {

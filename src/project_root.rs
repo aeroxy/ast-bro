@@ -81,8 +81,21 @@ pub fn resolve_home(path_arg: &Path, cwd: &Path, marker: Marker) -> (PathBuf, bo
     (abs_cwd, false)
 }
 
-/// Look for the project root (containing a known manifest) starting
-/// at the file's directory and walking up. Falls back to current dir.
+/// Look for the project root starting at the file's directory and
+/// walking up. Precedence:
+///
+/// 1. The first ancestor containing `.git` — a repository boundary is
+///    authoritative and stops the walk immediately. This makes the
+///    workspace/monorepo root win over an inner member manifest.
+/// 2. Otherwise the *nearest* ancestor holding a known manifest
+///    (`Cargo.toml`, `package.json`, …). Nearest wins so a stray manifest
+///    in `$HOME` or an unrelated outer directory can't drag the root
+///    above the project.
+/// 3. Otherwise the file's own directory.
+///
+/// Once a manifest has been found, the ascent stops before considering
+/// `$HOME` (or anything above it): a dotfiles repo at `$HOME` must not
+/// swallow manifest-rooted projects beneath it.
 pub fn find_root_for(file: &Path) -> Result<PathBuf, String> {
     if !file.exists() {
         return Err(format!("file not found: {}", file.display()));
@@ -105,19 +118,25 @@ pub fn find_root_for(file: &Path) -> Result<PathBuf, String> {
         "build.sbt",
         "pom.xml",
     ];
-    let mut last_seen_manifest: Option<PathBuf> = None;
+    let home = home_dir();
+    let mut nearest_manifest: Option<PathBuf> = None;
     loop {
-        // .git is a hard repository-root boundary — prefer it over any
-        // manifest found below, since the git root is the true project root.
+        // Guard: with a manifest in hand, never treat $HOME or its
+        // ancestors as a candidate root.
+        if nearest_manifest.is_some()
+            && home.as_deref().is_some_and(|h| h.starts_with(cur))
+        {
+            break;
+        }
         if cur.join(".git").exists() {
             return Ok(cur.to_path_buf());
         }
-        for n in &manifest_names {
-            if cur.join(n).is_file() {
-                // Keep the highest (latest) manifest seen; outer wins over
-                // an inner leaf-package manifest in monorepos / workspaces.
-                last_seen_manifest = Some(cur.to_path_buf());
-                break;
+        if nearest_manifest.is_none() {
+            for n in &manifest_names {
+                if cur.join(n).is_file() {
+                    nearest_manifest = Some(cur.to_path_buf());
+                    break;
+                }
             }
         }
         match cur.parent() {
@@ -125,7 +144,7 @@ pub fn find_root_for(file: &Path) -> Result<PathBuf, String> {
             None => break,
         }
     }
-    if let Some(root) = last_seen_manifest {
+    if let Some(root) = nearest_manifest {
         return Ok(root);
     }
     // Fall back to file's parent directory.
@@ -136,6 +155,15 @@ pub fn find_root_for(file: &Path) -> Result<PathBuf, String> {
             .ok_or("no parent directory")?
             .to_path_buf()
     })
+}
+
+/// The user's home directory, canonicalized (so the `$HOME` ascent guard
+/// in `find_root_for` survives macOS `/tmp` → `/private/tmp` symlinks).
+fn home_dir() -> Option<PathBuf> {
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from)
+        .and_then(|p| p.canonicalize().ok())
 }
 
 /// Best-effort canonicalize. Handles paths whose tail doesn't exist yet
@@ -253,6 +281,77 @@ mod tests {
     use super::*;
     use std::fs;
     use tempfile::tempdir;
+
+    fn touch(p: &Path) {
+        if let Some(parent) = p.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        fs::write(p, "").unwrap();
+    }
+
+    #[test]
+    fn find_root_stops_at_git_boundary_above_member_manifest() {
+        // Workspace layout: .git at the repo root, Cargo.toml in a member.
+        // The git root wins so qns are workspace-relative.
+        let tmp = tempdir().unwrap();
+        let repo = tmp.path().join("mono");
+        fs::create_dir_all(repo.join(".git")).unwrap();
+        touch(&repo.join("pkg/Cargo.toml"));
+        touch(&repo.join("pkg/src/lib.rs"));
+
+        let root = find_root_for(&repo.join("pkg/src/lib.rs")).unwrap();
+        assert_eq!(root, repo.canonicalize().unwrap());
+    }
+
+    #[test]
+    fn find_root_uses_nearest_manifest_without_git() {
+        let tmp = tempdir().unwrap();
+        let proj = tmp.path().join("proj");
+        touch(&proj.join("Cargo.toml"));
+        touch(&proj.join("src/lib.rs"));
+
+        let root = find_root_for(&proj.join("src/lib.rs")).unwrap();
+        assert_eq!(root, proj.canonicalize().unwrap());
+    }
+
+    #[test]
+    fn find_root_ignores_stray_outer_manifest() {
+        // A stray package.json in an ancestor (think: $HOME) must not
+        // drag the root above the project's own manifest.
+        let tmp = tempdir().unwrap();
+        touch(&tmp.path().join("package.json"));
+        let proj = tmp.path().join("code/proj");
+        touch(&proj.join("Cargo.toml"));
+        touch(&proj.join("src/lib.rs"));
+
+        let root = find_root_for(&proj.join("src/lib.rs")).unwrap();
+        assert_eq!(root, proj.canonicalize().unwrap());
+    }
+
+    #[test]
+    fn find_root_falls_back_to_parent_dir() {
+        let tmp = tempdir().unwrap();
+        let dir = tmp.path().join("loose");
+        touch(&dir.join("script.py"));
+
+        let root = find_root_for(&dir.join("script.py")).unwrap();
+        assert_eq!(root, dir.canonicalize().unwrap());
+    }
+
+    #[test]
+    fn find_root_inner_git_wins_over_outer_git() {
+        // A project with its own .git nested inside another repo
+        // (vendored checkout) roots at the inner .git.
+        let tmp = tempdir().unwrap();
+        let outer = tmp.path().join("outer");
+        fs::create_dir_all(outer.join(".git")).unwrap();
+        let inner = outer.join("vendor/dep");
+        fs::create_dir_all(inner.join(".git")).unwrap();
+        touch(&inner.join("src/main.rs"));
+
+        let root = find_root_for(&inner.join("src/main.rs")).unwrap();
+        assert_eq!(root, inner.canonicalize().unwrap());
+    }
 
     #[test]
     fn compare_corpus_subset_explicit() {

@@ -29,7 +29,7 @@ fn write(p: &std::path::Path, body: &str) {
 }
 
 #[test]
-fn impact_on_type_finds_implementors_and_constructions() {
+fn impact_on_type_finds_implementors() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path();
 
@@ -51,13 +51,34 @@ pub fn create_animal() -> Box<dyn Animal> {
     let (out, code) = run_in(root, &["impact", "Animal", "--rebuild"]);
     assert_eq!(code, 0, "impact exited non-zero: {}", out);
 
-    // Should find Dog as an implementor
     assert!(out.contains("Dog"), "expected Dog (implementor of Animal), got:\n{}", out);
     assert!(out.contains("struct"), "expected Dog to be labeled as struct, got:\n{}", out);
-    
-    // Should find create_animal as a construction (it uses Dog, but if it used Animal it would match)
-    // Wait, my test setup has create_animal using Dog. Let's make it use Animal if possible.
-    // Actually, callers of Animal (constructions) should appear.
+}
+
+#[test]
+fn impact_on_struct_finds_construction_sites() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+
+    write(&root.join("Cargo.toml"), "[package]\nname=\"smoke\"\nversion=\"0.0.0\"\nedition=\"2021\"\n");
+    write(
+        &root.join("src/lib.rs"),
+        r#"
+pub struct Config { pub debug: bool }
+
+pub fn load_config() -> Config {
+    Config { debug: false }
+}
+"#,
+    );
+
+    let (out, code) = run_in(root, &["impact", "Config", "--rebuild"]);
+    assert_eq!(code, 0, "impact exited non-zero: {}", out);
+    assert!(
+        out.contains("load_config"),
+        "expected load_config (constructs Config via struct literal) in dependents, got:\n{}",
+        out
+    );
 }
 
 #[test]
@@ -109,15 +130,22 @@ pub fn factory() {
 
     let (out, code) = run_in(root, &["impact", "Service", "--depth", "2", "--rebuild"]);
     assert_eq!(code, 0);
-    
-    // Direct: MyService is an implementor of Service (depth 1)
-    assert!(out.contains("MyService"));
-    
-    // Callers of MyService's constructor (make_service) at depth 2 are not
-    // surfaced through the current transitive walker (which uses
-    // traverse::callers — a callable-only API — even for type implementors).
-    // This test documents that depth-2 transitive dependents for types are
-    // not yet implemented; it verifies the depth-1 implementor still appears.
+
+    // Depth 1: MyService is an implementor of Service.
+    assert!(out.contains("MyService"), "expected MyService (implementor), got:\n{}", out);
+
+    // Depth 2: make_service constructs the implementor (`MyService {}`),
+    // so it depends on the base type transitively.
+    assert!(
+        out.contains("make_service"),
+        "expected make_service (constructs implementor MyService) at depth 2, got:\n{}",
+        out
+    );
+    assert!(
+        out.contains("transitively affected"),
+        "expected a transitive section, got:\n{}",
+        out
+    );
 }
 
 #[test]

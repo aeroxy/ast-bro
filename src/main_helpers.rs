@@ -33,14 +33,35 @@ pub fn can_parse_for_hook(path: &Path) -> bool {
     ) {
         return true;
     }
-    if SupportLang::from_path(path).is_some() {
-        return true;
+    if let Some(lang) = SupportLang::from_path(path) {
+        return is_supported_adapter(lang);
     }
     // Extensionless file — check shebang
     if path.extension().is_none() {
-        return crate::file_filter::detect_language(path).is_some();
+        return crate::file_filter::detect_language(path)
+            .map(is_supported_adapter)
+            .unwrap_or(false);
     }
     false
+}
+
+fn is_supported_adapter(lang: SupportLang) -> bool {
+    matches!(
+        lang,
+        SupportLang::Rust
+            | SupportLang::Python
+            | SupportLang::TypeScript
+            | SupportLang::Tsx
+            | SupportLang::JavaScript
+            | SupportLang::CSharp
+            | SupportLang::Go
+            | SupportLang::Java
+            | SupportLang::Kotlin
+            | SupportLang::Scala
+            | SupportLang::Cpp
+            | SupportLang::Ruby
+            | SupportLang::Php
+    )
 }
 
 pub fn parse_file_for_hook(path: &Path) -> Option<ParseResult> {
@@ -62,13 +83,15 @@ pub fn parse_file_for_hook(path: &Path) -> Option<ParseResult> {
     }
 
     // Try extension first; for extensionless files, fall back to shebang.
-    let lang = SupportLang::from_path(path).or_else(|| {
-        if path.extension().is_none() {
-            crate::file_filter::detect_language(path)
-        } else {
-            None
-        }
-    })?;
+    let lang = SupportLang::from_path(path)
+        .or_else(|| {
+            if path.extension().is_none() {
+                crate::file_filter::detect_language(path)
+            } else {
+                None
+            }
+        })
+        .filter(|&l| is_supported_adapter(l))?;
     let mut result = match lang {
         SupportLang::Rust => RustAdapter.parse(
             path,

@@ -28,10 +28,12 @@ pub fn run_callers_text(target: &str, root: &Path, depth: usize, limit: usize, i
     let qns = crate::calls::cli_helpers::resolve_target_qns(calls, target);
     let mut hits = Vec::new();
     for qn in &qns {
-        hits.extend(traverse::callers(calls, qn, depth.max(1), limit));
-    }
-    if !include_ambiguous {
-        hits.retain(|h| !matches!(h.edge.confidence, crate::calls::graph::Confidence::Ambiguous));
+        // Filter inside the traversal so dropped ambiguous edges don't
+        // consume the limit (mirrors the CLI's run_callers).
+        hits.extend(traverse::callers(calls, qn, depth.max(1), limit, |e| {
+            include_ambiguous
+                || !matches!(e.confidence, crate::calls::graph::Confidence::Ambiguous)
+        }));
     }
     if hits.len() > limit {
         hits.truncate(limit);

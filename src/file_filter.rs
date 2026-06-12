@@ -117,9 +117,15 @@ pub fn should_skip_path(path: &Path, repo_root: &Path) -> bool {
 }
 
 /// Path components that denote a test directory (case-insensitive).
+///
+/// Deliberately excludes bare `integration` — `src/integration/` is a
+/// common home for production third-party-integration code, and a false
+/// positive here silently hides real callers from `--exclude-tests`
+/// output. The unambiguous `integration-tests` / `integration_tests`
+/// forms are kept.
 const TEST_DIR_TOKENS: &[&str] = &[
     "test", "tests", "__tests__", "e2e", "cypress", "playwright",
-    "integration", "integration-tests", "test-fixtures", "fixtures",
+    "integration-tests", "integration_tests", "test-fixtures", "fixtures",
     "spec", "specs", "mocha", "jest",
 ];
 
@@ -297,6 +303,11 @@ mod tests {
         assert!(!is_test_file(&root.join("src/foo.rs"), &root));
         assert!(!is_test_file(&root.join("lib/auth.py"), &root));
         assert!(!is_test_file(&root.join("src/test_utils.rs"), &root));
+        // Production integration code must not be classified as tests.
+        assert!(!is_test_file(&root.join("src/integration/stripe.rs"), &root));
+        // ...but explicit integration-test directories still are.
+        assert!(is_test_file(&root.join("integration-tests/api.rs"), &root));
+        assert!(is_test_file(&root.join("integration_tests/api.rs"), &root));
     }
 
     #[test]
@@ -406,7 +417,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("bin");
         // Write some random binary bytes, no newline
-        std::fs::write(&path, &[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]).unwrap();
+        std::fs::write(&path, [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]).unwrap();
         assert_eq!(detect_language(&path), None);
     }
 
@@ -428,7 +439,7 @@ mod tests {
         // Valid shebang with lots of spaces, newline just inside 256 bytes
         let padding = " ".repeat(230);
         let content = format!("#!/usr/bin/env python3{}\nprint('hi')\n", padding);
-        assert!(content.as_bytes()[..256].iter().position(|&b| b == b'\n').is_some());
+        assert!(content.as_bytes()[..256].contains(&b'\n'));
         std::fs::write(&path, content).unwrap();
         assert_eq!(
             detect_language(&path),
@@ -444,7 +455,7 @@ mod tests {
         let padding = " ".repeat(300);
         let content = format!("#!/usr/bin/env python3{}\nprint('hi')\n", padding);
         // Confirm newline is at position > 256
-        assert!(content.as_bytes()[..256].iter().position(|&b| b == b'\n').is_none());
+        assert!(!content.as_bytes()[..256].contains(&b'\n'));
         std::fs::write(&path, content).unwrap();
         // Should return None since the line is too long to be trusted
         assert_eq!(detect_language(&path), None);

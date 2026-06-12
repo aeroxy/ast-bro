@@ -16,8 +16,9 @@ use serde::Serialize;
 use serde_json::json;
 
 use crate::calls::build::build_call_graph;
+use crate::calls::cli::collect_type_callers;
 use crate::calls::cli_helpers::{resolve_target_full, ResolvedTarget, SymbolKind};
-use crate::calls::graph::{CallEdge, CallGraph, CallTarget, Confidence};
+use crate::calls::graph::{CallEdge, CallGraph, CallTarget, Confidence, Qn};
 use crate::calls::traverse::{self, CallHit};
 use crate::deps::traverse as dep_traverse;
 use crate::deps::DepGraph;
@@ -90,7 +91,6 @@ pub struct ImpactEntry {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ImpactReport {
-    pub target: String,
     pub target_qn: String,
     pub target_file: String,
     pub target_line: u32,
@@ -148,7 +148,7 @@ pub fn run_impact(
             render_json(target, &reports, opts.pretty, candidates.len())
         );
     } else {
-        print!("{}", render_text(target, &reports, opts, candidates.len()));
+        print!("{}", render_text(&reports, candidates.len()));
     }
     0
 }
@@ -178,7 +178,6 @@ fn compute_impact(
     };
 
     let mut report = ImpactReport {
-        target: c.qn.as_str().to_string(),
         target_qn: c.qn.as_str().to_string(),
         target_file: crate::project_root::relative_posix(&file_path, root)
             .unwrap_or_else(|| file_path.display().to_string()),
@@ -204,7 +203,7 @@ fn compute_impact(
     let mut transitive = BTreeMap::new();
     let mut test_calls: Vec<CallHit> = Vec::new();
 
-    let all_callers = traverse::callers(calls, &c.qn, opts.depth.max(1), opts.limit);
+    let all_callers = traverse::callers(calls, &c.qn, opts.depth.max(1), opts.limit, |_| true);
     for h in &all_callers {
         let abs = root.join(&h.edge.file);
         let is_test = is_test_file(&abs, root);
@@ -246,14 +245,92 @@ fn compute_impact(
     }
 
     if c.kind == SymbolKind::Type {
+        // Construct/receiver edges never resolve to a type qn, so the
+        // reverse index (and `traverse::callers` above) can't see them.
+        // Type dependents are gathered from construction edges instead:
+        //   depth 1: implementors + callables constructing the type itself
+        //   depth 2: callers of those constructors; callables constructing
+        //            an implementor
+        //   depth 3+: `traverse::callers` from each construction site.
+        let mut seen_transitive: std::collections::HashSet<Qn> =
+            std::collections::HashSet::new();
+        let add_transitive = |depth: usize,
+                                  source: &Qn,
+                                  file: &Path,
+                                  line: u32,
+                                  confidence: Confidence,
+                                  transitive: &mut BTreeMap<usize, Vec<ImpactEntry>>,
+                                  test_calls: &mut Vec<CallHit>,
+                                  seen: &mut std::collections::HashSet<Qn>| {
+            let abs = root.join(file);
+            let is_test = is_test_file(&abs, root);
+            if is_test && !opts.exclude_tests {
+                test_calls.push(CallHit {
+                    depth,
+                    edge: CallEdge {
+                        source: source.clone(),
+                        target: CallTarget::Resolved(c.qn.clone()),
+                        kind: crate::calls::graph::CallKindCompat::Construct,
+                        line,
+                        file: file.to_path_buf(),
+                        confidence,
+                        receiver: None,
+                        candidates: Vec::new(),
+                    },
+                });
+            }
+            if opts.exclude_tests && is_test {
+                return;
+            }
+            if opts.tests && !is_test {
+                return;
+            }
+            if !seen.insert(source.clone()) {
+                return;
+            }
+            transitive.entry(depth).or_default().push(ImpactEntry {
+                qn: source.as_str().to_string(),
+                file: file.display().to_string(),
+                line,
+                kind: calls
+                    .callable_meta
+                    .get(source)
+                    .map(|m| m.kind.clone())
+                    .unwrap_or_else(|| "function".into()),
+                confidence: Some(confidence.as_str().to_string()),
+                depth: Some(depth),
+            });
+        };
+
+        // Callers of the callables that construct the target type itself
+        // are depth-2 dependents (the construction sites themselves are
+        // depth 1 and already shown in the callers section).
+        if opts.depth > 1 {
+            let group = collect_type_callers(calls, &c.qn);
+            for e in &group.constructions {
+                for h in traverse::callers(calls, &e.source, opts.depth - 1, opts.limit, |_| true)
+                {
+                    add_transitive(
+                        h.depth + 1,
+                        &h.edge.source,
+                        &h.edge.file,
+                        h.edge.line,
+                        h.edge.confidence,
+                        &mut transitive,
+                        &mut test_calls,
+                        &mut seen_transitive,
+                    );
+                }
+            }
+        }
+
         if let Some(impls) = calls.implementors.get(c.qn.name()) {
             for qn in impls {
                 let meta = calls.types.get(qn);
                 let file = meta.map(|m| m.file.clone()).unwrap_or_else(|| PathBuf::from(qn.file()));
                 let line = meta.map(|m| m.line).unwrap_or(0);
                 let abs = root.join(&file);
-                let is_test = is_test_file(&abs, root);
-                if is_test && !opts.exclude_tests {
+                if is_test_file(&abs, root) && !opts.exclude_tests {
                     test_calls.push(CallHit {
                         depth: 1,
                         edge: CallEdge {
@@ -268,44 +345,43 @@ fn compute_impact(
                         },
                     });
                 }
-                // Implementors (depth 1) are shown in Section 1 (build_callers_section).
-                // We don't add them to the transitive map to avoid duplication.
-
-                // Transitive dependents: anyone who calls the implementor is a 
-                // dependent of the base type at depth 2+.
+                // Implementors (depth 1) are shown in the callers section;
+                // they're not repeated in the transitive map. Whoever
+                // constructs an implementor depends on the base type at
+                // depth 2; callers of those constructors at depth 3+.
                 if opts.depth > 1 {
-                    let sub_callers = traverse::callers(calls, qn, opts.depth - 1, opts.limit);
-                    for h in sub_callers {
-                        let total_depth = h.depth + 1;
-                        let abs = root.join(&h.edge.file);
-                        let is_test = is_test_file(&abs, root);
-                        if is_test && !opts.exclude_tests {
-                            let mut h2 = h.clone();
-                            h2.depth = total_depth;
-                            test_calls.push(h2);
+                    let group = collect_type_callers(calls, qn);
+                    for e in &group.constructions {
+                        add_transitive(
+                            2,
+                            &e.source,
+                            &e.file,
+                            e.line,
+                            e.confidence,
+                            &mut transitive,
+                            &mut test_calls,
+                            &mut seen_transitive,
+                        );
+                        if opts.depth > 2 {
+                            for h in traverse::callers(
+                                calls,
+                                &e.source,
+                                opts.depth - 2,
+                                opts.limit,
+                                |_| true,
+                            ) {
+                                add_transitive(
+                                    h.depth + 2,
+                                    &h.edge.source,
+                                    &h.edge.file,
+                                    h.edge.line,
+                                    h.edge.confidence,
+                                    &mut transitive,
+                                    &mut test_calls,
+                                    &mut seen_transitive,
+                                );
+                            }
                         }
-                        if opts.exclude_tests && is_test {
-                            continue;
-                        }
-                        if opts.tests && !is_test {
-                            continue;
-                        }
-                        let entry = ImpactEntry {
-                            qn: h.edge.source.as_str().to_string(),
-                            file: h.edge.file.display().to_string(),
-                            line: h.edge.line,
-                            kind: calls
-                                .callable_meta
-                                .get(&h.edge.source)
-                                .map(|m| m.kind.clone())
-                                .unwrap_or_else(|| "function".into()),
-                            confidence: Some(h.edge.confidence.as_str().to_string()),
-                            depth: Some(total_depth),
-                        };
-                        transitive
-                            .entry(total_depth)
-                            .or_insert_with(Vec::new)
-                            .push(entry);
                     }
                 }
             }
@@ -316,7 +392,7 @@ fn compute_impact(
         let total: usize = transitive.values().map(|v| v.len()).sum();
         report.transitive_count = total;
         let mut section = ImpactSection {
-            title: format!("! {} entities transitively affected (depth {})", total, opts.depth),
+            title: format!("! {} symbols transitively affected (depth {})", total, opts.depth),
             entries: Vec::new(),
         };
         for (depth, entries) in &transitive {
@@ -421,7 +497,7 @@ fn build_callers_section(
     opts: &ImpactOptions,
     root: &Path,
 ) -> ImpactSection {
-    let mut hits = traverse::callers(calls, &c.qn, 1, opts.limit);
+    let mut hits = traverse::callers(calls, &c.qn, 1, opts.limit, |_| true);
     if c.kind == SymbolKind::Type {
         if let Some(impls) = calls.implementors.get(c.qn.name()) {
             for qn in impls {
@@ -441,6 +517,13 @@ fn build_callers_section(
                     });
                 }
             }
+        }
+        // Construction sites (`Foo {}`, `Foo::new()`, `Foo.method()`) —
+        // these edges target a bare name, never the type qn, so the
+        // reverse-index lookup above can't return them.
+        let group = collect_type_callers(calls, &c.qn);
+        for e in group.constructions {
+            hits.push(CallHit { depth: 1, edge: e });
         }
     }
     if !opts.include_ambiguous {
@@ -519,7 +602,7 @@ fn build_file_reverse_deps_section(
     opts: &ImpactOptions,
 ) -> ImpactSection {
     let deps_file = root.join(file);
-    let hits = dep_traverse::reverse(deps, &deps_file, 1, opts.limit);
+    let hits = dep_traverse::reverse(deps, &deps_file, 1, opts.limit, |_| true);
     let hits: Vec<_> = hits
         .into_iter()
         .filter(|h| {
@@ -552,12 +635,7 @@ fn build_file_reverse_deps_section(
     }
 }
 
-fn render_text(
-    _target_raw: &str,
-    reports: &[ImpactReport],
-    opts: &ImpactOptions,
-    candidate_count: usize,
-) -> String {
+fn render_text(reports: &[ImpactReport], candidate_count: usize) -> String {
     let mut out = String::new();
     for r in reports {
         out.push_str(&format!(
@@ -587,30 +665,13 @@ fn render_text(
                         "    {}{} {} {}{}{}\n",
                         if e.qn.starts_with('[') { "" } else { "→ " }.dimmed(),
                         e.kind.dimmed(),
-                        e.qn.name_or_raw_segment().yellow(),
+                        name_or_raw_segment(&e.qn).yellow(),
                         colorize_file_path(&e.qn, &e.file),
                         depth_tag,
                         conf_tag,
                     ));
                 }
             }
-        }
-        if r.transitive_count > 0 {
-            out.push_str(&format!(
-                "\n{} {} symbols transitively affected{}{}\n",
-                "!".bold(),
-                r.transitive_count,
-                if opts.tests {
-                    format!(", {} affected tests", r.test_count)
-                } else {
-                    String::new()
-                },
-                if opts.exclude_tests {
-                    " (tests excluded)"
-                } else {
-                    ""
-                },
-            ));
         }
         if candidate_count > 1 {
             out.push('\n');
@@ -669,19 +730,15 @@ fn colorize_file_path(qn: &str, file: &str) -> String {
     format!(" ({})", display).truecolor(100, 100, 100).to_string()
 }
 
-trait NameOrRaw {
-    fn name_or_raw_segment(&self) -> String;
-}
-
-impl NameOrRaw for String {
-    fn name_or_raw_segment(&self) -> String {
-        if self.starts_with('[') {
-            return self.clone();
-        }
-        match self.rfind("::") {
-            Some(i) => self[i + 2..].to_string(),
-            None => self.clone(),
-        }
+/// Terminal `::` segment of a qn, or the string unchanged when it's a
+/// tagged pseudo-entry like `[external] serde_json::to_string`.
+fn name_or_raw_segment(qn: &str) -> &str {
+    if qn.starts_with('[') {
+        return qn;
+    }
+    match qn.rfind("::") {
+        Some(i) => &qn[i + 2..],
+        None => qn,
     }
 }
 
@@ -691,7 +748,6 @@ pub mod mcp {
 
     pub fn run_impact(args: Value) -> crate::mcp::tools::CallResult {
         #[derive(serde::Deserialize)]
-        #[allow(dead_code)]
         struct Args {
             target: String,
             #[serde(default = "default_dot")]
@@ -702,19 +758,20 @@ pub mod mcp {
             limit: usize,
             #[serde(default = "default_mode")]
             mode: String,
-            #[serde(default)]
+            /// Ambiguous edges are shown by default (CLI parity) — they
+            /// carry the construction sites of struct-literal usage.
+            #[serde(default = "default_true")]
             include_ambiguous: bool,
             #[serde(default)]
             tests: bool,
             #[serde(default)]
             exclude_tests: bool,
-            #[serde(default)]
-            json: bool,
         }
         fn default_dot() -> PathBuf { PathBuf::from(".") }
         fn default_two() -> usize { 2 }
         fn default_limit() -> usize { 200 }
         fn default_mode() -> String { "all".into() }
+        fn default_true() -> bool { true }
 
         let a: Args = match serde_json::from_value(args) {
             Ok(v) => v,

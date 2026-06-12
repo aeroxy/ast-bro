@@ -116,7 +116,7 @@ pub fn list() -> Value {
                     "properties": {
                         "file":    { "type": "string",  "description": "Path to the file whose imports to follow." },
                         "depth":   { "type": "integer", "description": "Max BFS depth (default 3).", "minimum": 1 },
-                        "external": { "type": "boolean", "description": "Include unresolved (external) imports." },
+                        "hide_external": { "type": "boolean", "description": "Drop unresolved imports. Default: false (shown with [external] tag)." },
                         "rebuild": { "type": "boolean", "description": "Drop the cached graph and rebuild." },
                         "json":    { "type": "boolean" }
                     },
@@ -394,7 +394,22 @@ fn default_one() -> usize { 1 }
 fn default_two_hundred() -> usize { 200 }
 fn default_dot() -> PathBuf { PathBuf::from(".") }
 
-fn run_callers(args: Value) -> CallResult {
+/// Back-compat shim for renamed boolean args. Pre-rename clients sent
+/// `include_ambiguous` / `external` / `include_external` (true = show);
+/// the new `hide_*` args invert the polarity (true = drop). When only the
+/// old key is present, translate it so old clients keep their behavior
+/// instead of having the flag silently ignored.
+fn translate_renamed_bool(args: &mut Value, old: &str, new: &str) {
+    if args.get(new).is_some() {
+        return;
+    }
+    if let Some(v) = args.get(old).and_then(Value::as_bool) {
+        args[new] = Value::Bool(!v);
+    }
+}
+
+fn run_callers(mut args: Value) -> CallResult {
+    translate_renamed_bool(&mut args, "include_ambiguous", "hide_ambiguous");
     let a: CallersArgs = match serde_json::from_value(args) {
         Ok(a) => a,
         Err(e) => return CallResult::Error(format!("bad args: {}", e)),
@@ -414,7 +429,8 @@ fn run_callers(args: Value) -> CallResult {
     CallResult::Text(out)
 }
 
-fn run_callees(args: Value) -> CallResult {
+fn run_callees(mut args: Value) -> CallResult {
+    translate_renamed_bool(&mut args, "external", "hide_external");
     let a: CalleesArgs = match serde_json::from_value(args) {
         Ok(a) => a,
         Err(e) => return CallResult::Error(format!("bad args: {}", e)),
@@ -691,7 +707,7 @@ fn run_implements(args: Value) -> CallResult {
 struct DepsArgs {
     file: PathBuf,
     #[serde(default = "default_depth")] depth: usize,
-    #[serde(default)] external: bool,
+    #[serde(default)] hide_external: bool,
     #[serde(default)] json: bool,
 }
 
@@ -722,7 +738,8 @@ fn default_limit() -> usize { 200 }
 fn default_min_size() -> usize { 2 }
 fn default_path() -> PathBuf { PathBuf::from(".") }
 
-fn run_deps(args: Value) -> CallResult {
+fn run_deps(mut args: Value) -> CallResult {
+    translate_renamed_bool(&mut args, "external", "hide_external");
     let a: DepsArgs = match serde_json::from_value(args) {
         Ok(v) => v,
         Err(e) => return CallResult::Error(format!("invalid arguments: {}", e)),
@@ -739,12 +756,11 @@ fn run_deps(args: Value) -> CallResult {
         Ok(c) => c,
         Err(e) => return CallResult::Error(format!("cannot resolve {}: {}", a.file.display(), e)),
     };
-    let _ = a.external; // forwarded but only relevant to graph; deps text always shows what's resolved.
     let hits = crate::deps::traverse::forward(&graph, &canon, a.depth.max(1));
     if a.json {
-        CallResult::Text(crate::deps::render::render_deps_json(&graph, &canon, &hits, true))
+        CallResult::Text(crate::deps::render::render_deps_json(&graph, &canon, &hits, !a.hide_external, true))
     } else {
-        CallResult::Text(crate::deps::render::render_deps_text(&graph, &canon, &hits))
+        CallResult::Text(crate::deps::render::render_deps_text(&graph, &canon, &hits, !a.hide_external))
     }
 }
 
@@ -765,7 +781,7 @@ fn run_reverse_deps(args: Value) -> CallResult {
         Ok(c) => c,
         Err(e) => return CallResult::Error(format!("cannot resolve {}: {}", a.file.display(), e)),
     };
-    let hits = crate::deps::traverse::reverse(&graph, &canon, a.depth.max(1), a.limit);
+    let hits = crate::deps::traverse::reverse(&graph, &canon, a.depth.max(1), a.limit, |_| true);
     if a.json {
         CallResult::Text(crate::deps::render::render_reverse_deps_json(&graph, &canon, &hits, true))
     } else {
@@ -794,7 +810,8 @@ fn run_cycles(args: Value) -> CallResult {
     }
 }
 
-fn run_graph(args: Value) -> CallResult {
+fn run_graph(mut args: Value) -> CallResult {
+    translate_renamed_bool(&mut args, "include_external", "hide_external");
     let a: GraphArgs = match serde_json::from_value(args) {
         Ok(v) => v,
         Err(e) => return CallResult::Error(format!("invalid arguments: {}", e)),
@@ -810,7 +827,7 @@ fn run_graph(args: Value) -> CallResult {
     let body = if a.json {
         crate::deps::render::render_graph_json(&graph, !a.hide_external, true)
     } else {
-        crate::deps::render::render_graph_text(&graph)
+        crate::deps::render::render_graph_text(&graph, !a.hide_external)
     };
     CallResult::Text(body)
 }

@@ -4,7 +4,7 @@ use toml_edit::{Array, DocumentMut, Table};
 
 use super::paths;
 use super::{common, toml_object, Change, Detection, InstallOpts, Installer, Scope, Status};
-use crate::prompt::{agent_skill_md, AGENT_PROMPT};
+use crate::prompt::{agent_prompt, agent_skill_md};
 
 pub struct Codex;
 
@@ -68,7 +68,7 @@ impl Installer for Codex {
     }
 
     fn install_prompt(&self, scope: &Scope, opts: &InstallOpts) -> Result<Change, String> {
-        common::install_prompt_in(&self.prompt_path(scope)?, AGENT_PROMPT, opts)
+        common::install_prompt_in(&self.prompt_path(scope)?, agent_prompt(), opts)
     }
 
     fn install_hook(&self, _scope: &Scope, _opts: &InstallOpts) -> Result<Change, String> {
@@ -87,7 +87,7 @@ impl Installer for Codex {
     }
 
     fn install_skills(&self, scope: &Scope, opts: &InstallOpts) -> Result<Change, String> {
-        common::install_plain_file_in(&self.skill_path(scope)?, &agent_skill_md(), opts)
+        common::install_plain_file_in(&self.skill_path(scope)?, agent_skill_md(), opts)
     }
 
     fn uninstall(&self, scope: &Scope, opts: &InstallOpts) -> Result<Vec<Change>, String> {

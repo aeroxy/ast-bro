@@ -68,25 +68,53 @@ pub fn run_callers(
     for c in &candidates {
         match c.kind {
             SymbolKind::Callable => {
-                hits.extend(traverse::callers(calls, &c.qn, depth.max(1), limit));
+                hits.extend(traverse::callers(
+                    calls,
+                    &c.qn,
+                    depth.max(1),
+                    limit,
+                    |edge| {
+                        if !include_ambiguous && matches!(edge.confidence, Confidence::Ambiguous) {
+                            return false;
+                        }
+                        if tests || exclude_tests {
+                            let abs = root.join(&edge.file);
+                            let is_test = crate::file_filter::is_test_file(&abs, &root);
+                            if exclude_tests {
+                                if is_test {
+                                    return false;
+                                }
+                            } else if !is_test {
+                                return false;
+                            }
+                        }
+                        true
+                    },
+                ));
             }
             SymbolKind::Type => {
-                type_groups.push(collect_type_callers(calls, &c.qn));
+                let mut group = collect_type_callers(calls, &c.qn);
+                // Same --tests / --exclude-tests semantics as the callable
+                // hits above — implementations and constructions both
+                // carry repo-relative file paths.
+                if tests || exclude_tests {
+                    let keep = |file: &Path| {
+                        let is_test =
+                            crate::file_filter::is_test_file(&root.join(file), &root);
+                        if exclude_tests {
+                            !is_test
+                        } else {
+                            is_test
+                        }
+                    };
+                    group.implementations.retain(|i| keep(&i.file));
+                    group.constructions.retain(|e| keep(&e.file));
+                }
+                type_groups.push(group);
             }
         }
     }
 
-    if !include_ambiguous {
-        hits.retain(|h| !matches!(h.edge.confidence, Confidence::Ambiguous));
-    }
-    if tests || exclude_tests {
-        hits.retain(|h| {
-            let abs = root.join(&h.edge.file);
-            let is_test = crate::file_filter::is_test_file(&abs, &root);
-            if exclude_tests { !is_test }
-            else { is_test }
-        });
-    }
     if hits.len() > limit {
         hits.truncate(limit);
     }
@@ -255,7 +283,7 @@ pub struct ImplHit {
     pub line: u32,
 }
 
-fn collect_type_callers(calls: &CallGraph, type_qn: &Qn) -> TypeCallersGroup {
+pub(crate) fn collect_type_callers(calls: &CallGraph, type_qn: &Qn) -> TypeCallersGroup {
     let bare = type_qn.name().to_string();
     let kind = calls
         .types
@@ -471,14 +499,6 @@ fn normalise_type_name(name: &str) -> String {
     }
     name.to_string()
 }
-
-/// Walk up from `path` (file or directory) looking for a project manifest
-/// (`Cargo.toml`, `pyproject.toml`, `package.json`, …) and use that as the
-/// graph root. Stops at the cwd. Without this, `ast-bro callers X ./src`
-/// would treat `./src` itself as the root — qns would then look like
-/// `main_helpers.rs::…` instead of `src/main_helpers.rs::…`, and any
-/// `<file>:<symbol>` filter the user wrote against the project-relative path
-/// would silently miss.
 
 /// `ast-bro trace <FROM> <TO>` — shortest static call path between two
 /// symbols, with each hop's body inlined. Reuses the same root resolution +

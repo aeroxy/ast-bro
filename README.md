@@ -1,6 +1,6 @@
 # ast-bro
 
-Fast, AST-based **code-navigation toolkit** for source files — surface the *shape* of a file (signatures with line numbers, no method bodies), the *true public API* of a package, the *dependency graph* between files, the *call graph* between symbols, search the repo by *symbol* or *behaviour*, and *squeeze* repetitive logs into a smaller, reversible form. Seventeen subcommands, one binary, built for LLM coding agents and humans who’d rather not waste tokens reading every file just to understand a codebase.
+Fast, AST-based **code-navigation toolkit** for source files — surface the *shape* of a file (signatures with line numbers, no method bodies), the *true public API* of a package, the *dependency graph* between files, the *call graph* between symbols, search the repo by *symbol* or *behaviour*, the *blast radius* of touching a symbol, a *token-budgeted context pack* for any symbol, and *squeeze* repetitive logs into a smaller, reversible form. Nineteen subcommands, one binary, built for LLM coding agents and humans who’d rather not waste tokens reading every file just to understand a codebase.
 
 [ast-bro](https://github.com/aeroxy/ast-bro) is written in Rust and uses [ast-grep](https://github.com/ast-grep/ast-grep)’s incredibly fast [tree-sitter](https://github.com/tree-sitter/tree-sitter) bindings. Thanks to [rayon](https://github.com/rayon-rs/rayon), it parses your entire workspace concurrently—often in milliseconds. For Google- or ByteDance-scale monorepos, [ast-bro](https://github.com/aeroxy/ast-bro) benefits from the additional abstraction layer provided by [repolayer](https://github.com/zhousiyao03-cyber/repolayer).
 
@@ -30,8 +30,10 @@ Modern agentic coding tools explore codebases by reading files directly. That's 
 3. **Dependency graph for free.** `deps` / `reverse-deps` / `cycles` / `graph` build a file-level import graph (Rust, Python, TS/JS, Java, C#, Kotlin, Scala, Go) cached at `.ast-bro/graph/`. Use `reverse-deps` before refactoring to know the blast radius. `cycles` exits non-zero — wire it into a CI gate. `graph` emits the full dependency graph (text by default, `--json` for JSON).
 4. **Symbol-level call graph.** `callers` / `callees` answer "who calls X" and "what does X call" with AST accuracy across all 14 languages — no `grep` false positives on overloaded names, comments, or string literals. Both are kind-aware: ask for a function and you get call-sites; ask for a type and you get implementors / constructions / ancestors. A three-pass resolver (same-file → global symbol table → dep-graph disambiguation) tags every edge `Exact` / `Inferred` / `Ambiguous` so you can filter by precision. `trace <FROM> <TO>` walks the shortest static call path between two symbols, inlining each hop's body — "how does X reach Y?" answered in one call instead of chaining `callees`. Same on-disk cache as the dep graph.
 5. **Hybrid semantic search.** `search` runs BM25 + dense embeddings via [`potion-code-16M`](https://huggingface.co/minishlab/potion-code-16M) (a static, no-inference model — ~64 MB, runs on CPU in microseconds). `find-related` returns chunks structurally similar to one you already have, with a dep-graph-aware boost when a graph cache exists.
-6. **Squeeze logs, not just code.** `squeeze` compresses a repetitive log/text file into a smaller, reversible form (a legend plus short tags) so a noisy log costs far fewer tokens to hand to an agent — and falls back to the raw text when squeezing wouldn't help. This is for *logs/text*, not code (for code, `map` / `digest` / `show` are the token win).
-7. **Seventeen native MCP tools.** Every CLI command is also exposed as an MCP tool — `ast-bro install --mcp <agent>` wires it into Claude Code, Cursor, Gemini, Codex, or VS Code Copilot in one line.
+6. **Blast radius in one shot.** `impact <symbol>` combines callers, callees, file-level deps, file-level reverse-deps, transitive callers at `--depth N`, and test-file detection into one "what would break?" report — replaces a chain of four round-trips with a single call. Four `--mode` variants: `all` (default), `deps`, `dependents`, `tests`. `--tests` / `--exclude-tests` narrow the filter. Works for both callables and types.
+7. **Token-budgeted context.** `context <symbol> --budget N` packs "everything an LLM needs to understand this symbol" into a caller-supplied token budget: target body first, then direct callees (bodies while budget permits, signatures otherwise), direct callers (signatures), transitive callees/callers at depth 2 (signatures only). For types: type body, implementors, methods, callers-of-methods. Flags `truncated` when budget ran short and `target_omitted` when even the target body didn't fit. Same data as four or five `show`/`callers`/`callees` calls, one round-trip, budget-bounded.
+8. **Squeeze logs, not just code.** `squeeze` compresses a repetitive log/text file into a smaller, reversible form (a legend plus short tags) so a noisy log costs far fewer tokens to hand to an agent — and falls back to the raw text when squeezing wouldn't help. This is for *logs/text*, not code (for code, `map` / `digest` / `show` are the token win).
+9. **Nineteen native MCP tools.** Every CLI command is also exposed as an MCP tool — `ast-bro install --mcp <agent>` wires it into Claude Code, Cursor, Gemini, Codex, or VS Code Copilot in one line.
 
 ### The workflow
 
@@ -56,6 +58,8 @@ Agent: ast-bro show Player.cs TakeDamage  # just the method body
 Agent: ast-bro reverse-deps Player.cs     # who imports this — blast radius before refactor
 Agent: ast-bro callers Player.TakeDamage  # AST-accurate call sites — no grep false positives
 Agent: ast-bro callees Player.TakeDamage  # what TakeDamage itself calls
+Agent: ast-bro impact Player.TakeDamage   # callers + callees + file deps + tests, one call
+Agent: ast-bro context Player.TakeDamage --budget 2000  # everything an LLM needs, token-bounded
 Agent: ast-bro cycles src/                # find import cycles via Tarjan SCC
 ```
 
@@ -101,7 +105,7 @@ For "what does this package actually expose?" — historically the most expensiv
    benches/data/
    *.generated.rs
    ```
-4. **Extension allowlist** — files are only opened if their extension is one ast-bro knows how to parse (the table above for map/digest/show/implements; a broader set for the search commands).
+4. **Extension allowlist** — files are only opened if their extension is one ast-bro knows how to parse (the table above for map/digest/show/implements; a broader set for the search commands). Explicitly-passed extensionless files fall back to shebang detection (`#!/usr/bin/env python3` → Python, `#!/usr/bin/ruby` → Ruby, `#!/usr/bin/env node` → TypeScript, etc.) — so CLI scripts like `~/.local/bin/my-script` or `bin/deploy` work without an extension. Directory walks do **not** open extensionless files; the shebang is only consulted for explicit inputs to keep the walk fast.
 
 Want to see exactly what ast-bro walks? Compare `ast-bro digest some/dir` with `rg --files some/dir` — anything in `rg` but not the digest is being filtered by one of the layers above.
 
@@ -198,11 +202,26 @@ ast-bro graph . --json              # same, as JSON (ast-bro.graph.v1)
 
 # Call graph: who calls X, what does X call (AST-accurate, all 14 langs)
 ast-bro callers TakeDamage              # function/method: in-edges
+ast-bro callers --tests TakeDamage      # same, only test files
+ast-bro callers --hide-ambiguous TakeDamage  # drop ambiguous call edges
 ast-bro callers Player                  # type: implementors + constructions
 ast-bro callees Player.TakeDamage       # function/method: out-edges
+ast-bro callees --hide-external Player.TakeDamage  # drop unresolved + external callees
 ast-bro callees Player --depth 2        # type: ancestor walk (transitive)
-ast-bro callers src/Player.cs:TakeDamage --include-ambiguous
+ast-bro callers src/Player.cs:TakeDamage
 ast-bro trace handle_request render     # shortest static call path, each hop inlined
+
+# Blast radius of touching a symbol (one command: callers + callees + file deps + tests)
+ast-bro impact TakeDamage               # default --mode all (every section)
+ast-bro impact Player --depth 3         # deeper transitive window
+ast-bro impact TakeDamage --mode tests  # only the affected tests section
+ast-bro impact TakeDamage --tests       # apply tests filter to every section
+ast-bro impact TakeDamage --exclude-tests  # drop test files from every section
+
+# Token-budgeted context pack for a symbol (target + callees + callers + transitive)
+ast-bro context TakeDamage              # default budget 8000 tokens
+ast-bro context TakeDamage --budget 2000  # tight pack for smaller LLM windows
+ast-bro context Player --json           # schema: ast-bro.context.v1
 
 # Hybrid BM25 + dense semantic search (builds an index on first call)
 ast-bro search "how does login work"
@@ -428,7 +447,7 @@ as native tools — no shell parsing required:
 ast-bro mcp
 ```
 
-The server speaks line-delimited JSON-RPC 2.0 on stdin/stdout and exposes seventeen
+The server speaks line-delimited JSON-RPC 2.0 on stdin/stdout and exposes nineteen
 tools that map 1:1 to the CLI commands:
 
 | Tool | Equivalent CLI | Returns |
@@ -441,6 +460,8 @@ tools that map 1:1 to the CLI commands:
 | `callees`      | `ast-bro callees <symbol>`           | text, or `ast-bro.callees.v1` with `json: true` |
 | `trace`        | `ast-bro trace <from> <to>`          | text, or `ast-bro.trace.v1` with `json: true` |
 | `surface`      | `ast-bro surface [path]`             | text, or `ast-bro.surface.v1` with `json: true` |
+| `impact`       | `ast-bro impact <symbol>`            | text, or `ast-bro.impact.v1` with `json: true` |
+| `context`      | `ast-bro context <symbol>`           | text, or `ast-bro.context.v1` with `json: true` |
 | `deps`         | `ast-bro deps <file>`                | text, or `ast-bro.deps.v1` with `json: true` |
 | `reverse_deps` | `ast-bro reverse-deps <file>`        | text, or `ast-bro.reverse-deps.v1` with `json: true` |
 | `cycles`       | `ast-bro cycles [path]`              | text, or `ast-bro.cycles.v1` with `json: true` |
@@ -563,7 +584,7 @@ Symbol forms accepted by both: bare suffix (`TakeDamage`), dotted (`Player.TakeD
 2. **Global symbol table** — single-match promotion across the project. Receiver-bearing calls (`obj.bar()`) skip this pass to avoid `builder.hidden()`-style false positives on global homonyms.
 3. **Dep-graph disambiguation** — for ambiguous matches, filter candidates by the caller's transitive forward-dep closure.
 
-Every edge carries a `Confidence` tag — `Exact` (passes A/B), `Inferred` (pass C narrowed to one), or `Ambiguous` (multiple candidates survive). `--include-ambiguous` (callers) and `--external` (callees) surface the noisier results when explicitly requested.
+Every edge carries a `Confidence` tag — `Exact` (passes A/B), `Inferred` (pass C narrowed to one), or `Ambiguous` (multiple candidates survive). Ambiguous callers and unresolved/external callees are shown by default (tagged); `--hide-ambiguous` (callers) and `--hide-external` (callees) drop them when you want the cleaner bucket.
 
 **Cache.** Same `.ast-bro/graph/index.bin` as the dep graph, lazily promoted — users who only run `deps` / `cycles` never pay the call-graph build cost. Per-file invalidation: edit one file, only that file gets re-extracted and re-resolved.
 

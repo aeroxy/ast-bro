@@ -15,6 +15,7 @@ use std::sync::Arc;
 pub fn run_deps(
     file: &Path,
     depth: usize,
+    include_external: bool,
     json: bool,
     pretty: bool,
     rebuild: bool,
@@ -53,13 +54,20 @@ pub fn run_deps(
     };
     let hits = traverse::forward(&graph, &canonical, depth.max(1));
     if json {
-        println!("{}", render::render_deps_json(&graph, &canonical, &hits, pretty));
+        println!(
+            "{}",
+            render::render_deps_json(&graph, &canonical, &hits, include_external, pretty)
+        );
     } else {
-        print!("{}", render::render_deps_text(&graph, &canonical, &hits));
+        print!(
+            "{}",
+            render::render_deps_text(&graph, &canonical, &hits, include_external)
+        );
     }
     0
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn run_reverse_deps(
     file: &Path,
     depth: usize,
@@ -102,26 +110,26 @@ pub fn run_reverse_deps(
             return 2;
         }
     };
-    let hits = traverse::reverse(&graph, &canonical, depth.max(1), limit);
-    let filtered: Vec<_> = hits
-        .into_iter()
-        .filter(|h| {
-            if !tests && !exclude_tests {
-                return true;
-            }
-            let is_test = crate::file_filter::is_test_file(&h.file, &root);
-            if exclude_tests { !is_test } else { is_test }
-        })
-        .collect();
+    let hits = traverse::reverse(&graph, &canonical, depth.max(1), limit, |e| {
+        if !tests && !exclude_tests {
+            return true;
+        }
+        let is_test = crate::file_filter::is_test_file(&e.target, &root);
+        if exclude_tests {
+            !is_test
+        } else {
+            is_test
+        }
+    });
     if json {
         println!(
             "{}",
-            render::render_reverse_deps_json(&graph, &canonical, &filtered, pretty)
+            render::render_reverse_deps_json(&graph, &canonical, &hits, pretty)
         );
     } else {
         print!(
             "{}",
-            render::render_reverse_deps_text(&graph, &canonical, &filtered)
+            render::render_reverse_deps_text(&graph, &canonical, &hits)
         );
     }
     0
@@ -214,7 +222,7 @@ pub fn run_graph(
     if json {
         println!("{}", render::render_graph_json(&graph, include_external, pretty));
     } else {
-        print!("{}", render::render_graph_text(&graph));
+        print!("{}", render::render_graph_text(&graph, include_external));
     }
     0
 }

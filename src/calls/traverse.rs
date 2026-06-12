@@ -15,33 +15,50 @@ pub struct CallHit {
 /// Forward — what does `start` call (transitively, deduped by target qn).
 pub fn callees(graph: &CallGraph, start: &Qn, max_depth: usize) -> Vec<CallHit> {
     let edges_at = |qn: &Qn| graph.forward.get(qn).cloned().unwrap_or_default();
-    bfs(start, max_depth, |qn| {
-        edges_at(qn)
-            .into_iter()
-            .filter_map(|e| {
-                if let crate::calls::graph::CallTarget::Resolved(t) = &e.target {
-                    let t = t.clone();
-                    Some((t, e))
-                } else {
-                    // Keep external/bare edges in the output but don't recurse
-                    // into them (no node to traverse).
-                    None
-                }
-            })
-            .collect()
-    })
+    bfs(
+        start,
+        max_depth,
+        usize::MAX,
+        |qn| {
+            edges_at(qn)
+                .into_iter()
+                .filter_map(|e| {
+                    if let crate::calls::graph::CallTarget::Resolved(t) = &e.target {
+                        let t = t.clone();
+                        Some((t, e))
+                    } else {
+                        // Keep external/bare edges in the output but don't recurse
+                        // into them (no node to traverse).
+                        None
+                    }
+                })
+                .collect()
+        },
+        |_| true,
+    )
 }
 
 /// Reverse — who calls `start` (transitively).
-pub fn callers(graph: &CallGraph, start: &Qn, max_depth: usize, limit: usize) -> Vec<CallHit> {
+pub fn callers<F: Fn(&CallEdge) -> bool>(
+    graph: &CallGraph,
+    start: &Qn,
+    max_depth: usize,
+    limit: usize,
+    predicate: F,
+) -> Vec<CallHit> {
     let edges_at = |qn: &Qn| graph.reverse.get(qn).cloned().unwrap_or_default();
-    let mut all = bfs(start, max_depth, |qn| {
-        edges_at(qn).into_iter().map(|e| (e.source.clone(), e)).collect()
-    });
-    if all.len() > limit {
-        all.truncate(limit);
-    }
-    all
+    bfs(
+        start,
+        max_depth,
+        limit,
+        |qn| {
+            edges_at(qn)
+                .into_iter()
+                .map(|e| (e.source.clone(), e))
+                .collect()
+        },
+        predicate,
+    )
 }
 
 /// All resolved + external + bare edges originating at `start`. Useful for
@@ -51,11 +68,11 @@ pub fn callees_one_hop(graph: &CallGraph, start: &Qn) -> Vec<CallEdge> {
     graph.forward.get(start).cloned().unwrap_or_default()
 }
 
-fn bfs<F: Fn(&Qn) -> Vec<(Qn, CallEdge)>>(
-    start: &Qn,
-    max_depth: usize,
-    edges_at: F,
-) -> Vec<CallHit> {
+fn bfs<F, P>(start: &Qn, max_depth: usize, limit: usize, edges_at: F, predicate: P) -> Vec<CallHit>
+where
+    F: Fn(&Qn) -> Vec<(Qn, CallEdge)>,
+    P: Fn(&CallEdge) -> bool,
+{
     let mut out = Vec::new();
     let mut seen: HashSet<Qn> = HashSet::new();
     let mut q: VecDeque<(Qn, usize)> = VecDeque::new();
@@ -67,7 +84,15 @@ fn bfs<F: Fn(&Qn) -> Vec<(Qn, CallEdge)>>(
         }
         for (next, edge) in edges_at(&cur) {
             if seen.insert(next.clone()) {
-                out.push(CallHit { depth: depth + 1, edge });
+                if predicate(&edge) {
+                    out.push(CallHit {
+                        depth: depth + 1,
+                        edge,
+                    });
+                    if out.len() >= limit {
+                        return out;
+                    }
+                }
                 q.push_back((next, depth + 1));
             }
         }

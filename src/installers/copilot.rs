@@ -4,7 +4,7 @@ use serde_json::{json, Value};
 
 use super::paths;
 use super::{common, json_object, Change, Detection, InstallOpts, Installer, Scope, Status};
-use crate::prompt::AGENT_PROMPT;
+use crate::prompt::agent_prompt;
 
 pub struct Copilot;
 
@@ -52,7 +52,7 @@ impl Installer for Copilot {
     }
 
     fn install_prompt(&self, scope: &Scope, opts: &InstallOpts) -> Result<Change, String> {
-        common::install_prompt_in(&self.prompt_path(scope)?, AGENT_PROMPT, opts)
+        common::install_prompt_in(&self.prompt_path(scope)?, agent_prompt(), opts)
     }
 
     fn install_hook(&self, _scope: &Scope, _opts: &InstallOpts) -> Result<Change, String> {

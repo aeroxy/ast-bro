@@ -1628,3 +1628,35 @@ fn calls_partial_invalidation_picks_up_new_caller() {
         "expected both first and second after partial invalidation, got:\n{out2}"
     );
 }
+
+#[test]
+fn rust_callers_on_struct_finds_struct_literal_construction() {
+    // `Foo { .. }` literal syntax goes through `_call_site_from_struct`
+    // (struct_expression), unlike the receiver-based `Foo.method()` path
+    // covered above.
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(&root.join("Cargo.toml"), "[package]\nname=\"x\"\nversion=\"0.0.0\"\nedition=\"2021\"\n");
+    write(
+        &root.join("src/lib.rs"),
+        r#"
+pub struct Config { pub debug: bool }
+
+pub fn load_config() -> Config {
+    Config { debug: false }
+}
+"#,
+    );
+    let (out, code) = run_in(root, &["callers", "Config", ".", "--rebuild"]);
+    assert_eq!(code, 0, "callers exited non-zero: {}", out);
+    assert!(
+        out.contains("construction(s)"),
+        "expected constructions group, got:\n{}",
+        out
+    );
+    assert!(
+        out.contains("load_config"),
+        "expected `load_config` (constructs Config via struct literal), got:\n{}",
+        out
+    );
+}

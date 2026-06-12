@@ -20,10 +20,17 @@ use crate::deps::traverse::DepHit;
 
 // ---- Text rendering ----
 
-pub fn render_deps_text(graph: &DepGraph, start: &Path, hits: &[DepHit]) -> String {
+pub fn render_deps_text(
+    graph: &DepGraph,
+    start: &Path,
+    hits: &[DepHit],
+    include_external: bool,
+) -> String {
     let mut out = String::new();
     let _ = writeln!(out, "{}", graph.rel(start).cyan().bold());
-    if hits.is_empty() && graph.external.get(start).map_or(true, |v| v.is_empty()) {
+    if hits.is_empty()
+        && (!include_external || graph.external.get(start).is_none_or(|v| v.is_empty()))
+    {
         let _ = writeln!(out, "  {}", "(no imports)".dimmed());
         return out;
     }
@@ -43,21 +50,23 @@ pub fn render_deps_text(graph: &DepGraph, start: &Path, hits: &[DepHit]) -> Stri
             alias
         );
     }
-    if let Some(externals) = graph.external.get(start) {
-        if !externals.is_empty() {
-            let _ = writeln!(out);
-            let _ = writeln!(
-                out,
-                "# {} {}",
-                externals.len().to_string().bold(),
-                if externals.len() == 1 {
-                    "unresolved import:".dimmed()
-                } else {
-                    "unresolved imports:".dimmed()
+    if include_external {
+        if let Some(externals) = graph.external.get(start) {
+            if !externals.is_empty() {
+                let _ = writeln!(out);
+                let _ = writeln!(
+                    out,
+                    "# {} {}",
+                    externals.len().to_string().bold(),
+                    if externals.len() == 1 {
+                        "unresolved import:".dimmed()
+                    } else {
+                        "unresolved imports:".dimmed()
+                    }
+                );
+                for ext in externals {
+                    let _ = writeln!(out, "  {} {}", "[external]".cyan(), ext.dimmed());
                 }
-            );
-            for ext in externals {
-                let _ = writeln!(out, "  {} {}", "[external]".cyan(), ext.dimmed());
             }
         }
     }
@@ -109,32 +118,45 @@ pub fn render_cycles_text(graph: &DepGraph, cycles: &[Cycle]) -> String {
     out
 }
 
-pub fn render_graph_text(graph: &DepGraph) -> String {
+pub fn render_graph_text(graph: &DepGraph, include_external: bool) -> String {
     let mut out = String::new();
     let edges = graph.sorted_edges();
-    let _ = writeln!(
-        out,
-        "{}",
-        format!("{} files, {} edges", graph.stats.file_count, edges.len())
-            .dimmed()
-    );
-    let mut grouped: BTreeMap<String, Vec<(String, ImportKind)>> = BTreeMap::new();
+    let mut grouped: BTreeMap<String, Vec<(String, Option<ImportKind>)>> = BTreeMap::new();
     for (s, t, k) in edges {
         grouped
             .entry(graph.rel(&s))
             .or_default()
-            .push((graph.rel(&t), k));
+            .push((graph.rel(&t), Some(k)));
     }
+    if include_external {
+        for (file, externals) in &graph.external {
+            let s = graph.rel(file);
+            for ext in externals {
+                grouped.entry(s.clone()).or_default().push((ext.clone(), None));
+            }
+        }
+    }
+
+    let total_edges: usize = grouped.values().map(|v| v.len()).sum();
+    let _ = writeln!(
+        out,
+        "{}",
+        format!("{} files, {} edges", graph.stats.file_count, total_edges).dimmed()
+    );
+
     for (s, ts) in grouped {
         let _ = writeln!(out);
         let _ = writeln!(out, "{}", s.cyan().bold());
         for (t, k) in ts {
+            let kind_label = k
+                .map(|kind| format!(" ({})", kind.label()))
+                .unwrap_or_else(|| format!(" {}", "[external]".cyan()));
             let _ = writeln!(
                 out,
                 "  {} {} {}",
                 "→".dimmed(),
-                t.green(),
-                format!("({})", k.label()).dimmed()
+                if k.is_some() { t.green() } else { t.dimmed() },
+                kind_label.dimmed()
             );
         }
     }
@@ -162,12 +184,18 @@ struct JsonHit<'a> {
     local_name: Option<&'a str>,
 }
 
-pub fn render_deps_json(graph: &DepGraph, start: &Path, hits: &[DepHit], pretty: bool) -> String {
-    let external = graph
-        .external
-        .get(start)
-        .cloned()
-        .unwrap_or_default();
+pub fn render_deps_json(
+    graph: &DepGraph,
+    start: &Path,
+    hits: &[DepHit],
+    include_external: bool,
+    pretty: bool,
+) -> String {
+    let external = if include_external {
+        graph.external.get(start).cloned().unwrap_or_default()
+    } else {
+        Vec::new()
+    };
     let doc = DepsDoc {
         schema: JSON_SCHEMA_DEPS,
         file: graph.rel(start),

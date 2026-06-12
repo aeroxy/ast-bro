@@ -5,7 +5,7 @@ use serde_yaml::{Mapping, Value as Yaml};
 use super::io::{atomic_write, read_optional};
 use super::paths;
 use super::{common, Change, Detection, InstallOpts, Installer, Scope, Status};
-use crate::prompt::AGENT_PROMPT;
+use crate::prompt::agent_prompt;
 
 pub struct Aider;
 
@@ -48,7 +48,7 @@ impl Installer for Aider {
 
     fn install_prompt(&self, scope: &Scope, opts: &InstallOpts) -> Result<Change, String> {
         let conv_path = self.conventions_path(scope)?;
-        let change = common::install_prompt_in(&conv_path, AGENT_PROMPT, opts)?;
+        let change = common::install_prompt_in(&conv_path, agent_prompt(), opts)?;
 
         let cfg_path = self.config_path(scope)?;
         let existing = read_optional(&cfg_path)?.unwrap_or_default();

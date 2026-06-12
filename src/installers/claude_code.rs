@@ -5,7 +5,7 @@ use serde_json::{json, Value};
 use super::json_hook::matches_any_marker;
 use super::paths;
 use super::{common, json_object, Change, Detection, InstallOpts, Installer, Scope, Status};
-use crate::prompt::{agent_skill_md, AGENT_PROMPT, EXPLORE_FRONTMATTER};
+use crate::prompt::{agent_prompt, agent_skill_md, EXPLORE_FRONTMATTER};
 
 pub struct ClaudeCode;
 
@@ -104,7 +104,7 @@ impl Installer for ClaudeCode {
     }
 
     fn install_prompt(&self, scope: &Scope, opts: &InstallOpts) -> Result<Change, String> {
-        common::install_prompt_in(&self.prompt_path(scope)?, AGENT_PROMPT, opts)
+        common::install_prompt_in(&self.prompt_path(scope)?, agent_prompt(), opts)
     }
 
     fn install_hook(&self, scope: &Scope, opts: &InstallOpts) -> Result<Change, String> {
@@ -125,7 +125,7 @@ impl Installer for ClaudeCode {
                 "Explore" => EXPLORE_FRONTMATTER,
                 _ => "",
             };
-            changes.push(common::install_subagent_in(&path, frontmatter, AGENT_PROMPT, opts)?);
+            changes.push(common::install_subagent_in(&path, frontmatter, agent_prompt(), opts)?);
         }
         Ok(changes)
     }
@@ -142,7 +142,7 @@ impl Installer for ClaudeCode {
     }
 
     fn install_skills(&self, scope: &Scope, opts: &InstallOpts) -> Result<Change, String> {
-        common::install_plain_file_in(&self.skill_path(scope)?, &agent_skill_md(), opts)
+        common::install_plain_file_in(&self.skill_path(scope)?, agent_skill_md(), opts)
     }
 
     fn uninstall(&self, scope: &Scope, opts: &InstallOpts) -> Result<Vec<Change>, String> {
@@ -363,7 +363,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let agent_path = dir.path().join(".claude/agents/Explore.md");
         std::fs::create_dir_all(agent_path.parent().unwrap()).unwrap();
-        std::fs::write(&agent_path, AGENT_PROMPT).unwrap();
+        std::fs::write(&agent_path, agent_prompt()).unwrap();
         let scope = local_scope(&dir);
         let changes = ClaudeCode
             .install_subagents(&scope, &InstallOpts::default())

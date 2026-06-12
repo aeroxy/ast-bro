@@ -20,11 +20,17 @@ pub struct DepHit {
 /// Forward BFS — what does `start` import (transitively).
 pub fn forward(graph: &DepGraph, start: &Path, max_depth: usize) -> Vec<DepHit> {
     let edges_at = |p: &Path| graph.forward.get(p).cloned().unwrap_or_default();
-    bfs(start, max_depth, edges_at)
+    bfs(start, max_depth, usize::MAX, edges_at, |_| true)
 }
 
 /// Reverse BFS — who imports `start` (transitively).
-pub fn reverse(graph: &DepGraph, start: &Path, max_depth: usize, limit: usize) -> Vec<DepHit> {
+pub fn reverse<F: Fn(&DepEdge) -> bool>(
+    graph: &DepGraph,
+    start: &Path,
+    max_depth: usize,
+    limit: usize,
+    predicate: F,
+) -> Vec<DepHit> {
     let rev = graph.reverse_adjacency();
     let edges_at = |p: &Path| {
         rev.get(p)
@@ -40,18 +46,20 @@ pub fn reverse(graph: &DepGraph, start: &Path, max_depth: usize, limit: usize) -
             })
             .collect::<Vec<_>>()
     };
-    let mut all = bfs(start, max_depth, edges_at);
-    if all.len() > limit {
-        all.truncate(limit);
-    }
-    all
+    bfs(start, max_depth, limit, edges_at, predicate)
 }
 
-fn bfs<F: Fn(&Path) -> Vec<DepEdge>>(
+fn bfs<F, P>(
     start: &Path,
     max_depth: usize,
+    limit: usize,
     edges_at: F,
-) -> Vec<DepHit> {
+    predicate: P,
+) -> Vec<DepHit>
+where
+    F: Fn(&Path) -> Vec<DepEdge>,
+    P: Fn(&DepEdge) -> bool,
+{
     let mut out = Vec::new();
     let mut seen: HashSet<PathBuf> = HashSet::new();
     let mut q: VecDeque<(PathBuf, usize)> = VecDeque::new();
@@ -64,13 +72,18 @@ fn bfs<F: Fn(&Path) -> Vec<DepEdge>>(
         }
         for e in edges_at(&cur) {
             if seen.insert(e.target.clone()) {
-                out.push(DepHit {
-                    depth: depth + 1,
-                    file: e.target.clone(),
-                    kind: e.kind,
-                    line: e.line,
-                    local_name: e.local_name,
-                });
+                if predicate(&e) {
+                    out.push(DepHit {
+                        depth: depth + 1,
+                        file: e.target.clone(),
+                        kind: e.kind,
+                        line: e.line,
+                        local_name: e.local_name,
+                    });
+                    if out.len() >= limit {
+                        return out;
+                    }
+                }
                 q.push_back((e.target, depth + 1));
             }
         }
