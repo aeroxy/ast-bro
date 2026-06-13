@@ -158,6 +158,17 @@ pub fn is_test_file(path: &Path, repo_root: &Path) -> bool {
     if TEST_FILE_SUFFIXES.iter().any(|suf| stem.ends_with(suf)) {
         return true;
     }
+    // Python's pytest/unittest convention uses a `test_` *prefix*
+    // (`test_foo.py`). Scope it to `.py` so Rust's `test_utils.rs` — a
+    // build-included helper module, not a test target — isn't swept in.
+    if stem.starts_with("test_")
+        && rel
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| e.eq_ignore_ascii_case("py"))
+    {
+        return true;
+    }
     false
 }
 
@@ -295,6 +306,11 @@ mod tests {
         assert!(is_test_file(&root.join("src/utils.test.ts"), &root));
         assert!(is_test_file(&root.join("src/auth.spec.js"), &root));
         assert!(is_test_file(&root.join("src/bar_tests.py"), &root));
+        // Python pytest/unittest `test_` prefix convention.
+        assert!(is_test_file(&root.join("pkg/test_foo.py"), &root));
+        // The `test_` prefix is Python-scoped: Rust's test_utils.rs (a
+        // build-included helper, asserted non-test below) must not match.
+        assert!(!is_test_file(&root.join("src/test_helpers.go"), &root));
     }
 
     #[test]
