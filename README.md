@@ -429,6 +429,8 @@ changes, so downstream tooling can guard on it:
 | `ast-bro.callers.v1` | `callers --json` |
 | `ast-bro.callees.v1` | `callees --json` |
 | `ast-bro.trace.v1` | `trace --json` |
+| `ast-bro.impact.v1` | `impact --json` |
+| `ast-bro.context.v1` | `context --json` |
 | `ast-bro.search.v1` | `search --json` |
 | `ast-bro.related.v1` | `find-related --json` |
 | `ast-bro.index-stats.v1` | `index --stats --json` |

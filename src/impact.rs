@@ -353,7 +353,13 @@ fn compute_impact(
         let group = collect_type_callers(calls, &c.qn);
         for e in &group.constructions {
             let is_test = is_test_file(&root.join(&e.file), root);
-            if seen_transitive.insert(e.source.clone()) && is_test && !opts.exclude_tests {
+            // Insert unconditionally (mark seen) as before; only the test_calls
+            // push respects --hide-ambiguous, matching build_callers_section's
+            // retain so an ambiguous construction isn't hidden there yet counted here.
+            let fresh = seen_transitive.insert(e.source.clone());
+            let ambiguous_hidden =
+                !opts.include_ambiguous && matches!(e.confidence, Confidence::Ambiguous);
+            if fresh && is_test && !opts.exclude_tests && !ambiguous_hidden {
                 test_calls.push(CallHit {
                     depth: 1,
                     edge: e.clone(),
