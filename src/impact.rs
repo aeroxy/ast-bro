@@ -637,13 +637,7 @@ fn build_callers_section(
     if !opts.include_ambiguous {
         hits.retain(|h| !matches!(h.edge.confidence, Confidence::Ambiguous));
     }
-    hits.retain(|h| {
-        let abs = root.join(&h.edge.file);
-        let is_test = is_test_file(&abs, root);
-        if opts.exclude_tests { !is_test }
-        else if opts.tests { is_test }
-        else { true }
-    });
+    hits.retain(|h| passes_test_flags(&h.edge.file, root, opts));
     // Type targets append implementors + constructions after the capped
     // traversal, so the merged list can exceed the per-section limit; trim
     // back to it (no-op for callable targets, already capped by traverse).
@@ -692,17 +686,7 @@ fn build_file_deps_section(
     let hits = dep_traverse::forward(deps, &deps_file, 1);
     let hits: Vec<_> = hits
         .into_iter()
-        .filter(|h| {
-            if !opts.tests && !opts.exclude_tests {
-                return true;
-            }
-            let is_test = is_test_file(&h.file, root);
-            if opts.exclude_tests {
-                !is_test
-            } else {
-                is_test
-            }
-        })
+        .filter(|h| passes_test_flags(&h.file, root, opts))
         .collect();
     ImpactSection {
         title: format!("→ imports (file, {})", hits.len()),
@@ -734,13 +718,7 @@ fn build_file_reverse_deps_section(
     // Test filtering happens inside the traversal so excluded importers
     // don't consume --limit (same pattern as the caller traversals).
     let hits = dep_traverse::reverse(deps, &deps_file, 1, opts.limit, |e| {
-        if opts.exclude_tests {
-            !is_test_file(&e.target, root)
-        } else if opts.tests {
-            is_test_file(&e.target, root)
-        } else {
-            true
-        }
+        passes_test_flags(&e.target, root, opts)
     });
     ImpactSection {
         title: format!("← imported by (file, {})", hits.len()),

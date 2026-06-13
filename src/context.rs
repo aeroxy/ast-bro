@@ -239,6 +239,10 @@ fn build_context(
 
         let direct_callees = traverse::callees_one_hop(calls, &c.qn);
         for e in &direct_callees {
+            if used >= budget_tokens {
+                truncated = true;
+                break;
+            }
             if matches!(e.confidence, Confidence::Ambiguous) {
                 continue;
             }
@@ -300,6 +304,10 @@ fn build_context(
             !matches!(e.confidence, Confidence::Ambiguous)
         });
         for h in &direct_callers {
+            if used >= budget_tokens {
+                truncated = true;
+                break;
+            }
             if !seen_qns.insert(h.edge.source.as_str().to_string()) {
                 continue;
             }
@@ -333,6 +341,10 @@ fn build_context(
 
         let trans_callees = traverse::callees(calls, &c.qn, 2);
         for h in &trans_callees {
+            if used >= budget_tokens {
+                truncated = true;
+                break;
+            }
             if matches!(h.edge.confidence, Confidence::Ambiguous) || h.depth < 2 {
                 continue;
             }
@@ -372,6 +384,10 @@ fn build_context(
             !matches!(e.confidence, Confidence::Ambiguous)
         });
         for h in &trans_callers {
+            if used >= budget_tokens {
+                truncated = true;
+                break;
+            }
             if h.depth < 2 {
                 continue;
             }
@@ -435,6 +451,10 @@ fn build_context(
         // Implementors of this type (the "who implements it" dimension).
         if let Some(impls) = calls.implementors.get(c.qn.name()) {
             for impl_qn in impls {
+                if used >= budget_tokens {
+                    truncated = true;
+                    break;
+                }
                 if !seen_qns.insert(impl_qn.as_str().to_string()) {
                     continue;
                 }
@@ -501,6 +521,10 @@ fn build_context(
             .collect();
         method_qns.sort_by(|a, b| a.as_str().cmp(b.as_str()));
         for method_qn in &method_qns {
+            if used >= budget_tokens {
+                truncated = true;
+                break;
+            }
             if !seen_qns.insert(method_qn.as_str().to_string()) {
                 continue;
             }
@@ -550,6 +574,10 @@ fn build_context(
 
         // Callers of each method — direct dependents of the type.
         for method_qn in &method_qns {
+            if used >= budget_tokens {
+                truncated = true;
+                break;
+            }
             let method_callers = traverse::callers(calls, method_qn, 1, 20, |e| {
                 !matches!(e.confidence, Confidence::Ambiguous)
             });
