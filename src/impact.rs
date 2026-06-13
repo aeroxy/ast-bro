@@ -617,22 +617,10 @@ fn build_callers_section(
     opts: &ImpactOptions,
     root: &Path,
 ) -> ImpactSection {
-    // Filter inside the traversal so dropped edges don't consume the limit;
-    // the retains below only act on type implementors/constructions, which
-    // are appended after traversal.
-    let mut hits = traverse::callers(calls, &c.qn, 1, opts.limit, |e| {
-        if !opts.include_ambiguous && matches!(e.confidence, Confidence::Ambiguous) {
-            return false;
-        }
-        if opts.tests || opts.exclude_tests {
-            let is_test = is_test_file(&root.join(&e.file), root);
-            if opts.exclude_tests {
-                return !is_test;
-            }
-            return is_test;
-        }
-        true
-    });
+    // Collect type-specific dependents first. For a type, implementors and
+    // construction sites are the most relevant edges, so they go ahead of the
+    // BFS callers and survive the per-section cap below (the BFS tail yields).
+    let mut hits: Vec<CallHit> = Vec::new();
     if c.kind == SymbolKind::Type {
         if let Some(impls) = calls.implementors.get(c.qn.name()) {
             for qn in impls {
@@ -655,19 +643,33 @@ fn build_callers_section(
         }
         // Construction sites (`Foo {}`, `Foo::new()`, `Foo.method()`) —
         // these edges target a bare name, never the type qn, so the
-        // reverse-index lookup above can't return them.
+        // reverse-index lookup below can't return them.
         let group = collect_type_callers(calls, &c.qn);
         for e in group.constructions {
             hits.push(CallHit { depth: 1, edge: e });
         }
     }
+    // Filter inside the traversal so dropped edges don't consume the limit.
+    hits.extend(traverse::callers(calls, &c.qn, 1, opts.limit, |e| {
+        if !opts.include_ambiguous && matches!(e.confidence, Confidence::Ambiguous) {
+            return false;
+        }
+        if opts.tests || opts.exclude_tests {
+            let is_test = is_test_file(&root.join(&e.file), root);
+            if opts.exclude_tests {
+                return !is_test;
+            }
+            return is_test;
+        }
+        true
+    }));
     if !opts.include_ambiguous {
         hits.retain(|h| !matches!(h.edge.confidence, Confidence::Ambiguous));
     }
     hits.retain(|h| passes_test_flags(&h.edge.file, root, opts));
-    // Type targets append implementors + constructions after the capped
-    // traversal, so the merged list can exceed the per-section limit; trim
-    // back to it (no-op for callable targets, already capped by traverse).
+    // Type implementors/constructions were collected first, so when the merged
+    // list exceeds the per-section limit the appended BFS callers are trimmed,
+    // not the type-specific dependents. (No-op for callable targets.)
     if hits.len() > opts.limit {
         hits.truncate(opts.limit);
     }
