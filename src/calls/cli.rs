@@ -78,8 +78,12 @@ pub fn run_callers(
                             return false;
                         }
                         if tests || exclude_tests {
-                            let abs = root.join(&edge.file);
-                            let is_test = crate::file_filter::is_test_file(&abs, &root);
+                            // edge.file is already repo-relative; pass an empty
+                            // root so is_test_file skips the strip_prefix join.
+                            let is_test = crate::file_filter::is_test_file(
+                                &edge.file,
+                                std::path::Path::new(""),
+                            );
                             if exclude_tests {
                                 if is_test {
                                     return false;

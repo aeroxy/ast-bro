@@ -210,7 +210,9 @@ fn compute_impact(
         if !opts.tests && !opts.exclude_tests {
             return true;
         }
-        let is_test = is_test_file(&root.join(&e.file), root);
+        // e.file is already repo-relative; pass an empty root so is_test_file
+        // skips the strip_prefix join.
+        let is_test = is_test_file(&e.file, std::path::Path::new(""));
         if opts.exclude_tests {
             !is_test
         } else {
