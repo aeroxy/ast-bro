@@ -160,10 +160,17 @@ pub fn find_root_for(file: &Path) -> Result<PathBuf, String> {
 /// The user's home directory, canonicalized (so the `$HOME` ascent guard
 /// in `find_root_for` survives macOS `/tmp` → `/private/tmp` symlinks).
 fn home_dir() -> Option<PathBuf> {
-    std::env::var_os("HOME")
-        .or_else(|| std::env::var_os("USERPROFILE"))
-        .map(PathBuf::from)
-        .and_then(|p| p.canonicalize().ok())
+    // The home directory is fixed for the process lifetime, so cache the
+    // canonicalized path — `find_root_for` runs per command (and per MCP
+    // tools/call), and we don't want a canonicalize() syscall each time.
+    static HOME: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
+    HOME.get_or_init(|| {
+        std::env::var_os("HOME")
+            .or_else(|| std::env::var_os("USERPROFILE"))
+            .map(PathBuf::from)
+            .and_then(|p| p.canonicalize().ok())
+    })
+    .clone()
 }
 
 /// Best-effort canonicalize. Handles paths whose tail doesn't exist yet
