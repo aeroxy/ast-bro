@@ -29,11 +29,6 @@ ast-bro impact <symbol> --tests                  # keep only test files in every
 ast-bro impact <symbol> --hide-ambiguous         # drop Ambiguous call edges
 ```
 
-Older flags are preserved for back-compat (they are now no-ops because the underlying behaviour flipped):
-
-- `--include-ambiguous` → ignored compatibility flag (no-op).
-- `--external` → ignored compatibility flag (no-op).
-
 ## Output
 
 Text mode is rendered section-by-section. Empty sections are dropped by the

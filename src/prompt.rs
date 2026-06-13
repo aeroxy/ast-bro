@@ -77,8 +77,10 @@ mod tests {
 
     #[test]
     fn skill_md_starts_with_yaml_frontmatter() {
+        // Newline-agnostic: `lines()` strips a trailing \r, so this accepts
+        // both LF and CRLF checkouts.
         assert!(
-            SKILL_MD.starts_with("---\n"),
+            SKILL_MD.lines().next() == Some("---"),
             "SKILL.md must open with a YAML frontmatter marker"
         );
     }
