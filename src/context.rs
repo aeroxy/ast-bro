@@ -28,6 +28,11 @@ fn parse_file_cached<'a>(
     path: &Path,
     cache: &'a mut ParsedFileCache,
 ) -> &'a Option<crate::core::ParseResult> {
+    // `entry` needs an owned key, so it allocates a PathBuf on every call even
+    // on hits. Probe first and only pay the allocation when actually inserting.
+    if cache.contains_key(path) {
+        return &cache[path];
+    }
     cache
         .entry(path.to_path_buf())
         .or_insert_with(|| crate::parse_file(path))
