@@ -272,11 +272,10 @@ fn compute_impact(
                                   file: &Path,
                                   line: u32,
                                   confidence: Confidence,
+                                  is_test: bool,
                                   transitive: &mut BTreeMap<usize, Vec<ImpactEntry>>,
                                   test_calls: &mut Vec<CallHit>,
                                   seen: &mut std::collections::HashSet<Qn>| {
-            let abs = root.join(file);
-            let is_test = is_test_file(&abs, root);
             if opts.exclude_tests && is_test {
                 return;
             }
@@ -336,8 +335,8 @@ fn compute_impact(
         // affected-tests section, and used as seeds for the deeper walk.
         let group = collect_type_callers(calls, &c.qn);
         for e in &group.constructions {
+            let is_test = is_test_file(&root.join(&e.file), root);
             if seen_transitive.insert(e.source.clone()) {
-                let is_test = is_test_file(&root.join(&e.file), root);
                 if is_test && !opts.exclude_tests {
                     test_calls.push(CallHit {
                         depth: 1,
@@ -354,12 +353,20 @@ fn compute_impact(
                     opts.limit,
                     keep_by_test_flags,
                 ) {
+                    let h_is_test = if opts.exclude_tests {
+                        false
+                    } else if opts.tests {
+                        true
+                    } else {
+                        is_test_file(&root.join(&h.edge.file), root)
+                    };
                     add_transitive(
                         h.depth + 1,
                         &h.edge.source,
                         &h.edge.file,
                         h.edge.line,
                         h.edge.confidence,
+                        h_is_test,
                         &mut transitive,
                         &mut test_calls,
                         &mut seen_transitive,
@@ -396,12 +403,14 @@ fn compute_impact(
                 if opts.depth > 1 {
                     let group = collect_type_callers(calls, qn);
                     for e in &group.constructions {
+                        let e_is_test = is_test_file(&root.join(&e.file), root);
                         add_transitive(
                             2,
                             &e.source,
                             &e.file,
                             e.line,
                             e.confidence,
+                            e_is_test,
                             &mut transitive,
                             &mut test_calls,
                             &mut seen_transitive,
@@ -414,12 +423,20 @@ fn compute_impact(
                                 opts.limit,
                                 keep_by_test_flags,
                             ) {
+                                let h_is_test = if opts.exclude_tests {
+                                    false
+                                } else if opts.tests {
+                                    true
+                                } else {
+                                    is_test_file(&root.join(&h.edge.file), root)
+                                };
                                 add_transitive(
                                     h.depth + 2,
                                     &h.edge.source,
                                     &h.edge.file,
                                     h.edge.line,
                                     h.edge.confidence,
+                                    h_is_test,
                                     &mut transitive,
                                     &mut test_calls,
                                     &mut seen_transitive,
