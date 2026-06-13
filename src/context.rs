@@ -125,6 +125,10 @@ fn push_target_entry(
                     Some(s),
                     sig_tok,
                 ));
+            } else {
+                // Signature won't fit either — still record a metadata-only
+                // entry so the target isn't silently absent from the pack.
+                entries.push(entry("target (metadata only — unresolved)", None, None, 0));
             }
             (false, true)
         }

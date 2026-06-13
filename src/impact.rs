@@ -332,21 +332,44 @@ fn compute_impact(
             }
         };
 
+        // Collect transitive dependents at their MINIMUM depth. Each
+        // construction site spawns its own reverse BFS; emitting hits eagerly
+        // into a shared `seen` set would pin a symbol to whichever site
+        // reached it first, so a deeper site processed earlier could mask a
+        // shallower path and report an inflated depth. Resolving the minimum
+        // here makes the result independent of construction-site order.
+        let mut cand: std::collections::HashMap<Qn, (usize, PathBuf, u32, Confidence)> =
+            std::collections::HashMap::new();
+        let consider =
+            |cand: &mut std::collections::HashMap<Qn, (usize, PathBuf, u32, Confidence)>,
+             depth: usize,
+             source: &Qn,
+             file: &Path,
+             line: u32,
+             conf: Confidence| {
+                cand.entry(source.clone())
+                    .and_modify(|slot| {
+                        if depth < slot.0 {
+                            *slot = (depth, file.to_path_buf(), line, conf);
+                        }
+                    })
+                    .or_insert((depth, file.to_path_buf(), line, conf));
+            };
+
         // Callables that construct the target type itself are depth-1
         // dependents: shown in the callers section, recorded here for the
-        // affected-tests section, and used as seeds for the deeper walk.
+        // affected-tests section, and used as seeds for the deeper walk. They
+        // are marked seen so they never reappear as transitive entries.
         let group = collect_type_callers(calls, &c.qn);
         for e in &group.constructions {
             let is_test = is_test_file(&root.join(&e.file), root);
-            if seen_transitive.insert(e.source.clone()) {
-                if is_test && !opts.exclude_tests {
-                    test_calls.push(CallHit {
-                        depth: 1,
-                        edge: e.clone(),
-                    });
-                }
+            if seen_transitive.insert(e.source.clone()) && is_test && !opts.exclude_tests {
+                test_calls.push(CallHit {
+                    depth: 1,
+                    edge: e.clone(),
+                });
             }
-            // Callers of the constructors are depth-2 dependents.
+            // Callers of the constructors are depth-2+ dependents.
             if opts.depth > 1 {
                 for h in traverse::callers(
                     calls,
@@ -355,23 +378,13 @@ fn compute_impact(
                     opts.limit,
                     keep_by_test_flags,
                 ) {
-                    let h_is_test = if opts.exclude_tests {
-                        false
-                    } else if opts.tests {
-                        true
-                    } else {
-                        is_test_file(&root.join(&h.edge.file), root)
-                    };
-                    add_transitive(
+                    consider(
+                        &mut cand,
                         h.depth + 1,
                         &h.edge.source,
                         &h.edge.file,
                         h.edge.line,
                         h.edge.confidence,
-                        h_is_test,
-                        &mut transitive,
-                        &mut test_calls,
-                        &mut seen_transitive,
                     );
                 }
             }
@@ -383,6 +396,9 @@ fn compute_impact(
                 let file = meta.map(|m| m.file.clone()).unwrap_or_else(|| PathBuf::from(qn.file()));
                 let line = meta.map(|m| m.line).unwrap_or(0);
                 let abs = root.join(&file);
+                // Implementors (depth 1) are shown in the callers section and
+                // never repeated as transitive entries.
+                seen_transitive.insert(qn.clone());
                 if is_test_file(&abs, root) && !opts.exclude_tests {
                     test_calls.push(CallHit {
                         depth: 1,
@@ -398,25 +414,12 @@ fn compute_impact(
                         },
                     });
                 }
-                // Implementors (depth 1) are shown in the callers section;
-                // they're not repeated in the transitive map. Whoever
-                // constructs an implementor depends on the base type at
-                // depth 2; callers of those constructors at depth 3+.
+                // Whoever constructs an implementor depends on the base type
+                // at depth 2; callers of those constructors at depth 3+.
                 if opts.depth > 1 {
                     let group = collect_type_callers(calls, qn);
                     for e in &group.constructions {
-                        let e_is_test = is_test_file(&root.join(&e.file), root);
-                        add_transitive(
-                            2,
-                            &e.source,
-                            &e.file,
-                            e.line,
-                            e.confidence,
-                            e_is_test,
-                            &mut transitive,
-                            &mut test_calls,
-                            &mut seen_transitive,
-                        );
+                        consider(&mut cand, 2, &e.source, &e.file, e.line, e.confidence);
                         if opts.depth > 2 {
                             for h in traverse::callers(
                                 calls,
@@ -425,29 +428,42 @@ fn compute_impact(
                                 opts.limit,
                                 keep_by_test_flags,
                             ) {
-                                let h_is_test = if opts.exclude_tests {
-                                    false
-                                } else if opts.tests {
-                                    true
-                                } else {
-                                    is_test_file(&root.join(&h.edge.file), root)
-                                };
-                                add_transitive(
+                                consider(
+                                    &mut cand,
                                     h.depth + 2,
                                     &h.edge.source,
                                     &h.edge.file,
                                     h.edge.line,
                                     h.edge.confidence,
-                                    h_is_test,
-                                    &mut transitive,
-                                    &mut test_calls,
-                                    &mut seen_transitive,
                                 );
                             }
                         }
                     }
                 }
             }
+        }
+
+        // Emit each transitive dependent once, at its resolved minimum depth.
+        // Sorting by (depth, qn) keeps output deterministic regardless of the
+        // HashMap's iteration order.
+        let mut resolved: Vec<(Qn, usize, PathBuf, u32, Confidence)> = cand
+            .into_iter()
+            .map(|(qn, (depth, file, line, conf))| (qn, depth, file, line, conf))
+            .collect();
+        resolved.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.as_str().cmp(b.0.as_str())));
+        for (source, depth, file, line, conf) in &resolved {
+            let is_test = is_test_file(&root.join(file), root);
+            add_transitive(
+                *depth,
+                source,
+                file,
+                *line,
+                *conf,
+                is_test,
+                &mut transitive,
+                &mut test_calls,
+                &mut seen_transitive,
+            );
         }
     }
 
