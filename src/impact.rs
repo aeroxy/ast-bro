@@ -696,8 +696,8 @@ fn build_file_deps_section(
                 let rel = crate::project_root::relative_posix(&h.file, root)
                     .unwrap_or_else(|| h.file.display().to_string());
                 ImpactEntry {
-                    qn: rel,
-                    file: h.file.display().to_string(),
+                    qn: rel.clone(),
+                    file: rel,
                     line: h.line,
                     kind: format!("{:?}", h.kind).to_lowercase(),
                     confidence: None,
@@ -728,8 +728,8 @@ fn build_file_reverse_deps_section(
                 let rel = crate::project_root::relative_posix(&h.file, root)
                     .unwrap_or_else(|| h.file.display().to_string());
                 ImpactEntry {
-                    qn: rel,
-                    file: h.file.display().to_string(),
+                    qn: rel.clone(),
+                    file: rel,
                     line: h.line,
                     kind: format!("{:?}", h.kind).to_lowercase(),
                     confidence: None,
