@@ -408,46 +408,15 @@ fn build_context(
     } else {
         // Type target: show the type definition, its implementors, and callers
         // of its methods / constructors.
-        let type_meta = calls.types.get(&c.qn);
-        let file_abs = type_meta
-            .map(|m| root.join(&m.file))
-            .unwrap_or_else(|| root.join(c.qn.file()));
-        let line = type_meta.map(|m| m.line).unwrap_or(0);
-        let kind = type_meta
-            .map(|m| m.kind.as_str())
-            .unwrap_or("type")
-            .to_string();
-        let name = c.qn.name();
-
-        let mut body_text: Option<String> = None;
-        let mut sig_text: Option<String> = None;
-        if let Some(pr) = parse_file_cached(&file_abs, &mut parse_cache) {
-            let matches = crate::core::find_symbols(pr, name);
-            for m in &matches {
-                if m.start_line.abs_diff(line as usize) <= 1 {
-                    body_text = Some(m.source.trim_end().to_string());
-                    sig_text = m
-                        .source
-                        .lines()
-                        .next()
-                        .map(|l| l.trim_end().to_string());
-                    break;
-                }
-            }
-            if body_text.is_none() {
-                if let Some(m) = matches.into_iter().next() {
-                    body_text = Some(m.source.trim_end().to_string());
-                    sig_text = m
-                        .source
-                        .lines()
-                        .next()
-                        .map(|l| l.trim_end().to_string());
-                }
-            }
-        }
-
-        let file_rel = crate::project_root::relative_posix(&file_abs, root)
-            .unwrap_or_else(|| file_abs.display().to_string());
+        let (body_text, sig_text, file_rel, line, _) =
+            resolve_qn_source(&c.qn, calls, root, &mut parse_cache);
+        // resolve_qn_source falls back to "function" when metadata is absent;
+        // a type target wants "type" (mirrors the implementor handling below).
+        let kind = calls
+            .types
+            .get(&c.qn)
+            .map(|m| m.kind.clone())
+            .unwrap_or_else(|| "type".into());
 
         let (omitted, unavailable) = push_target_entry(
             c.qn.as_str(),

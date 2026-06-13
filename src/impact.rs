@@ -638,6 +638,12 @@ fn build_callers_section(
         else if opts.tests { is_test }
         else { true }
     });
+    // Type targets append implementors + constructions after the capped
+    // traversal, so the merged list can exceed the per-section limit; trim
+    // back to it (no-op for callable targets, already capped by traverse).
+    if hits.len() > opts.limit {
+        hits.truncate(opts.limit);
+    }
     ImpactSection {
         title: if c.kind == SymbolKind::Type {
             format!("← implemented / called by ({})", hits.len())
