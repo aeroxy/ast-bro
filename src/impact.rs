@@ -204,9 +204,12 @@ fn compute_impact(
     let mut test_calls: Vec<CallHit> = Vec::new();
 
     // Test filtering happens inside the traversal so excluded edges don't
-    // consume --limit. Ambiguous edges stay subject to include_ambiguous
-    // (default on) at render time.
+    // consume --limit. Ambiguous edges are dropped here too when
+    // --hide-ambiguous is set, matching the direct sections' retain.
     let all_callers = traverse::callers(calls, &c.qn, opts.depth.max(1), opts.limit, |e| {
+        if !opts.include_ambiguous && matches!(e.confidence, Confidence::Ambiguous) {
+            return false;
+        }
         if !opts.tests && !opts.exclude_tests {
             return true;
         }
@@ -318,9 +321,13 @@ fn compute_impact(
             });
         };
 
-        // Same test predicate as the callable traversal above — filtering
-        // inside the BFS keeps excluded edges from consuming --limit.
+        // Same predicate as the callable traversal above — filtering inside
+        // the BFS keeps excluded edges from consuming --limit, and ambiguous
+        // edges are dropped when --hide-ambiguous is set.
         let keep_by_test_flags = |e: &CallEdge| {
+            if !opts.include_ambiguous && matches!(e.confidence, Confidence::Ambiguous) {
+                return false;
+            }
             if !opts.tests && !opts.exclude_tests {
                 return true;
             }
