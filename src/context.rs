@@ -170,6 +170,14 @@ pub fn run_context(
     }
 
     let c = &candidates[0];
+    if candidates.len() > 1 {
+        eprintln!(
+            "# note: '{}' matched {} symbols; showing '{}'. Use a more specific suffix (e.g. 'Type.method') to pick another.",
+            target,
+            candidates.len(),
+            c.qn.as_str()
+        );
+    }
     let report = build_context(c, calls, &root, opts);
 
     if opts.json {
@@ -827,6 +835,14 @@ pub mod mcp {
             json: true,
             pretty: true,
         };
+        if candidates.len() > 1 {
+            eprintln!(
+                "# note: '{}' matched {} symbols; showing '{}'. Use a more specific suffix (e.g. 'Type.method') to pick another.",
+                a.target,
+                candidates.len(),
+                candidates[0].qn.as_str()
+            );
+        }
         let report = build_context(&candidates[0], calls, &root, &opts);
         let body = if a.json {
             let doc = json!({
