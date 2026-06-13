@@ -441,7 +441,7 @@ fn build_context(
         if let Some(pr) = parse_file_cached(&file_abs, &mut parse_cache) {
             let matches = crate::core::find_symbols(pr, name);
             for m in &matches {
-                if m.start_line as u32 == line || m.start_line.abs_diff(line as usize) <= 1 {
+                if m.start_line.abs_diff(line as usize) <= 1 {
                     body_text = Some(m.source.trim_end().to_string());
                     sig_text = m
                         .source
@@ -683,7 +683,7 @@ fn resolve_qn_source(
     if let Some(pr) = parse_file_cached(&file_abs, cache) {
         let matches = crate::core::find_symbols(pr, name);
         for m in &matches {
-            if m.start_line == line as usize || m.start_line.abs_diff(line as usize) <= 1 {
+            if m.start_line.abs_diff(line as usize) <= 1 {
                 return (
                     Some(m.source.trim_end().to_string()),
                     Some(first_line(&m.source).to_string()),
@@ -720,7 +720,7 @@ fn signature_from_meta(
     };
     let matches = crate::core::find_symbols(pr, name);
     for m in &matches {
-        if m.start_line == line as usize || m.start_line.abs_diff(line as usize) <= 1 {
+        if m.start_line.abs_diff(line as usize) <= 1 {
             return Some(first_line(&m.source).to_string());
         }
     }
