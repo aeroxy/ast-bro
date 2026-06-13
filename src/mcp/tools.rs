@@ -268,7 +268,7 @@ pub fn list() -> Value {
                         "depth":             { "type": "integer", "description": "Transitive depth (default 2).", "minimum": 1 },
                         "limit":             { "type": "integer", "description": "Result cap per section (default 200).", "minimum": 1 },
                         "mode":              { "type": "string",  "description": "Section: 'deps', 'dependents', 'tests', or 'all' (default).", "enum": ["deps", "dependents", "tests", "all"] },
-                        "include_ambiguous": { "type": "boolean", "description": "Include ambiguous call-edge matches." },
+                        "hide_ambiguous":    { "type": "boolean", "description": "Drop ambiguous call-edge matches. Default: false (shown with Ambiguous tag)." },
                         "tests":             { "type": "boolean", "description": "Show only test files." },
                         "exclude_tests":     { "type": "boolean", "description": "Exclude test files from output." },
                         "json":              { "type": "boolean" }
@@ -399,7 +399,7 @@ fn default_dot() -> PathBuf { PathBuf::from(".") }
 /// the new `hide_*` args invert the polarity (true = drop). When only the
 /// old key is present, translate it so old clients keep their behavior
 /// instead of having the flag silently ignored.
-fn translate_renamed_bool(args: &mut Value, old: &str, new: &str) {
+pub(crate) fn translate_renamed_bool(args: &mut Value, old: &str, new: &str) {
     if args.get(new).is_some() {
         return;
     }

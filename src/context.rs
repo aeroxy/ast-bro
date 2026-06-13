@@ -10,17 +10,15 @@
 //! chaining 4-5 separate `show`/`callers`/`callees` calls.
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
 use colored::Colorize;
 use serde::Serialize;
 use serde_json::json;
 
-use crate::calls::build::build_call_graph;
 use crate::calls::cli_helpers::{resolve_target_full, ResolvedTarget, SymbolKind};
 use crate::calls::graph::{CallGraph, CallTarget, Confidence};
 use crate::calls::traverse;
-use crate::graph_cache::{self, UnifiedGraph};
+use crate::graph_cache;
 
 const BYTES_PER_TOKEN: usize = 4;
 
@@ -152,7 +150,7 @@ pub fn run_context(
             return 2;
         }
     };
-    let graph = match ensure_graph(&root, rebuild) {
+    let graph = match graph_cache::ensure_with_calls(&root, rebuild) {
         Ok(g) => g,
         Err(e) => {
             eprintln!("# note: {}", e);
@@ -201,21 +199,6 @@ pub fn run_context(
         print!("{}", render_text(&report));
     }
     0
-}
-
-fn ensure_graph(
-    root: &Path,
-    force_rebuild: bool,
-) -> std::io::Result<Arc<UnifiedGraph>> {
-    let unified = if force_rebuild {
-        graph_cache::shared::rebuild(root)?
-    } else {
-        graph_cache::get_or_init(root)?
-    };
-    if unified.calls.is_some() {
-        return Ok(unified);
-    }
-    graph_cache::promote_calls(root, |g| build_call_graph(root, &g.deps))
 }
 
 fn build_context(
@@ -813,7 +796,7 @@ pub mod mcp {
             Ok(r) => r,
             Err(e) => return crate::mcp::tools::CallResult::Error(e),
         };
-        let graph = match ensure_graph(&root, false) {
+        let graph = match graph_cache::ensure_with_calls(&root, false) {
             Ok(g) => g,
             Err(e) => {
                 return crate::mcp::tools::CallResult::Error(format!(

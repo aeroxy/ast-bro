@@ -9,13 +9,11 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
 use colored::Colorize;
 use serde::Serialize;
 use serde_json::json;
 
-use crate::calls::build::build_call_graph;
 use crate::calls::cli::collect_type_callers;
 use crate::calls::cli_helpers::{resolve_target_full, ResolvedTarget, SymbolKind};
 use crate::calls::graph::{CallEdge, CallGraph, CallTarget, Confidence, Qn};
@@ -23,7 +21,7 @@ use crate::calls::traverse::{self, CallHit};
 use crate::deps::traverse as dep_traverse;
 use crate::deps::DepGraph;
 use crate::file_filter::is_test_file;
-use crate::graph_cache::{self, UnifiedGraph};
+use crate::graph_cache;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ImpactMode {
@@ -34,7 +32,7 @@ pub enum ImpactMode {
 }
 
 impl ImpactMode {
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn parse(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
             "deps" | "depend" | "dependencies" => Some(Self::Deps),
             "dependents" | "dependent" | "reverse" | "callers" => Some(Self::Dependents),
@@ -54,21 +52,6 @@ pub struct ImpactOptions {
     pub exclude_tests: bool,
     pub json: bool,
     pub pretty: bool,
-}
-
-fn ensure_graph(
-    root: &Path,
-    force_rebuild: bool,
-) -> std::io::Result<Arc<UnifiedGraph>> {
-    let unified = if force_rebuild {
-        graph_cache::shared::rebuild(root)?
-    } else {
-        graph_cache::get_or_init(root)?
-    };
-    if unified.calls.is_some() {
-        return Ok(unified);
-    }
-    graph_cache::promote_calls(root, |g| build_call_graph(root, &g.deps))
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -114,7 +97,7 @@ pub fn run_impact(
             return 2;
         }
     };
-    let graph = match ensure_graph(&root, rebuild) {
+    let graph = match graph_cache::ensure_with_calls(&root, rebuild) {
         Ok(g) => g,
         Err(e) => {
             eprintln!("# note: {}", e);
@@ -878,7 +861,11 @@ pub mod mcp {
     use super::*;
     use serde_json::Value;
 
-    pub fn run_impact(args: Value) -> crate::mcp::tools::CallResult {
+    pub fn run_impact(mut args: Value) -> crate::mcp::tools::CallResult {
+        // Pre-rename clients sent `include_ambiguous` (true = show); the new
+        // `hide_ambiguous` arg inverts the polarity. Translate so old clients
+        // keep their behavior, matching the callers/callees/deps tools.
+        crate::mcp::tools::translate_renamed_bool(&mut args, "include_ambiguous", "hide_ambiguous");
         #[derive(serde::Deserialize)]
         struct Args {
             target: String,
@@ -890,10 +877,10 @@ pub mod mcp {
             limit: usize,
             #[serde(default = "default_mode")]
             mode: String,
-            /// Ambiguous edges are shown by default (CLI parity) — they
-            /// carry the construction sites of struct-literal usage.
-            #[serde(default = "default_true")]
-            include_ambiguous: bool,
+            /// Ambiguous edges are shown by default (CLI parity) — set this to
+            /// drop them. They carry the construction sites of struct-literal usage.
+            #[serde(default)]
+            hide_ambiguous: bool,
             #[serde(default)]
             tests: bool,
             #[serde(default)]
@@ -907,7 +894,6 @@ pub mod mcp {
         fn default_two() -> usize { 2 }
         fn default_limit() -> usize { 200 }
         fn default_mode() -> String { "all".into() }
-        fn default_true() -> bool { true }
 
         let a: Args = match serde_json::from_value(args) {
             Ok(v) => v,
@@ -915,7 +901,7 @@ pub mod mcp {
                 return crate::mcp::tools::CallResult::Error(format!("bad args: {e}"))
             }
         };
-        let mode = match ImpactMode::from_str(&a.mode) {
+        let mode = match ImpactMode::parse(&a.mode) {
             Some(m) => m,
             None => {
                 return crate::mcp::tools::CallResult::Error(format!(
@@ -928,7 +914,7 @@ pub mod mcp {
             Ok(r) => r,
             Err(e) => return crate::mcp::tools::CallResult::Error(e),
         };
-        let graph = match ensure_graph(&root, false) {
+        let graph = match graph_cache::ensure_with_calls(&root, false) {
             Ok(g) => g,
             Err(e) => {
                 return crate::mcp::tools::CallResult::Error(format!(
@@ -955,7 +941,7 @@ pub mod mcp {
             depth: a.depth,
             limit: a.limit,
             mode,
-            include_ambiguous: a.include_ambiguous,
+            include_ambiguous: !a.hide_ambiguous,
             tests: a.tests,
             exclude_tests: a.exclude_tests,
             json: true,

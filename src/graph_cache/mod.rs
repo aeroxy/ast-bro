@@ -43,3 +43,22 @@ impl UnifiedGraph {
         Self { deps, calls: None }
     }
 }
+
+/// Fetch the unified graph with its call-graph half guaranteed present,
+/// promoting (building) the call graph on first access if it hasn't
+/// materialised yet. Shared by `impact` and `context`, which both need the
+/// call graph and would otherwise each carry an identical copy of this logic.
+pub fn ensure_with_calls(
+    root: &std::path::Path,
+    force_rebuild: bool,
+) -> std::io::Result<std::sync::Arc<UnifiedGraph>> {
+    let unified = if force_rebuild {
+        shared::rebuild(root)?
+    } else {
+        get_or_init(root)?
+    };
+    if unified.calls.is_some() {
+        return Ok(unified);
+    }
+    promote_calls(root, |g| crate::calls::build::build_call_graph(root, &g.deps))
+}

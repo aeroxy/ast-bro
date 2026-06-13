@@ -1334,7 +1334,7 @@ pub fn run() {
             json,
             compact,
         } => {
-            let impact_mode = match crate::impact::ImpactMode::from_str(mode) {
+            let impact_mode = match crate::impact::ImpactMode::parse(mode) {
                 Some(m) => m,
                 None => {
                     eprintln!(
