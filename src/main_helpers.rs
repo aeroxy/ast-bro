@@ -66,7 +66,14 @@ fn is_supported_adapter(lang: SupportLang) -> bool {
 
 pub fn parse_file_for_hook(path: &Path) -> Option<ParseResult> {
     let source = std::fs::read_to_string(path).ok()?;
-    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+    // Lowercase to match can_parse_for_hook, so uppercase extensions
+    // (README.MD, schema.SQL) aren't accepted there yet rejected here.
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let ext = ext.as_str();
 
     // Handle SQL files (regex-based parsing). `parse_sql` takes `&str`
     // directly — UTF-8 was already validated by `read_to_string` above.

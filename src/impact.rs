@@ -423,6 +423,14 @@ fn compute_impact(
                 if opts.depth > 1 {
                     let group = collect_type_callers(calls, qn);
                     for e in &group.constructions {
+                        // Skip ambiguous construction seeds when hidden, so
+                        // they don't leak into depth-2 transitive/test output
+                        // (matches build_callers_section's retain).
+                        if !opts.include_ambiguous
+                            && matches!(e.confidence, Confidence::Ambiguous)
+                        {
+                            continue;
+                        }
                         consider(&mut cand, 2, &e.source, &e.file, e.line, e.confidence);
                         if opts.depth > 2 {
                             for h in traverse::callers(
@@ -506,11 +514,22 @@ fn compute_impact(
                         qn: h.edge.source.as_str().to_string(),
                         file: h.edge.file.display().to_string(),
                         line: h.edge.line,
-                        kind: calls
-                            .callable_meta
-                            .get(&h.edge.source)
-                            .map(|m| m.kind.clone())
-                            .unwrap_or_else(|| "function".into()),
+                        // Implementor test entries carry a type qn (not in
+                        // callable_meta), so resolve their kind from the type
+                        // table — same as the transitive section above.
+                        kind: if h.edge.kind == crate::calls::graph::CallKindCompat::Implement {
+                            calls
+                                .types
+                                .get(&h.edge.source)
+                                .map(|m| m.kind.clone())
+                                .unwrap_or_else(|| "type".into())
+                        } else {
+                            calls
+                                .callable_meta
+                                .get(&h.edge.source)
+                                .map(|m| m.kind.clone())
+                                .unwrap_or_else(|| "function".into())
+                        },
                         confidence: Some(h.edge.confidence.as_str().to_string()),
                         depth: Some(h.depth),
                     })

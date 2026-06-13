@@ -708,6 +708,7 @@ struct DepsArgs {
     file: PathBuf,
     #[serde(default = "default_depth")] depth: usize,
     #[serde(default)] hide_external: bool,
+    #[serde(default)] rebuild: bool,
     #[serde(default)] json: bool,
 }
 
@@ -716,6 +717,7 @@ struct ReverseDepsArgs {
     file: PathBuf,
     #[serde(default = "default_depth")] depth: usize,
     #[serde(default = "default_limit")] limit: usize,
+    #[serde(default)] rebuild: bool,
     #[serde(default)] json: bool,
 }
 
@@ -723,6 +725,7 @@ struct ReverseDepsArgs {
 struct CyclesArgs {
     #[serde(default = "default_path")] path: PathBuf,
     #[serde(default = "default_min_size")] min_size: usize,
+    #[serde(default)] rebuild: bool,
     #[serde(default)] json: bool,
 }
 
@@ -731,6 +734,7 @@ struct GraphArgs {
     #[serde(default = "default_path")] path: PathBuf,
     #[serde(default)] json: bool,
     #[serde(default)] hide_external: bool,
+    #[serde(default)] rebuild: bool,
 }
 
 fn default_depth() -> usize { 3 }
@@ -748,7 +752,12 @@ fn run_deps(mut args: Value) -> CallResult {
         Ok(r) => r,
         Err(e) => return CallResult::Error(e),
     };
-    let graph = match crate::graph_cache::shared::get_or_init(&root).map(|u| u.deps.clone()) {
+    let unified = if a.rebuild {
+        crate::graph_cache::shared::rebuild(&root)
+    } else {
+        crate::graph_cache::shared::get_or_init(&root)
+    };
+    let graph = match unified.map(|u| u.deps.clone()) {
         Ok(g) => g,
         Err(e) => return CallResult::Error(e.to_string()),
     };
@@ -773,7 +782,12 @@ fn run_reverse_deps(args: Value) -> CallResult {
         Ok(r) => r,
         Err(e) => return CallResult::Error(e),
     };
-    let graph = match crate::graph_cache::shared::get_or_init(&root).map(|u| u.deps.clone()) {
+    let unified = if a.rebuild {
+        crate::graph_cache::shared::rebuild(&root)
+    } else {
+        crate::graph_cache::shared::get_or_init(&root)
+    };
+    let graph = match unified.map(|u| u.deps.clone()) {
         Ok(g) => g,
         Err(e) => return CallResult::Error(e.to_string()),
     };
@@ -798,7 +812,12 @@ fn run_cycles(args: Value) -> CallResult {
         Ok(r) => r,
         Err(e) => return CallResult::Error(format!("cannot resolve {}: {}", a.path.display(), e)),
     };
-    let graph = match crate::graph_cache::shared::get_or_init(&root).map(|u| u.deps.clone()) {
+    let unified = if a.rebuild {
+        crate::graph_cache::shared::rebuild(&root)
+    } else {
+        crate::graph_cache::shared::get_or_init(&root)
+    };
+    let graph = match unified.map(|u| u.deps.clone()) {
         Ok(g) => g,
         Err(e) => return CallResult::Error(e.to_string()),
     };
@@ -820,7 +839,12 @@ fn run_graph(mut args: Value) -> CallResult {
         Ok(r) => r,
         Err(e) => return CallResult::Error(format!("cannot resolve {}: {}", a.path.display(), e)),
     };
-    let graph = match crate::graph_cache::shared::get_or_init(&root).map(|u| u.deps.clone()) {
+    let unified = if a.rebuild {
+        crate::graph_cache::shared::rebuild(&root)
+    } else {
+        crate::graph_cache::shared::get_or_init(&root)
+    };
+    let graph = match unified.map(|u| u.deps.clone()) {
         Ok(g) => g,
         Err(e) => return CallResult::Error(e.to_string()),
     };

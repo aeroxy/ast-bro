@@ -114,7 +114,7 @@ Stop at the step that answers the question:
 
 15. **Find or rewrite by AST pattern** — `sb run -p '<pattern>' [-r '<rewrite>'] [--write] [--lang <lang>]`: metavariable patterns (`$VAR`, `$$$` for splats). `--write` mutates files — always dry-run first.
     ```
-    sb run -p 'println!($$$)' -l rust
+    sb run -p 'println!($$$)' --lang rust
     ```
 
 16. **Compress a repetitive log/text file** — `sb squeeze <file> [from:to]`: for **logs/text, not code**. Replaces repeated timestamps/tags with short tags plus a reversible legend; falls back to raw when it wouldn't help. `--raw` skips compression. Schema: `ast-bro.squeeze.v1`.

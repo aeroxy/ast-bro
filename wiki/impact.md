@@ -31,8 +31,8 @@ ast-bro impact <symbol> --hide-ambiguous         # drop Ambiguous call edges
 
 Older flags are preserved for back-compat (they are now no-ops because the underlying behaviour flipped):
 
-- `--include-ambiguous` → no-op, aliases `impact`.
-- `--external` → no-op, aliases `impact`.
+- `--include-ambiguous` → ignored compatibility flag (no-op).
+- `--external` → ignored compatibility flag (no-op).
 
 ## Output
 

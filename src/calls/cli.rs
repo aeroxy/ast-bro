@@ -12,7 +12,6 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::calls::build::build_call_graph;
 use crate::calls::cli_helpers::{resolve_target_full, SymbolKind};
 use crate::calls::graph::{CallEdge, CallGraph, CallKindCompat, CallTarget, Confidence, Qn};
 use crate::calls::{render, traverse};
@@ -39,7 +38,7 @@ pub fn run_callers(
             return 2;
         }
     };
-    let graph = match ensure_graph(&root, rebuild) {
+    let graph = match graph_cache::ensure_with_calls(&root, rebuild) {
         Ok(g) => g,
         Err(e) => {
             eprintln!("# note: {}", e);
@@ -159,7 +158,7 @@ pub fn run_callees(
             return 2;
         }
     };
-    let graph = match ensure_graph(&root, rebuild) {
+    let graph = match graph_cache::ensure_with_calls(&root, rebuild) {
         Ok(g) => g,
         Err(e) => {
             eprintln!("# note: {}", e);
@@ -524,7 +523,7 @@ pub fn run_trace(
             return 2;
         }
     };
-    let graph = match ensure_graph(&root, rebuild) {
+    let graph = match graph_cache::ensure_with_calls(&root, rebuild) {
         Ok(g) => g,
         Err(e) => {
             eprintln!("# note: {}", e);
@@ -552,18 +551,3 @@ pub fn run_trace(
     }
 }
 
-fn ensure_graph(
-    root: &Path,
-    force_rebuild: bool,
-) -> std::io::Result<std::sync::Arc<crate::graph_cache::UnifiedGraph>> {
-    let unified = if force_rebuild {
-        graph_cache::shared::rebuild(root)?
-    } else {
-        graph_cache::get_or_init(root)?
-    };
-    if unified.calls.is_some() {
-        return Ok(unified);
-    }
-    let promoted = graph_cache::promote_calls(root, |g| build_call_graph(root, &g.deps))?;
-    Ok(promoted)
-}
