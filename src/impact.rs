@@ -120,6 +120,14 @@ pub fn run_impact(
         return 2;
     }
 
+    if candidates.len() > 1 {
+        eprintln!(
+            "# note: '{}' matched {} symbols; showing all. Use a more specific suffix (e.g. 'Type.method') to narrow.",
+            target,
+            candidates.len(),
+        );
+    }
+
     let mut reports = Vec::new();
     for c in &candidates {
         reports.push(compute_impact(c, calls, &graph.deps, &root, opts));
