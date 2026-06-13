@@ -1689,7 +1689,7 @@ fn callers_tests_flag_reaches_tests_through_production_intermediate() {
         out
     );
     assert!(
-        !out.contains("wrapper ") || !out.contains("src/lib.rs:"),
+        !out.contains("wrapper ") && !out.contains("src/lib.rs:"),
         "wrapper (non-test) must not be reported under --tests, got:\n{}",
         out
     );

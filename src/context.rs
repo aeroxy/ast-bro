@@ -109,6 +109,8 @@ fn push_target_entry(
                 if sig.is_some() && sig_tok <= budget.saturating_sub(*used) {
                     *used += sig_tok;
                     entries.push(entry("target (signature only — budget)", None, sig, sig_tok));
+                } else {
+                    entries.push(entry("target (metadata only — budget)", None, None, 0));
                 }
                 (true, false)
             }

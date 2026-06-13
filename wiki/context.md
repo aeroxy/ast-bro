@@ -108,7 +108,7 @@ when hit.
 
 MCP consumers get the same payload through the `context` tool — arguments:
 `target`, optional `path`, optional `budget` (default 8000), optional `json`
-(default true inside MCP). The response is wrapped in the same `{"schema":
+(default false inside MCP — text unless `json: true`). The response is wrapped in the same `{"schema":
 "ast-bro.context.v1", "report": ...}` envelope the CLI emits with `--json`,
 so downstream tooling that parses the JSON doesn't need a code path split
 between MCP and CLI output.
