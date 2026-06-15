@@ -33,7 +33,15 @@
         ...
       }: let
         craneLib = crane.mkLib pkgs;
-        src = craneLib.cleanCargoSource ./.;
+        # Only keeps markdown files and regular cargo source files (e.g. .rs, Cargo.toml, Cargo.lock)
+        markdownFilter = path: _type: lib.hasSuffix ".md" path;
+        markdownOrCargo = path: type:
+          type == "directory" || (markdownFilter path type) || (craneLib.filterCargoSources path type);
+        src = pkgs.lib.cleanSourceWith {
+          src = ./.;
+          filter = markdownOrCargo;
+          name = "source";
+        };
 
         # Read package metadata from Cargo.toml so we don't have to
         # duplicate it here.
