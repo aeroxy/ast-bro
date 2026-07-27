@@ -148,11 +148,11 @@ enum Commands {
         dry_run: bool,
         #[arg(long)]
         force: bool,
-        /// Install ast-bro as an MCP server entry instead of the CLAUDE.md prompt.
+        /// Install ast-bro as an MCP server entry instead of the agent prompt.
         /// Combine with `--skills` to install both.
         #[arg(long)]
         mcp: bool,
-        /// Install ast-bro as a Claude Code skill instead of the CLAUDE.md prompt.
+        /// Install ast-bro as an agent skill instead of the agent prompt.
         /// Combine with `--mcp` to install both.
         #[arg(long)]
         skills: bool,
