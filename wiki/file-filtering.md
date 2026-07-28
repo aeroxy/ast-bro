@@ -59,6 +59,7 @@ For `search` / `find-related` / `index` only, an additional check: the file must
 
 - Anything `ast-grep` can parse (`.rs`, `.py`, `.pyi`, `.ts`/`.tsx`/`.js`/`.jsx`/`.mjs`/`.cjs`, `.java`, `.cs`, `.go`, `.kt`/`.kts`, `.scala`/`.sc`, `.bash`/`.sh`, `.cpp`/`.hpp`/`.c`/`.h`, `.css`, `.dart`, `.ex`/`.exs`, `.hs`, `.hcl`, `.html`, `.json`, `.lua`, `.nix`, `.php`, `.rb`, `.swift`, `.yaml`/`.yml`, `.zig`, `.sol`)
 - Markdown variants (`.md`, `.markdown`, `.mdx`, `.mdown`)
+- Plain-text formats with no tree-sitter grammar: `.toml` and PowerShell (`.ps1`/`.psm1`/`.psd1`), chunked at blank-line boundaries (LF or CRLF)
 
 Everything else (binaries, lockfiles, images, fonts, `.min.js`, `.txt`, etc.) is skipped before the file is opened.
 

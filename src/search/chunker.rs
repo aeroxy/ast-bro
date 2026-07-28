@@ -1,6 +1,6 @@
 //! AST-aware code chunking for indexing.
 //!
-//! Two structural-aware strategies, picked by file extension:
+//! Three strategies, picked by file extension:
 //!
 //! - **Anything ast-grep can parse** (bash, cpp, css, c#, dart, elixir, go,
 //!   haskell, hcl, html, java, json, kotlin, lua, nix, php, python, ruby, rust,
@@ -9,9 +9,15 @@
 //!   adapter; it only needs the AST root + iteration of named children.
 //! - **Markdown** (`.md`/`.markdown`/`.mdx`/`.mdown`) — split at `section`
 //!   boundaries via raw `tree_sitter_md`.
+//! - **Plain text** (`.toml`, PowerShell `.ps1`/`.psm1`/`.psd1`) — formats
+//!   with no tree-sitter grammar in `SupportLang`; split at blank-line
+//!   boundaries (LF or CRLF). Files without blank lines become one oversized
+//!   chunk, which the packer already tolerates. Note: sources must be UTF-8 —
+//!   UTF-16-encoded `.ps1` files fail `read_to_string` and are skipped, like
+//!   everywhere else in the codebase.
 //!
-//! Both paths feed the same greedy packer that targets `MAX_CHARS = 1500` and
-//! never splits mid-declaration. Files outside both sets are not chunked —
+//! All paths feed the same greedy packer that targets `MAX_CHARS = 1500` and
+//! never splits mid-declaration. Files outside these sets are not chunked —
 //! `is_indexable` is the single source of truth for what gets indexed.
 
 use ast_grep_core::{AstGrep, Language};
@@ -43,6 +49,9 @@ pub struct Chunk {
 pub enum ChunkerKind {
     AstGrep(SupportLang),
     Markdown,
+    /// Blank-line-delimited plain text; carries the language label to report
+    /// (e.g. `"toml"`, `"powershell"`).
+    Plain(&'static str),
 }
 
 impl ChunkerKind {
@@ -53,6 +62,7 @@ impl ChunkerKind {
         match self {
             ChunkerKind::AstGrep(lang) => format!("{lang:?}").to_ascii_lowercase(),
             ChunkerKind::Markdown => "markdown".to_string(),
+            ChunkerKind::Plain(name) => name.to_string(),
         }
     }
 }
@@ -60,8 +70,10 @@ impl ChunkerKind {
 /// Decide whether `path` is indexable, and how.
 ///
 /// Returns `Some(Markdown)` for `.md`/`.markdown`/`.mdx`/`.mdown` (handled via
-/// `tree_sitter_md`), `Some(AstGrep(lang))` for any extension ast-grep claims
-/// it can parse, and `None` otherwise.
+/// `tree_sitter_md`), `Some(Plain(_))` for `.toml` and PowerShell
+/// `.ps1`/`.psm1`/`.psd1` (blank-line-delimited plain text),
+/// `Some(AstGrep(lang))` for any extension ast-grep claims it can parse, and
+/// `None` otherwise.
 pub fn is_indexable(path: &Path) -> Option<ChunkerKind> {
     let ext = path
         .extension()
@@ -69,6 +81,12 @@ pub fn is_indexable(path: &Path) -> Option<ChunkerKind> {
         .map(str::to_ascii_lowercase);
     if matches!(ext.as_deref(), Some("md" | "markdown" | "mdx" | "mdown")) {
         return Some(ChunkerKind::Markdown);
+    }
+    if ext.as_deref() == Some("toml") {
+        return Some(ChunkerKind::Plain("toml"));
+    }
+    if matches!(ext.as_deref(), Some("ps1" | "psm1" | "psd1")) {
+        return Some(ChunkerKind::Plain("powershell"));
     }
     SupportLang::from_path(path).map(ChunkerKind::AstGrep)
 }
@@ -94,6 +112,7 @@ pub fn chunk_source(source: &str, file_path: &str, kind: ChunkerKind) -> Vec<Chu
     let split_points = match kind {
         ChunkerKind::AstGrep(lang) => ast_grep_split_points(source, lang),
         ChunkerKind::Markdown => markdown_split_points(source),
+        ChunkerKind::Plain(_) => paragraph_split_points(source),
     };
     let lang_name = kind.language_name();
     pack(source, file_path, &lang_name, &split_points)
@@ -149,6 +168,53 @@ fn markdown_split_points(source: &str) -> Vec<usize> {
     }
     if *points.last().unwrap() < source.len() {
         points.push(source.len());
+    }
+    points
+}
+
+/// Blank-line end-bytes for plain-text formats (TOML, PowerShell) that have
+/// no tree-sitter grammar. A "blank line" is a run of two or more consecutive
+/// line terminators, where a terminator is `\n` or `\r\n` — PowerShell files
+/// are routinely CRLF, so matching bare `\n\n` only would never split them.
+///
+/// Every emitted offset sits immediately after an ASCII `\n` byte, which is
+/// always a valid UTF-8 boundary (`b'\n'` never appears inside a multi-byte
+/// sequence), so `pack` can slice at these points safely.
+fn paragraph_split_points(source: &str) -> Vec<usize> {
+    let bytes = source.as_bytes();
+    let len = bytes.len();
+    let mut points: Vec<usize> = vec![0];
+    let mut i = 0;
+    while i < len {
+        // A line terminator at `i` is either "\n" or "\r\n".
+        let first = match bytes[i] {
+            b'\n' => 1,
+            b'\r' if i + 1 < len && bytes[i + 1] == b'\n' => 2,
+            _ => {
+                i += 1;
+                continue;
+            }
+        };
+        // Consume the whole run of consecutive terminators.
+        let mut terminators = 1;
+        i += first;
+        loop {
+            if i < len && bytes[i] == b'\n' {
+                i += 1;
+            } else if i + 1 < len && bytes[i] == b'\r' && bytes[i + 1] == b'\n' {
+                i += 2;
+            } else {
+                break;
+            }
+            terminators += 1;
+        }
+        // ≥2 terminators means at least one blank line — split after the run.
+        if terminators >= 2 && i < len && i > *points.last().unwrap() {
+            points.push(i);
+        }
+    }
+    if *points.last().unwrap() < len {
+        points.push(len);
     }
     points
 }
@@ -385,5 +451,73 @@ content c
         let chunks = md(src);
         let joined: String = chunks.iter().map(|c| c.content.as_str()).collect();
         assert_eq!(joined, src);
+    }
+
+    // ── Plain text (TOML / PowerShell) ────────────────────────────────────
+
+    #[test]
+    fn is_indexable_accepts_plain_text_formats() {
+        assert_eq!(
+            is_indexable(&PathBuf::from("Cargo.toml")),
+            Some(ChunkerKind::Plain("toml"))
+        );
+        for ext in ["ps1", "psm1", "psd1"] {
+            assert_eq!(
+                is_indexable(&PathBuf::from(format!("script.{ext}"))),
+                Some(ChunkerKind::Plain("powershell")),
+                "expected .{ext} to map to the plain powershell chunker"
+            );
+        }
+    }
+
+    #[test]
+    fn paragraph_split_detects_lf_blank_lines() {
+        let src = "function A {}\n\nfunction B {}\n\nfunction C {}\n";
+        let points = paragraph_split_points(src);
+        // 0, after each blank-line run, and EOF → 4 points / 3 regions.
+        assert_eq!(points.len(), 4, "points: {points:?}");
+        assert_eq!(points[0], 0);
+        assert_eq!(*points.last().unwrap(), src.len());
+    }
+
+    #[test]
+    fn paragraph_split_detects_crlf_blank_lines() {
+        // Regression for upstream PR #29: its splitter only matched bare
+        // "\n\n", so CRLF files — the norm for PowerShell — never split.
+        let src = "function A {}\r\n\r\nfunction B {}\r\n\r\nfunction C {}\r\n";
+        let points = paragraph_split_points(src);
+        assert_eq!(points.len(), 4, "points: {points:?}");
+        assert_eq!(points[0], 0);
+        assert_eq!(*points.last().unwrap(), src.len());
+    }
+
+    #[test]
+    fn plain_splits_into_multiple_chunks_when_over_max() {
+        let para = format!("[section]\nkey = \"{}\"\n", "x".repeat(1200));
+        let src = format!("{para}\n{para}\n{para}");
+        let chunks = chunk_source(&src, "big.toml", ChunkerKind::Plain("toml"));
+        assert!(chunks.len() >= 2, "expected splitting, got {}", chunks.len());
+        assert_eq!(chunks[0].language, "toml");
+    }
+
+    #[test]
+    fn plain_chunks_cover_source() {
+        for src in [
+            "[package]\nname = \"demo\"\n\n[dependencies]\nserde = \"1\"\n",
+            "function A {}\r\n\r\nfunction B {}\r\n\r\nfunction C {}\r\n",
+        ] {
+            let chunks = chunk_source(src, "f", ChunkerKind::Plain("toml"));
+            let joined: String = chunks.iter().map(|c| c.content.as_str()).collect();
+            assert_eq!(joined, src);
+        }
+    }
+
+    #[test]
+    fn plain_no_blank_lines_is_one_chunk() {
+        let src = "a = 1\nb = 2\nc = 3\n";
+        let chunks = chunk_source(src, "f.toml", ChunkerKind::Plain("toml"));
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].start_line, 1);
+        assert_eq!(chunks[0].end_line, 3);
     }
 }
