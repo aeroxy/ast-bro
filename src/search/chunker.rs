@@ -43,6 +43,7 @@ pub struct Chunk {
 pub enum ChunkerKind {
     AstGrep(SupportLang),
     Markdown,
+    Plain(&'static str),
 }
 
 impl ChunkerKind {
@@ -53,6 +54,7 @@ impl ChunkerKind {
         match self {
             ChunkerKind::AstGrep(lang) => format!("{lang:?}").to_ascii_lowercase(),
             ChunkerKind::Markdown => "markdown".to_string(),
+            ChunkerKind::Plain(name) => name.to_string(),
         }
     }
 }
@@ -69,6 +71,12 @@ pub fn is_indexable(path: &Path) -> Option<ChunkerKind> {
         .map(str::to_ascii_lowercase);
     if matches!(ext.as_deref(), Some("md" | "markdown" | "mdx" | "mdown")) {
         return Some(ChunkerKind::Markdown);
+    }
+    if ext.as_deref() == Some("toml") {
+        return Some(ChunkerKind::Plain("toml"));
+    }
+    if matches!(ext.as_deref(), Some("ps1" | "psm1" | "psd1")) {
+        return Some(ChunkerKind::Plain("powershell"));
     }
     SupportLang::from_path(path).map(ChunkerKind::AstGrep)
 }
@@ -94,6 +102,7 @@ pub fn chunk_source(source: &str, file_path: &str, kind: ChunkerKind) -> Vec<Chu
     let split_points = match kind {
         ChunkerKind::AstGrep(lang) => ast_grep_split_points(source, lang),
         ChunkerKind::Markdown => markdown_split_points(source),
+        ChunkerKind::Plain(_) => paragraph_split_points(source),
     };
     let lang_name = kind.language_name();
     pack(source, file_path, &lang_name, &split_points)
@@ -145,6 +154,32 @@ fn markdown_split_points(source: &str) -> Vec<usize> {
             if end > *points.last().unwrap() && end <= source.len() {
                 points.push(end);
             }
+        }
+    }
+    if *points.last().unwrap() < source.len() {
+        points.push(source.len());
+    }
+    points
+}
+
+/// Split at blank-line boundaries (consecutive newlines).
+/// Used for plain-text formats (TOML, PowerShell) that lack tree-sitter grammars.
+fn paragraph_split_points(source: &str) -> Vec<usize> {
+    let mut points = vec![0usize];
+    let bytes = source.as_bytes();
+    let len = bytes.len();
+    let mut i = 0;
+    while i < len {
+        if bytes[i] == b'\n' {
+            let start = i;
+            while i < len && bytes[i] == b'\n' {
+                i += 1;
+            }
+            if i - start >= 2 && i < len {
+                points.push(i);
+            }
+        } else {
+            i += 1;
         }
     }
     if *points.last().unwrap() < source.len() {
@@ -385,5 +420,25 @@ content c
         let chunks = md(src);
         let joined: String = chunks.iter().map(|c| c.content.as_str()).collect();
         assert_eq!(joined, src);
+    }
+
+    #[test]
+    fn is_indexable_accepts_toml() {
+        assert!(
+            is_indexable(&PathBuf::from("Cargo.toml")).is_some(),
+            "expected .toml to be indexable"
+        );
+    }
+
+    #[test]
+    fn is_indexable_accepts_powershell() {
+        for ext in ["ps1", "psm1", "psd1"] {
+            let p = PathBuf::from(format!("script.{}", ext));
+            assert!(
+                is_indexable(&p).is_some(),
+                "expected .{} to be indexable",
+                ext
+            );
+        }
     }
 }
