@@ -62,3 +62,36 @@ pub fn ensure_with_calls(
     }
     promote_calls(root, |g| crate::calls::build::build_call_graph(root, &g.deps))
 }
+
+/// Shared prologue for the symbol-query commands (`callers`, `callees`,
+/// `trace`, `impact`, `context`): find the project root and load the
+/// unified graph with the calls half present. Failures follow the error
+/// contract (#36) — unresolvable root → exit 2, cache/build failure →
+/// exit 1, both on stderr with a JSON envelope under `--json`. Returns
+/// `Err(exit_code)` for the caller to propagate.
+pub fn load_for_symbol_query(
+    command: &str,
+    path: &std::path::Path,
+    rebuild: bool,
+    json: bool,
+) -> Result<(std::path::PathBuf, std::sync::Arc<UnifiedGraph>), i32> {
+    use crate::cli_error::{CliError, ErrorKind};
+    let root = match crate::project_root::find_root_for(path) {
+        Ok(r) => r,
+        Err(e) => return Err(CliError::new(command, ErrorKind::PathNotFound, e).emit(json)),
+    };
+    let graph = match ensure_with_calls(&root, rebuild) {
+        Ok(g) => g,
+        Err(e) => {
+            return Err(
+                CliError::new(command, ErrorKind::IndexError, e.to_string()).emit(json),
+            )
+        }
+    };
+    if graph.calls.is_none() {
+        return Err(
+            CliError::new(command, ErrorKind::IndexError, "call graph is empty").emit(json),
+        );
+    }
+    Ok((root, graph))
+}

@@ -323,3 +323,48 @@ impl S {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn max_members_caps_the_same_declarations_in_text_and_json() {
+    // One definition of "member" across renderers: the cap applies to type
+    // members, not to module/namespace children. Text `+N more` and JSON
+    // `dropped_members` must agree.
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path().join("m.rs");
+    std::fs::write(
+        &p,
+        "pub mod inner {\n    pub fn a() {}\n    pub fn b() {}\n    pub fn c() {}\n}\n\
+         pub struct S { pub x: u32, pub y: u32, pub z: u32 }\n",
+    )
+    .unwrap();
+    let p = p.to_str().unwrap();
+
+    // Module children are not "members": all three functions render in text
+    // and survive in JSON.
+    let text = run(&["map", p, "--max-members", "1"]);
+    for f in ["fn a", "fn b", "fn c"] {
+        assert!(text.contains(f), "module fns must not be capped:\n{text}");
+    }
+    // The struct's fields are members: text shows the cap note...
+    assert!(
+        text.contains("+2 more member(s)"),
+        "struct fields over the cap must be reported:\n{text}"
+    );
+    // ...and JSON reports exactly the same drop count.
+    let json = run(&["map", p, "--max-members", "1", "--json", "--compact"]);
+    let doc: serde_json::Value = serde_json::from_str(json.trim()).expect("valid json");
+    let file = &doc["files"][0];
+    assert_eq!(file["truncated"], true, "{json}");
+    assert_eq!(file["dropped_members"], 2, "text +N and JSON dropped_members must agree: {json}");
+    let inner = file["declarations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|d| d["name"] == "inner")
+        .expect("module in json");
+    assert_eq!(
+        inner["children"].as_array().unwrap().len(),
+        3,
+        "module children must not be capped in JSON either: {json}"
+    );
+}

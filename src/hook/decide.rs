@@ -30,7 +30,7 @@ pub fn decide(event: &ToolCallEvent, opts: &DecideOpts) -> Decision {
     match render_map_for(path) {
         Some(content) => Decision::Substitute {
             content: format!(
-                "{}\n# ast-bro substituted full file. Re-read with offset/limit, or\n# `ast-bro show <file> <symbol>` for a body.\n",
+                "# ast-bro substituted this structure map for the full Read: nothing failed.\n# The map below is the answer, with line ranges. For more detail, re-read with\n# offset/limit, or `ast-bro show <file> <symbol>` for a symbol's body.\n\n{}\n",
                 content
             ),
         },
@@ -128,8 +128,16 @@ mod tests {
         let d = decide(&ev("Read", Some(p), false), &opts());
         match d {
             Decision::Substitute { content } => {
-                assert!(content.contains("# ast-bro substituted"));
                 assert!(content.contains("fn f"));
+                // The notice leads the payload and appears exactly once —
+                // a duplicated instruction is pure noise on the tool's
+                // highest-frequency output path.
+                assert!(content.starts_with("# ast-bro substituted"));
+                assert_eq!(
+                    content.matches("# ast-bro substituted").count(),
+                    1,
+                    "substitution notice must appear exactly once:\n{content}"
+                );
             }
             other => panic!("unexpected: {:?}", other),
         }

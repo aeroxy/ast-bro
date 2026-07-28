@@ -73,13 +73,29 @@ pub fn render_deps_text(
     out
 }
 
-pub fn render_reverse_deps_text(graph: &DepGraph, start: &Path, hits: &[DepHit]) -> String {
+pub fn render_reverse_deps_text(
+    graph: &DepGraph,
+    start: &Path,
+    hits: &[DepHit],
+    total: usize,
+) -> String {
     let mut out = String::new();
+    // Carry the true pre-`--limit` count in the header so a capped list is
+    // never mistaken for a complete one (issue #32).
+    let suffix = if total > hits.len() {
+        format!(
+            " ({} total; showing {} — raise --limit to see the rest)",
+            total,
+            hits.len()
+        )
+    } else {
+        format!(" ({} total)", total)
+    };
     let _ = writeln!(
         out,
         "{} {}",
         graph.rel(start).cyan().bold(),
-        "← imported by:".dimmed()
+        format!("← imported by:{}", suffix).dimmed()
     );
     if hits.is_empty() {
         let _ = writeln!(out, "  {}", "(no importers)".dimmed());
@@ -222,17 +238,23 @@ pub fn render_reverse_deps_json(
     graph: &DepGraph,
     start: &Path,
     hits: &[DepHit],
+    total: usize,
     pretty: bool,
 ) -> String {
     #[derive(Serialize)]
     struct Doc<'a> {
         schema: &'static str,
         file: String,
+        /// True pre-`--limit` importer count (issue #32).
+        total: usize,
+        truncated: bool,
         importers: Vec<JsonHit<'a>>,
     }
     let doc = Doc {
         schema: JSON_SCHEMA_REVERSE_DEPS,
         file: graph.rel(start),
+        total,
+        truncated: total > hits.len(),
         importers: hits
             .iter()
             .map(|h| JsonHit {

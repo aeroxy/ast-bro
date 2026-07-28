@@ -441,6 +441,21 @@ changes, so downstream tooling can guard on it:
 | `ast-bro.index-stats.v1` | `index --stats --json` |
 | `ast-bro.run.v1` | `run --json` |
 | `ast-bro.squeeze.v1` | `squeeze --json` |
+| `ast-bro.error.v1` | any rejected call under `--json` (on stderr) |
+
+---
+
+## CLI contract
+
+One rule set for every subcommand, so a consumer never needs a per-command table:
+
+- **Channel** — stdout carries results only; every note, hint, and error goes to stderr. `--json` output always parses without preprocessing.
+- **Exit codes** — `0`: the query ran and the result is complete, including a legitimately empty result ("this symbol genuinely has no callers"). `2`: the query could not run as asked — no such path, no such symbol, unknown flag, or an empty argument list (e.g. a `$(...)` substitution that produced nothing). `1`: internal failure. (`cycles` additionally exits `3` when cycles exist, for CI gates.)
+- **Machine-readable rejections** — with `--json`, a rejected call also emits an `ast-bro.error.v1` object on stderr: `{schema, command, kind, detail, hint}` with `kind` ∈ `no_input | path_not_found | symbol_not_found | unknown_flag | bad_argument | index_error`.
+- **Unknown flags** exit 2 with the error on stderr; when the flag exists on a sibling subcommand, the message names it (`--glob is a map flag`).
+- **Truncation is never silent** — when `--limit` / `--max-members` cut a list, the header reports the true total and the flag that lifts the cap, and JSON carries `total` / `truncated` (plus `frontier_truncated` when `--depth` stopped a walk that still had edges to follow).
+
+`map` and `digest` are one command: `digest` is an alias for `map --preset digest` (= `--detail names --no-private --no-fields --max-members 50`), and both accept the full flag set — detail (`--detail names|signatures|full`), visibility (`--no-private`, `--no-fields`, `--no-docs`, `--include-private`, `--include-fields`, …), and scope (`--glob`, `--max-members`) are independent axes. Explicit flags override the preset. At `names`/`signatures` detail the JSON payload sheds doc comments, which are routinely a third of its weight.
 
 ---
 

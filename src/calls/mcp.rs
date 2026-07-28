@@ -27,21 +27,65 @@ pub fn run_callers_text(target: &str, root: &Path, depth: usize, limit: usize, i
     };
     let qns = crate::calls::cli_helpers::resolve_target_qns(calls, target);
     let mut hits = Vec::new();
+    let mut frontier_truncated = false;
     for qn in &qns {
-        // Filter inside the traversal so dropped ambiguous edges don't
-        // consume the limit (mirrors the CLI's run_callers).
-        hits.extend(traverse::callers(calls, qn, depth.max(1), limit, |e| {
+        // Walk unbounded so the header carries the true total; `--limit`
+        // trims the display (issue #32). Filter inside the traversal so
+        // dropped ambiguous edges don't consume the limit.
+        let info = traverse::callers_info(calls, qn, depth.max(1), usize::MAX, |e| {
             include_ambiguous
                 || !matches!(e.confidence, crate::calls::graph::Confidence::Ambiguous)
-        }));
+        });
+        frontier_truncated |= info.frontier_truncated;
+        hits.extend(info.hits);
     }
+    let total = hits.len();
     if hits.len() > limit {
         hits.truncate(limit);
     }
+    // Same unattributed-edge surfacing as the CLI path (issue #31). MCP has
+    // no stderr channel, so when `include_ambiguous` is off the hidden count
+    // is prepended to the response text instead of printed as a note —
+    // silently dropping it would make "0 callers" read as authoritative.
+    let mut unattributed = traverse::unattributed_callers(calls, &qns);
+    let mut hidden_note = String::new();
+    let mut unattributed_hidden = 0usize;
+    if !include_ambiguous && !unattributed.is_empty() {
+        unattributed_hidden = unattributed.len();
+        hidden_note = format!(
+            "# note: {} unresolved call site(s) naming '{}' hidden (include_ambiguous: false); they may be additional callers\n",
+            unattributed_hidden,
+            target
+        );
+        unattributed.clear();
+    }
+    // Share the limit display budget, as in the CLI path.
+    let unattributed_total = unattributed.len();
+    let remaining = limit.saturating_sub(hits.len());
+    if unattributed.len() > remaining {
+        unattributed.truncate(remaining);
+    }
+    let trunc = render::Truncation {
+        total,
+        frontier_truncated,
+    };
     if json {
-        render::render_callers_json(target, depth.max(1), &hits, true)
+        render::render_callers_json(
+            target,
+            depth.max(1),
+            &hits,
+            &unattributed,
+            unattributed_total,
+            unattributed_hidden,
+            &trunc,
+            true,
+        )
     } else {
-        render::render_callers_text(target, &hits)
+        format!(
+            "{}{}",
+            hidden_note,
+            render::render_callers_text(target, &hits, &unattributed, unattributed_total, &trunc)
+        )
     }
 }
 
@@ -66,8 +110,31 @@ pub fn run_trace_text(from: &str, to: &str, root: &Path, depth: usize, json: boo
         Some(c) => c,
         None => return "# error: call graph unavailable".to_string(),
     };
-    let (out, _outcome) = render_trace(calls, root, from, to, depth.max(1), json, false);
-    out
+    let (out, outcome) = render_trace(calls, root, from, to, depth.max(1), json, false);
+    match outcome {
+        // MCP has no stderr channel, so the diagnostic must be the response
+        // itself — as a valid `ast-bro.trace.v1` doc under `json` so the
+        // schema promise holds even for a rejected call.
+        crate::calls::trace::TraceOutcome::Unresolved(missing) => {
+            if json {
+                serde_json::json!({
+                    "schema": crate::core::JSON_SCHEMA_TRACE,
+                    "from": from,
+                    "to": to,
+                    "found": false,
+                    "error": format!("no callable symbol matches '{}'", missing),
+                    "hops": [],
+                })
+                .to_string()
+            } else {
+                format!(
+                    "# note: no callable symbol matches '{}' (try a more specific suffix like 'Type.method').\n",
+                    missing
+                )
+            }
+        }
+        _ => out,
+    }
 }
 
 pub fn run_callees_text(target: &str, root: &Path, depth: usize, external: bool, json: bool) -> String {

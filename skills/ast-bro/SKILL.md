@@ -8,7 +8,11 @@ user-invocable: true
 
 `sb` is the short alias for the `ast-bro` binary. The legacy `ast-outline` command still works as a thin proxy.
 
-Each command accepts `--json` for a stable, versioned schema (e.g. `ast-bro.map.v1`) and `--compact` to emit single-line JSON instead of pretty-printed. Pass an unknown flag or no command and the help text prints automatically — there is no "default" command.
+Each command accepts `--json` for a stable, versioned schema (e.g. `ast-bro.map.v1`) and `--compact` to emit single-line JSON instead of pretty-printed.
+
+**Error contract** (uniform across every subcommand): stdout carries results only; every note, hint, and error goes to stderr. Exit `0` = the query ran (even when the answer is legitimately empty), exit `2` = the query could not run as asked (no such path/symbol, unknown flag, empty argument list — e.g. a `$(...)` substitution that produced nothing), exit `1` = internal failure. With `--json`, a rejected call also emits a machine-readable `ast-bro.error.v1` object on stderr. Recovery rule: *stdout empty or exit non-zero → the call was wrong; read stderr; fix the call.* Never silence stderr with `2>/dev/null` — for some commands it carries the only copy of the diagnostic.
+
+**Result caps** (defaults; truncation is always reported, never silent): `--limit 200` on `callers` / `callees` / `impact` / `reverse-deps`, `--max-members 50` under the digest preset, `--budget 8000` on `context`, `-k 10` on `search`; `--depth` defaults are 1 (`callers`/`callees`/`impact` direct sections), 2 (`context`), 3 (`deps`), 12 (`trace`). When a cap is hit the header carries the true total (`# 113 caller(s) … (showing 3; raise --limit to see the rest)`), and JSON carries `total` / `truncated` (plus `frontier_truncated` when `--depth` stopped a walk that still had edges to follow).
 
 Read structure with `sb` before opening full contents. Pull method bodies only once you know which ones you need.
 
@@ -26,14 +30,16 @@ sb callers Player.TakeDamage
 
 Stop at the step that answers the question:
 
-1. **Unfamiliar directory** — `sb digest <dir>`: one-page map of every file's types and public methods.
+1. **Unfamiliar directory** — `sb digest <dir>`: one-page map of every file's types and public methods. (`digest` is an alias for `sb map --preset digest`; it accepts every `map` flag.)
    ```
    sb digest src/
+   sb digest src/ --glob '*.java' --max-members 8
    ```
 
-2. **One file's shape** — `sb map <file>`: signatures with line ranges, no bodies (5–10× smaller than a full read).
+2. **One file's shape** — `sb map <file>`: signatures with line ranges, no bodies (5–10× smaller than a full read). Three orthogonal axes: detail (`--detail names|signatures|full`), visibility (`--no-private`, `--no-fields`, `--no-docs`, …), and scope (`--glob`, `--max-members`). `--detail signatures --max-members N` is the middle ground when a directory-wide `map` is too big and `digest`'s bare names are too little.
    ```
    sb map src/file_filter.rs
+   sb map src/ --detail signatures --max-members 8
    ```
 
 3. **One symbol's source** — `sb show <file> <Symbol>`: suffix matching, multiple at once. Explicitly-passed extensionless files fall back to shebang detection (`#!/usr/bin/env python3` → Python, `#!/usr/bin/env node` → TypeScript, etc.) — useful for CLI scripts in `bin/` or `~/.local/bin/`. Directory walks skip extensionless files to keep the walk fast.
@@ -84,7 +90,7 @@ Stop at the step that answers the question:
 
 12. **Who calls X / what X calls / how A reaches B** — symbol-level call graph (shares the dep-graph cache with steps 8–11).
 
-    Edges are tagged `Exact` / `Inferred` / `Ambiguous` by a three-pass resolver (same-file → global symbol table → dep-graph disambiguation). **Ambiguous callers and unresolved/external callees are shown by default** (red/cyan) so you see the full set without re-running. Pass `--hide-ambiguous` (callers) or `--hide-external` (callees) to drop them when you want the cleaner bucket.
+    Edges are tagged `Exact` / `Inferred` / `Ambiguous` by a three-pass resolver (same-file → global symbol table → dep-graph disambiguation). **Ambiguous callers and unresolved/external callees are shown by default** (red/cyan) so you see the full set without re-running. Pass `--hide-ambiguous` (callers) or `--hide-external` (callees) to drop them when you want the cleaner bucket. `callers` additionally lists **unresolved call sites naming the target** (call chains whose receiver couldn't be typed) in a separate section — treat those as possible extra callers when costing a rename; the resolved count alone can undercount.
 
     - `sb callers <Symbol>`: in-edges. Kind-aware: a function gets call-sites; a type gets implementors / constructions / ancestors.
       ```

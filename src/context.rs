@@ -148,34 +148,15 @@ pub fn run_context(
     opts: &ContextOptions,
     rebuild: bool,
 ) -> i32 {
-    let root = match crate::project_root::find_root_for(path) {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("# note: {}", e);
-            return 2;
-        }
-    };
-    let graph = match graph_cache::ensure_with_calls(&root, rebuild) {
-        Ok(g) => g,
-        Err(e) => {
-            eprintln!("# note: {}", e);
-            return 1;
-        }
-    };
-    let calls = match &graph.calls {
-        Some(c) => c,
-        None => {
-            eprintln!("# note: call graph is empty");
-            return 1;
-        }
-    };
+    let (root, graph) =
+        match graph_cache::load_for_symbol_query("context", path, rebuild, opts.json) {
+            Ok(pair) => pair,
+            Err(code) => return code,
+        };
+    let calls = graph.calls.as_ref().expect("calls half present");
     let candidates = resolve_target_full(calls, target);
     if candidates.is_empty() {
-        eprintln!(
-            "# note: no symbol matches '{}' (try a more specific suffix like 'Type.method').",
-            target
-        );
-        return 2;
+        return crate::cli_error::symbol_not_found("context", target, opts.json);
     }
 
     let c = &candidates[0];

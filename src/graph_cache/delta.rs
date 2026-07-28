@@ -256,10 +256,8 @@ pub fn apply_delta_to_calls(
         for e in edges.iter_mut() {
             let CallTarget::Bare(name) = &e.target else { continue };
             let Some(cands) = calls.symbol_table.get(name) else { continue };
-            let has_receiver = e
-                .receiver
-                .as_deref()
-                .is_some_and(|r| !matches!(r, "self" | "Self" | "crate" | "super"));
+            let has_receiver =
+                !crate::calls::resolve::receiver_is_self_like(e.receiver.as_deref());
             if cands.len() == 1 && !has_receiver {
                 e.target = CallTarget::Resolved(cands[0].clone());
                 e.confidence = crate::calls::graph::Confidence::Inferred;

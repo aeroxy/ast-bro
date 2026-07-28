@@ -24,11 +24,13 @@ pub fn list() -> Value {
                             "description": "Files or directories to map.",
                             "minItems": 1
                         },
+                        "detail":     { "type": "string", "enum": ["names", "signatures", "full"], "description": "Detail level: `full` (signatures + docs, default), `signatures` (no docs), `names` (bare member names — the digest renderer)." },
                         "no_private": { "type": "boolean", "description": "Hide private declarations." },
                         "no_fields":  { "type": "boolean", "description": "Hide field declarations." },
                         "no_docs":    { "type": "boolean", "description": "Hide doc comments." },
                         "no_attrs":   { "type": "boolean", "description": "Hide attributes / decorators." },
                         "no_lines":   { "type": "boolean", "description": "Hide line-range suffixes." },
+                        "max_members": { "type": "integer", "description": "Cap members shown per type; the output reports what was cut." },
                         "glob":       { "type": "string",  "description": "Glob filter applied during directory walk." },
                         "json":       { "type": "boolean", "description": "Return JSON (schema `ast-bro.map.v1`) instead of text." }
                     },
@@ -37,7 +39,7 @@ pub fn list() -> Value {
             },
             {
                 "name": "digest",
-                "description": "One-page module map for an unfamiliar directory: every file's types and public methods. Returns text by default; set `json: true` for `ast-bro.map.v1`.",
+                "description": "One-page module map for an unfamiliar directory: every file's types and public methods. Alias for `map` with detail=names, public-only, max_members=50. Returns text by default; set `json: true` for `ast-bro.map.v1`.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -49,7 +51,8 @@ pub fn list() -> Value {
                         },
                         "include_private": { "type": "boolean" },
                         "include_fields":  { "type": "boolean" },
-                        "max_members":     { "type": "integer", "description": "Cap members per type (default 50)." },
+                        "max_members":     { "type": "integer", "description": "Cap members per type (default 50); the output reports what was cut." },
+                        "glob":            { "type": "string", "description": "Glob filter applied during directory walk." },
                         "json":            { "type": "boolean" }
                     },
                     "required": ["paths"]
@@ -473,11 +476,13 @@ fn run_trace(args: Value) -> CallResult {
 #[derive(Deserialize, Default)]
 struct MapArgs {
     paths: Vec<PathBuf>,
+    #[serde(default)] detail: Option<String>,
     #[serde(default)] no_private: bool,
     #[serde(default)] no_fields: bool,
     #[serde(default)] no_docs: bool,
     #[serde(default)] no_attrs: bool,
     #[serde(default)] no_lines: bool,
+    #[serde(default)] max_members: Option<usize>,
     #[serde(default)] glob: Option<String>,
     #[serde(default)] json: bool,
 }
@@ -490,18 +495,39 @@ fn run_map(args: Value) -> CallResult {
     if a.paths.is_empty() {
         return CallResult::Error("`paths` must not be empty".into());
     }
+    let detail = a.detail.as_deref().unwrap_or("full");
+    if !matches!(detail, "names" | "signatures" | "full") {
+        return CallResult::Error(format!(
+            "invalid detail level '{}': expected names|signatures|full",
+            detail
+        ));
+    }
     let results = crate::walk_and_parse(&a.paths, a.glob.as_deref());
+    let include_docs = detail == "full" && !a.no_docs;
     let opts = MapOptions {
         include_private: !a.no_private,
         include_fields: !a.no_fields,
-        include_docs: !a.no_docs,
+        include_docs,
         include_attributes: !a.no_attrs,
         include_line_numbers: !a.no_lines,
         max_doc_lines: 6,
-        max_members: None,
+        max_members: a.max_members,
     };
     if a.json {
         CallResult::Text(core::render_json_map(&results, &opts, true))
+    } else if detail == "names" {
+        let d_opts = DigestOptions {
+            include_private: !a.no_private,
+            include_fields: !a.no_fields,
+            max_members_per_type: a.max_members.unwrap_or(usize::MAX),
+            max_heading_depth: 3,
+        };
+        let root = if a.paths.len() == 1 && a.paths[0].is_dir() {
+            Some(a.paths[0].as_path())
+        } else {
+            None
+        };
+        CallResult::Text(core::render_digest(&results, &d_opts, root))
     } else {
         let mut out = String::new();
         for res in &results {
@@ -518,6 +544,7 @@ struct DigestArgs {
     #[serde(default)] include_private: bool,
     #[serde(default)] include_fields: bool,
     #[serde(default = "default_max_members")] max_members: usize,
+    #[serde(default)] glob: Option<String>,
     #[serde(default)] json: bool,
 }
 
@@ -531,12 +558,14 @@ fn run_digest(args: Value) -> CallResult {
     if a.paths.is_empty() {
         return CallResult::Error("`paths` must not be empty".into());
     }
-    let results = crate::walk_and_parse(&a.paths, None);
+    let results = crate::walk_and_parse(&a.paths, a.glob.as_deref());
     if a.json {
+        // Mirrors the CLI's digest preset: names-level detail sheds doc
+        // comments from the JSON payload too (issue #37).
         let opts = MapOptions {
             include_private: a.include_private,
             include_fields: a.include_fields,
-            include_docs: true,
+            include_docs: false,
             include_attributes: true,
             include_line_numbers: true,
             max_doc_lines: 6,
@@ -795,11 +824,22 @@ fn run_reverse_deps(args: Value) -> CallResult {
         Ok(c) => c,
         Err(e) => return CallResult::Error(format!("cannot resolve {}: {}", a.file.display(), e)),
     };
-    let hits = crate::deps::traverse::reverse(&graph, &canon, a.depth.max(1), a.limit, |_| true);
+    // Walk unbounded so the output reports the true total; `limit` trims
+    // the display (issue #32).
+    let mut hits =
+        crate::deps::traverse::reverse(&graph, &canon, a.depth.max(1), usize::MAX, |_| true);
+    let total = hits.len();
+    if hits.len() > a.limit {
+        hits.truncate(a.limit);
+    }
     if a.json {
-        CallResult::Text(crate::deps::render::render_reverse_deps_json(&graph, &canon, &hits, true))
+        CallResult::Text(crate::deps::render::render_reverse_deps_json(
+            &graph, &canon, &hits, total, true,
+        ))
     } else {
-        CallResult::Text(crate::deps::render::render_reverse_deps_text(&graph, &canon, &hits))
+        CallResult::Text(crate::deps::render::render_reverse_deps_text(
+            &graph, &canon, &hits, total,
+        ))
     }
 }
 

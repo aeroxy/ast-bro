@@ -16,12 +16,78 @@ use colored::Colorize;
 use serde::Serialize;
 use serde_json::json;
 
-pub fn render_callers_text(target: &str, hits: &[CallHit]) -> String {
+/// Truncation facts for a rendered list (issue #32): `total` is the true
+/// pre-`--limit` count, `frontier_truncated` says the depth cap stopped
+/// the walk while edges remained.
+pub struct Truncation {
+    pub total: usize,
+    pub frontier_truncated: bool,
+}
+
+impl Truncation {
+    /// `" (showing N; raise --limit to see the rest)"` when the display
+    /// was cut, empty otherwise.
+    fn header_suffix(&self, shown: usize) -> String {
+        if self.total > shown {
+            format!(" (showing {}; raise --limit to see the rest)", shown)
+        } else {
+            String::new()
+        }
+    }
+}
+
+pub fn render_callers_text(
+    target: &str,
+    hits: &[CallHit],
+    unattributed: &[CallEdge],
+    unattributed_total: usize,
+    trunc: &Truncation,
+) -> String {
     let mut out = String::new();
-    out.push_str(&header_line("caller", hits.len(), target));
+    out.push_str(&header_line_suffixed(
+        "caller",
+        trunc.total,
+        target,
+        &trunc.header_suffix(hits.len()),
+    ));
     for h in hits {
         out.push_str(&format_caller_line(h));
         out.push('\n');
+    }
+    out.push_str(&unattributed_section(target, unattributed, unattributed_total));
+    out
+}
+
+/// Call sites the resolver could not attribute (bare/ambiguous edges naming
+/// the target). Rendered below the resolved hits so a caller count is never
+/// silently low (issue #31). The section shares the `--limit` display
+/// budget, so its header carries its own true total.
+fn unattributed_section(target: &str, edges: &[CallEdge], total: usize) -> String {
+    let mut out = String::new();
+    if total == 0 {
+        return out;
+    }
+    let suffix = if total > edges.len() {
+        format!(" (showing {}; raise --limit to see the rest)", edges.len())
+    } else {
+        String::new()
+    };
+    out.push_str(&format!(
+        "\n{} {} unresolved call site(s) naming '{}' (receiver not resolvable; possible additional callers){}:\n",
+        "##".dimmed(),
+        total.to_string().bold(),
+        target.yellow(),
+        suffix.dimmed(),
+    ));
+    for e in edges {
+        out.push_str(&format!(
+            "{}{} {} {}  {}\n",
+            colorize_file(&file_str(&e.file)),
+            colorize_line(e.line),
+            "in".dimmed(),
+            colorize_qn(&e.source),
+            colorize_confidence(e.confidence),
+        ));
     }
     out
 }
@@ -34,11 +100,27 @@ pub fn render_callers_text_extended(
     target: &str,
     hits: &[CallHit],
     type_groups: &[crate::calls::cli::TypeCallersGroup],
+    unattributed: &[CallEdge],
+    unattributed_total: usize,
+    trunc: &Truncation,
 ) -> String {
     let mut out = String::new();
-    let total: usize =
-        hits.len() + type_groups.iter().map(|g| g.implementations.len() + g.constructions.len()).sum::<usize>();
-    out.push_str(&header_line("caller", total, target));
+    let total: usize = trunc.total
+        + type_groups
+            .iter()
+            .map(|g| g.implementations.len() + g.constructions.len())
+            .sum::<usize>();
+    let shown = hits.len()
+        + type_groups
+            .iter()
+            .map(|g| g.implementations.len() + g.constructions.len())
+            .sum::<usize>();
+    out.push_str(&header_line_suffixed(
+        "caller",
+        total,
+        target,
+        &trunc.header_suffix(shown),
+    ));
 
     for h in hits {
         out.push_str(&format_caller_line(h));
@@ -84,6 +166,7 @@ pub fn render_callers_text_extended(
             }
         }
     }
+    out.push_str(&unattributed_section(target, unattributed, unattributed_total));
     out
 }
 
@@ -226,12 +309,20 @@ fn format_caller_line(h: &CallHit) -> String {
 }
 
 fn header_line(label: &str, count: usize, target: &str) -> String {
+    header_line_suffixed(label, count, target, "")
+}
+
+/// `# 113 caller(s) for 'x' (showing 3; raise --limit to see the rest):`
+/// — the suffix carries truncation facts so a capped list is never
+/// mistaken for a complete one (issue #32).
+fn header_line_suffixed(label: &str, count: usize, target: &str, suffix: &str) -> String {
     format!(
-        "{} {} {}(s) for {}:\n",
+        "{} {} {}(s) for {}{}:\n",
         "#".dimmed(),
         count.to_string().bold(),
         label,
         format!("'{}'", target).yellow(),
+        suffix.dimmed(),
     )
 }
 
@@ -295,6 +386,36 @@ struct JsonCaller<'a> {
     candidates: Vec<&'a Qn>,
 }
 
+/// A bare call site naming the target that the resolver could not attribute
+/// to a node. `callee` is the raw name as written; `candidates` are the qns
+/// pass C could not choose between (empty when none were found at all).
+#[derive(Serialize)]
+struct JsonUnattributed<'a> {
+    source: String,
+    callee: String,
+    kind: &'static str,
+    file: String,
+    line: u32,
+    confidence: &'static str,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    candidates: Vec<&'a Qn>,
+}
+
+fn json_unattributed(edges: &[CallEdge]) -> Vec<JsonUnattributed<'_>> {
+    edges
+        .iter()
+        .map(|e| JsonUnattributed {
+            source: e.source.to_string(),
+            callee: e.target.name_or_raw(),
+            kind: e.kind.as_str(),
+            file: file_str(&e.file),
+            line: e.line,
+            confidence: e.confidence.as_str(),
+            candidates: e.candidates.iter().collect(),
+        })
+        .collect()
+}
+
 #[derive(Serialize)]
 struct JsonCallee<'a> {
     source: String,
@@ -308,11 +429,16 @@ struct JsonCallee<'a> {
     candidates: Vec<&'a Qn>,
 }
 
+#[allow(clippy::too_many_arguments)] // one arg per orthogonal output facet
 pub fn render_callers_json_extended(
     target: &str,
     depth: usize,
     hits: &[CallHit],
     type_groups: &[crate::calls::cli::TypeCallersGroup],
+    unattributed: &[CallEdge],
+    unattributed_total: usize,
+    unattributed_hidden: usize,
+    trunc: &Truncation,
     pretty: bool,
 ) -> String {
     let matches: Vec<JsonCaller> = hits
@@ -371,8 +497,17 @@ pub fn render_callers_json_extended(
         "schema": JSON_SCHEMA_CALLERS,
         "target": target,
         "depth": depth,
+        "total": trunc.total,
+        "truncated": trunc.total > hits.len(),
+        "frontier_truncated": trunc.frontier_truncated,
         "matches": matches,
         "types": type_views,
+        "unattributed": json_unattributed(unattributed),
+        "unattributed_total": unattributed_total,
+        "unattributed_truncated": unattributed_total > unattributed.len(),
+        // Sites dropped by hide_ambiguous — kept in the body because JSON
+        // consumers (MCP especially) have no stderr to read the note from.
+        "unattributed_hidden": unattributed_hidden,
     });
     if pretty {
         serde_json::to_string_pretty(&doc).unwrap_or_default()
@@ -381,7 +516,17 @@ pub fn render_callers_json_extended(
     }
 }
 
-pub fn render_callers_json(target: &str, depth: usize, hits: &[CallHit], pretty: bool) -> String {
+#[allow(clippy::too_many_arguments)] // one arg per orthogonal output facet
+pub fn render_callers_json(
+    target: &str,
+    depth: usize,
+    hits: &[CallHit],
+    unattributed: &[CallEdge],
+    unattributed_total: usize,
+    unattributed_hidden: usize,
+    trunc: &Truncation,
+    pretty: bool,
+) -> String {
     let matches: Vec<JsonCaller> = hits
         .iter()
         .map(|h| JsonCaller {
@@ -399,7 +544,14 @@ pub fn render_callers_json(target: &str, depth: usize, hits: &[CallHit], pretty:
         "schema": JSON_SCHEMA_CALLERS,
         "target": target,
         "depth": depth,
+        "total": trunc.total,
+        "truncated": trunc.total > hits.len(),
+        "frontier_truncated": trunc.frontier_truncated,
         "matches": matches,
+        "unattributed": json_unattributed(unattributed),
+        "unattributed_total": unattributed_total,
+        "unattributed_truncated": unattributed_total > unattributed.len(),
+        "unattributed_hidden": unattributed_hidden,
     });
     if pretty {
         serde_json::to_string_pretty(&doc).unwrap_or_default()
@@ -413,6 +565,8 @@ pub fn render_callees_json_extended(
     depth: usize,
     edges: &[CallEdge],
     type_groups: &[crate::calls::cli::TypeCalleesGroup],
+    total: usize,
+    frontier_truncated: bool,
     pretty: bool,
 ) -> String {
     let matches: Vec<JsonCallee> = edges
@@ -470,6 +624,9 @@ pub fn render_callees_json_extended(
         "schema": JSON_SCHEMA_CALLEES,
         "target": target.as_str(),
         "depth": depth,
+        "total": total,
+        "truncated": total > edges.len(),
+        "frontier_truncated": frontier_truncated,
         "matches": matches,
         "types": type_views,
     });
