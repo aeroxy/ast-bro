@@ -165,7 +165,7 @@ For each `RawEdge` whose target is a bare name:
    - Self-like binding prefers the sibling under the caller's own scope: `self.shared()` inside `Greeter::caller` binds `Greeter::shared`, not another same-file class's `shared`.
    - A type-qualified call on a local type (`Foo::bar()`, `Foo.bar()`) still binds `Exact`, but only to a local qn actually scoped as `::Foo::bar`.
    - Everything else falls through to pass B/C, where the dep graph either confirms the relationship (`Inferred`) or the edge stays honestly `Ambiguous`.
-2. Else if the name is in the file's `ParseResult::imports` **and the call has no explicit receiver** (same gate), look up the module → file via the existing `src/deps/resolver/resolve.rs::resolve` and promote to `Resolved("<that file>::<name>")` with `Exact`.
+2. Else if the name is in the file's `ParseResult::imports` **and the receiver is self-like** (the same gate — no receiver or a self/scope keyword), look up the module → file via the existing `src/deps/resolver/resolve.rs::resolve` and promote to `Resolved("<that file>::<name>")` with `Exact`.
 
 ### Pass B — global symbol table
 
@@ -175,7 +175,7 @@ For each `RawEdge` whose target is a bare name:
 - 1 candidate → promote to `Resolved` with `Exact`.
 - N candidates → defer to pass C.
 
-**Receiver gate.** Receiver-bearing calls (`obj.bar()`, `self.x()`, `super::foo()`) are deliberately **not** promoted by pass B. With a global single-match it would be too easy for `obj.hidden()` against a generic builder pattern to claim a wildly unrelated `hidden` definition somewhere else in the project. Receiver-bearing edges always go through pass C, which can confirm the relationship via the dep graph. The exact suppression list (`self`, `Self`, `crate`, `super`) lives in `src/calls/resolve.rs`.
+**Receiver gate.** Receiver-bearing calls (`obj.bar()`, `self.x()`, `super::foo()`) are deliberately **not** promoted by pass B. With a global single-match it would be too easy for `obj.hidden()` against a generic builder pattern to claim a wildly unrelated `hidden` definition somewhere else in the project. Receiver-bearing edges always go through pass C, which can confirm the relationship via the dep graph. The exact suppression list (`self`, `Self`, `crate`, `super`, `this`, `$this` — see `receiver_is_self_like`) lives in `src/calls/resolve.rs`.
 
 ### Pass C — dep-graph disambiguation
 

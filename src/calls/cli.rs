@@ -94,15 +94,40 @@ pub fn run_callers(
                     };
                     group.implementations.retain(|i| keep(&i.file));
                     group.constructions.retain(|e| keep(&e.file));
+                    // The filter narrows the query itself; totals report
+                    // the post-filter truth (display truncation below
+                    // leaves them untouched).
+                    group.implementations_total = group.implementations.len();
+                    group.constructions_total = group.constructions.len();
                 }
                 type_groups.push(group);
             }
         }
     }
 
-    let total = hits.len();
+    // Combined true total across every section — callable hits plus type
+    // groups — so `callers <Type> --limit N` cannot report a small total
+    // while printing unbounded implementation/construction lists.
+    let group_total: usize = type_groups
+        .iter()
+        .map(|g| g.implementations.len() + g.constructions.len())
+        .sum();
+    let total = hits.len() + group_total;
     if hits.len() > limit {
         hits.truncate(limit);
+    }
+    // Type groups share the --limit display budget; their true totals stay
+    // on the group (implementations_total / constructions_total).
+    let mut remaining = limit.saturating_sub(hits.len());
+    for g in &mut type_groups {
+        if g.implementations.len() > remaining {
+            g.implementations.truncate(remaining);
+        }
+        remaining -= g.implementations.len();
+        if g.constructions.len() > remaining {
+            g.constructions.truncate(remaining);
+        }
+        remaining -= g.constructions.len();
     }
     // At the default depth 1, "the callers have callers" is expected, not a
     // qualification — a note that fires on most queries trains the reader
@@ -144,10 +169,10 @@ pub fn run_callers(
         );
         unattributed.clear();
     }
-    // The section shares the --limit display budget with the resolved hits;
-    // its header carries its own true total, so nothing is silently cut.
+    // The unattributed section gets whatever display budget the resolved
+    // hits and type groups left; its header carries its own true total, so
+    // nothing is silently cut.
     let unattributed_total = unattributed.len();
-    let remaining = limit.saturating_sub(hits.len());
     if unattributed.len() > remaining {
         unattributed.truncate(remaining);
     }
@@ -219,7 +244,18 @@ pub fn run_callees(
         match c.kind {
             SymbolKind::Callable => {
                 if depth <= 1 {
-                    all_edges.extend(traverse::callees_one_hop(calls, &c.qn));
+                    let edges = traverse::callees_one_hop(calls, &c.qn);
+                    // The one-hop fast path must still report the frontier:
+                    // a resolved direct callee with outgoing calls of its
+                    // own means --depth 1 stopped a walk that had edges
+                    // left. JSON consumers read this flag at any depth.
+                    frontier_truncated |= edges.iter().any(|e| match &e.target {
+                        CallTarget::Resolved(qn) => {
+                            calls.forward.get(qn).is_some_and(|out| !out.is_empty())
+                        }
+                        _ => false,
+                    });
+                    all_edges.extend(edges);
                 } else {
                     let info = traverse::callees_info(calls, &c.qn, depth.max(1));
                     frontier_truncated |= info.frontier_truncated;
@@ -293,6 +329,10 @@ pub struct TypeCallersGroup {
     pub kind: String,
     pub implementations: Vec<ImplHit>,
     pub constructions: Vec<CallEdge>,
+    /// True counts before `--limit` trimmed the display; set alongside any
+    /// truncation so a capped section is never mistaken for a complete one.
+    pub implementations_total: usize,
+    pub constructions_total: usize,
 }
 
 /// Inverse of `TypeCallersGroup` on the *type relationship* graph: walks
@@ -408,11 +448,15 @@ pub(crate) fn collect_type_callers(calls: &CallGraph, type_qn: &Qn) -> TypeCalle
     constructions.sort_by(|a, b| a.file.cmp(&b.file).then(a.line.cmp(&b.line)));
     constructions.dedup_by(|a, b| a.file == b.file && a.line == b.line && a.source == b.source);
 
+    let implementations_total = implementations.len();
+    let constructions_total = constructions.len();
     TypeCallersGroup {
         target_qn: type_qn.clone(),
         kind,
         implementations,
         constructions,
+        implementations_total,
+        constructions_total,
     }
 }
 

@@ -368,3 +368,79 @@ fn max_members_caps_the_same_declarations_in_text_and_json() {
         "module children must not be capped in JSON either: {json}"
     );
 }
+
+#[test]
+fn max_members_counts_raw_declarations_even_with_overloads() {
+    // Overloads collapse into one display token, but the cap and the
+    // "+N more" count apply to raw declarations — the same unit JSON's
+    // `dropped_members` counts (PR #38 review).
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path().join("Over.java");
+    std::fs::write(
+        &p,
+        "public class Over {\n\
+         \x20 public void f(int a) {}\n\
+         \x20 public void f(String a) {}\n\
+         \x20 public void f(double a) {}\n\
+         \x20 public void g() {}\n\
+         }\n",
+    )
+    .unwrap();
+    let p = p.to_str().unwrap();
+
+    let text = run(&["map", p, "--detail", "names", "--max-members", "1"]);
+    assert!(
+        text.contains("+3 more"),
+        "raw-declaration drop count expected:\n{text}"
+    );
+    let json = run(&["map", p, "--max-members", "1", "--json", "--compact"]);
+    let doc: serde_json::Value = serde_json::from_str(json.trim()).expect("valid json");
+    assert_eq!(
+        doc["files"][0]["dropped_members"], 3,
+        "text +N and JSON dropped_members must agree: {json}"
+    );
+}
+
+#[test]
+fn free_functions_are_not_capped_by_max_members() {
+    // `--max-members` caps members *of a type*; module-level free functions
+    // stay complete in text, matching the JSON payload (PR #38 review).
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path().join("free.rs");
+    std::fs::write(&p, "pub fn a() {}\npub fn b() {}\npub fn c() {}\n").unwrap();
+    let p = p.to_str().unwrap();
+    let text = run(&["map", p, "--detail", "names", "--max-members", "1"]);
+    for f in ["a", "b", "c"] {
+        assert!(
+            text.contains(&format!("{f}()")),
+            "free fn {f} must not be capped:\n{text}"
+        );
+    }
+}
+
+#[test]
+fn names_detail_honors_no_attrs_and_no_lines() {
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path().join("attrs.rs");
+    std::fs::write(
+        &p,
+        "#[derive(Debug)]\npub struct S {\n    pub x: u32,\n}\n",
+    )
+    .unwrap();
+    let p = p.to_str().unwrap();
+
+    let with = run(&["map", p, "--detail", "names"]);
+    assert!(
+        with.contains("derive") && with.contains("L2-4"),
+        "attrs + line ranges expected by default:\n{with}"
+    );
+    let without = run(&["map", p, "--detail", "names", "--no-attrs", "--no-lines"]);
+    assert!(
+        !without.contains("derive"),
+        "--no-attrs must drop attrs in names detail:\n{without}"
+    );
+    assert!(
+        !without.contains("L2-4"),
+        "--no-lines must drop line suffixes in names detail:\n{without}"
+    );
+}

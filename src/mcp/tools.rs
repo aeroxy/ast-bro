@@ -30,7 +30,7 @@ pub fn list() -> Value {
                         "no_docs":    { "type": "boolean", "description": "Hide doc comments." },
                         "no_attrs":   { "type": "boolean", "description": "Hide attributes / decorators." },
                         "no_lines":   { "type": "boolean", "description": "Hide line-range suffixes." },
-                        "max_members": { "type": "integer", "description": "Cap members shown per type; the output reports what was cut." },
+                        "max_members": { "type": "integer", "minimum": 0, "description": "Cap members shown per type; the output reports what was cut." },
                         "glob":       { "type": "string",  "description": "Glob filter applied during directory walk." },
                         "json":       { "type": "boolean", "description": "Return JSON (schema `ast-bro.map.v1`) instead of text." }
                     },
@@ -51,7 +51,7 @@ pub fn list() -> Value {
                         },
                         "include_private": { "type": "boolean" },
                         "include_fields":  { "type": "boolean" },
-                        "max_members":     { "type": "integer", "description": "Cap members per type (default 50); the output reports what was cut." },
+                        "max_members":     { "type": "integer", "minimum": 0, "description": "Cap members per type (default 50); the output reports what was cut." },
                         "glob":            { "type": "string", "description": "Glob filter applied during directory walk." },
                         "json":            { "type": "boolean" }
                     },
@@ -519,6 +519,8 @@ fn run_map(args: Value) -> CallResult {
         let d_opts = DigestOptions {
             include_private: !a.no_private,
             include_fields: !a.no_fields,
+            include_attributes: !a.no_attrs,
+            include_line_numbers: !a.no_lines,
             max_members_per_type: a.max_members.unwrap_or(usize::MAX),
             max_heading_depth: 3,
         };
@@ -578,6 +580,7 @@ fn run_digest(args: Value) -> CallResult {
             include_fields: a.include_fields,
             max_members_per_type: a.max_members,
             max_heading_depth: 3,
+            ..DigestOptions::default()
         };
         let root = if a.paths.len() == 1 && a.paths[0].is_dir() {
             Some(a.paths[0].as_path())

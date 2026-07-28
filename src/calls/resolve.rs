@@ -113,8 +113,23 @@ pub fn run_with_table(
                         .or_else(|| local_qn_by_name.get(&raw.bare_name).cloned())
                 } else {
                     raw.receiver.as_deref().and_then(|recv| {
-                        let scoped = format!("::{}::{}", recv, raw.bare_name);
-                        fp.defined.iter().find(|q| q.0.ends_with(&scoped)).cloned()
+                        // Receivers can arrive namespace-qualified
+                        // (`Foo\Greeter::m()` in PHP, `a::b::Type::m()`
+                        // elsewhere). Normalize the separators and try the
+                        // full path first, then fall back to the terminal
+                        // segment so a self-referencing FQN still binds.
+                        let normalized = recv.replace(['\\', '.'], "::");
+                        let full = format!("::{}::{}", normalized, raw.bare_name);
+                        fp.defined
+                            .iter()
+                            .find(|q| q.0.ends_with(&full))
+                            .or_else(|| {
+                                let last =
+                                    normalized.rsplit("::").next().unwrap_or(normalized.as_str());
+                                let scoped = format!("::{}::{}", last, raw.bare_name);
+                                fp.defined.iter().find(|q| q.0.ends_with(&scoped))
+                            })
+                            .cloned()
                     })
                 };
                 if let Some(qn) = local_target {

@@ -131,7 +131,7 @@ fn implements_unknown_type_exits_2_on_stderr() {
     assert_eq!(code, Some(2), "stderr:\n{stderr}");
     assert!(stdout.is_empty(), "stdout must be empty:\n{stdout}");
     assert!(
-        stderr.contains("no declaration named"),
+        stderr.contains("no type named"),
         "expected symbol-not-found on stderr:\n{stderr}"
     );
 }
@@ -289,4 +289,15 @@ fn map_on_small_input_stays_quiet() {
         !stderr.contains("# hint:"),
         "small directories must not nag:\n{stderr}"
     );
+}
+
+#[test]
+fn implements_function_name_exits_2() {
+    // Only *type* declarations validate an `implements` target: a function
+    // named like the query must not produce an authoritative "0 match(es)"
+    // (PR #38 review).
+    let (code, stdout, stderr) = run(&["implements", "find_symbols", "src/"]);
+    assert_eq!(code, Some(2), "stderr:\n{stderr}");
+    assert!(stdout.is_empty(), "stdout:\n{stdout}");
+    assert!(stderr.contains("no type named"), "stderr:\n{stderr}");
 }

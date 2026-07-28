@@ -1969,3 +1969,74 @@ class Other:
         "a receiver named `parent` must not bind Exact to a same-file homonym:\n{out}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// PR #38 review — frontier reporting on the callees one-hop path, and the
+// --limit budget applied to type-caller groups.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn callees_depth1_reports_frontier_in_json() {
+    // a → b → c: at the default depth 1, `callees a` shows only b, and the
+    // JSON flag must say the walk stopped with edges left (b calls c).
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(&root.join("Cargo.toml"), "[package]\nname=\"x\"\nversion=\"0.0.0\"\nedition=\"2021\"\n");
+    write(
+        &root.join("src/lib.rs"),
+        "pub fn c() {}\npub fn b() { c(); }\npub fn a() { b(); }\n",
+    );
+    let (out, code) = run_in(root, &["callees", "a", ".", "--json", "--compact", "--rebuild"]);
+    assert_eq!(code, 0, "{out}");
+    let doc: serde_json::Value = serde_json::from_str(out.trim()).expect("valid json");
+    assert_eq!(
+        doc["frontier_truncated"], true,
+        "depth-1 one-hop path must still report the frontier: {out}"
+    );
+
+    // A leaf callee (c calls nothing): flag stays false.
+    let (out, code) = run_in(root, &["callees", "b", ".", "--json", "--compact"]);
+    assert_eq!(code, 0, "{out}");
+    let doc: serde_json::Value = serde_json::from_str(out.trim()).expect("valid json");
+    assert_eq!(doc["frontier_truncated"], false, "{out}");
+}
+
+#[test]
+fn callers_limit_bounds_type_groups_too() {
+    // A trait with three implementors and three construction sites: --limit 2
+    // must bound the *combined* display, with true totals in the JSON.
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(&root.join("Cargo.toml"), "[package]\nname=\"x\"\nversion=\"0.0.0\"\nedition=\"2021\"\n");
+    write(
+        &root.join("src/lib.rs"),
+        "pub trait Widget { fn go(&self); }\n\
+         pub struct A; impl Widget for A { fn go(&self) {} }\n\
+         pub struct B; impl Widget for B { fn go(&self) {} }\n\
+         pub struct C; impl Widget for C { fn go(&self) {} }\n",
+    );
+    let (out, code) = run_in(root, &["callers", "Widget", ".", "--limit", "2", "--json", "--compact", "--rebuild"]);
+    assert_eq!(code, 0, "{out}");
+    let doc: serde_json::Value = serde_json::from_str(out.trim()).expect("valid json");
+    let group = &doc["types"][0];
+    let impls_shown = group["implementations"].as_array().unwrap().len();
+    let impls_total = group["implementations_total"].as_u64().unwrap() as usize;
+    assert_eq!(impls_total, 3, "true total must survive truncation: {out}");
+    assert!(
+        impls_shown <= 2,
+        "type-group rows must respect --limit (got {impls_shown}): {out}"
+    );
+    assert_eq!(group["truncated"], true, "{out}");
+    assert_eq!(
+        doc["truncated"], true,
+        "top-level truncated must reflect the combined shown count: {out}"
+    );
+
+    // Text: the section header carries the true total plus a showing note.
+    let (out, code) = run_in(root, &["callers", "Widget", ".", "--limit", "2"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(
+        out.contains("3 implementation(s)") && out.contains("showing 2"),
+        "capped section must say so:\n{out}"
+    );
+}
