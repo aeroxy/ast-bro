@@ -88,6 +88,59 @@ pub fn callers_info<F: Fn(&CallEdge) -> bool>(
     )
 }
 
+/// Multi-source reverse BFS: one pass over the graph for a batch of
+/// `(seed, base_depth)` pairs, reporting each caller once at its minimum
+/// total depth (`base_depth` + distance from that seed). Equivalent to
+/// running `callers` from every seed and keeping the min-depth hit per
+/// node — but without re-walking the shared upstream cone once per seed,
+/// which made `impact` on widely-constructed types quadratic-ish. Seeds
+/// themselves are never reported; `max_total_depth` caps the walk.
+pub fn callers_multi<F: Fn(&CallEdge) -> bool>(
+    graph: &CallGraph,
+    seeds: &[(Qn, usize)],
+    max_total_depth: usize,
+    predicate: F,
+) -> Vec<CallHit> {
+    // Sorted seeds + FIFO expansion keep the queue depth-monotonic, so the
+    // first visit to a node is at its minimum total depth (the plain BFS
+    // invariant, extended to non-uniform starting depths).
+    let mut sorted: Vec<&(Qn, usize)> = seeds.iter().collect();
+    sorted.sort_by_key(|(_, d)| *d);
+    let mut seen: HashSet<Qn> = HashSet::new();
+    let mut reported: HashSet<Qn> = HashSet::new();
+    let mut q: VecDeque<(Qn, usize)> = VecDeque::new();
+    for (qn, depth) in sorted {
+        if *depth < max_total_depth && seen.insert(qn.clone()) {
+            q.push_back((qn.clone(), *depth));
+        }
+        reported.insert(qn.clone());
+    }
+    let mut out = Vec::new();
+    while let Some((cur, depth)) = q.pop_front() {
+        if depth >= max_total_depth {
+            continue;
+        }
+        for e in graph.reverse.get(&cur).cloned().unwrap_or_default() {
+            let next = e.source.clone();
+            let first_visit = seen.insert(next.clone());
+            // `reported` dedups output separately from traversal, so a node
+            // first reached via a predicate-rejected edge can still be
+            // reported when a later qualifying edge points at it.
+            if predicate(&e) && !reported.contains(&next) {
+                reported.insert(next.clone());
+                out.push(CallHit {
+                    depth: depth + 1,
+                    edge: e,
+                });
+            }
+            if first_visit {
+                q.push_back((next, depth + 1));
+            }
+        }
+    }
+    out
+}
+
 /// Bare edges that *name* one of `targets` but were never attributed to a
 /// node, so the reverse index (and therefore the `callers` BFS) can't see
 /// them. An edge counts when a target qn survives in its candidate set,

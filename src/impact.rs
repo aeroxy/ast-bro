@@ -339,6 +339,11 @@ fn compute_impact(
                     .or_insert((depth, file.to_path_buf(), line, conf));
             };
 
+        // Seeds for one shared multi-source walk below — one reverse BFS per
+        // construction site re-walks the same upstream cone over and over on
+        // widely-constructed types (PR #38 review).
+        let mut ctor_walk_seeds: Vec<(Qn, usize)> = Vec::new();
+
         // Callables that construct the target type itself are depth-1
         // dependents: shown in the callers section, recorded here for the
         // affected-tests section, and used as seeds for the deeper walk. They
@@ -358,24 +363,10 @@ fn compute_impact(
                     edge: e.clone(),
                 });
             }
-            // Callers of the constructors are depth-2+ dependents.
+            // Callers of the constructors are depth-2+ dependents — seeded
+            // into the shared walk below.
             if opts.depth > 1 {
-                for h in traverse::callers(
-                    calls,
-                    &e.source,
-                    opts.depth - 1,
-                    usize::MAX,
-                    keep_by_test_flags,
-                ) {
-                    consider(
-                        &mut cand,
-                        h.depth + 1,
-                        &h.edge.source,
-                        &h.edge.file,
-                        h.edge.line,
-                        h.edge.confidence,
-                    );
-                }
+                ctor_walk_seeds.push((e.source.clone(), 1));
             }
         }
 
@@ -418,26 +409,26 @@ fn compute_impact(
                         }
                         consider(&mut cand, 2, &e.source, &e.file, e.line, e.confidence);
                         if opts.depth > 2 {
-                            for h in traverse::callers(
-                                calls,
-                                &e.source,
-                                opts.depth - 2,
-                                usize::MAX,
-                                keep_by_test_flags,
-                            ) {
-                                consider(
-                                    &mut cand,
-                                    h.depth + 2,
-                                    &h.edge.source,
-                                    &h.edge.file,
-                                    h.edge.line,
-                                    h.edge.confidence,
-                                );
-                            }
+                            ctor_walk_seeds.push((e.source.clone(), 2));
                         }
                     }
                 }
             }
+        }
+
+        // One multi-source walk over the reverse graph replaces a BFS per
+        // construction site; hit depths arrive as base + distance, and
+        // `consider` still collapses to the per-qn minimum.
+        for h in traverse::callers_multi(calls, &ctor_walk_seeds, opts.depth, keep_by_test_flags)
+        {
+            consider(
+                &mut cand,
+                h.depth,
+                &h.edge.source,
+                &h.edge.file,
+                h.edge.line,
+                h.edge.confidence,
+            );
         }
 
         // Emit each transitive dependent once, at its resolved minimum depth.

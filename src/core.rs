@@ -269,6 +269,8 @@ impl Default for MapOptions {
 pub struct DigestOptions {
     pub include_private: bool,
     pub include_fields: bool,
+    pub include_attributes: bool,
+    pub include_line_numbers: bool,
     pub max_members_per_type: usize,
     pub max_heading_depth: usize,
 }
@@ -278,6 +280,8 @@ impl Default for DigestOptions {
         Self {
             include_private: false,
             include_fields: false,
+            include_attributes: true,
+            include_line_numbers: true,
             max_members_per_type: 50,
             max_heading_depth: 3,
         }
@@ -874,7 +878,11 @@ fn _digest_one(result: &ParseResult, opts: &DigestOptions) -> Vec<String> {
         // Inline attrs (e.g. `#[derive(Debug)]`, `@dataclass`) before the
         // kind keyword. The adapter populated `attrs` already; we just
         // surface a short joined form (skip overly long attr lists).
-        let attrs_inline = _format_inline_attrs(&t.attrs);
+        let attrs_inline = if opts.include_attributes {
+            _format_inline_attrs(&t.attrs)
+        } else {
+            String::new()
+        };
         if !attrs_inline.is_empty() {
             header.push_str(&attrs_inline);
             header.push(' ');
@@ -903,30 +911,35 @@ fn _digest_one(result: &ParseResult, opts: &DigestOptions) -> Vec<String> {
         if t.deprecated {
             header.push_str(&format!(" {}", "[deprecated]".red()));
         }
-        header.push_str(&t.lines_suffix());
+        if opts.include_line_numbers {
+            header.push_str(&t.lines_suffix());
+        }
         lines.push(header);
 
         let members = _digest_members(&t, opts);
         if !members.is_empty() {
-            let collapsed = _collapse_overloads(members.iter().map(|d| (*d).clone()).collect());
-            let shown = &collapsed[..std::cmp::min(collapsed.len(), opts.max_members_per_type)];
-            let tokens: Vec<String> = shown.iter().map(_format_member_token).collect();
+            // Cap the *raw* member list, then collapse survivors for
+            // display — so the "+N more" count and the JSON payload's
+            // `dropped_members` count the same declarations even when
+            // overloads collapse into one token.
+            let cap = std::cmp::min(members.len(), opts.max_members_per_type);
+            let dropped = members.len() - cap;
+            let collapsed =
+                _collapse_overloads(members[..cap].iter().map(|d| (*d).clone()).collect());
+            let tokens: Vec<String> = collapsed.iter().map(_format_member_token).collect();
             lines.extend(_wrap_tokens(&tokens, 100, "      "));
-            if collapsed.len() > shown.len() {
-                lines.push(
-                    format!("      ... +{} more", collapsed.len() - shown.len())
-                        .dimmed()
-                        .to_string(),
-                );
+            if dropped > 0 {
+                lines.push(format!("      ... +{} more", dropped).dimmed().to_string());
             }
         }
     }
 
     if !free_functions.is_empty() {
+        // Free functions are not members of a type, so `--max-members`
+        // does not apply — matching the JSON payload, which never caps
+        // them. Capping here without a marker was silent truncation.
         let collapsed = _collapse_overloads(free_functions.iter().map(|d| (*d).clone()).collect());
-        let shown =
-            &collapsed[..std::cmp::min(collapsed.len(), opts.max_members_per_type)];
-        let tokens: Vec<String> = shown.iter().map(_format_member_token).collect();
+        let tokens: Vec<String> = collapsed.iter().map(_format_member_token).collect();
         lines.extend(_wrap_tokens(&tokens, 100, "    "));
     }
 

@@ -848,16 +848,7 @@ fn exit_with_parse_error(e: clap::Error) -> ! {
             err = err.hint(h);
         }
         // Human text already printed via clap above; emit only the envelope.
-        let mut doc = serde_json::json!({
-            "schema": crate::cli_error::JSON_SCHEMA_ERROR,
-            "command": err.command,
-            "kind": err.kind.as_str(),
-            "detail": err.detail,
-        });
-        if let Some(h) = &err.hint {
-            doc["hint"] = serde_json::json!(h);
-        }
-        eprintln!("{}", doc);
+        err.emit_json_only();
     }
     std::process::exit(kind.exit_code());
 }
@@ -981,6 +972,8 @@ fn run_map_digest(a: &MapArgs, digest_alias: bool) {
             let opts = DigestOptions {
                 include_private,
                 include_fields,
+                include_attributes: !a.no_attrs,
+                include_line_numbers: !a.no_lines,
                 max_members_per_type: max_members.unwrap_or(usize::MAX),
                 max_heading_depth: 3,
             };
@@ -1214,14 +1207,21 @@ pub fn run() {
                 // Distinguish "this type has no implementations" (a real,
                 // interesting answer: exit 0) from "no such type anywhere"
                 // (the query could not run as asked: exit 2) — issue #36.
-                let target_exists = results
-                    .iter()
-                    .any(|r| !crate::core::find_symbols(r, target).is_empty());
+                // Only *type* declarations count as proof: a function named
+                // `helper` must not validate `implements helper`.
+                let target_exists = results.iter().any(|r| {
+                    crate::core::find_symbols(r, target).iter().any(|m| {
+                        matches!(
+                            m.kind.as_str(),
+                            "class" | "struct" | "interface" | "record" | "enum"
+                        )
+                    })
+                });
                 if !target_exists {
                     crate::cli_error::CliError::new(
                         "implements",
                         crate::cli_error::ErrorKind::SymbolNotFound,
-                        format!("no declaration named '{}' in the given path(s)", target),
+                        format!("no type named '{}' in the given path(s)", target),
                     )
                     .hint("A 0-match answer is only reported for types that exist. Check the spelling or widen the search path.")
                     .exit(*json);
@@ -1426,10 +1426,16 @@ pub fn run() {
                 Err(e) => {
                     use crate::surface::SurfaceError;
                     let kind = match &e {
-                        SurfaceError::NoEntryPoint { .. } | SurfaceError::Io { .. } => {
+                        SurfaceError::NoEntryPoint { .. } => {
                             crate::cli_error::ErrorKind::PathNotFound
                         }
-                        SurfaceError::Parse { .. } => crate::cli_error::ErrorKind::IndexError,
+                        // The path was verified to exist above, so a
+                        // surviving Io error is a read/permission failure —
+                        // an internal failure (exit 1), not a wrong path an
+                        // agent should retry differently.
+                        SurfaceError::Io { .. } | SurfaceError::Parse { .. } => {
+                            crate::cli_error::ErrorKind::IndexError
+                        }
                         SurfaceError::BadOverride(_) => crate::cli_error::ErrorKind::BadArgument,
                     };
                     crate::cli_error::CliError::new("surface", kind, e.to_string()).exit(json_on);

@@ -81,6 +81,30 @@ impl CliError {
         self
     }
 
+    /// The `ast-bro.error.v1` envelope — the single place its shape lives,
+    /// so the parse-error path and `emit` cannot drift apart.
+    pub fn envelope(&self) -> serde_json::Value {
+        let mut doc = json!({
+            "schema": JSON_SCHEMA_ERROR,
+            "command": self.command,
+            "kind": self.kind.as_str(),
+            "detail": self.detail,
+        });
+        if let Some(h) = &self.hint {
+            doc["hint"] = json!(h);
+        }
+        for (k, v) in &self.extra {
+            doc[k.as_str()] = v.clone();
+        }
+        doc
+    }
+
+    /// Envelope only, no human text — for call sites that already printed a
+    /// rendered message (e.g. clap parse errors).
+    pub fn emit_json_only(&self) {
+        eprintln!("{}", self.envelope());
+    }
+
     /// Print the rejection to stderr — human text always, plus the JSON
     /// envelope when the caller asked for `--json` — and return the exit
     /// code to use. Never touches stdout.
@@ -92,19 +116,7 @@ impl CliError {
             }
         }
         if json_mode {
-            let mut doc = json!({
-                "schema": JSON_SCHEMA_ERROR,
-                "command": self.command,
-                "kind": self.kind.as_str(),
-                "detail": self.detail,
-            });
-            if let Some(h) = &self.hint {
-                doc["hint"] = json!(h);
-            }
-            for (k, v) in &self.extra {
-                doc[k.as_str()] = v.clone();
-            }
-            eprintln!("{}", doc);
+            self.emit_json_only();
         }
         self.kind.exit_code()
     }

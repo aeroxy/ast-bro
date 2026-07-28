@@ -28,11 +28,17 @@ impl Truncation {
     /// `" (showing N; raise --limit to see the rest)"` when the display
     /// was cut, empty otherwise.
     fn header_suffix(&self, shown: usize) -> String {
-        if self.total > shown {
-            format!(" (showing {}; raise --limit to see the rest)", shown)
-        } else {
-            String::new()
-        }
+        section_suffix(self.total, shown)
+    }
+}
+
+/// Shared "(showing N; …)" suffix for any section whose display count fell
+/// short of its true total.
+fn section_suffix(total: usize, shown: usize) -> String {
+    if total > shown {
+        format!(" (showing {}; raise --limit to see the rest)", shown)
+    } else {
+        String::new()
     }
 }
 
@@ -105,11 +111,10 @@ pub fn render_callers_text_extended(
     trunc: &Truncation,
 ) -> String {
     let mut out = String::new();
-    let total: usize = trunc.total
-        + type_groups
-            .iter()
-            .map(|g| g.implementations.len() + g.constructions.len())
-            .sum::<usize>();
+    // `trunc.total` is the combined true total (callable hits + type
+    // groups, pre-truncation) computed by the caller; compare it against
+    // the combined shown count so a capped section can never read as
+    // complete just because another section inflated `shown`.
     let shown = hits.len()
         + type_groups
             .iter()
@@ -117,7 +122,7 @@ pub fn render_callers_text_extended(
             .sum::<usize>();
     out.push_str(&header_line_suffixed(
         "caller",
-        total,
+        trunc.total,
         target,
         &trunc.header_suffix(shown),
     ));
@@ -128,13 +133,18 @@ pub fn render_callers_text_extended(
     }
 
     for g in type_groups {
-        if !g.implementations.is_empty() {
+        // Headers carry the section's true total; a `--limit`-trimmed
+        // section says so instead of passing its shortened list off as
+        // complete (the header renders even when trimmed to zero rows).
+        if g.implementations_total > 0 {
+            let suffix = section_suffix(g.implementations_total, g.implementations.len());
             out.push_str(&format!(
-                "\n{} {} {} of {}:\n",
+                "\n{} {} {} of {}{}:\n",
                 "##".dimmed(),
-                g.implementations.len().to_string().bold(),
+                g.implementations_total.to_string().bold(),
                 "implementation(s)",
                 format!("{} {}", g.kind, g.target_qn.name()).yellow(),
+                suffix.dimmed(),
             ));
             for i in &g.implementations {
                 out.push_str(&format!(
@@ -146,13 +156,15 @@ pub fn render_callers_text_extended(
                 ));
             }
         }
-        if !g.constructions.is_empty() {
+        if g.constructions_total > 0 {
+            let suffix = section_suffix(g.constructions_total, g.constructions.len());
             out.push_str(&format!(
-                "\n{} {} {} of {}:\n",
+                "\n{} {} {} of {}{}:\n",
                 "##".dimmed(),
-                g.constructions.len().to_string().bold(),
+                g.constructions_total.to_string().bold(),
                 "construction(s)",
                 format!("{} {}", g.kind, g.target_qn.name()).yellow(),
+                suffix.dimmed(),
             ));
             for e in &g.constructions {
                 out.push_str(&format!(
@@ -489,6 +501,10 @@ pub fn render_callers_json_extended(
                 "kind": g.kind,
                 "implementations": impls,
                 "constructions": ctors,
+                "implementations_total": g.implementations_total,
+                "constructions_total": g.constructions_total,
+                "truncated": g.implementations_total > g.implementations.len()
+                    || g.constructions_total > g.constructions.len(),
             })
         })
         .collect();
@@ -498,7 +514,14 @@ pub fn render_callers_json_extended(
         "target": target,
         "depth": depth,
         "total": trunc.total,
-        "truncated": trunc.total > hits.len(),
+        // Combined-shown vs combined-total, matching the text header: type
+        // groups count toward both sides, so a truncated callable list is
+        // reported even when groups pad the shown count (PR #38 review).
+        "truncated": trunc.total > hits.len()
+            + type_groups
+                .iter()
+                .map(|g| g.implementations.len() + g.constructions.len())
+                .sum::<usize>(),
         "frontier_truncated": trunc.frontier_truncated,
         "matches": matches,
         "types": type_views,
