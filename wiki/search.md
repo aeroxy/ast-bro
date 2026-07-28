@@ -62,7 +62,8 @@ same masking path as language/scope/tombstone filtering.
 src/search/
 ├── tokens.rs      identifier extraction + camel/snake split
 ├── bm25.rs        sparse BM25 (lucene variant), get_scores(tokens, mask)
-├── chunker.rs     AST-aware chunking via ast-grep + tree-sitter-md (markdown)
+├── chunker.rs     chunking: ast-grep decls, tree-sitter-md sections (markdown),
+│                  blank-line paragraphs (toml / powershell)
 ├── download.rs    HF probe + hf-mirror fallback + sha256 manifest
 ├── embed.rs       safetensors mmap + tokenizer.json + cosine_topk (SIMD via wide)
 ├── fusion.rs      RRF (k=60) + alpha resolver
