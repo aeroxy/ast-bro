@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 
 mod adapters;
 mod calls;
+mod cli_error;
 mod context;
 mod core;
 mod deps;
@@ -36,30 +37,12 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     /// Map files or directories — signatures with line ranges, no method bodies.
-    Map {
-        /// Files or directories to map.
-        #[arg(num_args = 1..)]
-        paths: Vec<PathBuf>,
-
-        #[arg(long)]
-        no_private: bool,
-        #[arg(long)]
-        no_fields: bool,
-        #[arg(long)]
-        no_docs: bool,
-        #[arg(long)]
-        no_attrs: bool,
-        #[arg(long)]
-        no_lines: bool,
-        #[arg(long)]
-        glob: Option<String>,
-        /// Emit output as JSON instead of text
-        #[arg(long)]
-        json: bool,
-        /// With --json: emit compact (single-line) JSON instead of pretty-printed
-        #[arg(long)]
-        compact: bool,
-    },
+    ///
+    /// Three orthogonal axes (issue #37): detail (`--detail names|signatures|full`),
+    /// visibility (`--no-private`, `--no-fields`, …), and scope (`--glob`,
+    /// `--max-members`). `--preset digest` = `--detail names --no-private
+    /// --no-fields --max-members 50`; explicit flags override the preset.
+    Map(MapArgs),
     /// Extract source of a symbol
     Show {
         path: PathBuf,
@@ -95,24 +78,8 @@ enum Commands {
         #[arg(long)]
         compact: bool,
     },
-    /// One-page module map
-    Digest {
-        #[arg(num_args = 1..)]
-        paths: Vec<PathBuf>,
-
-        #[arg(long)]
-        include_private: bool,
-        #[arg(long)]
-        include_fields: bool,
-        #[arg(long, default_value_t = 50)]
-        max_members: usize,
-        /// Emit output as JSON instead of text
-        #[arg(long)]
-        json: bool,
-        /// With --json: emit compact (single-line) JSON
-        #[arg(long)]
-        compact: bool,
-    },
+    /// One-page module map — alias for `map --preset digest`.
+    Digest(MapArgs),
     /// Find subclasses / implementations
     Implements {
         target: String,
@@ -420,6 +387,10 @@ enum Commands {
         symbol: Option<String>,
         #[arg(long, default_value_t = 1)]
         depth: usize,
+        /// Cap the number of callees shown (the header always reports the
+        /// true total).
+        #[arg(long, default_value_t = 200)]
+        limit: usize,
         /// Hide unresolved callees (the `Bare`/`External` bucket).
         /// Shown by default (tagged cyan/red); set this flag to drop them.
         #[arg(long)]
@@ -554,6 +525,73 @@ enum Commands {
     },
 }
 
+/// Shared argument set for `map` and its `digest` alias (issue #37). The
+/// two subcommands are one command internally — same walk, same
+/// `Declaration` IR, byte-identical `--json` — differing only in which
+/// preset applies.
+#[derive(clap::Args)]
+struct MapArgs {
+    /// Files or directories to map.
+    #[arg(num_args = 1..)]
+    paths: Vec<PathBuf>,
+
+    /// Detail level: `full` (signatures + docs), `signatures` (signatures,
+    /// no docs), `names` (bare member names — the digest renderer).
+    /// Defaults to `full` for `map`, `names` under `--preset digest` /
+    /// the `digest` alias.
+    #[arg(long, value_enum)]
+    detail: Option<DetailLevel>,
+
+    /// Named preset. `digest` = `--detail names --no-private --no-fields
+    /// --max-members 50`. Explicit flags override the preset.
+    #[arg(long, value_enum)]
+    preset: Option<MapPreset>,
+
+    #[arg(long)]
+    no_private: bool,
+    #[arg(long)]
+    no_fields: bool,
+    #[arg(long)]
+    no_docs: bool,
+    #[arg(long)]
+    no_attrs: bool,
+    #[arg(long)]
+    no_lines: bool,
+
+    /// Include private members (overrides a preset that hides them).
+    #[arg(long, conflicts_with = "no_private")]
+    include_private: bool,
+    /// Include fields (overrides a preset that hides them).
+    #[arg(long, conflicts_with = "no_fields")]
+    include_fields: bool,
+
+    /// Cap members shown per type, at any detail level.
+    #[arg(long)]
+    max_members: Option<usize>,
+    /// Only walk files matching this glob (e.g. '*.java').
+    #[arg(long)]
+    glob: Option<String>,
+
+    /// Emit output as JSON instead of text
+    #[arg(long)]
+    json: bool,
+    /// With --json: emit compact (single-line) JSON instead of pretty-printed
+    #[arg(long)]
+    compact: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+enum DetailLevel {
+    Names,
+    Signatures,
+    Full,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+enum MapPreset {
+    Digest,
+}
+
 pub(crate) fn parse_file(path: &Path) -> Option<ParseResult> {
     crate::main_helpers::parse_file_for_hook(path)
 }
@@ -649,7 +687,9 @@ fn build_filtered_walker(
         .flat_map(|p| {
             let expanded = path_glob::expand_existing(p);
             if expanded.is_empty() {
-                println!("# note: path not found: {}", p.display());
+                // Diagnostics never go to stdout (issue #36); callers that
+                // pre-validate via `require_paths` won't reach this.
+                eprintln!("# note: path not found: {}", p.display());
             }
             expanded
         })
@@ -737,66 +777,288 @@ pub(crate) fn walk_and_parse(paths: &[PathBuf], glob_str: Option<&str>) -> Vec<P
     results
 }
 
+/// Rejected argument list → stderr + exit 2 (issue #36). Keeps clap's own
+/// rendering (it already includes usage and did-you-mean suggestions), adds
+/// a cross-subcommand hint when the offending flag exists on a sibling
+/// subcommand, and emits the `ast-bro.error.v1` envelope when `--json` was
+/// among the raw args.
+fn exit_with_parse_error(e: clap::Error) -> ! {
+    use clap::error::{ContextKind, ContextValue, ErrorKind};
+    use clap::CommandFactory;
+
+    let raw: Vec<String> = std::env::args().skip(1).collect();
+    let json_mode = raw.iter().any(|a| a == "--json");
+    let subcommand = raw
+        .iter()
+        .find(|a| !a.starts_with('-'))
+        .cloned()
+        .unwrap_or_else(|| "ast-bro".to_string());
+
+    let invalid_arg = e.get(ContextKind::InvalidArg).and_then(|v| match v {
+        ContextValue::String(s) => Some(s.clone()),
+        _ => None,
+    });
+
+    // Cross-subcommand hint: `--glob` on `digest` should say it's a `map`
+    // flag, turning the failure into a fix.
+    let mut hint: Option<String> = None;
+    if e.kind() == ErrorKind::UnknownArgument {
+        if let Some(flag) = invalid_arg.as_deref().and_then(|f| f.strip_prefix("--")) {
+            let flag = flag.split('=').next().unwrap_or(flag);
+            let cmd = Cli::command();
+            let hosts: Vec<String> = cmd
+                .get_subcommands()
+                .filter(|sc| {
+                    sc.get_name() != subcommand
+                        && sc.get_arguments().any(|a| a.get_long() == Some(flag))
+                })
+                .map(|sc| sc.get_name().to_string())
+                .collect();
+            if !hosts.is_empty() {
+                hint = Some(format!("`--{}` is a `{}` flag", flag, hosts.join("` / `")));
+            }
+        }
+    }
+
+    // clap prints parse errors (message + usage + suggestion) to stderr.
+    let _ = e.print();
+    if let Some(h) = &hint {
+        eprintln!("  {}", h);
+    }
+
+    let kind = match e.kind() {
+        ErrorKind::UnknownArgument => crate::cli_error::ErrorKind::UnknownFlag,
+        _ => crate::cli_error::ErrorKind::BadArgument,
+    };
+    let detail = match (&invalid_arg, e.kind()) {
+        (Some(flag), ErrorKind::UnknownArgument) => {
+            format!("`{}` has no `{}` flag", subcommand, flag)
+        }
+        _ => e
+            .to_string()
+            .lines()
+            .next()
+            .unwrap_or("invalid arguments")
+            .trim_start_matches("error: ")
+            .to_string(),
+    };
+    if json_mode {
+        let mut err = crate::cli_error::CliError::new(subcommand, kind, detail);
+        if let Some(h) = hint {
+            err = err.hint(h);
+        }
+        // Human text already printed via clap above; emit only the envelope.
+        let mut doc = serde_json::json!({
+            "schema": crate::cli_error::JSON_SCHEMA_ERROR,
+            "command": err.command,
+            "kind": err.kind.as_str(),
+            "detail": err.detail,
+        });
+        if let Some(h) = &err.hint {
+            doc["hint"] = serde_json::json!(h);
+        }
+        eprintln!("{}", doc);
+    }
+    std::process::exit(kind.exit_code());
+}
+
+/// Validate path arguments before walking (issue #33). An empty argument
+/// list (a collapsed shell substitution) or a list where nothing resolves
+/// rejects with exit 2 on stderr; partial misses proceed with a stderr
+/// note. Returns the *original* arguments that resolved (not their
+/// expansions) — the walker expands exactly once, so glob expansion is
+/// never applied twice to the same string.
+fn require_paths(command: &str, paths: &[PathBuf], json_mode: bool) -> Vec<PathBuf> {
+    use crate::cli_error::{CliError, ErrorKind};
+    if paths.is_empty() {
+        CliError::new(
+            command,
+            ErrorKind::NoInput,
+            format!(
+                "`{}` received no paths (0 arguments after the subcommand)",
+                command
+            ),
+        )
+        .hint(format!(
+            "An empty argument list is not an empty codebase: nothing was inspected.\n\
+             If the list came from a shell substitution such as `ast-bro {} $(...)`, the\n\
+             substitution produced nothing. Resolve the files first, check the list is\n\
+             non-empty, then pass the paths explicitly.",
+            command
+        ))
+        .exit(json_mode);
+    }
+    let mut existing: Vec<PathBuf> = Vec::new();
+    let mut missing: Vec<String> = Vec::new();
+    for p in paths {
+        if path_glob::expand_existing(p).is_empty() {
+            missing.push(p.display().to_string());
+        } else {
+            existing.push(p.clone());
+        }
+    }
+    if existing.is_empty() {
+        CliError::new(
+            command,
+            ErrorKind::PathNotFound,
+            format!(
+                "`{}` resolved 0 of {} path(s); nothing was inspected",
+                command,
+                paths.len()
+            ),
+        )
+        .hint(format!(
+            "missing: {}\n\
+             An empty result here means the paths are wrong, not that the code has no declarations.",
+            missing.join(", ")
+        ))
+        .extra("requested", serde_json::json!(paths.len()))
+        .extra("resolved", serde_json::json!(0))
+        .extra("missing", serde_json::json!(missing))
+        .exit(json_mode);
+    }
+    for m in &missing {
+        eprintln!("# note: path not found: {}", m);
+    }
+    existing
+}
+
+/// One handler behind both `map` and `digest` (issue #37). Resolves the
+/// preset first, then lets explicitly-passed flags override it, so
+/// `digest --include-private` and `map --preset digest --max-members 8`
+/// both mean what they say.
+fn run_map_digest(a: &MapArgs, digest_alias: bool) {
+    let command = if digest_alias { "digest" } else { "map" };
+    let paths = require_paths(command, &a.paths, a.json);
+
+    let preset_digest = digest_alias || matches!(a.preset, Some(MapPreset::Digest));
+    let detail = a.detail.unwrap_or(if preset_digest {
+        DetailLevel::Names
+    } else {
+        DetailLevel::Full
+    });
+    let include_private = if a.include_private {
+        true
+    } else if a.no_private {
+        false
+    } else {
+        !preset_digest
+    };
+    let include_fields = if a.include_fields {
+        true
+    } else if a.no_fields {
+        false
+    } else {
+        !preset_digest
+    };
+    let max_members = a.max_members.or(if preset_digest { Some(50) } else { None });
+    // Docs ride only on the `full` detail level (and can still be dropped
+    // there with --no-docs). This also governs the JSON payload, which is
+    // what makes `digest --json` shed its doc-comment weight.
+    let include_docs = matches!(detail, DetailLevel::Full) && !a.no_docs;
+
+    let results = walk_and_parse(&paths, a.glob.as_deref());
+    let pretty = !a.compact;
+    let map_opts = MapOptions {
+        include_private,
+        include_fields,
+        include_docs,
+        include_attributes: !a.no_attrs,
+        include_line_numbers: !a.no_lines,
+        max_doc_lines: 6,
+        max_members,
+    };
+
+    if a.json {
+        println!(
+            "{}",
+            crate::core::render_json_map(&results, &map_opts, pretty)
+        );
+        return;
+    }
+    match detail {
+        DetailLevel::Names => {
+            let opts = DigestOptions {
+                include_private,
+                include_fields,
+                max_members_per_type: max_members.unwrap_or(usize::MAX),
+                max_heading_depth: 3,
+            };
+            let root = if paths.len() == 1 && paths[0].is_dir() {
+                Some(paths[0].as_path())
+            } else {
+                None
+            };
+            println!("{}", crate::core::render_digest(&results, &opts, root));
+        }
+        DetailLevel::Signatures | DetailLevel::Full => {
+            if results.is_empty() {
+                // The paths exist but contain nothing parseable — that's a
+                // real (empty) answer, and stdout must say so rather than
+                // stay silent (issue #33).
+                println!("# 0 parseable file(s) in the given path(s)");
+                return;
+            }
+            let mut out = String::new();
+            for res in &results {
+                out.push_str(&crate::core::render_map(res, &map_opts));
+                out.push_str("\n\n");
+            }
+            println!("{}", out.trim_end());
+            // A directory-wide `map` can balloon past what fits in one
+            // read; point at the digest preset instead of letting the
+            // caller reach for `head` and silently lose the middle
+            // (issue #35). Never redirect — the choice stays with the
+            // caller. Small outputs stay quiet.
+            const HINT_THRESHOLD_BYTES: usize = 25_000;
+            let dir_input = paths.iter().find(|p| p.is_dir());
+            if let Some(dir) = dir_input {
+                if out.len() > HINT_THRESHOLD_BYTES {
+                    eprintln!(
+                        "# hint: this was a directory ({} KB); `{} {} --preset digest --max-members 8` answers the same question in a fraction of the size",
+                        out.len() / 1024,
+                        command,
+                        dir.display(),
+                    );
+                }
+            }
+        }
+    }
+}
+
 pub fn run() {
     use clap::error::ErrorKind;
     use clap::CommandFactory;
 
-    // Agent-friendly arg handling: instead of dying on a typo or unknown
-    // flag, print the help text so the calling agent can self-correct
-    // without a separate `--help` round-trip. `--help` / `--version` keep
-    // their normal exit-0 behaviour; everything else prints help to stdout
-    // and exits 0 too (agents see "output" rather than "error").
+    // Error contract (issue #36): a rejected argument list is an error, not
+    // a result. `--help` / `--version` keep their exit-0 behaviour, and a
+    // bare `ast-bro` (no arguments at all) still prints help on stdout —
+    // that's a request for orientation, not a failed query. Everything
+    // else — unknown flag, unknown subcommand, bad value — goes to stderr
+    // with exit 2, plus an `ast-bro.error.v1` envelope when `--json` was
+    // among the raw args, so a mistyped flag is never mistaken for a
+    // large successful answer.
     let cli = match Cli::try_parse() {
         Ok(c) => c,
         Err(e) => match e.kind() {
             ErrorKind::DisplayHelp | ErrorKind::DisplayVersion => {
                 e.exit();
             }
-            _ => {
+            _ if std::env::args_os().len() <= 1 => {
                 let mut cmd = Cli::command();
                 let _ = cmd.print_help();
                 println!();
-                println!(
-                    "# note: could not parse args ({}). Showing help instead.",
-                    e.kind()
-                );
                 std::process::exit(0);
+            }
+            _ => {
+                exit_with_parse_error(e);
             }
         },
     };
 
     match &cli.command {
-        Commands::Map {
-            paths,
-            no_private,
-            no_fields,
-            no_docs,
-            no_attrs,
-            no_lines,
-            glob,
-            json,
-            compact,
-        } => {
-            let results = walk_and_parse(paths, glob.as_deref());
-            let opts = MapOptions {
-                include_private: !(*no_private),
-                include_fields: !(*no_fields),
-                include_docs: !(*no_docs),
-                include_attributes: !(*no_attrs),
-                include_line_numbers: !(*no_lines),
-                max_doc_lines: 6,
-                max_members: None,
-            };
-            let json_on = *json;
-            let pretty = !(*compact);
-            if json_on {
-                println!("{}", crate::core::render_json_map(&results, &opts, pretty));
-            } else {
-                for res in results {
-                    println!("{}", crate::core::render_map(&res, &opts));
-                    println!();
-                }
-            }
+        Commands::Map(args) => {
+            run_map_digest(args, false);
         }
         Commands::Show {
             path,
@@ -805,69 +1067,84 @@ pub fn run() {
             json,
             compact,
         } => {
+            use crate::cli_error::{CliError, ErrorKind as CliErrorKind};
             if !path.exists() {
-                println!("# note: path not found: {}", path.display());
-            } else if let Some(res) = parse_file(path) {
-                let mut symbols = vec![symbol.as_str()];
-                symbols.extend(others.iter().map(|s| s.as_str()));
-                if *json {
-                    let mut seen = std::collections::HashSet::new();
-                    let mut all_matches = Vec::new();
-                    for sym in &symbols {
-                        for m in crate::core::find_symbols(&res, sym) {
-                            let key = (m.start_line, m.end_line, m.qualified_name.clone());
-                            if seen.insert(key) {
-                                all_matches.push(m);
-                            }
-                        }
-                    }
-                    println!(
-                        "{}",
-                        crate::core::render_json_show(&res, &all_matches, !(*compact))
-                    );
-                    if all_matches.is_empty() {
-                        // JSON consumers see [] in the payload; humans/agents
-                        // glancing at stderr-free output get a hint too.
-                        println!(
-                            "# note: no symbol matching {:?} in {}",
-                            symbol,
-                            path.display()
-                        );
-                    }
-                } else {
-                    let mut any_match = false;
-                    for sym in &symbols {
-                        let matches = crate::core::find_symbols(&res, sym);
-                        for m in matches {
-                            any_match = true;
-                            println!(
-                                "# {}:{}-{} {} ({})",
-                                res.path.display(),
-                                m.start_line,
-                                m.end_line,
-                                m.qualified_name,
-                                m.kind
-                            );
-                            if !m.ancestor_signatures.is_empty() {
-                                println!("# in: {}", m.ancestor_signatures.join(" → "));
-                            }
-                            println!("{}", m.source);
-                        }
-                    }
-                    if !any_match {
-                        let joined = symbols.join(", ");
-                        println!(
-                            "# note: no symbol matching '{}' in {}",
-                            joined,
-                            path.display()
-                        );
+                CliError::new(
+                    "show",
+                    CliErrorKind::PathNotFound,
+                    format!("path not found: {}", path.display()),
+                )
+                .exit(*json);
+            }
+            let Some(res) = parse_file(path) else {
+                CliError::new(
+                    "show",
+                    CliErrorKind::BadArgument,
+                    format!("unsupported file type for `show`: {}", path.display()),
+                )
+                .exit(*json);
+            };
+            let mut symbols = vec![symbol.as_str()];
+            symbols.extend(others.iter().map(|s| s.as_str()));
+            // Per-symbol matches, deduped across overlapping suffixes.
+            let mut seen = std::collections::HashSet::new();
+            let mut all_matches = Vec::new();
+            let mut unmatched: Vec<&str> = Vec::new();
+            for sym in &symbols {
+                let found = crate::core::find_symbols(&res, sym);
+                if found.is_empty() {
+                    unmatched.push(sym);
+                }
+                for m in found {
+                    let key = (m.start_line, m.end_line, m.qualified_name.clone());
+                    if seen.insert(key) {
+                        all_matches.push(m);
                     }
                 }
-            } else {
-                println!(
-                    "# note: unsupported file type for `show`: {}",
+            }
+            if all_matches.is_empty() {
+                // No requested symbol exists: the query could not run as
+                // asked. An empty payload would read as "the file has no
+                // such declarations", which is a different claim (#36).
+                CliError::new(
+                    "show",
+                    CliErrorKind::SymbolNotFound,
+                    format!(
+                        "no symbol matching '{}' in {}",
+                        symbols.join(", "),
+                        path.display()
+                    ),
+                )
+                .hint("Suffix matching is supported: try 'Type.method' or check `ast-bro map <file>` for the declared names.")
+                .exit(*json);
+            }
+            if !unmatched.is_empty() {
+                eprintln!(
+                    "# note: no symbol matching '{}' in {} (other symbol(s) shown)",
+                    unmatched.join(", "),
                     path.display()
                 );
+            }
+            if *json {
+                println!(
+                    "{}",
+                    crate::core::render_json_show(&res, &all_matches, !(*compact))
+                );
+            } else {
+                for m in &all_matches {
+                    println!(
+                        "# {}:{}-{} {} ({})",
+                        res.path.display(),
+                        m.start_line,
+                        m.end_line,
+                        m.qualified_name,
+                        m.kind
+                    );
+                    if !m.ancestor_signatures.is_empty() {
+                        println!("# in: {}", m.ancestor_signatures.join(" → "));
+                    }
+                    println!("{}", m.source);
+                }
             }
         }
         Commands::Squeeze {
@@ -877,19 +1154,27 @@ pub fn run() {
             json,
             compact,
         } => {
+            use crate::cli_error::{CliError, ErrorKind as CliErrorKind};
             if !path.exists() {
-                println!("# note: path not found: {}", path.display());
-                return;
+                CliError::new(
+                    "squeeze",
+                    CliErrorKind::PathNotFound,
+                    format!("path not found: {}", path.display()),
+                )
+                .exit(*json);
             }
             let text = match std::fs::read_to_string(path) {
                 Ok(t) => t,
                 Err(e) => {
-                    if path.is_dir() {
-                        println!("# note: path is a directory: {}", path.display());
+                    let detail = if path.is_dir() {
+                        format!(
+                            "`squeeze` expects a file, got a directory: {}",
+                            path.display()
+                        )
                     } else {
-                        println!("# note: could not read {}: {}", path.display(), e);
-                    }
-                    return;
+                        format!("could not read {}: {}", path.display(), e)
+                    };
+                    CliError::new("squeeze", CliErrorKind::BadArgument, detail).exit(*json);
                 }
             };
             let line_count = text.lines().count();
@@ -911,43 +1196,8 @@ pub fn run() {
                 println!("{}", crate::squeeze::render::render_text(&report));
             }
         }
-        Commands::Digest {
-            paths,
-            include_private,
-            include_fields,
-            max_members,
-            json,
-            compact,
-        } => {
-            let results = walk_and_parse(paths, None);
-            if *json {
-                let opts = MapOptions {
-                    include_private: *include_private,
-                    include_fields: *include_fields,
-                    include_docs: true,
-                    include_attributes: true,
-                    include_line_numbers: true,
-                    max_doc_lines: 6,
-                    max_members: Some(*max_members),
-                };
-                println!(
-                    "{}",
-                    crate::core::render_json_map(&results, &opts, !(*compact))
-                );
-            } else {
-                let opts = DigestOptions {
-                    include_private: *include_private,
-                    include_fields: *include_fields,
-                    max_members_per_type: *max_members,
-                    max_heading_depth: 3,
-                };
-                let root = if paths.len() == 1 && paths[0].is_dir() {
-                    Some(paths[0].as_path())
-                } else {
-                    None
-                };
-                println!("{}", crate::core::render_digest(&results, &opts, root));
-            }
+        Commands::Digest(args) => {
+            run_map_digest(args, true);
         }
         Commands::Implements {
             target,
@@ -956,9 +1206,27 @@ pub fn run() {
             json,
             compact,
         } => {
-            let results = walk_and_parse(paths, None);
+            let paths = require_paths("implements", paths, *json);
+            let results = walk_and_parse(&paths, None);
             let transitive = !direct;
             let matches = crate::core::find_implementations(&results, target, transitive);
+            if matches.is_empty() {
+                // Distinguish "this type has no implementations" (a real,
+                // interesting answer: exit 0) from "no such type anywhere"
+                // (the query could not run as asked: exit 2) — issue #36.
+                let target_exists = results
+                    .iter()
+                    .any(|r| !crate::core::find_symbols(r, target).is_empty());
+                if !target_exists {
+                    crate::cli_error::CliError::new(
+                        "implements",
+                        crate::cli_error::ErrorKind::SymbolNotFound,
+                        format!("no declaration named '{}' in the given path(s)", target),
+                    )
+                    .hint("A 0-match answer is only reported for types that exist. Check the spelling or widen the search path.")
+                    .exit(*json);
+                }
+            }
             if *json {
                 println!(
                     "{}",
@@ -1078,11 +1346,13 @@ pub fn run() {
                 (Some(t), _, _) => match parse_file_line(t) {
                     Some(parsed) => parsed,
                     None => {
-                        println!(
-                            "# note: expected <FILE>:<LINE>, got {t:?} \
-                                 (or use --file FILE --line N instead)"
-                        );
-                        return;
+                        crate::cli_error::CliError::new(
+                            "find-related",
+                            crate::cli_error::ErrorKind::BadArgument,
+                            format!("expected <FILE>:<LINE>, got {t:?}"),
+                        )
+                        .hint("Use `find-related src/file.rs:42`, or `--file FILE --line N`.")
+                        .exit(*json);
                     }
                 },
                 (None, Some(f), Some(l)) => (f.clone(), *l),
@@ -1108,15 +1378,25 @@ pub fn run() {
             json,
             compact,
         } => {
+            if !path.exists() {
+                crate::cli_error::CliError::new(
+                    "surface",
+                    crate::cli_error::ErrorKind::PathNotFound,
+                    format!("path not found: {}", path.display()),
+                )
+                .exit(*json);
+            }
             let lang_override = match lang {
                 Some(s) => match crate::surface::LangOverride::parse(s) {
                     Some(l) => Some(l),
                     None => {
-                        println!(
-                            "# note: unknown --lang value '{}'. Expected rust|python|fallback.",
-                            s
-                        );
-                        return;
+                        crate::cli_error::CliError::new(
+                            "surface",
+                            crate::cli_error::ErrorKind::BadArgument,
+                            format!("unknown --lang value '{}'", s),
+                        )
+                        .hint("Expected rust|python|fallback.")
+                        .exit(*json);
                     }
                 },
                 None => None,
@@ -1144,7 +1424,15 @@ pub fn run() {
                     print!("{}", rendered);
                 }
                 Err(e) => {
-                    println!("# note: {e}");
+                    use crate::surface::SurfaceError;
+                    let kind = match &e {
+                        SurfaceError::NoEntryPoint { .. } | SurfaceError::Io { .. } => {
+                            crate::cli_error::ErrorKind::PathNotFound
+                        }
+                        SurfaceError::Parse { .. } => crate::cli_error::ErrorKind::IndexError,
+                        SurfaceError::BadOverride(_) => crate::cli_error::ErrorKind::BadArgument,
+                    };
+                    crate::cli_error::CliError::new("surface", kind, e.to_string()).exit(json_on);
                 }
             }
         }
@@ -1285,6 +1573,7 @@ pub fn run() {
             file,
             symbol,
             depth,
+            limit,
             hide_external,
             external,
             rebuild,
@@ -1299,6 +1588,7 @@ pub fn run() {
                 &resolved,
                 path,
                 *depth,
+                *limit,
                 !(*hide_external),
                 *rebuild,
                 *json,

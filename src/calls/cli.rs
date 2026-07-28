@@ -16,7 +16,6 @@ use crate::calls::cli_helpers::{resolve_target_full, SymbolKind};
 use crate::calls::graph::{CallEdge, CallGraph, CallKindCompat, CallTarget, Confidence, Qn};
 use crate::calls::{render, traverse};
 use crate::graph_cache;
-use crate::project_root::find_root_for;
 
 #[allow(clippy::too_many_arguments)]
 pub fn run_callers(
@@ -31,47 +30,30 @@ pub fn run_callers(
     json: bool,
     pretty: bool,
 ) -> i32 {
-    let root = match find_root_for(path) {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("# note: {}", e);
-            return 2;
-        }
+    let (root, graph) = match graph_cache::load_for_symbol_query("callers", path, rebuild, json) {
+        Ok(pair) => pair,
+        Err(code) => return code,
     };
-    let graph = match graph_cache::ensure_with_calls(&root, rebuild) {
-        Ok(g) => g,
-        Err(e) => {
-            eprintln!("# note: {}", e);
-            return 1;
-        }
-    };
-    let calls = match &graph.calls {
-        Some(c) => c,
-        None => {
-            eprintln!("# note: call graph is empty");
-            return 1;
-        }
-    };
+    let calls = graph.calls.as_ref().expect("calls half present");
 
     let candidates = resolve_target_full(calls, target);
     if candidates.is_empty() {
-        eprintln!(
-            "# note: no symbol matches '{}' (try a more specific suffix like 'Type.method').",
-            target
-        );
-        return 2;
+        return crate::cli_error::symbol_not_found("callers", target, json);
     }
 
     let mut hits = Vec::new();
+    let mut frontier_truncated = false;
     let mut type_groups: Vec<TypeCallersGroup> = Vec::new();
     for c in &candidates {
         match c.kind {
             SymbolKind::Callable => {
-                hits.extend(traverse::callers(
+                // Walk unbounded so the header can report the true total;
+                // `--limit` trims the *display* below (issue #32).
+                let info = traverse::callers_info(
                     calls,
                     &c.qn,
                     depth.max(1),
-                    limit,
+                    usize::MAX,
                     |edge| {
                         if !include_ambiguous && matches!(edge.confidence, Confidence::Ambiguous) {
                             return false;
@@ -91,7 +73,9 @@ pub fn run_callers(
                         }
                         true
                     },
-                ));
+                );
+                frontier_truncated |= info.frontier_truncated;
+                hits.extend(info.hits);
             }
             SymbolKind::Type => {
                 let mut group = collect_type_callers(calls, &c.qn);
@@ -116,10 +100,62 @@ pub fn run_callers(
         }
     }
 
+    let total = hits.len();
     if hits.len() > limit {
         hits.truncate(limit);
     }
+    // At the default depth 1, "the callers have callers" is expected, not a
+    // qualification — a note that fires on most queries trains the reader
+    // to skip it. The JSON `frontier_truncated` field is always set; the
+    // stderr line only accompanies an explicitly deepened walk.
+    if frontier_truncated && depth > 1 {
+        eprintln!(
+            "# note: --depth {} reached with unexplored edges beyond it; raise --depth to walk further",
+            depth
+        );
+    }
 
+    // Bare edges naming the target never enter the reverse index, so the
+    // BFS above cannot count them. Surface them (or say they were hidden)
+    // so the caller count is never silently low — issue #31.
+    let callable_qns: Vec<Qn> = candidates
+        .iter()
+        .filter(|c| matches!(c.kind, SymbolKind::Callable))
+        .map(|c| c.qn.clone())
+        .collect();
+    let mut unattributed = traverse::unattributed_callers(calls, &callable_qns);
+    if tests || exclude_tests {
+        unattributed.retain(|e| {
+            let is_test = crate::file_filter::is_test_file(&root.join(&e.file), &root);
+            if exclude_tests {
+                !is_test
+            } else {
+                is_test
+            }
+        });
+    }
+    let mut unattributed_hidden = 0usize;
+    if !include_ambiguous && !unattributed.is_empty() {
+        unattributed_hidden = unattributed.len();
+        eprintln!(
+            "# note: {} unresolved call site(s) naming '{}' hidden (--hide-ambiguous); they may be additional callers",
+            unattributed_hidden,
+            target
+        );
+        unattributed.clear();
+    }
+    // The section shares the --limit display budget with the resolved hits;
+    // its header carries its own true total, so nothing is silently cut.
+    let unattributed_total = unattributed.len();
+    let remaining = limit.saturating_sub(hits.len());
+    if unattributed.len() > remaining {
+        unattributed.truncate(remaining);
+    }
+
+    let trunc = render::Truncation {
+        total,
+        frontier_truncated,
+    };
     if json {
         println!(
             "{}",
@@ -128,62 +164,56 @@ pub fn run_callers(
                 depth.max(1),
                 &hits,
                 &type_groups,
+                &unattributed,
+                unattributed_total,
+                unattributed_hidden,
+                &trunc,
                 pretty,
             )
         );
     } else {
         print!(
             "{}",
-            render::render_callers_text_extended(target, &hits, &type_groups)
+            render::render_callers_text_extended(
+                target,
+                &hits,
+                &type_groups,
+                &unattributed,
+                unattributed_total,
+                &trunc,
+            )
         );
     }
     0
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn run_callees(
     target: &str,
     path: &Path,
     depth: usize,
+    limit: usize,
     external: bool,
     rebuild: bool,
     json: bool,
     pretty: bool,
 ) -> i32 {
-    let root = match find_root_for(path) {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("# note: {}", e);
-            return 2;
-        }
+    let (_root, graph) = match graph_cache::load_for_symbol_query("callees", path, rebuild, json) {
+        Ok(pair) => pair,
+        Err(code) => return code,
     };
-    let graph = match graph_cache::ensure_with_calls(&root, rebuild) {
-        Ok(g) => g,
-        Err(e) => {
-            eprintln!("# note: {}", e);
-            return 1;
-        }
-    };
-    let calls = match &graph.calls {
-        Some(c) => c,
-        None => {
-            eprintln!("# note: call graph is empty");
-            return 1;
-        }
-    };
+    let calls = graph.calls.as_ref().expect("calls half present");
 
     let candidates = resolve_target_full(calls, target);
     if candidates.is_empty() {
-        eprintln!(
-            "# note: no symbol matches '{}' (try a more specific suffix like 'Type.method').",
-            target
-        );
-        return 2;
+        return crate::cli_error::symbol_not_found("callees", target, json);
     }
 
     // Split the candidates: callables go through normal call-edge traversal;
     // types expand into their member methods (each method becomes its own
     // callable target, grouped under the type in the output).
     let mut all_edges = Vec::new();
+    let mut frontier_truncated = false;
     let mut type_groups: Vec<TypeCalleesGroup> = Vec::new();
     for c in &candidates {
         match c.kind {
@@ -191,7 +221,9 @@ pub fn run_callees(
                 if depth <= 1 {
                     all_edges.extend(traverse::callees_one_hop(calls, &c.qn));
                 } else {
-                    for h in traverse::callees(calls, &c.qn, depth.max(1)) {
+                    let info = traverse::callees_info(calls, &c.qn, depth.max(1));
+                    frontier_truncated |= info.frontier_truncated;
+                    for h in info.hits {
                         all_edges.push(h.edge);
                     }
                 }
@@ -200,6 +232,25 @@ pub fn run_callees(
                 type_groups.push(collect_type_callees(calls, &c.qn, depth));
             }
         }
+    }
+    let total = all_edges.len();
+    if all_edges.len() > limit {
+        all_edges.truncate(limit);
+    }
+    // Same rationale as run_callers: the frontier note only accompanies an
+    // explicitly deepened walk; JSON always carries the flag.
+    if frontier_truncated && depth > 1 {
+        eprintln!(
+            "# note: --depth {} reached with unexplored edges beyond it; raise --depth to walk further",
+            depth
+        );
+    }
+    if total > all_edges.len() {
+        eprintln!(
+            "# note: {} callee(s) total; showing {} (raise --limit to see the rest)",
+            total,
+            all_edges.len()
+        );
     }
 
     let first = candidates
@@ -214,6 +265,8 @@ pub fn run_callees(
                 depth.max(1),
                 &all_edges,
                 &type_groups,
+                total,
+                frontier_truncated,
                 pretty,
             )
         );
@@ -514,38 +567,27 @@ pub fn run_trace(
     pretty: bool,
 ) -> i32 {
     use crate::calls::trace::{render_trace, TraceOutcome};
-    let root = match find_root_for(path) {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("# note: {}", e);
-            return 2;
-        }
+    let (root, graph) = match graph_cache::load_for_symbol_query("trace", path, rebuild, json) {
+        Ok(pair) => pair,
+        Err(code) => return code,
     };
-    let graph = match graph_cache::ensure_with_calls(&root, rebuild) {
-        Ok(g) => g,
-        Err(e) => {
-            eprintln!("# note: {}", e);
-            return 1;
-        }
-    };
-    let calls = match &graph.calls {
-        Some(c) => c,
-        None => {
-            eprintln!("# note: call graph is empty");
-            return 1;
-        }
-    };
+    let calls = graph.calls.as_ref().expect("calls half present");
     let (out, outcome) = render_trace(calls, &root, from, to, depth, json, pretty);
-    print!("{}", out);
-    if !out.ends_with('\n') {
-        println!();
-    }
     match outcome {
         // Found a path, or both symbols resolved but no static path exists
         // (the graceful response is the answer) → success.
-        TraceOutcome::Found | TraceOutcome::NoPath => 0,
-        // `<from>` or `<to>` matched no symbol → bad input.
-        TraceOutcome::Unresolved => 2,
+        TraceOutcome::Found | TraceOutcome::NoPath => {
+            print!("{}", out);
+            if !out.ends_with('\n') {
+                println!();
+            }
+            0
+        }
+        // `<from>` or `<to>` matched no symbol → rejected call (#36:
+        // nothing on stdout).
+        TraceOutcome::Unresolved(missing) => {
+            crate::cli_error::symbol_not_found("trace", &missing, json)
+        }
     }
 }
 

@@ -1,9 +1,12 @@
 //! CLI handler functions called from `src/main.rs`. Each one mirrors a
-//! single subcommand and returns the process exit code (0 success, 2
-//! user error, 1 internal error).
+//! single subcommand and returns the process exit code following the error
+//! contract (#36): 0 = the query ran, 2 = the query could not run as asked,
+//! 1 = internal failure. Rejections go to stderr (with an `ast-bro.error.v1`
+//! envelope under `--json`); stdout carries results only.
 
 use std::path::{Path, PathBuf};
 
+use crate::cli_error::{CliError, ErrorKind};
 use crate::deps::render;
 use crate::deps::scc;
 use crate::deps::traverse;
@@ -21,35 +24,35 @@ pub fn run_deps(
     rebuild: bool,
 ) -> i32 {
     if file.is_dir() {
-        eprintln!(
-            "# note: `deps` expects a file, not a directory.\n  \
-             Use `ast-bro graph <dir>` to visualize the full dependency graph."
-        );
-        return 2;
+        return CliError::new(
+            "deps",
+            ErrorKind::BadArgument,
+            "`deps` expects a file, not a directory",
+        )
+        .hint("Use `ast-bro graph <dir>` to visualize the full dependency graph.")
+        .emit(json);
     }
     let root = match find_root_for_with_cache(file) {
         Ok(r) => r,
-        Err(e) => {
-            eprintln!("# note: {}", e);
-            return 2;
-        }
+        Err(e) => return CliError::new("deps", ErrorKind::PathNotFound, e).emit(json),
     };
     let unified = match load_unified(&root, rebuild) {
         Ok(g) => g,
         Err(e) => {
-            eprintln!("# note: {}", e);
-            return 1;
+            return CliError::new("deps", ErrorKind::IndexError, e.to_string()).emit(json)
         }
     };
     let graph = unified.deps.clone();
     let canonical = match canonicalise_in_root(file, &graph) {
         Some(p) => p,
         None => {
-            eprintln!(
-                "# note: {} is not part of the dep graph (excluded by .gitignore or unsupported language?)",
-                file.display()
-            );
-            return 2;
+            return CliError::new(
+                "deps",
+                ErrorKind::PathNotFound,
+                format!("{} is not part of the dep graph", file.display()),
+            )
+            .hint("The file may be excluded by .gitignore or in an unsupported language.")
+            .emit(json);
         }
     };
     let hits = traverse::forward(&graph, &canonical, depth.max(1));
@@ -79,38 +82,39 @@ pub fn run_reverse_deps(
     rebuild: bool,
 ) -> i32 {
     if file.is_dir() {
-        eprintln!(
-            "# note: `reverse-deps` expects a file, not a directory.\n  \
-             Use `ast-bro graph <dir>` to visualize the full dependency graph."
-        );
-        return 2;
+        return CliError::new(
+            "reverse-deps",
+            ErrorKind::BadArgument,
+            "`reverse-deps` expects a file, not a directory",
+        )
+        .hint("Use `ast-bro graph <dir>` to visualize the full dependency graph.")
+        .emit(json);
     }
     let root = match find_root_for_with_cache(file) {
         Ok(r) => r,
-        Err(e) => {
-            eprintln!("# note: {}", e);
-            return 2;
-        }
+        Err(e) => return CliError::new("reverse-deps", ErrorKind::PathNotFound, e).emit(json),
     };
     let unified = match load_unified(&root, rebuild) {
         Ok(g) => g,
         Err(e) => {
-            eprintln!("# note: {}", e);
-            return 1;
+            return CliError::new("reverse-deps", ErrorKind::IndexError, e.to_string()).emit(json)
         }
     };
     let graph = unified.deps.clone();
     let canonical = match canonicalise_in_root(file, &graph) {
         Some(p) => p,
         None => {
-            eprintln!(
-                "# note: {} is not part of the dep graph",
-                file.display()
-            );
-            return 2;
+            return CliError::new(
+                "reverse-deps",
+                ErrorKind::PathNotFound,
+                format!("{} is not part of the dep graph", file.display()),
+            )
+            .emit(json);
         }
     };
-    let hits = traverse::reverse(&graph, &canonical, depth.max(1), limit, |e| {
+    // Walk unbounded so the output can report the true total; `--limit`
+    // trims the display below (issue #32).
+    let mut hits = traverse::reverse(&graph, &canonical, depth.max(1), usize::MAX, |e| {
         if !tests && !exclude_tests {
             return true;
         }
@@ -121,15 +125,24 @@ pub fn run_reverse_deps(
             is_test
         }
     });
+    let total = hits.len();
+    if hits.len() > limit {
+        hits.truncate(limit);
+        eprintln!(
+            "# note: {} importer(s) total; showing {} (raise --limit to see the rest)",
+            total,
+            hits.len()
+        );
+    }
     if json {
         println!(
             "{}",
-            render::render_reverse_deps_json(&graph, &canonical, &hits, pretty)
+            render::render_reverse_deps_json(&graph, &canonical, &hits, total, pretty)
         );
     } else {
         print!(
             "{}",
-            render::render_reverse_deps_text(&graph, &canonical, &hits)
+            render::render_reverse_deps_text(&graph, &canonical, &hits, total)
         );
     }
     0
@@ -145,16 +158,12 @@ pub fn run_cycles(
     let cwd = current_dir_or_dot();
     let (root, scope) = match resolve_dir_root_and_scope(path, &cwd) {
         Ok(rs) => rs,
-        Err(e) => {
-            eprintln!("# note: {}", e);
-            return 2;
-        }
+        Err(e) => return CliError::new("cycles", ErrorKind::PathNotFound, e).emit(json),
     };
     let unified = match load_unified(&root, rebuild) {
         Ok(g) => g,
         Err(e) => {
-            eprintln!("# note: {}", e);
-            return 1;
+            return CliError::new("cycles", ErrorKind::IndexError, e.to_string()).emit(json)
         }
     };
     let graph = unified.deps.clone();
@@ -190,27 +199,27 @@ pub fn run_graph(
     // `graph` expects a directory (repo root), not a file.
     // Give a helpful hint if the user passes a file path.
     if path.is_file() {
-        eprintln!(
-            "# note: `graph` expects a directory, not a file.\n\
-             For per-file dependency analysis, use:\n  \
-             ast-bro deps <file>       # what this file imports\n  \
-             ast-bro reverse-deps <file>  # who imports this file"
-        );
-        return 2;
+        return CliError::new(
+            "graph",
+            ErrorKind::BadArgument,
+            "`graph` expects a directory, not a file",
+        )
+        .hint(
+            "For per-file dependency analysis, use:\n  \
+             ast-bro deps <file>          # what this file imports\n  \
+             ast-bro reverse-deps <file>  # who imports this file",
+        )
+        .emit(json);
     }
     let cwd = current_dir_or_dot();
     let (root, scope) = match resolve_dir_root_and_scope(path, &cwd) {
         Ok(rs) => rs,
-        Err(e) => {
-            eprintln!("# note: {}", e);
-            return 2;
-        }
+        Err(e) => return CliError::new("graph", ErrorKind::PathNotFound, e).emit(json),
     };
     let unified = match load_unified(&root, rebuild) {
         Ok(g) => g,
         Err(e) => {
-            eprintln!("# note: {}", e);
-            return 1;
+            return CliError::new("graph", ErrorKind::IndexError, e.to_string()).emit(json)
         }
     };
     let full = unified.deps.clone();

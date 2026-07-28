@@ -1694,3 +1694,278 @@ fn callers_tests_flag_reaches_tests_through_production_intermediate() {
         out
     );
 }
+
+// ---------------------------------------------------------------------------
+// Issue #31 — a same-name method in the calling file must not shadow an
+// explicit receiver, and `callers` must surface call sites the resolver
+// could not attribute instead of silently dropping them.
+// ---------------------------------------------------------------------------
+
+/// vlsi's minimal reproduction: `Caller` declares its own `getCtx()` while
+/// `viaChain()` calls `connection.getCtx().getPrefs().forDate()`. The head
+/// of the chain has an explicit receiver (`connection`), so pass A must not
+/// bind it to the local `getCtx` — and the rest of the chain must keep
+/// resolving.
+fn issue31_fixture(root: &std::path::Path) {
+    write(
+        &root.join("pom.xml"),
+        "<project><modelVersion>4.0.0</modelVersion><groupId>x</groupId><artifactId>x</artifactId><version>0.0.0</version></project>\n",
+    );
+    write(
+        &root.join("src/main/java/com/example/api/Prefs.java"),
+        "package com.example.api;\npublic class Prefs {\n  public boolean forDate() { return true; }\n}\n",
+    );
+    write(
+        &root.join("src/main/java/com/example/api/Ctx.java"),
+        "package com.example.api;\npublic class Ctx {\n  private final Prefs prefs = new Prefs();\n  public Prefs getPrefs() { return prefs; }\n}\n",
+    );
+    write(
+        &root.join("src/main/java/com/example/api/Conn.java"),
+        "package com.example.api;\npublic class Conn {\n  private final Ctx ctx = new Ctx();\n  public Ctx getCtx() { return ctx; }\n}\n",
+    );
+    write(
+        &root.join("src/main/java/com/example/impl/Caller.java"),
+        r#"package com.example.impl;
+
+import com.example.api.Conn;
+import com.example.api.Ctx;
+
+public class Caller {
+  private final Conn connection = new Conn();
+
+  protected Ctx getCtx() {
+    return connection.getCtx();
+  }
+
+  public boolean viaChain() {
+    return connection.getCtx().getPrefs().forDate();
+  }
+}
+"#,
+    );
+}
+
+#[test]
+fn java_local_homonym_does_not_shadow_explicit_receiver() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    issue31_fixture(root);
+
+    // The chain head `connection.getCtx()` must not be claimed by the local
+    // `Caller::getCtx` with Exact confidence, and the mid-chain `getPrefs`
+    // must keep resolving to `Ctx::getPrefs`.
+    let (out, code) = run_in(root, &["callees", "viaChain", ".", "--rebuild"]);
+    assert_eq!(code, 0, "callees exited non-zero: {}", out);
+    assert!(
+        !out.contains("Caller::getCtx  (Exact)"),
+        "local homonym must not claim the explicit-receiver call as Exact, got:\n{}",
+        out
+    );
+    assert!(
+        out.contains("Ctx::getPrefs"),
+        "mid-chain link should still resolve, got:\n{}",
+        out
+    );
+
+    // And the mid-chain caller relationship is visible from the other side.
+    let (out, code) = run_in(root, &["callers", "getPrefs", "."]);
+    assert_eq!(code, 0, "callers exited non-zero: {}", out);
+    assert!(
+        out.contains("viaChain"),
+        "expected viaChain as a caller of getPrefs, got:\n{}",
+        out
+    );
+}
+
+#[test]
+fn callers_surfaces_unattributed_call_sites() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    issue31_fixture(root);
+
+    // `forDate` is called at the end of a chain whose receiver type is not
+    // statically known to the resolver; the edge stays unattributed. It must
+    // still show up in `callers` output instead of reading as "0 callers".
+    let (out, code) = run_in(root, &["callers", "forDate", ".", "--rebuild"]);
+    assert_eq!(code, 0, "callers exited non-zero: {}", out);
+    assert!(
+        out.contains("unresolved call site(s)") && out.contains("viaChain"),
+        "expected the unattributed call site in viaChain to be surfaced, got:\n{}",
+        out
+    );
+
+    // JSON carries the same information under `unattributed`.
+    let (out, code) = run_in(root, &["callers", "forDate", ".", "--json", "--compact"]);
+    assert_eq!(code, 0);
+    let doc: serde_json::Value = serde_json::from_str(out.trim()).expect("valid json");
+    let unattributed = doc["unattributed"].as_array().expect("unattributed array");
+    assert_eq!(unattributed.len(), 1, "one unattributed site, got: {}", out);
+    assert!(
+        unattributed[0]["source"].as_str().unwrap_or("").contains("viaChain"),
+        "unattributed source should be viaChain, got: {}",
+        out
+    );
+    assert_eq!(doc["unattributed_hidden"], 0, "{}", out);
+
+    // With --hide-ambiguous the sites leave the list but the count stays in
+    // the body — JSON consumers (MCP especially) have no stderr to read the
+    // note from.
+    let (out, code) = run_in(
+        root,
+        &["callers", "forDate", ".", "--hide-ambiguous", "--json", "--compact"],
+    );
+    assert_eq!(code, 0);
+    let doc: serde_json::Value = serde_json::from_str(out.trim()).expect("valid json");
+    assert_eq!(doc["unattributed"].as_array().unwrap().len(), 0, "{}", out);
+    assert_eq!(
+        doc["unattributed_hidden"], 1,
+        "hidden count must survive in the JSON body: {}",
+        out
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Issue #32 — a capped result must be distinguishable from a complete one.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn callers_limit_reports_true_total() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(&root.join("Cargo.toml"), "[package]\nname=\"x\"\nversion=\"0.0.0\"\nedition=\"2021\"\n");
+    write(
+        &root.join("src/lib.rs"),
+        "pub fn target() {}\npub fn a() { target(); }\npub fn b() { target(); }\npub fn c() { target(); }\n",
+    );
+
+    let (out, code) = run_in(root, &["callers", "target", ".", "--limit", "1", "--rebuild"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(
+        out.contains("# 3 caller(s)") && out.contains("showing 1") && out.contains("--limit"),
+        "header must carry the true total and the flag that lifts the cap:\n{out}"
+    );
+
+    let (out, code) = run_in(
+        root,
+        &["callers", "target", ".", "--limit", "1", "--json", "--compact"],
+    );
+    assert_eq!(code, 0);
+    let doc: serde_json::Value = serde_json::from_str(out.trim()).expect("valid json");
+    assert_eq!(doc["total"], 3, "json total must be pre-limit: {out}");
+    assert_eq!(doc["truncated"], true);
+    assert_eq!(doc["matches"].as_array().unwrap().len(), 1);
+}
+
+#[test]
+fn callers_depth_cutoff_reports_frontier() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(&root.join("Cargo.toml"), "[package]\nname=\"x\"\nversion=\"0.0.0\"\nedition=\"2021\"\n");
+    write(
+        &root.join("src/lib.rs"),
+        "pub fn target() {}\npub fn mid() { target(); }\npub fn top() { mid(); }\n",
+    );
+    // depth 1 stops at `mid`, which still has an incoming edge from `top`:
+    // the JSON must say the walk stopped, not the graph.
+    let (out, code) = run_in(
+        root,
+        &["callers", "target", ".", "--depth", "1", "--json", "--compact", "--rebuild"],
+    );
+    assert_eq!(code, 0);
+    let doc: serde_json::Value = serde_json::from_str(out.trim()).expect("valid json");
+    assert_eq!(doc["frontier_truncated"], true, "{out}");
+
+    // depth 2 exhausts the graph — the flag must clear.
+    let (out, _) = run_in(
+        root,
+        &["callers", "target", ".", "--depth", "2", "--json", "--compact"],
+    );
+    let doc: serde_json::Value = serde_json::from_str(out.trim()).expect("valid json");
+    assert_eq!(doc["frontier_truncated"], false, "{out}");
+}
+
+#[test]
+fn callees_limit_is_available_and_reported() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(&root.join("Cargo.toml"), "[package]\nname=\"x\"\nversion=\"0.0.0\"\nedition=\"2021\"\n");
+    write(
+        &root.join("src/lib.rs"),
+        "pub fn x() {}\npub fn y() {}\npub fn z() {}\npub fn top() { x(); y(); z(); }\n",
+    );
+    let (out, code) = run_in(
+        root,
+        &["callees", "top", ".", "--depth", "2", "--limit", "1", "--json", "--compact", "--rebuild"],
+    );
+    assert_eq!(code, 0, "{out}");
+    let doc: serde_json::Value = serde_json::from_str(out.trim()).expect("valid json");
+    assert_eq!(doc["total"], 3, "{out}");
+    assert_eq!(doc["truncated"], true);
+}
+
+#[test]
+fn callers_limit_bounds_the_unattributed_section_too() {
+    // The unattributed section shares the --limit display budget: a capped
+    // query must not be followed by an unbounded list (review finding on
+    // issue #31/#32).
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(&root.join("Cargo.toml"), "[package]\nname=\"x\"\nversion=\"0.0.0\"\nedition=\"2021\"\n");
+    // `target` has one resolved caller and three unattributed call sites
+    // (explicit receivers that can't be typed, with a homonym in another
+    // file keeping them ambiguous).
+    write(
+        &root.join("src/lib.rs"),
+        "pub mod other;\npub struct T;\nimpl T { pub fn target(&self) {} }\n\
+         pub fn direct() { let t = T; t.target(); }\n",
+    );
+    write(
+        &root.join("src/other.rs"),
+        "pub struct U;\nimpl U { pub fn target(&self) {} }\n\
+         pub fn a(u: &U) { u.target(); }\npub fn b(u: &U) { u.target(); }\npub fn c(u: &U) { u.target(); }\n",
+    );
+
+    let (out, code) = run_in(root, &["callers", "T.target", ".", "--limit", "1", "--json", "--compact", "--rebuild"]);
+    assert_eq!(code, 0, "{out}");
+    let doc: serde_json::Value = serde_json::from_str(out.trim()).expect("valid json");
+    let shown = doc["unattributed"].as_array().unwrap().len();
+    let total = doc["unattributed_total"].as_u64().unwrap() as usize;
+    assert!(
+        shown <= 1,
+        "unattributed section must respect the remaining --limit budget: {out}"
+    );
+    assert!(total >= shown, "{out}");
+    if total > shown {
+        assert_eq!(doc["unattributed_truncated"], true, "{out}");
+    }
+}
+
+#[test]
+fn parameter_named_parent_is_not_self_like() {
+    // `parent`/`static` are PHP scope keywords that the PHP adapter already
+    // strips before the resolver sees them; as bare receiver strings they
+    // are ordinary variable names and must NOT get same-file Exact binding.
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(&root.join("pyproject.toml"), "[project]\nname=\"x\"\nversion=\"0\"\n");
+    write(
+        &root.join("tree.py"),
+        r#"class Node:
+    def add_child(self, c):
+        pass
+
+    def attach(self, parent):
+        parent.add_child(self)
+
+class Other:
+    def add_child(self, c):
+        pass
+"#,
+    );
+    let (out, code) = run_in(root, &["callers", "Node.add_child", ".", "--rebuild"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(
+        !out.contains("(Exact)"),
+        "a receiver named `parent` must not bind Exact to a same-file homonym:\n{out}"
+    );
+}

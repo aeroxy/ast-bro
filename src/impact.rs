@@ -57,6 +57,10 @@ pub struct ImpactOptions {
 #[derive(Debug, Clone, Serialize)]
 pub struct ImpactSection {
     pub title: String,
+    /// True pre-`--limit` entry count (issue #32); equals `entries.len()`
+    /// when nothing was cut.
+    pub total: usize,
+    pub truncated: bool,
     pub entries: Vec<ImpactEntry>,
 }
 
@@ -90,34 +94,15 @@ pub fn run_impact(
     opts: &ImpactOptions,
     rebuild: bool,
 ) -> i32 {
-    let root = match crate::project_root::find_root_for(path) {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("# note: {}", e);
-            return 2;
-        }
-    };
-    let graph = match graph_cache::ensure_with_calls(&root, rebuild) {
-        Ok(g) => g,
-        Err(e) => {
-            eprintln!("# note: {}", e);
-            return 1;
-        }
-    };
-    let calls = match &graph.calls {
-        Some(c) => c,
-        None => {
-            eprintln!("# note: call graph is empty");
-            return 1;
-        }
-    };
+    let (root, graph) =
+        match graph_cache::load_for_symbol_query("impact", path, rebuild, opts.json) {
+            Ok(pair) => pair,
+            Err(code) => return code,
+        };
+    let calls = graph.calls.as_ref().expect("calls half present");
     let candidates = resolve_target_full(calls, target);
     if candidates.is_empty() {
-        eprintln!(
-            "# note: no symbol matches '{}' (try a more specific suffix like 'Type.method').",
-            target
-        );
-        return 2;
+        return crate::cli_error::symbol_not_found("impact", target, opts.json);
     }
 
     if candidates.len() > 1 {
@@ -197,7 +182,9 @@ fn compute_impact(
     // Test filtering happens inside the traversal so excluded edges don't
     // consume --limit. Ambiguous edges are dropped here too when
     // --hide-ambiguous is set, matching the direct sections' retain.
-    let all_callers = traverse::callers(calls, &c.qn, opts.depth.max(1), opts.limit, |e| {
+    // Unbounded: `transitive_count` must be the true total; the transitive
+    // section applies --limit at display time (issue #32).
+    let all_callers = traverse::callers(calls, &c.qn, opts.depth.max(1), usize::MAX, |e| {
         if !opts.include_ambiguous && matches!(e.confidence, Confidence::Ambiguous) {
             return false;
         }
@@ -377,7 +364,7 @@ fn compute_impact(
                     calls,
                     &e.source,
                     opts.depth - 1,
-                    opts.limit,
+                    usize::MAX,
                     keep_by_test_flags,
                 ) {
                     consider(
@@ -435,7 +422,7 @@ fn compute_impact(
                                 calls,
                                 &e.source,
                                 opts.depth - 2,
-                                opts.limit,
+                                usize::MAX,
                                 keep_by_test_flags,
                             ) {
                                 consider(
@@ -480,18 +467,32 @@ fn compute_impact(
     if matches!(opts.mode, ImpactMode::All) && !transitive.is_empty() {
         let total: usize = transitive.values().map(|v| v.len()).sum();
         report.transitive_count = total;
-        let mut section = ImpactSection {
-            title: format!("! {} symbols transitively affected (depth {})", total, opts.depth),
-            entries: Vec::new(),
-        };
-        for (depth, entries) in &transitive {
-            for e in entries {
+        let mut entries: Vec<ImpactEntry> = Vec::new();
+        for (depth, group) in &transitive {
+            for e in group {
                 let mut e = e.clone();
                 e.depth = Some(*depth);
-                section.entries.push(e);
+                entries.push(e);
             }
         }
-        sections.push(section);
+        let truncated = entries.len() > opts.limit;
+        if truncated {
+            entries.truncate(opts.limit);
+        }
+        let title = if truncated {
+            format!(
+                "! {} symbols transitively affected (depth {}; showing {} — raise --limit to see the rest)",
+                total, opts.depth, entries.len()
+            )
+        } else {
+            format!("! {} symbols transitively affected (depth {})", total, opts.depth)
+        };
+        sections.push(ImpactSection {
+            title,
+            total,
+            truncated,
+            entries,
+        });
     }
 
     if opts.tests || matches!(opts.mode, ImpactMode::Tests | ImpactMode::All) {
@@ -534,7 +535,12 @@ fn compute_impact(
                     .collect(),
             )
         };
-        sections.push(ImpactSection { title: display, entries });
+        sections.push(ImpactSection {
+            title: display,
+            total: entries.len(),
+            truncated: false,
+            entries,
+        });
     }
 
     report
@@ -605,6 +611,8 @@ fn build_callees_section(
             .collect();
     ImpactSection {
         title: format!("→ calls ({})", entries.len()),
+        total: entries.len(),
+        truncated: false,
         entries,
     }
 }
@@ -647,8 +655,10 @@ fn build_callers_section(
             hits.push(CallHit { depth: 1, edge: e });
         }
     }
-    // Filter inside the traversal so dropped edges don't consume the limit.
-    hits.extend(traverse::callers(calls, &c.qn, 1, opts.limit, |e| {
+    // Walk unbounded so the section can report the true total; `--limit`
+    // trims the display below (issue #32). Filter inside the traversal so
+    // dropped edges don't distort the count.
+    hits.extend(traverse::callers(calls, &c.qn, 1, usize::MAX, |e| {
         if !opts.include_ambiguous && matches!(e.confidence, Confidence::Ambiguous) {
             return false;
         }
@@ -668,15 +678,29 @@ fn build_callers_section(
     // Type implementors/constructions were collected first, so when the merged
     // list exceeds the per-section limit the appended BFS callers are trimmed,
     // not the type-specific dependents. (No-op for callable targets.)
-    if hits.len() > opts.limit {
+    let total = hits.len();
+    let truncated = hits.len() > opts.limit;
+    if truncated {
         hits.truncate(opts.limit);
     }
+    let label = if c.kind == SymbolKind::Type {
+        "← implemented / called by"
+    } else {
+        "← called by"
+    };
     ImpactSection {
-        title: if c.kind == SymbolKind::Type {
-            format!("← implemented / called by ({})", hits.len())
+        title: if truncated {
+            format!(
+                "{} ({}; showing {} — raise --limit to see the rest)",
+                label,
+                total,
+                hits.len()
+            )
         } else {
-            format!("← called by ({})", hits.len())
+            format!("{} ({})", label, total)
         },
+        total,
+        truncated,
         entries: hits
             .into_iter()
             .map(|h| ImpactEntry {
@@ -717,6 +741,8 @@ fn build_file_deps_section(
         .collect();
     ImpactSection {
         title: format!("→ imports (file, {})", hits.len()),
+        total: hits.len(),
+        truncated: false,
         entries: hits
             .into_iter()
             .map(|h| {
@@ -742,13 +768,29 @@ fn build_file_reverse_deps_section(
     opts: &ImpactOptions,
 ) -> ImpactSection {
     let deps_file = root.join(file);
-    // Test filtering happens inside the traversal so excluded importers
-    // don't consume --limit (same pattern as the caller traversals).
-    let hits = dep_traverse::reverse(deps, &deps_file, 1, opts.limit, |e| {
+    // Walk unbounded so the section reports the true importer count;
+    // `--limit` trims the display (issue #32). Test filtering happens
+    // inside the traversal so excluded importers don't distort it.
+    let mut hits = dep_traverse::reverse(deps, &deps_file, 1, usize::MAX, |e| {
         passes_test_flags(&e.target, root, opts)
     });
+    let total = hits.len();
+    let truncated = hits.len() > opts.limit;
+    if truncated {
+        hits.truncate(opts.limit);
+    }
     ImpactSection {
-        title: format!("← imported by (file, {})", hits.len()),
+        title: if truncated {
+            format!(
+                "← imported by (file, {}; showing {} — raise --limit to see the rest)",
+                total,
+                hits.len()
+            )
+        } else {
+            format!("← imported by (file, {})", total)
+        },
+        total,
+        truncated,
         entries: hits
             .into_iter()
             .map(|h| {

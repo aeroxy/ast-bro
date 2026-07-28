@@ -521,7 +521,12 @@ fn _call_site_from_scoped_call_php<'a, D: Doc>(
         let text = collapse_ws(&String::from_utf8_lossy(&src[s.range()]))
             .trim_start_matches('\\')
             .to_string();
-        if matches!(text.as_str(), "self" | "static" | "parent") {
+        // PHP keywords are case-insensitive: `SELF::` / `Static::` are the
+        // same late-binding scopes as their lowercase forms.
+        if matches!(
+            text.to_ascii_lowercase().as_str(),
+            "self" | "static" | "parent"
+        ) {
             None
         } else {
             Some(text)

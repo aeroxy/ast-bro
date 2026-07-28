@@ -28,11 +28,13 @@ const MAX_SIBLINGS: usize = 30;
 /// Result class of a trace, so the CLI can choose an exit code: a found path
 /// and a no-path-but-endpoints-resolved are both exit 0 (informative); only a
 /// `<from>`/`<to>` that matches no symbol is a non-zero "bad input".
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// `Unresolved` carries the name that failed to resolve so each caller can
+/// render its own diagnostic (stderr for the CLI, response text for MCP).
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TraceOutcome {
     Found,
     NoPath,
-    Unresolved,
+    Unresolved(String),
 }
 
 /// One hop on a resolved path: the qn reached and the edge taken into it.
@@ -195,21 +197,11 @@ pub fn render_trace(
     let tos = resolve_target_qns(calls, to);
 
     if froms.is_empty() || tos.is_empty() {
+        // The rejection itself is rendered by the caller — stderr for the
+        // CLI (#36: stdout stays empty for a failed query), response text
+        // for MCP. The outcome carries the name that failed.
         let missing = if froms.is_empty() { from } else { to };
-        if json {
-            let v = serde_json::json!({
-                "schema": JSON_SCHEMA_TRACE,
-                "from": from, "to": to, "found": false,
-                "error": format!("no callable symbol matches '{}'", missing),
-                "hops": [],
-            });
-            return (to_json(&v, pretty), TraceOutcome::Unresolved);
-        }
-        let msg = format!(
-            "# note: no callable symbol matches '{}' (try a more specific suffix like 'Type.method').\n",
-            missing
-        );
-        return (msg, TraceOutcome::Unresolved);
+        return (String::new(), TraceOutcome::Unresolved(missing.to_string()));
     }
 
     let max_depth = max_depth.max(1);

@@ -29,9 +29,23 @@ It is written natively in Rust, relying heavily on the [tree-sitter](https://tre
 
 The `surface`, `deps`, `calls`, and `search` subsystems each have their own walk + render pipeline but use the same `Declaration` IR (and the same `file_filter`) under the hood. The call graph in particular extends `Declaration` with a `calls: Vec<CallSite>` field and `ParseResult` with `imports: Vec<ImportBinding>` so adapters can populate raw call-sites and import bindings during their existing tree walk; the resolver lives in `src/calls/resolve.rs`. See the dedicated wiki pages for their internals.
 
-## CLI structure (1.0)
+## CLI structure and the error contract
 
-Every operation is an explicit subcommand — there's no implicit-default form. Bare `ast-bro` (or `ast-bro --wrong`, or any unknown subcommand) prints help to stdout and exits 0, so an agent that mistypes gets a self-contained correction without a separate `--help` round-trip. The handler lives at the top of `main()` in `src/main.rs` and intercepts clap errors before they hit stderr.
+Every operation is an explicit subcommand — there's no implicit-default form. Bare `ast-bro` (no arguments at all) prints help to stdout and exits 0 — an orientation request, not a failed query.
+
+Everything else follows one contract (issues #33/#36), implemented in `src/cli_error.rs` and applied by every subcommand:
+
+- **Channel** — stdout carries results only. Every rejection, note, hint, and warning goes to stderr, which keeps `--json` output parseable without preprocessing and makes "stdout is empty" a reliable signal on its own.
+- **Exit code** — `0`: the query ran and the result is complete, including a legitimately empty result ("this symbol genuinely has no callers"). `2`: the query could not run as asked — no such path, no such symbol, unknown flag, missing argument, no paths after shell expansion — with nothing on stdout. `1`: internal failure (parse crash, unreadable cache).
+- **Machine-readable form** — with `--json`, a rejection also emits an `ast-bro.error.v1` object on stderr (`{schema, command, kind, detail, hint}`, `kind` ∈ `no_input | path_not_found | symbol_not_found | unknown_flag | bad_argument | index_error`), so a consumer needs exactly one check instead of a per-subcommand table.
+- **Unknown flags** — exit 2 with clap's error on stderr; when the flag exists on a sibling subcommand the message says which one (`--glob is a map flag`). Help on stdout is reserved for `--help`, which is a request for help — a rejected argument list is not a result.
+- **Notes beside a real result** — qualifications of a delivered answer (partial path misses, truncation notes, ambiguity counts) stay exit 0, message on stderr, result on stdout.
+
+The recovery rule an agent needs is one sentence: *stdout empty or exit non-zero → the call was wrong; read stderr; fix the call.*
+
+Relatedly, capped output is never silent (issue #32): `callers`/`callees`/`impact`/`reverse-deps` headers report the true total when `--limit` trims the display, JSON carries `total`/`truncated` (and `frontier_truncated` when `--depth` stopped a walk that still had edges), and `map --max-members` prints a `+N more` line for what it cut.
+
+`map` and `digest` are one command (issue #37): same walk, same `Declaration` IR, byte-identical `--json`. `map` exposes three orthogonal axes — detail (`--detail names|signatures|full`), visibility (`--no-private`, `--no-fields`, …), and scope (`--glob`, `--max-members`) — and `digest` is an alias for `map --preset digest` (`--detail names --no-private --no-fields --max-members 50`), with explicit flags overriding the preset. Detail below `full` also sheds doc comments from the JSON payload, which is routinely a third of its weight.
 
 ## MCP Server (`src/mcp/`)
 

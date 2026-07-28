@@ -12,8 +12,24 @@ pub struct CallHit {
     pub edge: CallEdge,
 }
 
+/// A traversal plus the fact an agent can't otherwise see: whether the
+/// walk stopped because the graph ended, or because `--depth` cut it off
+/// while reachable edges remained (issue #32).
+#[derive(Debug, Clone)]
+pub struct TraversalInfo {
+    pub hits: Vec<CallHit>,
+    /// True when at least one node at the depth cutoff still had
+    /// unexplored outgoing edges.
+    pub frontier_truncated: bool,
+}
+
 /// Forward — what does `start` call (transitively, deduped by target qn).
 pub fn callees(graph: &CallGraph, start: &Qn, max_depth: usize) -> Vec<CallHit> {
+    callees_info(graph, start, max_depth).hits
+}
+
+/// `callees` + frontier reporting.
+pub fn callees_info(graph: &CallGraph, start: &Qn, max_depth: usize) -> TraversalInfo {
     let edges_at = |qn: &Qn| graph.forward.get(qn).cloned().unwrap_or_default();
     bfs(
         start,
@@ -46,6 +62,17 @@ pub fn callers<F: Fn(&CallEdge) -> bool>(
     limit: usize,
     predicate: F,
 ) -> Vec<CallHit> {
+    callers_info(graph, start, max_depth, limit, predicate).hits
+}
+
+/// `callers` + frontier reporting.
+pub fn callers_info<F: Fn(&CallEdge) -> bool>(
+    graph: &CallGraph,
+    start: &Qn,
+    max_depth: usize,
+    limit: usize,
+    predicate: F,
+) -> TraversalInfo {
     let edges_at = |qn: &Qn| graph.reverse.get(qn).cloned().unwrap_or_default();
     bfs(
         start,
@@ -61,6 +88,40 @@ pub fn callers<F: Fn(&CallEdge) -> bool>(
     )
 }
 
+/// Bare edges that *name* one of `targets` but were never attributed to a
+/// node, so the reverse index (and therefore the `callers` BFS) can't see
+/// them. An edge counts when a target qn survives in its candidate set,
+/// or — for candidate-less bare edges — when the raw callee name matches a
+/// target's terminal name. Dropping these silently makes `callers` report
+/// a rename as cheaper than it is (issue #31).
+pub fn unattributed_callers(graph: &CallGraph, targets: &[Qn]) -> Vec<CallEdge> {
+    use crate::calls::graph::CallTarget;
+    let target_set: HashSet<&Qn> = targets.iter().collect();
+    let names: HashSet<&str> = targets.iter().map(|q| q.name()).collect();
+    let mut out: Vec<CallEdge> = Vec::new();
+    for edges in graph.forward.values() {
+        for e in edges {
+            let CallTarget::Bare(name) = &e.target else { continue };
+            let hit = if e.candidates.is_empty() {
+                names.contains(name.as_str())
+            } else {
+                e.candidates.iter().any(|c| target_set.contains(c))
+            };
+            if hit {
+                out.push(e.clone());
+            }
+        }
+    }
+    out.sort_by(|a, b| {
+        a.file
+            .cmp(&b.file)
+            .then(a.line.cmp(&b.line))
+            .then(a.source.0.cmp(&b.source.0))
+    });
+    out.dedup_by(|a, b| a.file == b.file && a.line == b.line && a.source == b.source);
+    out
+}
+
 /// All resolved + external + bare edges originating at `start`. Useful for
 /// the `callees` text renderer where we want to surface unresolved targets
 /// even when traversal can't recurse into them.
@@ -68,14 +129,24 @@ pub fn callees_one_hop(graph: &CallGraph, start: &Qn) -> Vec<CallEdge> {
     graph.forward.get(start).cloned().unwrap_or_default()
 }
 
-fn bfs<F, P>(start: &Qn, max_depth: usize, limit: usize, edges_at: F, predicate: P) -> Vec<CallHit>
+fn bfs<F, P>(
+    start: &Qn,
+    max_depth: usize,
+    limit: usize,
+    edges_at: F,
+    predicate: P,
+) -> TraversalInfo
 where
     F: Fn(&Qn) -> Vec<(Option<Qn>, CallEdge)>,
     P: Fn(&CallEdge) -> bool,
 {
     let mut out = Vec::new();
+    let mut frontier_truncated = false;
     if limit == 0 {
-        return out;
+        return TraversalInfo {
+            hits: out,
+            frontier_truncated,
+        };
     }
     // Two sets with different jobs: `seen` dedups *traversal* (every node is
     // expanded once, including ones whose edge the predicate rejects — a
@@ -94,6 +165,11 @@ where
     reported.insert(start.clone());
     while let Some((cur, depth)) = q.pop_front() {
         if depth >= max_depth {
+            // The walk stopped here, not the graph: distinguish "ends at
+            // the depth cap with edges left" from "the graph ends" (#32).
+            if !frontier_truncated && !edges_at(&cur).is_empty() {
+                frontier_truncated = true;
+            }
             continue;
         }
         for (next, edge) in edges_at(&cur) {
@@ -105,7 +181,10 @@ where
                         edge,
                     });
                     if out.len() >= limit {
-                        return out;
+                        return TraversalInfo {
+                            hits: out,
+                            frontier_truncated,
+                        };
                     }
                 }
                 continue;
@@ -118,7 +197,10 @@ where
                     edge,
                 });
                 if out.len() >= limit {
-                    return out;
+                    return TraversalInfo {
+                        hits: out,
+                        frontier_truncated,
+                    };
                 }
             }
             if first_visit {
@@ -126,5 +208,8 @@ where
             }
         }
     }
-    out
+    TraversalInfo {
+        hits: out,
+        frontier_truncated,
+    }
 }

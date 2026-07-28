@@ -722,8 +722,40 @@ fn _render_decl(decl: &Declaration, opts: &MapOptions, indent: usize, out: &mut 
         push_docs(&inner_prefix, out);
     }
 
+    // `--max-members` caps how many members a type renders; the remainder
+    // is reported, never silently dropped (issues #37 / #32).
+    let is_type = matches!(decl.kind, Class | Struct | Interface | Record | Enum);
+    let cap = if is_type {
+        opts.max_members.unwrap_or(usize::MAX)
+    } else {
+        usize::MAX
+    };
+    let visible = |d: &Declaration| {
+        let is_field = matches!(d.kind, Field | Property | Event | Indexer);
+        (!is_field || opts.include_fields)
+            && (d.visibility != "private" || opts.include_private)
+    };
+    let mut shown = 0usize;
+    let mut hidden = 0usize;
     for child in &decl.children {
+        if visible(child) {
+            if shown >= cap {
+                hidden += 1;
+                continue;
+            }
+            shown += 1;
+        }
         _render_decl(child, opts, indent + 1, out);
+    }
+    if hidden > 0 {
+        out.push(
+            format!(
+                "{}    ... +{} more member(s) (raise --max-members)",
+                prefix, hidden
+            )
+            .dimmed()
+            .to_string(),
+        );
     }
 
     if indent == 0
@@ -1336,8 +1368,16 @@ fn _serialize_path<S: Serializer>(p: &Path, ser: S) -> Result<S::Ok, S::Error> {
 // constants; bump those on breaking changes.
 // ---------------------------------------------------------------------------
 
-/// Respect MapOptions when serialising the declaration tree.
-fn _filter_decls(decls: &[Declaration], opts: &MapOptions) -> Vec<Declaration> {
+/// Respect MapOptions when serialising the declaration tree. `dropped`
+/// accumulates how many members `max_members` cut, so the JSON output can
+/// say a cap was hit instead of silently truncating (issue #32). With
+/// `include_docs` off, doc comments are shed from the payload too — they
+/// are routinely a third of its weight (issue #37).
+fn _filter_decls(
+    decls: &[Declaration],
+    opts: &MapOptions,
+    dropped: &mut usize,
+) -> Vec<Declaration> {
     use DeclarationKind::*;
     if decls.is_empty() {
         return Vec::new();
@@ -1356,9 +1396,21 @@ fn _filter_decls(decls: &[Declaration], opts: &MapOptions) -> Vec<Declaration> {
                 return None;
             }
             let mut clone = d.clone();
-            let mut children = _filter_decls(&d.children, opts);
-            if let Some(cap) = opts.max_members {
-                children.truncate(cap);
+            let mut children = _filter_decls(&d.children, opts, dropped);
+            // Same member definition as the text renderer: the cap applies
+            // to *type* members only, so `--max-members` answers the same
+            // question with and without --json.
+            let is_type = matches!(d.kind, Class | Struct | Interface | Record | Enum);
+            if is_type {
+                if let Some(cap) = opts.max_members {
+                    if children.len() > cap {
+                        *dropped += children.len() - cap;
+                        children.truncate(cap);
+                    }
+                }
+            }
+            if !opts.include_docs {
+                clone.docs = Vec::new();
             }
             clone.children = children;
             Some(clone)
@@ -1380,7 +1432,19 @@ struct JsonFile<'a> {
     error_count: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     warning: Option<&'static str>,
+    /// Present (true) when `--max-members` cut members out of
+    /// `declarations` — a capped payload must be distinguishable from a
+    /// complete one (issue #32).
+    #[serde(skip_serializing_if = "_is_false")]
+    truncated: bool,
+    /// How many members the cap dropped (0 when not truncated).
+    #[serde(skip_serializing_if = "_is_zero")]
+    dropped_members: usize,
     declarations: Vec<Declaration>,
+}
+
+fn _is_zero(n: &usize) -> bool {
+    *n == 0
 }
 
 #[derive(Serialize)]
@@ -1409,17 +1473,23 @@ pub fn render_json_map(results: &[ParseResult], opts: &MapOptions, pretty: bool)
     let files: Vec<JsonFile> = results
         .iter()
         .zip(paths.iter_mut())
-        .map(|(r, path)| JsonFile {
-            path,
-            language: r.language,
-            line_count: r.line_count,
-            error_count: r.error_count,
-            warning: if r.error_count > 0 {
-                Some("output may be incomplete")
-            } else {
-                None
-            },
-            declarations: _filter_decls(&r.declarations, opts),
+        .map(|(r, path)| {
+            let mut dropped = 0usize;
+            let declarations = _filter_decls(&r.declarations, opts, &mut dropped);
+            JsonFile {
+                path,
+                language: r.language,
+                line_count: r.line_count,
+                error_count: r.error_count,
+                warning: if r.error_count > 0 {
+                    Some("output may be incomplete")
+                } else {
+                    None
+                },
+                truncated: dropped > 0,
+                dropped_members: dropped,
+                declarations,
+            }
         })
         .collect();
 

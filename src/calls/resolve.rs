@@ -89,45 +89,74 @@ pub fn run_with_table(
         let lang = Lang::from_path(&fp.file);
 
         for raw in fp.raw_edges {
+            // An explicit receiver disqualifies same-file binding: a local
+            // homonym must not shadow `connection.getCtx()` — the receiver
+            // says the target lives on another object (issue #31). Self-like
+            // receivers (`self`, `this`, …) and receiver-less calls still
+            // bind locally, and a type-qualified call (`Foo::bar()`,
+            // `Foo.bar()`) binds only to a local qn actually scoped under
+            // that type.
+            let self_like = receiver_is_self_like(raw.receiver.as_deref());
+
             // -------- Pass A: same-file -------- //
             if file_qns.contains(&raw.bare_name) {
-                let target = local_qn_by_name
-                    .get(&raw.bare_name)
-                    .cloned()
-                    .map(CallTarget::Resolved)
-                    .unwrap_or(CallTarget::Bare(raw.bare_name.clone()));
-                let edge = raw_to_edge(
-                    raw.clone(),
-                    target,
-                    Confidence::Exact,
-                    rel_path(root, &fp.file),
-                    Vec::new(),
-                );
-                forward.entry(edge.source.clone()).or_default().push(edge);
-                continue;
-            }
-
-            // -------- Pass A (cont): import resolution -------- //
-            if let Some(spec) = import_lookup.get(&raw.bare_name) {
-                if let Some(target) = resolve_via_imports(
-                    spec,
-                    &raw.bare_name,
-                    &fp.file,
-                    lang,
-                    &aliases,
-                    &suffix_idx,
-                    root,
-                    &symbol_table,
-                ) {
+                let local_target = if self_like {
+                    // Prefer the sibling under the caller's own scope:
+                    // `self.shared()` inside `Greeter::caller` is
+                    // `Greeter::shared`, not a same-file homonym from
+                    // another class.
+                    raw.source
+                        .0
+                        .rfind("::")
+                        .map(|i| format!("{}::{}", &raw.source.0[..i], raw.bare_name))
+                        .and_then(|want| fp.defined.iter().find(|q| q.0 == want).cloned())
+                        .or_else(|| local_qn_by_name.get(&raw.bare_name).cloned())
+                } else {
+                    raw.receiver.as_deref().and_then(|recv| {
+                        let scoped = format!("::{}::{}", recv, raw.bare_name);
+                        fp.defined.iter().find(|q| q.0.ends_with(&scoped)).cloned()
+                    })
+                };
+                if let Some(qn) = local_target {
                     let edge = raw_to_edge(
                         raw.clone(),
-                        CallTarget::Resolved(target),
+                        CallTarget::Resolved(qn),
                         Confidence::Exact,
                         rel_path(root, &fp.file),
                         Vec::new(),
                     );
                     forward.entry(edge.source.clone()).or_default().push(edge);
                     continue;
+                }
+                // Explicit receiver with no locally-scoped match: fall
+                // through to pass B/C rather than mis-bind.
+            }
+
+            // -------- Pass A (cont): import resolution -------- //
+            // Same gate: `obj.parse()` must not bind to an imported free
+            // function `parse`.
+            if self_like {
+                if let Some(spec) = import_lookup.get(&raw.bare_name) {
+                    if let Some(target) = resolve_via_imports(
+                        spec,
+                        &raw.bare_name,
+                        &fp.file,
+                        lang,
+                        &aliases,
+                        &suffix_idx,
+                        root,
+                        &symbol_table,
+                    ) {
+                        let edge = raw_to_edge(
+                            raw.clone(),
+                            CallTarget::Resolved(target),
+                            Confidence::Exact,
+                            rel_path(root, &fp.file),
+                            Vec::new(),
+                        );
+                        forward.entry(edge.source.clone()).or_default().push(edge);
+                        continue;
+                    }
                 }
             }
 
@@ -138,8 +167,7 @@ pub fn run_with_table(
             // a resolved type for `obj`, single-name matches are too noisy
             // (e.g. `builder.hidden()` would resolve to any project method
             // happening to be called `hidden`). Defer them to pass C.
-            let has_receiver = raw.receiver.is_some()
-                && !matches!(raw.receiver.as_deref(), Some("self") | Some("Self") | Some("crate") | Some("super"));
+            let has_receiver = !self_like;
             match symbol_table.get(&raw.bare_name) {
                 Some(cands) if cands.len() == 1 && !has_receiver => {
                     let edge = raw_to_edge(
@@ -210,6 +238,27 @@ pub fn run_with_table(
         forward,
         symbol_table,
     }
+}
+
+/// A receiver that still points at the enclosing scope: absent (`foo()`),
+/// or one of the language self/scope keywords. Anything else — a variable,
+/// field, or type name — means the call targets another object, so
+/// same-file and single-global-match promotion must not claim it.
+/// (`self`/`Self`/`crate`/`super` — Rust; `this` — Java/TS/C#/C++/Kotlin/
+/// Scala; `$this` — PHP. PHP's `self::`/`static::`/`parent::` scoped calls
+/// never reach here — the adapter normalizes those receivers to `None` —
+/// so listing the bare words would only ever match user variables named
+/// `static`/`parent`, which are common and NOT self-like.)
+pub(crate) fn receiver_is_self_like(recv: Option<&str>) -> bool {
+    matches!(
+        recv,
+        None | Some("self")
+            | Some("Self")
+            | Some("crate")
+            | Some("super")
+            | Some("this")
+            | Some("$this")
+    )
 }
 
 /// Resolve `from <module> import <name>` (or equivalent) by mapping `module`

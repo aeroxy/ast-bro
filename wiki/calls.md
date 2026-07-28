@@ -11,7 +11,7 @@ Three subcommands — `callers`, `callees`, and `trace` — and a per-repo persi
 | function / method / constructor | call sites where `X` is invoked (in-edges) | call sites inside `X`'s body (out-edges) |
 | class / struct / trait / interface / enum / record | downstream uses — implementors + constructions, including unit-struct receiver patterns (`Foo()`, `Foo::new()`, `Foo {}`, `new Foo()`) | upstream dependencies — ancestor types and the methods they declare, walked transitively via `--depth N` |
 
-Both directions are inverses on their respective graphs. Diamond inheritance is handled. `--include-ambiguous` (callers) and `--external` (callees) surface the noisier results when explicitly requested.
+Both directions are inverses on their respective graphs. Diamond inheritance is handled. Ambiguous callers and unresolved/external callees are shown by default; `--hide-ambiguous` (callers) and `--hide-external` (callees) drop them. `callers` additionally scans for bare edges that *name* the target but were never attributed to a node (`traverse::unattributed_callers`) and lists them as possible callers — without this, a chain like `connection.getCtx().getPrefs().forDate()` whose receiver can't be typed would make `callers forDate` read `0` with nothing to suggest otherwise (issue #31).
 
 Symbol forms accepted by both subcommands:
 
@@ -57,6 +57,7 @@ build_call_graph(root, deps):
 
 callers <Sym>:                              # kind-aware:
   if callable: reverse traversal of `forward`
+               + unattributed bare edges naming <Sym>
   if type:     implementors ∪ constructions
 
 callees <Sym>:                              # kind-aware:
@@ -160,8 +161,11 @@ The single biggest source of grep noise is homonyms — `helper`, `init`, `parse
 
 For each `RawEdge` whose target is a bare name:
 
-1. If the name is in the file's `defined_names` (collected from local `Declaration`s), promote to `Resolved(qn)` with `Confidence::Exact`.
-2. Else if the name is in the file's `ParseResult::imports`, look up the module → file via the existing `src/deps/resolver/resolve.rs::resolve` and promote to `Resolved("<that file>::<name>")` with `Exact`.
+1. If the name is in the file's `defined_names` (collected from local `Declaration`s), promote to `Resolved(qn)` with `Confidence::Exact` — **but only when the receiver still points at the enclosing scope** (no receiver, or a self-like keyword: `self`/`Self`/`crate`/`super`/`this`/`$this` — PHP's `self::`/`static::`/`parent::` never reach the resolver as receivers; the adapter normalizes them to `None`, and the bare words are deliberately absent from the list because `parent`/`static` are common user variable names). An explicit receiver (`connection.getCtx()`) means the target lives on another object, so a same-file homonym must not claim it (issue #31 — the mis-bind used to be tagged `Exact` and silently broke the rest of the chain). Two refinements:
+   - Self-like binding prefers the sibling under the caller's own scope: `self.shared()` inside `Greeter::caller` binds `Greeter::shared`, not another same-file class's `shared`.
+   - A type-qualified call on a local type (`Foo::bar()`, `Foo.bar()`) still binds `Exact`, but only to a local qn actually scoped as `::Foo::bar`.
+   - Everything else falls through to pass B/C, where the dep graph either confirms the relationship (`Inferred`) or the edge stays honestly `Ambiguous`.
+2. Else if the name is in the file's `ParseResult::imports` **and the call has no explicit receiver** (same gate), look up the module → file via the existing `src/deps/resolver/resolve.rs::resolve` and promote to `Resolved("<that file>::<name>")` with `Exact`.
 
 ### Pass B — global symbol table
 
@@ -178,7 +182,7 @@ For each `RawEdge` whose target is a bare name:
 For each ambiguous edge with N candidates, load the dep half of the unified graph, compute the caller file's transitive forward-dep closure via `src/deps/traverse.rs::forward_bfs`, and filter the candidates to those whose file is in that closure.
 
 - Exactly 1 survives → promote to `Resolved` with `Inferred`.
-- More than 1 → keep all in `CallEdge::candidates` and tag `Ambiguous`. The renderer surfaces the count and one canonical choice; `--include-ambiguous` shows every candidate.
+- More than 1 → keep all in `CallEdge::candidates` and tag `Ambiguous`. The renderer surfaces the count and one canonical choice; ambiguous edges are shown by default (`--hide-ambiguous` drops them).
 
 This mirrors `code-review-graph`'s `resolve_bare_call_targets` but uses the richer ast-bro dep graph instead of just IMPORTS_FROM edges.
 

@@ -44,11 +44,18 @@ fn markdown_heading_case_insensitive() {
 #[test]
 fn code_symbol_match_stays_exact() {
     // Substring would have matched `find_implementations` — but for code
-    // symbols we want exact-suffix equality.
-    let s = run(&["show", "src/core.rs", "find_imp"]);
+    // symbols we want exact-suffix equality. Under the error contract
+    // (#36) a non-matching symbol is a rejected call: exit 2, stderr.
+    let out = Command::new(bin())
+        .args(["show", "src/core.rs", "find_imp"])
+        .env("NO_COLOR", "1")
+        .output()
+        .expect("run");
+    assert_eq!(out.status.code(), Some(2), "substring must not match a code symbol");
+    let stderr = String::from_utf8(out.stderr).expect("utf8");
     assert!(
-        s.contains("# note: no symbol matching"),
-        "code symbol substring match leaked:\n{s}"
+        stderr.contains("no symbol matching"),
+        "code symbol substring match leaked:\n{stderr}"
     );
     let s2 = run(&["show", "src/core.rs", "find_implementations"]);
     assert!(
