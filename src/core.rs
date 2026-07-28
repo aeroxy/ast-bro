@@ -1510,7 +1510,61 @@ pub fn render_json_map(results: &[ParseResult], opts: &MapOptions, pretty: bool)
         schema: JSON_SCHEMA_MAP,
         files,
     };
-    _to_json(&doc, pretty)
+
+    // Projection flags apply to the JSON payload exactly as they apply to
+    // text (issue #39): a caller that passes `--no-docs` has said it does
+    // not want the field. Omission is opt-in per call — with no projection
+    // flags the payload is serialized directly and stays byte-identical.
+    let strip_docs = !opts.include_docs;
+    let strip_lines = !opts.include_line_numbers;
+    let strip_attrs = !opts.include_attributes;
+    if !(strip_docs || strip_lines || strip_attrs) {
+        return _to_json(&doc, pretty);
+    }
+    let mut val = serde_json::to_value(&doc).unwrap_or_default();
+    if let Some(files) = val.get_mut("files").and_then(|f| f.as_array_mut()) {
+        for file in files {
+            if let Some(decls) = file.get_mut("declarations") {
+                _strip_projected_keys(decls, strip_docs, strip_lines, strip_attrs);
+            }
+        }
+    }
+    if pretty {
+        serde_json::to_string_pretty(&val).unwrap_or_default()
+    } else {
+        serde_json::to_string(&val).unwrap_or_default()
+    }
+}
+
+/// Remove the keys a projection flag opted out of, recursively through
+/// `children`. `doc_start_byte` rides with either group — it is a doc
+/// artifact *and* a byte offset — so either `--no-docs` or `--no-lines`
+/// drops it.
+fn _strip_projected_keys(decls: &mut serde_json::Value, docs: bool, lines: bool, attrs: bool) {
+    let Some(arr) = decls.as_array_mut() else {
+        return;
+    };
+    for d in arr {
+        let Some(map) = d.as_object_mut() else { continue };
+        if docs {
+            map.remove("docs");
+            map.remove("docs_inside");
+            map.remove("doc_start_byte");
+        }
+        if lines {
+            map.remove("start_line");
+            map.remove("end_line");
+            map.remove("start_byte");
+            map.remove("end_byte");
+            map.remove("doc_start_byte");
+        }
+        if attrs {
+            map.remove("attrs");
+        }
+        if let Some(children) = map.get_mut("children") {
+            _strip_projected_keys(children, docs, lines, attrs);
+        }
+    }
 }
 
 /// Render `show --json`.

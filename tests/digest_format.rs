@@ -444,3 +444,43 @@ fn names_detail_honors_no_attrs_and_no_lines() {
         "--no-lines must drop line suffixes in names detail:\n{without}"
     );
 }
+
+#[test]
+fn json_honors_projection_flags() {
+    // Issue #39: the --no-* projection flags apply to the JSON payload the
+    // same way they apply to text. Passing none keeps every key.
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path().join("doc.rs");
+    std::fs::write(
+        &p,
+        "/// A documented function.\n#[inline]\npub fn f() {}\n",
+    )
+    .unwrap();
+    let p = p.to_str().unwrap();
+    let decl = |args: &[&str]| -> serde_json::Value {
+        let out = run(&[&["map", p, "--json", "--compact"], args].concat());
+        let doc: serde_json::Value = serde_json::from_str(out.trim()).expect("valid json");
+        doc["files"][0]["declarations"][0].clone()
+    };
+
+    let full = decl(&[]);
+    for key in ["docs", "docs_inside", "doc_start_byte", "start_line", "start_byte", "attrs"] {
+        assert!(full.get(key).is_some(), "default payload must keep `{key}`: {full}");
+    }
+
+    let no_docs = decl(&["--no-docs"]);
+    for key in ["docs", "docs_inside", "doc_start_byte"] {
+        assert!(no_docs.get(key).is_none(), "--no-docs must drop `{key}`: {no_docs}");
+    }
+    assert!(no_docs.get("start_line").is_some());
+
+    let no_lines = decl(&["--no-lines"]);
+    for key in ["start_line", "end_line", "start_byte", "end_byte", "doc_start_byte"] {
+        assert!(no_lines.get(key).is_none(), "--no-lines must drop `{key}`: {no_lines}");
+    }
+    assert!(no_lines.get("docs").is_some(), "--no-lines must keep docs: {no_lines}");
+
+    let no_attrs = decl(&["--no-attrs"]);
+    assert!(no_attrs.get("attrs").is_none(), "--no-attrs must drop `attrs`: {no_attrs}");
+    assert!(no_attrs.get("docs").is_some());
+}
