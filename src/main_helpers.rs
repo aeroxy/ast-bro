@@ -7,6 +7,8 @@ use crate::adapters::base::LanguageAdapter;
 use crate::adapters::cpp::CppAdapter;
 use crate::adapters::csharp::CSharpAdapter;
 use crate::adapters::go::GoAdapter;
+use crate::adapters::json::JsonAdapter;
+use crate::adapters::yaml::YamlAdapter;
 use crate::adapters::java::JavaAdapter;
 use crate::adapters::kotlin::KotlinAdapter;
 use crate::adapters::php::PhpAdapter;
@@ -30,6 +32,7 @@ pub fn can_parse_for_hook(path: &Path) -> bool {
     if matches!(
         ext.as_str(),
         "sql" | "ddl" | "dml" | "md" | "markdown" | "mdx" | "mdown"
+            | "json" | "yaml" | "yml" | "toml" | "ps1" | "psm1" | "psd1"
     ) {
         return true;
     }
@@ -60,6 +63,8 @@ fn is_supported_adapter(lang: SupportLang) -> bool {
             | SupportLang::Scala
             | SupportLang::Cpp
             | SupportLang::Ruby
+            | SupportLang::Json
+            | SupportLang::Yaml
             | SupportLang::Php
     )
 }
@@ -89,6 +94,18 @@ pub fn parse_file_for_hook(path: &Path) -> Option<ParseResult> {
         return Some(r);
     }
 
+    if matches!(ext, "ps1" | "psm1" | "psd1") {
+        let mut r = crate::adapters::powershell::parse_powershell(path, source.as_bytes());
+        crate::core::populate_markers(&mut r.declarations, r.language);
+        return Some(r);
+    }
+
+    if matches!(ext, "toml") {
+        let mut r = crate::adapters::toml::parse_toml(path, source.as_bytes());
+        crate::core::populate_markers(&mut r.declarations, r.language);
+        return Some(r);
+    }
+
     // Try extension first; for extensionless files, fall back to shebang.
     let lang = SupportLang::from_path(path)
         .or_else(|| {
@@ -110,9 +127,12 @@ pub fn parse_file_for_hook(path: &Path) -> Option<ParseResult> {
             source.as_bytes(),
             lang.ast_grep(source.clone()).root(),
         ),
-        SupportLang::TypeScript | SupportLang::Tsx | SupportLang::JavaScript => {
-            TypeScriptAdapter.parse(path, source.as_bytes(), lang.ast_grep(source.clone()).root())
-        }
+        SupportLang::TypeScript | SupportLang::Tsx | SupportLang::JavaScript => TypeScriptAdapter
+            .parse(
+                path,
+                source.as_bytes(),
+                lang.ast_grep(source.clone()).root(),
+            ),
         SupportLang::CSharp => CSharpAdapter.parse(
             path,
             source.as_bytes(),
@@ -149,6 +169,16 @@ pub fn parse_file_for_hook(path: &Path) -> Option<ParseResult> {
             lang.ast_grep(source.clone()).root(),
         ),
         SupportLang::Php => PhpAdapter.parse(
+            path,
+            source.as_bytes(),
+            lang.ast_grep(source.clone()).root(),
+        ),
+        SupportLang::Json => JsonAdapter.parse(
+            path,
+            source.as_bytes(),
+            lang.ast_grep(source.clone()).root(),
+        ),
+        SupportLang::Yaml => YamlAdapter.parse(
             path,
             source.as_bytes(),
             lang.ast_grep(source.clone()).root(),

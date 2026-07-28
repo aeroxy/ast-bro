@@ -204,7 +204,7 @@ pub fn parse_composer_psr4(path: &Path) -> Vec<(String, String)> {
     // Longest prefix wins on tie — sort descending so the resolver picks the
     // most specific match first. (Stable sort preserves array order within
     // a prefix, so multi-dir entries try directories in declaration order.)
-    out.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
+    out.sort_by_key(|b| std::cmp::Reverse(b.0.len()));
     out
 }
 

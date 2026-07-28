@@ -103,7 +103,7 @@ fn show_missing_symbol_exits_zero_with_note() {
 
 #[test]
 fn show_unsupported_file_exits_zero_with_note() {
-    let (ok, stdout, _) = run(&["show", "Cargo.toml", "package"]);
+    let (ok, stdout, _) = run(&["show", "Cargo.lock", "package"]);
     assert!(ok, "must exit 0");
     assert!(
         stdout.contains("# note: unsupported file type"),

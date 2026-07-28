@@ -321,7 +321,7 @@ impl Index {
         // 2. Build flat chunks vec + per-file chunk_range.
         let mut chunks = Vec::new();
         let mut files: Vec<FileRecord> = Vec::with_capacity(file_paths.len());
-        for (path, file_chunks) in file_paths.iter().zip(chunks_per_file.into_iter()) {
+        for (path, file_chunks) in file_paths.iter().zip(chunks_per_file) {
             let rel = match path.strip_prefix(&paths.root) {
                 Ok(r) => normalise_path(r),
                 Err(_) => continue,
