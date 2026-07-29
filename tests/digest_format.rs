@@ -521,8 +521,12 @@ mod tests {
     .unwrap();
     let p = p.to_str().unwrap();
 
+    // Negative assertions must inspect rendered declarations, not the
+    // random temp path a header line might carry — strip the path first.
+    let sans_path = |s: String| s.replace(p, "<fixture>");
+
     // Digest = public-only view.
-    let digest = run(&["digest", p]);
+    let digest = sans_path(run(&["digest", p]));
     for shown in ["trait Speak", "speak()", "struct Loud", "public_helper()", "free_public()"] {
         assert!(digest.contains(shown), "`{shown}` must survive the public view:\n{digest}");
     }
@@ -531,11 +535,11 @@ mod tests {
     }
 
     // map default still shows everything; --no-private matches the digest.
-    let full = run(&["map", p]);
+    let full = sans_path(run(&["map", p]));
     for item in ["private_helper", "Hidden", "free_private", "gain"] {
         assert!(full.contains(item), "map default must keep `{item}`:\n{full}");
     }
-    let no_private = run(&["map", p, "--no-private"]);
+    let no_private = sans_path(run(&["map", p, "--no-private"]));
     assert!(
         !no_private.contains("private_helper") && !no_private.contains("free_private"),
         "--no-private must drop Rust private items:\n{no_private}"

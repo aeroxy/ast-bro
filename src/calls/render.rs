@@ -73,11 +73,7 @@ fn unattributed_section(target: &str, edges: &[CallEdge], total: usize) -> Strin
     if total == 0 {
         return out;
     }
-    let suffix = if total > edges.len() {
-        format!(" (showing {}; raise --limit to see the rest)", edges.len())
-    } else {
-        String::new()
-    };
+    let suffix = section_suffix(total, edges.len());
     out.push_str(&format!(
         "\n{} {} unresolved call site(s) naming '{}' (receiver not resolvable; possible additional callers){}:\n",
         "##".dimmed(),

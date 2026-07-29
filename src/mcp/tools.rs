@@ -570,7 +570,7 @@ fn run_digest(args: Value) -> CallResult {
         Ok(v) => v,
         Err(e) => return CallResult::Error(format!("invalid arguments: {}", e)),
     };
-    let (paths, _path_note) = match crate::resolve_paths_for_mcp("digest", &a.paths) {
+    let (paths, path_note) = match crate::resolve_paths_for_mcp("digest", &a.paths) {
         Ok(pair) => pair,
         Err(e) => return CallResult::Error(e),
     };
@@ -601,7 +601,14 @@ fn run_digest(args: Value) -> CallResult {
         } else {
             None
         };
-        CallResult::Text(core::render_digest(&results, &opts, root))
+        match &path_note {
+            Some(n) => CallResult::Text(format!(
+                "{}\n{}",
+                n,
+                core::render_digest(&results, &opts, root)
+            )),
+            None => CallResult::Text(core::render_digest(&results, &opts, root)),
+        }
     }
 }
 
@@ -721,7 +728,7 @@ fn run_implements(args: Value) -> CallResult {
         Ok(v) => v,
         Err(e) => return CallResult::Error(format!("invalid arguments: {}", e)),
     };
-    let (paths, _path_note) = match crate::resolve_paths_for_mcp("implements", &a.paths) {
+    let (paths, path_note) = match crate::resolve_paths_for_mcp("implements", &a.paths) {
         Ok(pair) => pair,
         Err(e) => return CallResult::Error(e),
     };
@@ -732,10 +739,14 @@ fn run_implements(args: Value) -> CallResult {
     if a.json {
         CallResult::Text(core::render_json_implements(&a.target, &matches, transitive, true))
     } else {
-        let mut out = format!(
+        let mut out = match &path_note {
+            Some(n) => format!("{}\n", n),
+            None => String::new(),
+        };
+        out.push_str(&format!(
             "# {} match(es) for '{}' (incl. transitive):\n",
             matches.len(), a.target
-        );
+        ));
         for m in &matches {
             let via = if m.via.is_empty() {
                 String::new()

@@ -786,7 +786,12 @@ fn exit_with_parse_error(e: clap::Error) -> ! {
     use clap::error::{ContextKind, ContextValue, ErrorKind};
     use clap::CommandFactory;
 
-    let raw: Vec<String> = std::env::args().skip(1).collect();
+    // args_os + lossy conversion: a non-UTF-8 argument must follow the
+    // exit-2 contract, not panic the rejection path itself.
+    let raw: Vec<String> = std::env::args_os()
+        .skip(1)
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
     let json_mode = raw.iter().any(|a| a == "--json");
     let subcommand = raw
         .iter()
@@ -879,15 +884,7 @@ fn require_paths(command: &str, paths: &[PathBuf], json_mode: bool) -> Vec<PathB
         ))
         .exit(json_mode);
     }
-    let mut existing: Vec<PathBuf> = Vec::new();
-    let mut missing: Vec<String> = Vec::new();
-    for p in paths {
-        if path_glob::expand_existing(p).is_empty() {
-            missing.push(p.display().to_string());
-        } else {
-            existing.push(p.clone());
-        }
-    }
+    let (existing, missing) = split_existing(paths);
     if existing.is_empty() {
         CliError::new(
             command,
@@ -914,6 +911,22 @@ fn require_paths(command: &str, paths: &[PathBuf], json_mode: bool) -> Vec<PathB
     existing
 }
 
+/// Partition path arguments into (resolvable originals, missing display
+/// strings) — the shared core of `require_paths` (CLI) and
+/// `resolve_paths_for_mcp` (MCP), which differ only in how they report.
+fn split_existing(paths: &[PathBuf]) -> (Vec<PathBuf>, Vec<String>) {
+    let mut existing: Vec<PathBuf> = Vec::new();
+    let mut missing: Vec<String> = Vec::new();
+    for p in paths {
+        if path_glob::expand_existing(p).is_empty() {
+            missing.push(p.display().to_string());
+        } else {
+            existing.push(p.clone());
+        }
+    }
+    (existing, missing)
+}
+
 /// MCP-side counterpart of `require_paths` (#33): the server has no stderr
 /// channel to the client and must not exit, so validation failures come
 /// back as `Err(message)` for the tool to wrap in `CallResult::Error`.
@@ -929,15 +942,7 @@ pub(crate) fn resolve_paths_for_mcp(
             command
         ));
     }
-    let mut existing: Vec<PathBuf> = Vec::new();
-    let mut missing: Vec<String> = Vec::new();
-    for p in paths {
-        if path_glob::expand_existing(p).is_empty() {
-            missing.push(p.display().to_string());
-        } else {
-            existing.push(p.clone());
-        }
-    }
+    let (existing, missing) = split_existing(paths);
     if existing.is_empty() {
         return Err(format!(
             "`{}` resolved 0 of {} path(s); nothing was inspected. missing: {}. An empty result here would mean the paths are wrong, not that the code has no declarations",

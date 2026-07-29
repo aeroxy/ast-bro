@@ -138,9 +138,13 @@ fn implements_unknown_type_exits_2_on_stderr() {
 
 #[test]
 fn implements_existing_type_with_zero_impls_exits_0() {
-    // `CliError` exists (src/cli_error.rs) but nothing implements it — a
-    // legitimately empty answer must stay exit 0 on stdout.
-    let (code, stdout, stderr) = run(&["implements", "CliError", "src/"]);
+    // A real type with no implementations is a legitimately empty answer:
+    // exit 0, result on stdout. Fixture-local so changes to the repo's own
+    // sources can never invalidate the premise.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("lonely.rs"), "pub struct Lonely;\n").unwrap();
+    let root = dir.path().to_str().unwrap().to_string();
+    let (code, stdout, stderr) = run(&["implements", "Lonely", &root]);
     assert_eq!(code, Some(0), "stderr:\n{stderr}");
     assert!(stdout.contains("0 match(es)"), "stdout:\n{stdout}");
 }
