@@ -2040,3 +2040,34 @@ fn callers_limit_bounds_type_groups_too() {
         "capped section must say so:\n{out}"
     );
 }
+
+#[test]
+fn qualified_receiver_does_not_rebind_to_local_homonym() {
+    // `other::Type::method()` explicitly names another scope's `Type`;
+    // a same-file `Type` with the same terminal name must not claim the
+    // edge as Exact (PR #38 review: no terminal-segment fallback).
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(&root.join("Cargo.toml"), "[package]\nname=\"x\"\nversion=\"0.0.0\"\nedition=\"2021\"\n");
+    write(
+        &root.join("src/lib.rs"),
+        "pub mod other;\npub struct Type;\nimpl Type { pub fn method() {} }\n\
+         pub fn caller() { crate::other::Type::method(); }\n",
+    );
+    write(
+        &root.join("src/other.rs"),
+        "pub struct Type;\nimpl Type { pub fn method() {} }\n",
+    );
+    let (out, code) = run_in(root, &["callees", "caller", ".", "--json", "--compact", "--rebuild"]);
+    assert_eq!(code, 0, "{out}");
+    let doc: serde_json::Value = serde_json::from_str(out.trim()).expect("valid json");
+    let exact_to_local = doc["matches"].as_array().unwrap().iter().any(|m| {
+        m["confidence"] == "Exact"
+            && m["target"].as_str().unwrap_or("").contains("src/lib.rs")
+            && m["target"].as_str().unwrap_or("").contains("method")
+    });
+    assert!(
+        !exact_to_local,
+        "qualified receiver must not bind Exact to the same-file homonym: {out}"
+    );
+}
