@@ -545,3 +545,42 @@ mod tests {
         "trait members and pub methods must survive --no-private:\n{no_private}"
     );
 }
+
+#[test]
+fn nested_cap_drop_counts_match_text_when_subtree_is_removed() {
+    // A capped nested type that is itself removed by an ancestor's cap
+    // must contribute nothing to JSON dropped_members — the text renderer
+    // never shows a `+N` for it either.
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path().join("Nested.java");
+    std::fs::write(
+        &p,
+        "public class Outer {\n\
+         \x20 public class A { public void a1() {} public void a2() {} public void a3() {} }\n\
+         \x20 public class B { public void b1() {} }\n\
+         \x20 public class C { public void c1() {} public void c2() {} public void c3() {} public void c4() {} }\n\
+         }\n",
+    )
+    .unwrap();
+    let p = p.to_str().unwrap();
+
+    // Cap 2: Outer keeps [A, B], drops C entirely (+1). A caps 3 -> 2 (+1).
+    // C's four members must NOT count. Total = 2.
+    let json = run(&["map", p, "--max-members", "2", "--json", "--compact"]);
+    let doc: serde_json::Value = serde_json::from_str(json.trim()).expect("valid json");
+    assert_eq!(
+        doc["files"][0]["dropped_members"], 2,
+        "drops inside a removed subtree must not be counted: {json}"
+    );
+
+    // And the text +N lines sum to the same 2.
+    let text = run(&["map", p, "--max-members", "2"]);
+    let total: usize = text
+        .lines()
+        .filter_map(|l| {
+            let i = l.find("... +")?;
+            l[i + 5..].split_whitespace().next()?.parse::<usize>().ok()
+        })
+        .sum();
+    assert_eq!(total, 2, "text +N lines must sum to dropped_members:\n{text}");
+}

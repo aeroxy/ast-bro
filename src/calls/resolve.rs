@@ -126,7 +126,32 @@ pub fn run_with_table(
                         // the edge stays honestly `Ambiguous`.
                         let normalized = recv.replace(['\\', '.'], "::");
                         let full = format!("::{}::{}", normalized, raw.bare_name);
-                        fp.defined.iter().find(|q| q.0.ends_with(&full)).cloned()
+                        let matches: Vec<&Qn> =
+                            fp.defined.iter().filter(|q| q.0.ends_with(&full)).collect();
+                        match matches.len() {
+                            0 => None,
+                            1 => Some(matches[0].clone()),
+                            // Several lexical scopes declare this suffix
+                            // (`mod a`/`mod b` each with `Foo::method`).
+                            // Bind only a candidate whose scope encloses
+                            // the *caller* (innermost wins) — that is what
+                            // the unqualified path means in the source.
+                            // Otherwise defer to pass B/C so the edge
+                            // stays honestly Ambiguous instead of taking
+                            // whichever match came first.
+                            _ => {
+                                let caller = raw.source.0.as_str();
+                                matches
+                                    .iter()
+                                    .filter(|q| {
+                                        let scope = &q.0[..q.0.len() - full.len()];
+                                        caller == scope
+                                            || caller.starts_with(&format!("{}::", scope))
+                                    })
+                                    .max_by_key(|q| q.0.len())
+                                    .map(|q| (*q).clone())
+                            }
+                        }
                     })
                 };
                 if let Some(qn) = local_target {
