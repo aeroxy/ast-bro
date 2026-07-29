@@ -1159,15 +1159,24 @@ pub fn run() {
             let text = match std::fs::read_to_string(path) {
                 Ok(t) => t,
                 Err(e) => {
-                    let detail = if path.is_dir() {
-                        format!(
-                            "`squeeze` expects a file, got a directory: {}",
-                            path.display()
+                    // A directory is a wrong argument (exit 2); a read
+                    // failure on an existing file is an internal failure
+                    // (exit 1), matching the surface handler's Io mapping.
+                    let (kind, detail) = if path.is_dir() {
+                        (
+                            CliErrorKind::BadArgument,
+                            format!(
+                                "`squeeze` expects a file, got a directory: {}",
+                                path.display()
+                            ),
                         )
                     } else {
-                        format!("could not read {}: {}", path.display(), e)
+                        (
+                            CliErrorKind::IndexError,
+                            format!("could not read {}: {}", path.display(), e),
+                        )
                     };
-                    CliError::new("squeeze", CliErrorKind::BadArgument, detail).exit(*json);
+                    CliError::new("squeeze", kind, detail).exit(*json);
                 }
             };
             let line_count = text.lines().count();

@@ -179,7 +179,7 @@ For each `RawEdge` whose target is a bare name:
 
 ### Pass C — dep-graph disambiguation
 
-For each ambiguous edge with N candidates, load the dep half of the unified graph, compute the caller file's transitive forward-dep closure via `src/deps/traverse.rs::forward_bfs`, and filter the candidates to those whose file is in that closure.
+For each ambiguous edge with N candidates, load the dep half of the unified graph, compute the caller file's transitive forward-dep closure via `src/deps/traverse.rs::forward`, and filter the candidates to those whose file is in that closure.
 
 - Exactly 1 survives → promote to `Resolved` with `Inferred`.
 - More than 1 → keep all in `CallEdge::candidates` and tag `Ambiguous`. The renderer surfaces the count and one canonical choice; ambiguous edges are shown by default (`--hide-ambiguous` drops them).
