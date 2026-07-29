@@ -584,3 +584,34 @@ fn nested_cap_drop_counts_match_text_when_subtree_is_removed() {
         .sum();
     assert_eq!(total, 2, "text +N lines must sum to dropped_members:\n{text}");
 }
+
+#[test]
+fn restricted_rust_visibility_forms_are_pinned() {
+    // pub(self) / pub(in self) grant no reach beyond the module: private.
+    // pub(crate) / pub(super) / pub(in crate) stay visible in the
+    // public-only view — the moral equivalent of C# internal / Java
+    // package-private, which have never been hidden. This test locks the
+    // design choice down.
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path().join("restricted.rs");
+    std::fs::write(
+        &p,
+        "pub mod inner {\n\
+         pub(self) fn self_only() {}\n\
+         pub(in self) fn in_self_only() {}\n\
+         pub(crate) fn crate_wide() {}\n\
+         pub(super) fn parent_wide() {}\n\
+         pub(in crate) fn in_crate_wide() {}\n\
+         pub fn open() {}\n\
+         }\n",
+    )
+    .unwrap();
+    let p = p.to_str().unwrap();
+    let out = run(&["map", p, "--no-private"]);
+    for hidden in ["self_only", "in_self_only"] {
+        assert!(!out.contains(hidden), "`{hidden}` is private-equivalent:\n{out}");
+    }
+    for shown in ["crate_wide", "parent_wide", "in_crate_wide", "open"] {
+        assert!(out.contains(shown), "`{shown}` must stay visible:\n{out}");
+    }
+}

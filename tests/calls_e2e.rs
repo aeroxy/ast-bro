@@ -1957,6 +1957,9 @@ fn parameter_named_parent_is_not_self_like() {
     def attach(self, parent):
         parent.add_child(self)
 
+    def attach_static(self, static):
+        static.add_child(self)
+
 class Other:
     def add_child(self, c):
         pass
@@ -1966,7 +1969,7 @@ class Other:
     assert_eq!(code, 0, "{out}");
     assert!(
         !out.contains("(Exact)"),
-        "a receiver named `parent` must not bind Exact to a same-file homonym:\n{out}"
+        "receivers named `parent`/`static` must not bind Exact to a same-file homonym:\n{out}"
     );
 }
 

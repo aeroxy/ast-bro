@@ -6,20 +6,23 @@
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use std::time::Duration;
 
 fn bin() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_ast-bro"))
 }
 
 /// Drive `ast-bro mcp` with initialize + one tools/call; return the last
-/// response line parsed as JSON.
+/// response line parsed as JSON. The server exits on stdin EOF; a bounded
+/// wait keeps a hung server from wedging the test run, and stderr rides
+/// along in every panic message so failures stay debuggable.
 fn call_tool(dir: &std::path::Path, name: &str, arguments: serde_json::Value) -> serde_json::Value {
     let mut child = Command::new(bin())
         .arg("mcp")
         .current_dir(dir)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .spawn()
         .expect("spawn mcp server");
     let request = serde_json::json!({
@@ -36,10 +39,22 @@ fn call_tool(dir: &std::path::Path, name: &str, arguments: serde_json::Value) ->
         .unwrap();
         writeln!(stdin, "{}", request).unwrap();
     }
-    let out = child.wait_with_output().expect("mcp output");
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(child.wait_with_output());
+    });
+    let out = rx
+        .recv_timeout(Duration::from_secs(30))
+        .expect("mcp server did not exit within 30s (hung on EOF?)")
+        .expect("mcp output");
     let stdout = String::from_utf8(out.stdout).expect("utf8");
-    let last = stdout.lines().last().expect("a response line");
-    serde_json::from_str(last).expect("valid json-rpc response")
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let last = stdout
+        .lines()
+        .last()
+        .unwrap_or_else(|| panic!("no response line; stderr:\n{stderr}"));
+    serde_json::from_str(last)
+        .unwrap_or_else(|e| panic!("invalid json-rpc response ({e}): {last}\nstderr:\n{stderr}"))
 }
 
 fn result_of(resp: &serde_json::Value) -> (&serde_json::Value, bool, &str) {

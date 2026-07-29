@@ -106,7 +106,7 @@ fn _node_to_decl<'a, D: Doc>(node: &Node<'a, D>, src: &[u8]) -> Option<Declarati
         return Some(_trait_to_decl(node, src));
     }
     if kind == "function_item" {
-        return Some(_function_to_decl(node, src, false, false));
+        return Some(_function_to_decl(node, src, false, Vis::Owned));
     }
     if kind == "mod_item" {
         return Some(_mod_to_decl(node, src));
@@ -292,7 +292,7 @@ fn _trait_to_decl<'a, D: Doc>(node: &Node<'a, D>, src: &[u8]) -> Declaration {
         for item in body.children() {
             match item.kind().as_ref() {
                 "function_signature_item" | "function_item" => {
-                    children.push(_function_to_decl(&item, src, true, true));
+                    children.push(_function_to_decl(&item, src, true, Vis::Inherited));
                 }
                 "associated_type" => {
                     if let Some(d) = _associated_type_to_decl(&item, src) {
@@ -300,7 +300,7 @@ fn _trait_to_decl<'a, D: Doc>(node: &Node<'a, D>, src: &[u8]) -> Declaration {
                     }
                 }
                 "const_item" => {
-                    if let Some(d) = _const_or_static_to_field(&item, src, true) {
+                    if let Some(d) = _const_or_static_to_field(&item, src, Vis::Inherited) {
                         children.push(d);
                     }
                 }
@@ -355,7 +355,12 @@ fn _impl_to_decl<'a, D: Doc>(node: &Node<'a, D>, src: &[u8]) -> Declaration {
                 // Trait-impl methods carry no modifier of their own and
                 // inherit the trait's reach; inherent-impl methods without
                 // `pub` are module-private.
-                children.push(_function_to_decl(&item, src, true, trait_node.is_some()));
+                children.push(_function_to_decl(
+                    &item,
+                    src,
+                    true,
+                    if trait_node.is_some() { Vis::Inherited } else { Vis::Owned },
+                ));
             }
         }
     }
@@ -389,14 +394,11 @@ fn _impl_to_decl<'a, D: Doc>(node: &Node<'a, D>, src: &[u8]) -> Declaration {
     }
 }
 
-/// `inherited`: the item cannot carry its own modifier and takes the
-/// enclosing trait's reach (trait declarations, trait impls) — leave
-/// visibility `""` rather than claiming `"private"`.
 fn _function_to_decl<'a, D: Doc>(
     node: &Node<'a, D>,
     src: &[u8],
     is_method: bool,
-    inherited: bool,
+    vis: Vis,
 ) -> Declaration {
     let name = field_text(node, "name").unwrap_or_else(|| "?".to_string());
 
@@ -430,10 +432,9 @@ fn _function_to_decl<'a, D: Doc>(
         attrs,
         docs,
         docs_inside: false,
-        visibility: if inherited {
-            _visibility(node, src)
-        } else {
-            _visibility_or_private(node, src)
+        visibility: match vis {
+            Vis::Inherited => _visibility(node, src),
+            Vis::Owned => _visibility_or_private(node, src),
         },
         start_line: node.start_pos().line() + 1,
         end_line: node.end_pos().line() + 1,
@@ -805,10 +806,10 @@ fn _foreign_mod_to_decl<'a, D: Doc>(node: &Node<'a, D>, src: &[u8]) -> Declarati
         for item in body.children() {
             match item.kind().as_ref() {
                 "function_signature_item" => {
-                    children.push(_function_to_decl(&item, src, false, false));
+                    children.push(_function_to_decl(&item, src, false, Vis::Owned));
                 }
                 "static_item" => {
-                    if let Some(d) = _const_or_static_to_field(&item, src, false) {
+                    if let Some(d) = _const_or_static_to_field(&item, src, Vis::Owned) {
                         children.push(d);
                     }
                 }
@@ -876,7 +877,7 @@ fn _associated_type_to_decl<'a, D: Doc>(node: &Node<'a, D>, src: &[u8]) -> Optio
 fn _const_or_static_to_field<'a, D: Doc>(
     node: &Node<'a, D>,
     src: &[u8],
-    inherited: bool,
+    vis: Vis,
 ) -> Option<Declaration> {
     let name = field_text(node, "name")?;
     let mut attrs = Vec::new();
@@ -898,10 +899,9 @@ fn _const_or_static_to_field<'a, D: Doc>(
         attrs,
         docs,
         docs_inside: false,
-        visibility: if inherited {
-            _visibility(node, src)
-        } else {
-            _visibility_or_private(node, src)
+        visibility: match vis {
+            Vis::Inherited => _visibility(node, src),
+            Vis::Owned => _visibility_or_private(node, src),
         },
         start_line: node.start_pos().line() + 1,
         end_line: node.end_pos().line() + 1,
@@ -1079,6 +1079,18 @@ fn _visibility_or_private<'a, D: Doc>(node: &Node<'a, D>, src: &[u8]) -> String 
     } else {
         v
     }
+}
+
+/// How a builder should read a missing `pub` on an item — call sites name
+/// the semantics instead of passing a bare bool (the "boolean trap"):
+/// `_function_to_decl(&item, src, true, Vis::Inherited)`.
+#[derive(Clone, Copy, PartialEq)]
+enum Vis {
+    /// Module scope / inherent impls / fields: no modifier means private.
+    Owned,
+    /// Trait declarations and trait impls: members cannot carry a modifier
+    /// and take the enclosing trait's reach — visibility stays `""`.
+    Inherited,
 }
 
 /// `pub(self)` / `pub(in self)`, whitespace-insensitively.
