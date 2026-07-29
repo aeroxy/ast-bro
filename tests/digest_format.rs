@@ -484,3 +484,64 @@ fn json_honors_projection_flags() {
     assert!(no_attrs.get("attrs").is_none(), "--no-attrs must drop `attrs`: {no_attrs}");
     assert!(no_attrs.get("docs").is_some());
 }
+
+#[test]
+fn rust_missing_pub_means_private_except_inherited_contexts() {
+    // Rust items without `pub` are module-private and now say so, which is
+    // what makes `--no-private` (and the digest public-only view) real for
+    // Rust. Trait members and trait-impl methods carry no modifier of
+    // their own and must NOT be treated as private.
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path().join("vis.rs");
+    std::fs::write(
+        &p,
+        r#"pub trait Speak {
+    fn speak(&self);
+}
+pub struct Loud {
+    pub level: u32,
+    gain: u32,
+}
+impl Speak for Loud {
+    fn speak(&self) {}
+}
+impl Loud {
+    pub fn public_helper(&self) {}
+    fn private_helper(&self) {}
+}
+struct Hidden;
+fn free_private() {}
+pub fn free_public() {}
+#[cfg(test)]
+mod tests {
+    pub fn inner() {}
+}
+"#,
+    )
+    .unwrap();
+    let p = p.to_str().unwrap();
+
+    // Digest = public-only view.
+    let digest = run(&["digest", p]);
+    for shown in ["trait Speak", "speak()", "struct Loud", "public_helper()", "free_public()"] {
+        assert!(digest.contains(shown), "`{shown}` must survive the public view:\n{digest}");
+    }
+    for hidden in ["private_helper", "Hidden", "free_private", "inner()", "gain"] {
+        assert!(!digest.contains(hidden), "`{hidden}` must be hidden in the public view:\n{digest}");
+    }
+
+    // map default still shows everything; --no-private matches the digest.
+    let full = run(&["map", p]);
+    for item in ["private_helper", "Hidden", "free_private", "gain"] {
+        assert!(full.contains(item), "map default must keep `{item}`:\n{full}");
+    }
+    let no_private = run(&["map", p, "--no-private"]);
+    assert!(
+        !no_private.contains("private_helper") && !no_private.contains("free_private"),
+        "--no-private must drop Rust private items:\n{no_private}"
+    );
+    assert!(
+        no_private.contains("speak") && no_private.contains("public_helper"),
+        "trait members and pub methods must survive --no-private:\n{no_private}"
+    );
+}

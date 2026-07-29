@@ -863,7 +863,7 @@ fn _digest_one(result: &ParseResult, opts: &DigestOptions) -> Vec<String> {
         return lines;
     }
 
-    let types = _flatten_types(&result.declarations, "");
+    let types = _flatten_types(&result.declarations, "", opts);
     let free_functions = _flatten_free_functions(&result.declarations, opts);
 
     if types.is_empty() && free_functions.is_empty() {
@@ -1051,25 +1051,34 @@ fn _format_inline_attrs(attrs: &[String]) -> String {
     joined.dimmed().to_string()
 }
 
-fn _flatten_types(decls: &[Declaration], prefix: &str) -> Vec<Declaration> {
+fn _flatten_types(decls: &[Declaration], prefix: &str, opts: &DigestOptions) -> Vec<Declaration> {
     use DeclarationKind::*;
     let mut out = Vec::new();
     for d in decls {
         if d.kind == Namespace {
+            // Private namespaces (Rust `mod tests`, private inline mods)
+            // are dropped subtree-and-all under the public-only view, the
+            // same way the JSON filter treats them.
+            if d.visibility == "private" && !opts.include_private {
+                continue;
+            }
             let new_prefix = if prefix.is_empty() {
                 format!("{}.", d.name)
             } else {
                 format!("{}{}.", prefix, d.name)
             };
-            out.extend(_flatten_types(&d.children, &new_prefix));
+            out.extend(_flatten_types(&d.children, &new_prefix, opts));
         } else if matches!(d.kind, Class | Struct | Interface | Record | Enum) {
+            if d.visibility == "private" && !opts.include_private {
+                continue;
+            }
             let mut qualified = d.clone();
             if !prefix.is_empty() {
                 qualified.name = format!("{}{}", prefix, d.name);
             }
             let new_prefix = format!("{}.", qualified.name);
             out.push(qualified);
-            out.extend(_flatten_types(&d.children, &new_prefix));
+            out.extend(_flatten_types(&d.children, &new_prefix, opts));
         }
     }
     out
@@ -1083,6 +1092,11 @@ fn _flatten_free_functions<'a>(
     let mut out = Vec::new();
     for d in decls {
         if d.kind == Namespace {
+            // Same private-namespace gate as `_flatten_types`: a private
+            // `mod` hides its subtree from the public-only view.
+            if d.visibility == "private" && !opts.include_private {
+                continue;
+            }
             out.extend(_flatten_free_functions(&d.children, opts));
         } else if matches!(d.kind, Class | Struct | Interface | Record | Enum) {
             continue;
