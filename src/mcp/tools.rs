@@ -492,9 +492,12 @@ fn run_map(args: Value) -> CallResult {
         Ok(v) => v,
         Err(e) => return CallResult::Error(format!("invalid arguments: {}", e)),
     };
-    if a.paths.is_empty() {
-        return CallResult::Error("`paths` must not be empty".into());
-    }
+    // Missing inputs are a rejected call, not an empty answer (#33) —
+    // MCP has no stderr, so the distinction must ride the error channel.
+    let (paths, path_note) = match crate::resolve_paths_for_mcp("map", &a.paths) {
+        Ok(pair) => pair,
+        Err(e) => return CallResult::Error(e),
+    };
     let detail = a.detail.as_deref().unwrap_or("full");
     if !matches!(detail, "names" | "signatures" | "full") {
         return CallResult::Error(format!(
@@ -502,7 +505,12 @@ fn run_map(args: Value) -> CallResult {
             detail
         ));
     }
-    let results = crate::walk_and_parse(&a.paths, a.glob.as_deref());
+    let results = crate::walk_and_parse(&paths, a.glob.as_deref());
+    // Partial misses ride the text response (JSON responses stay pure).
+    let note = |out: String| match &path_note {
+        Some(n) => CallResult::Text(format!("{}\n{}", n, out)),
+        None => CallResult::Text(out),
+    };
     let include_docs = detail == "full" && !a.no_docs;
     let opts = MapOptions {
         include_private: !a.no_private,
@@ -524,24 +532,24 @@ fn run_map(args: Value) -> CallResult {
             max_members_per_type: a.max_members.unwrap_or(usize::MAX),
             max_heading_depth: 3,
         };
-        let root = if a.paths.len() == 1 && a.paths[0].is_dir() {
-            Some(a.paths[0].as_path())
+        let root = if paths.len() == 1 && paths[0].is_dir() {
+            Some(paths[0].as_path())
         } else {
             None
         };
-        CallResult::Text(core::render_digest(&results, &d_opts, root))
+        note(core::render_digest(&results, &d_opts, root))
     } else if results.is_empty() {
         // Same empty-answer message as the CLI (issue #33): the paths
         // exist but contain nothing parseable — say so rather than return
         // an empty string.
-        CallResult::Text("# 0 parseable file(s) in the given path(s)".to_string())
+        note("# 0 parseable file(s) in the given path(s)".to_string())
     } else {
         let mut out = String::new();
         for res in &results {
             out.push_str(&core::render_map(res, &opts));
             out.push('\n');
         }
-        CallResult::Text(out)
+        note(out)
     }
 }
 
@@ -562,10 +570,11 @@ fn run_digest(args: Value) -> CallResult {
         Ok(v) => v,
         Err(e) => return CallResult::Error(format!("invalid arguments: {}", e)),
     };
-    if a.paths.is_empty() {
-        return CallResult::Error("`paths` must not be empty".into());
-    }
-    let results = crate::walk_and_parse(&a.paths, a.glob.as_deref());
+    let (paths, _path_note) = match crate::resolve_paths_for_mcp("digest", &a.paths) {
+        Ok(pair) => pair,
+        Err(e) => return CallResult::Error(e),
+    };
+    let results = crate::walk_and_parse(&paths, a.glob.as_deref());
     if a.json {
         // Mirrors the CLI's digest preset: names-level detail sheds doc
         // comments from the JSON payload too (issue #37).
@@ -587,8 +596,8 @@ fn run_digest(args: Value) -> CallResult {
             max_heading_depth: 3,
             ..DigestOptions::default()
         };
-        let root = if a.paths.len() == 1 && a.paths[0].is_dir() {
-            Some(a.paths[0].as_path())
+        let root = if paths.len() == 1 && paths[0].is_dir() {
+            Some(paths[0].as_path())
         } else {
             None
         };
@@ -712,10 +721,11 @@ fn run_implements(args: Value) -> CallResult {
         Ok(v) => v,
         Err(e) => return CallResult::Error(format!("invalid arguments: {}", e)),
     };
-    if a.paths.is_empty() {
-        return CallResult::Error("`paths` must not be empty".into());
-    }
-    let results = crate::walk_and_parse(&a.paths, None);
+    let (paths, _path_note) = match crate::resolve_paths_for_mcp("implements", &a.paths) {
+        Ok(pair) => pair,
+        Err(e) => return CallResult::Error(e),
+    };
+    let results = crate::walk_and_parse(&paths, None);
     let transitive = !a.direct;
     let matches = core::find_implementations(&results, &a.target, transitive);
 
@@ -960,7 +970,10 @@ fn run_run(args: Value) -> CallResult {
     let search_paths = if a.paths.is_empty() {
         vec![PathBuf::from(".")]
     } else {
-        a.paths
+        match crate::resolve_paths_for_mcp("run", &a.paths) {
+            Ok((paths, _)) => paths,
+            Err(e) => return CallResult::Error(e),
+        }
     };
     let files = crate::walk_paths(&search_paths, a.glob.as_deref());
     
