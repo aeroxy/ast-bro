@@ -930,12 +930,13 @@ fn split_existing(paths: &[PathBuf]) -> (Vec<PathBuf>, Vec<String>) {
 /// MCP-side counterpart of `require_paths` (#33): the server has no stderr
 /// channel to the client and must not exit, so validation failures come
 /// back as `Err(message)` for the tool to wrap in `CallResult::Error`.
-/// `Ok` carries the original arguments that resolved plus a note line for
-/// partial misses (text responses prepend it; JSON responses drop it).
+/// `Ok` carries the original arguments that resolved plus the missing
+/// originals — text responses prepend a note line, JSON responses inject
+/// a `missing_paths` field, so partial resolution is never silent.
 pub(crate) fn resolve_paths_for_mcp(
     command: &str,
     paths: &[PathBuf],
-) -> Result<(Vec<PathBuf>, Option<String>), String> {
+) -> Result<(Vec<PathBuf>, Vec<String>), String> {
     if paths.is_empty() {
         return Err(format!(
             "`{}` received no paths (empty argument list): an empty list is not an empty codebase — nothing was inspected",
@@ -951,12 +952,7 @@ pub(crate) fn resolve_paths_for_mcp(
             missing.join(", ")
         ));
     }
-    let note = if missing.is_empty() {
-        None
-    } else {
-        Some(format!("# note: path not found: {}", missing.join(", ")))
-    };
-    Ok((existing, note))
+    Ok((existing, missing))
 }
 
 /// One handler behind both `map` and `digest` (issue #37). Resolves the

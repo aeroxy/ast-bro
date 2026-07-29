@@ -487,6 +487,34 @@ struct MapArgs {
     #[serde(default)] json: bool,
 }
 
+/// `# note: path not found: …` line for text responses (None when all
+/// requested paths resolved).
+fn partial_note(missing: &[String]) -> Option<String> {
+    if missing.is_empty() {
+        None
+    } else {
+        Some(format!("# note: path not found: {}", missing.join(", ")))
+    }
+}
+
+/// JSON responses can't prepend a note without breaking parsers, and MCP
+/// has no stderr — inject the unresolved originals as a `missing_paths`
+/// field so a partial payload can never read as covering inputs it never
+/// saw. No-op when everything resolved, keeping untouched payloads
+/// byte-identical to the CLI's.
+fn with_missing_paths(json: String, missing: &[String]) -> String {
+    if missing.is_empty() {
+        return json;
+    }
+    match serde_json::from_str::<Value>(&json) {
+        Ok(mut doc) => {
+            doc["missing_paths"] = serde_json::json!(missing);
+            serde_json::to_string_pretty(&doc).unwrap_or(json)
+        }
+        Err(_) => json,
+    }
+}
+
 fn run_map(args: Value) -> CallResult {
     let a: MapArgs = match serde_json::from_value(args) {
         Ok(v) => v,
@@ -494,10 +522,11 @@ fn run_map(args: Value) -> CallResult {
     };
     // Missing inputs are a rejected call, not an empty answer (#33) —
     // MCP has no stderr, so the distinction must ride the error channel.
-    let (paths, path_note) = match crate::resolve_paths_for_mcp("map", &a.paths) {
+    let (paths, missing) = match crate::resolve_paths_for_mcp("map", &a.paths) {
         Ok(pair) => pair,
         Err(e) => return CallResult::Error(e),
     };
+    let path_note = partial_note(&missing);
     let detail = a.detail.as_deref().unwrap_or("full");
     if !matches!(detail, "names" | "signatures" | "full") {
         return CallResult::Error(format!(
@@ -522,7 +551,10 @@ fn run_map(args: Value) -> CallResult {
         max_members: a.max_members,
     };
     if a.json {
-        CallResult::Text(core::render_json_map(&results, &opts, true))
+        CallResult::Text(with_missing_paths(
+            core::render_json_map(&results, &opts, true),
+            &missing,
+        ))
     } else if detail == "names" {
         let d_opts = DigestOptions {
             include_private: !a.no_private,
@@ -570,10 +602,11 @@ fn run_digest(args: Value) -> CallResult {
         Ok(v) => v,
         Err(e) => return CallResult::Error(format!("invalid arguments: {}", e)),
     };
-    let (paths, path_note) = match crate::resolve_paths_for_mcp("digest", &a.paths) {
+    let (paths, missing) = match crate::resolve_paths_for_mcp("digest", &a.paths) {
         Ok(pair) => pair,
         Err(e) => return CallResult::Error(e),
     };
+    let path_note = partial_note(&missing);
     let results = crate::walk_and_parse(&paths, a.glob.as_deref());
     if a.json {
         // Mirrors the CLI's digest preset: names-level detail sheds doc
@@ -587,7 +620,10 @@ fn run_digest(args: Value) -> CallResult {
             max_doc_lines: 6,
             max_members: Some(a.max_members),
         };
-        CallResult::Text(core::render_json_map(&results, &opts, true))
+        CallResult::Text(with_missing_paths(
+            core::render_json_map(&results, &opts, true),
+            &missing,
+        ))
     } else {
         let opts = DigestOptions {
             include_private: a.include_private,
@@ -728,16 +764,20 @@ fn run_implements(args: Value) -> CallResult {
         Ok(v) => v,
         Err(e) => return CallResult::Error(format!("invalid arguments: {}", e)),
     };
-    let (paths, path_note) = match crate::resolve_paths_for_mcp("implements", &a.paths) {
+    let (paths, missing) = match crate::resolve_paths_for_mcp("implements", &a.paths) {
         Ok(pair) => pair,
         Err(e) => return CallResult::Error(e),
     };
+    let path_note = partial_note(&missing);
     let results = crate::walk_and_parse(&paths, None);
     let transitive = !a.direct;
     let matches = core::find_implementations(&results, &a.target, transitive);
 
     if a.json {
-        CallResult::Text(core::render_json_implements(&a.target, &matches, transitive, true))
+        CallResult::Text(with_missing_paths(
+            core::render_json_implements(&a.target, &matches, transitive, true),
+            &missing,
+        ))
     } else {
         let mut out = match &path_note {
             Some(n) => format!("{}\n", n),

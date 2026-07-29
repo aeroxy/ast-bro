@@ -140,3 +140,45 @@ fn mcp_digest_all_missing_paths_is_an_error() {
     let (_, is_error, _) = result_of(&resp);
     assert!(is_error, "{resp}");
 }
+
+#[test]
+fn mcp_json_partial_miss_carries_missing_paths() {
+    // JSON responses can't prepend a note; the unresolved originals ride
+    // as a machine-readable `missing_paths` field instead, for map and
+    // the digest alias alike.
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(tmp.path().join("lib.rs"), "pub fn f() {}\n").unwrap();
+    for tool in ["map", "digest"] {
+        let resp = call_tool(
+            tmp.path(),
+            tool,
+            serde_json::json!({"paths": ["lib.rs", "/nope/gone.rs"], "json": true}),
+        );
+        let (_, is_error, text) = result_of(&resp);
+        assert!(!is_error, "partial miss is a qualified success: {resp}");
+        let doc: serde_json::Value = serde_json::from_str(text).expect("payload parses");
+        assert_eq!(
+            doc["missing_paths"],
+            serde_json::json!(["/nope/gone.rs"]),
+            "{tool} payload must name the unresolved input: {text}"
+        );
+        assert_eq!(
+            doc["files"].as_array().map(|f| f.len()),
+            Some(1),
+            "the resolved path still renders: {text}"
+        );
+    }
+
+    // Fully-resolved requests keep the untouched payload — no field.
+    let resp = call_tool(
+        tmp.path(),
+        "map",
+        serde_json::json!({"paths": ["lib.rs"], "json": true}),
+    );
+    let (_, _, text) = result_of(&resp);
+    let doc: serde_json::Value = serde_json::from_str(text).expect("payload parses");
+    assert!(
+        doc.get("missing_paths").is_none(),
+        "no phantom field when everything resolved: {text}"
+    );
+}
