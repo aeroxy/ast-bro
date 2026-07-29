@@ -2176,3 +2176,72 @@ pub fn via_crate() { crate::a::Foo::method(); }
         );
     }
 }
+
+#[test]
+fn super_prefix_skips_the_callers_own_scope() {
+    // An ancestor decoy: `deep` declares its own `Foo::method`, but
+    // `super::Foo::method()` from inside `deep` means the *parent*'s Foo.
+    // The walk must skip the caller's own level, not bind the first
+    // anchored match it finds on the way up.
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(&root.join("Cargo.toml"), "[package]\nname=\"x\"\nversion=\"0.0.0\"\nedition=\"2021\"\n");
+    write(
+        &root.join("src/lib.rs"),
+        r#"pub mod a {
+    pub struct Foo;
+    impl Foo { pub fn method() {} }
+    pub mod deep {
+        pub struct Foo;
+        impl Foo { pub fn method() {} }
+        pub fn via_super() { super::Foo::method(); }
+    }
+}
+"#,
+    );
+    let (out, code) = run_in(root, &["callees", "via_super", ".", "--json", "--compact", "--rebuild"]);
+    assert_eq!(code, 0, "{out}");
+    let doc: serde_json::Value = serde_json::from_str(out.trim()).expect("valid json");
+    let m = &doc["matches"][0];
+    assert_eq!(m["confidence"], "Exact", "{out}");
+    let target = m["target"].as_str().unwrap_or("");
+    assert!(
+        target.contains("::a::Foo::method") && !target.contains("::deep::"),
+        "super:: must bind the parent's Foo, not the caller-level decoy: {out}"
+    );
+}
+
+#[test]
+fn crate_prefix_anchors_at_the_file_root_only() {
+    // `crate::a::Foo` from inside `a::deep` must anchor at the file root —
+    // an intermediate scope declaring the same `a::Foo` path (here,
+    // `a::deep::a::Foo`) must not shadow it.
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(&root.join("Cargo.toml"), "[package]\nname=\"x\"\nversion=\"0.0.0\"\nedition=\"2021\"\n");
+    write(
+        &root.join("src/lib.rs"),
+        r#"pub mod a {
+    pub struct Foo;
+    impl Foo { pub fn method() {} }
+    pub mod deep {
+        pub mod a {
+            pub struct Foo;
+            impl Foo { pub fn method() {} }
+        }
+        pub fn via_crate() { crate::a::Foo::method(); }
+    }
+}
+"#,
+    );
+    let (out, code) = run_in(root, &["callees", "via_crate", ".", "--json", "--compact", "--rebuild"]);
+    assert_eq!(code, 0, "{out}");
+    let doc: serde_json::Value = serde_json::from_str(out.trim()).expect("valid json");
+    let m = &doc["matches"][0];
+    assert_eq!(m["confidence"], "Exact", "{out}");
+    let target = m["target"].as_str().unwrap_or("");
+    assert!(
+        target.contains("src/lib.rs::a::Foo::method") && !target.contains("::deep::"),
+        "crate:: must bind the file-root path, not an intermediate decoy: {out}"
+    );
+}

@@ -127,42 +127,77 @@ pub fn run_with_table(
                         let normalized = recv.replace(['\\', '.'], "::");
                         // Rust self-relative prefixes (`crate::`, `self::`,
                         // `super::…`) never appear inside qns — those start
-                        // with the repo-relative file path. Resolve them
-                        // against the caller's scope chain by *anchored
-                        // equality* (never a bare suffix), so the explicit
-                        // qualifier keeps its meaning: `self::P` anchors at
-                        // an enclosing scope of the caller (innermost
-                        // first), each `super::` naturally lands one level
-                        // up the same chain, and `crate::P` anchors at the
-                        // file segment. A miss falls through to pass B/C —
-                        // no terminal-segment fallback.
+                        // with the repo-relative file path. Each prefix
+                        // picks its own anchor (see the match arms below);
+                        // matching is always *anchored equality*, never a
+                        // bare suffix, and a miss falls through to pass
+                        // B/C — no terminal-segment fallback.
+                        #[derive(Clone, Copy)]
+                        enum SelfRel {
+                            Crate,
+                            SelfMod,
+                            Super(usize),
+                        }
                         let mut rest = normalized.as_str();
-                        let mut self_relative = false;
+                        let mut rel: Option<SelfRel> = None;
                         loop {
-                            let stripped = rest
-                                .strip_prefix("crate::")
-                                .or_else(|| rest.strip_prefix("self::"))
-                                .or_else(|| rest.strip_prefix("super::"));
-                            match stripped {
-                                Some(r) => {
-                                    rest = r;
-                                    self_relative = true;
-                                }
-                                None => break,
+                            if let Some(r) = rest.strip_prefix("crate::") {
+                                rest = r;
+                                rel = Some(SelfRel::Crate);
+                            } else if let Some(r) = rest.strip_prefix("self::") {
+                                rest = r;
+                                rel.get_or_insert(SelfRel::SelfMod);
+                            } else if let Some(r) = rest.strip_prefix("super::") {
+                                rest = r;
+                                rel = Some(match rel {
+                                    Some(SelfRel::Super(n)) => SelfRel::Super(n + 1),
+                                    _ => SelfRel::Super(1),
+                                });
+                            } else {
+                                break;
                             }
                         }
-                        if self_relative {
+                        if let Some(rel) = rel {
                             let want_tail = format!("::{}::{}", rest, raw.bare_name);
-                            let mut cur = raw.source.0.as_str();
-                            return std::iter::from_fn(|| {
-                                let i = cur.rfind("::")?;
-                                cur = &cur[..i];
-                                Some(cur)
-                            })
-                            .find_map(|base| {
-                                let want = format!("{}{}", base, want_tail);
-                                fp.defined.iter().find(|q| q.0 == want).cloned()
-                            });
+                            let caller = raw.source.0.as_str();
+                            return match rel {
+                                // `crate::P` anchors at the file segment
+                                // *only* — an intermediate scope declaring
+                                // the same path must not shadow the root.
+                                SelfRel::Crate => {
+                                    let file = caller
+                                        .split_once("::")
+                                        .map_or(caller, |(f, _)| f);
+                                    let want = format!("{}{}", file, want_tail);
+                                    fp.defined.iter().find(|q| q.0 == want).cloned()
+                                }
+                                // `self::P` starts at the caller's
+                                // enclosing scope; each `super::` skips one
+                                // more level before the walk begins, so an
+                                // ancestor decoy at the caller's own level
+                                // cannot shadow the parent. (A method's qn
+                                // carries type segments the resolver can't
+                                // tell from modules, so the walk continues
+                                // upward past the start — anchored equality
+                                // keeps any hit real.)
+                                SelfRel::SelfMod | SelfRel::Super(_) => {
+                                    let skip = match rel {
+                                        SelfRel::Super(n) => n,
+                                        _ => 0,
+                                    };
+                                    let mut cur = caller;
+                                    std::iter::from_fn(|| {
+                                        let i = cur.rfind("::")?;
+                                        cur = &cur[..i];
+                                        Some(cur)
+                                    })
+                                    .skip(skip)
+                                    .find_map(|base| {
+                                        let want = format!("{}{}", base, want_tail);
+                                        fp.defined.iter().find(|q| q.0 == want).cloned()
+                                    })
+                                }
+                            };
                         }
                         let full = format!("::{}::{}", normalized, raw.bare_name);
                         let matches: Vec<&Qn> =
