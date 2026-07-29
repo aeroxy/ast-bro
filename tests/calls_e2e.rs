@@ -2119,3 +2119,54 @@ pub fn caller_outside() { Foo::method(); }
         "a caller outside both scopes must not get an arbitrary Exact pick: {out}"
     );
 }
+
+#[test]
+fn rust_self_relative_receiver_prefixes_resolve_against_caller_scope() {
+    // `crate::a::Foo::method()`, `self::Foo::method()`, and
+    // `super::Foo::method()` never match a qn textually (qns start with
+    // the file path). Each must resolve against the caller's scope chain
+    // by anchored equality and bind Exact to `a`'s Foo — not fall through
+    // as ambiguous, and never bind `b`'s decoy.
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(&root.join("Cargo.toml"), "[package]\nname=\"x\"\nversion=\"0.0.0\"\nedition=\"2021\"\n");
+    write(
+        &root.join("src/lib.rs"),
+        r#"pub mod a {
+    pub struct Foo;
+    impl Foo { pub fn method() {} }
+    pub fn via_self() { self::Foo::method(); }
+    pub mod deep {
+        pub fn via_super() { super::Foo::method(); }
+    }
+}
+pub mod b {
+    pub struct Foo;
+    impl Foo { pub fn method() {} }
+}
+pub fn via_crate() { crate::a::Foo::method(); }
+"#,
+    );
+    for (caller, first) in [
+        ("via_crate", true),
+        ("via_self", false),
+        ("via_super", false),
+    ] {
+        let mut args = vec!["callees", caller, ".", "--json", "--compact"];
+        if first {
+            args.push("--rebuild");
+        }
+        let (out, code) = run_in(root, &args);
+        assert_eq!(code, 0, "{out}");
+        let doc: serde_json::Value = serde_json::from_str(out.trim()).expect("valid json");
+        let m = &doc["matches"][0];
+        assert_eq!(
+            m["confidence"], "Exact",
+            "{caller} must bind Exact via its scope chain: {out}"
+        );
+        assert!(
+            m["target"].as_str().unwrap_or("").contains("::a::Foo::method"),
+            "{caller} must bind a's Foo, not b's: {out}"
+        );
+    }
+}

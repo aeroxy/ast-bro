@@ -1474,9 +1474,11 @@ fn _map_eligible(d: &Declaration, opts: &MapOptions) -> bool {
     if d.visibility == "private" && !opts.include_private {
         return false;
     }
-    if matches!(d.kind, Heading | CodeBlock) && !opts.include_docs {
-        return false;
-    }
+    // Markdown headings and fenced blocks are the *structure* of a
+    // markdown file (their `docs` are empty), not doc comments —
+    // `--no-docs` strips documentation fields via the JSON projection but
+    // must not delete the declarations themselves; the text renderer
+    // never did.
     true
 }
 
