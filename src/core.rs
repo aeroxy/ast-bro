@@ -139,6 +139,20 @@ fn _is_false(b: &bool) -> bool {
     !*b
 }
 
+/// The declaration kinds whose children `--max-members` caps — the one
+/// definition of "member" shared by the text renderer and the JSON filter,
+/// so the two can't drift apart (PR #38 review).
+fn _is_capped_type(kind: &DeclarationKind) -> bool {
+    matches!(
+        kind,
+        DeclarationKind::Class
+            | DeclarationKind::Struct
+            | DeclarationKind::Interface
+            | DeclarationKind::Record
+            | DeclarationKind::Enum
+    )
+}
+
 /// One unresolved call-site as observed during AST walking. Resolution to
 /// a project-qualified name happens later in `src/calls/resolve.rs`.
 #[derive(Debug, Clone, Serialize, Default)]
@@ -728,8 +742,7 @@ fn _render_decl(decl: &Declaration, opts: &MapOptions, indent: usize, out: &mut 
 
     // `--max-members` caps how many members a type renders; the remainder
     // is reported, never silently dropped (issues #37 / #32).
-    let is_type = matches!(decl.kind, Class | Struct | Interface | Record | Enum);
-    let cap = if is_type {
+    let cap = if _is_capped_type(&decl.kind) {
         opts.max_members.unwrap_or(usize::MAX)
     } else {
         usize::MAX
@@ -1427,8 +1440,7 @@ fn _filter_decls(
             // Same member definition as the text renderer: the cap applies
             // to *type* members only, so `--max-members` answers the same
             // question with and without --json.
-            let is_type = matches!(d.kind, Class | Struct | Interface | Record | Enum);
-            if is_type {
+            if _is_capped_type(&d.kind) {
                 if let Some(cap) = opts.max_members {
                     if children.len() > cap {
                         *dropped += children.len() - cap;

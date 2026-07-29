@@ -530,6 +530,11 @@ fn run_map(args: Value) -> CallResult {
             None
         };
         CallResult::Text(core::render_digest(&results, &d_opts, root))
+    } else if results.is_empty() {
+        // Same empty-answer message as the CLI (issue #33): the paths
+        // exist but contain nothing parseable — say so rather than return
+        // an empty string.
+        CallResult::Text("# 0 parseable file(s) in the given path(s)".to_string())
     } else {
         let mut out = String::new();
         for res in &results {

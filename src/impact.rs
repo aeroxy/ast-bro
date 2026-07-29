@@ -364,8 +364,11 @@ fn compute_impact(
                 });
             }
             // Callers of the constructors are depth-2+ dependents — seeded
-            // into the shared walk below.
-            if opts.depth > 1 {
+            // into the shared walk below. A construction hidden by
+            // --hide-ambiguous must not seed it either (same rule as the
+            // implementor path): its depth-2+ dependents would be
+            // consequences of an edge the caller asked to hide.
+            if opts.depth > 1 && !ambiguous_hidden {
                 ctor_walk_seeds.push((e.source.clone(), 1));
             }
         }
