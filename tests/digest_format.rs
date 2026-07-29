@@ -619,3 +619,29 @@ fn restricted_rust_visibility_forms_are_pinned() {
         assert!(out.contains(shown), "`{shown}` must stay visible:\n{out}");
     }
 }
+
+#[test]
+fn methods_implementing_a_locally_private_trait_are_not_public() {
+    // A pub type implementing a *private* trait: those methods are only
+    // callable where the trait is in scope, so the public-only view must
+    // omit them. A pub trait's impl methods stay visible (pinned by
+    // rust_missing_pub_means_private_except_inherited_contexts).
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path().join("ptrait.rs");
+    std::fs::write(
+        &p,
+        "trait Hidden {\n    fn secret(&self);\n}\npub struct Loud;\nimpl Hidden for Loud {\n    fn secret(&self) {}\n}\n",
+    )
+    .unwrap();
+    let p = p.to_str().unwrap();
+
+    let digest = run(&["digest", p]);
+    assert!(digest.contains("Loud"), "the pub type stays:\n{digest}");
+    assert!(
+        !digest.contains("secret"),
+        "a private trait's impl methods are not public API:\n{digest}"
+    );
+    // map default still shows everything.
+    let full = run(&["map", p]);
+    assert!(full.contains("secret"), "{full}");
+}

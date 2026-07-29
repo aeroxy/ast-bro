@@ -52,7 +52,29 @@ fn _walk_mod<'a, D: Doc>(node: &Node<'a, D>, src: &[u8], out: &mut Vec<Declarati
         }
     }
 
-    for impl_decl in pending_impls {
+    for mut impl_decl in pending_impls {
+        // A trait impl inherits its *trait's* reach: methods implementing
+        // a locally-declared private trait are not public API even when
+        // the implementing type is pub. Traits we can't see (other files,
+        // std) keep the inherited "" — their modifier is unknowable here.
+        if let Some(trait_bare) = impl_decl
+            .bases
+            .first()
+            .map(|b| b.split('<').next().unwrap_or(b).trim().to_string())
+        {
+            let trait_private = out.iter().any(|d| {
+                d.kind == DeclarationKind::Interface
+                    && d.name == trait_bare
+                    && d.visibility == "private"
+            });
+            if trait_private {
+                for c in impl_decl.children.iter_mut() {
+                    if c.visibility.is_empty() {
+                        c.visibility = "private".to_string();
+                    }
+                }
+            }
+        }
         // `_impl_to_decl` synthesises a name like `impl_Foo`; the real
         // target is the suffix.
         let target_name = impl_decl
