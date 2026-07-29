@@ -125,6 +125,45 @@ pub fn run_with_table(
                         // graph either confirms the target (`Inferred`) or
                         // the edge stays honestly `Ambiguous`.
                         let normalized = recv.replace(['\\', '.'], "::");
+                        // Rust self-relative prefixes (`crate::`, `self::`,
+                        // `super::…`) never appear inside qns — those start
+                        // with the repo-relative file path. Resolve them
+                        // against the caller's scope chain by *anchored
+                        // equality* (never a bare suffix), so the explicit
+                        // qualifier keeps its meaning: `self::P` anchors at
+                        // an enclosing scope of the caller (innermost
+                        // first), each `super::` naturally lands one level
+                        // up the same chain, and `crate::P` anchors at the
+                        // file segment. A miss falls through to pass B/C —
+                        // no terminal-segment fallback.
+                        let mut rest = normalized.as_str();
+                        let mut self_relative = false;
+                        loop {
+                            let stripped = rest
+                                .strip_prefix("crate::")
+                                .or_else(|| rest.strip_prefix("self::"))
+                                .or_else(|| rest.strip_prefix("super::"));
+                            match stripped {
+                                Some(r) => {
+                                    rest = r;
+                                    self_relative = true;
+                                }
+                                None => break,
+                            }
+                        }
+                        if self_relative {
+                            let want_tail = format!("::{}::{}", rest, raw.bare_name);
+                            let mut cur = raw.source.0.as_str();
+                            return std::iter::from_fn(|| {
+                                let i = cur.rfind("::")?;
+                                cur = &cur[..i];
+                                Some(cur)
+                            })
+                            .find_map(|base| {
+                                let want = format!("{}{}", base, want_tail);
+                                fp.defined.iter().find(|q| q.0 == want).cloned()
+                            });
+                        }
                         let full = format!("::{}::{}", normalized, raw.bare_name);
                         let matches: Vec<&Qn> =
                             fp.defined.iter().filter(|q| q.0.ends_with(&full)).collect();
