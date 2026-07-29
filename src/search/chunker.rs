@@ -173,9 +173,12 @@ fn markdown_split_points(source: &str) -> Vec<usize> {
 }
 
 /// Blank-line end-bytes for plain-text formats (TOML, PowerShell) that have
-/// no tree-sitter grammar. A "blank line" is a run of two or more consecutive
-/// line terminators, where a terminator is `\n` or `\r\n` — PowerShell files
+/// no tree-sitter grammar. A "blank line" is a run of two or more line
+/// terminators, where a terminator is `\n` or `\r\n` — PowerShell files
 /// are routinely CRLF, so matching bare `\n\n` only would never split them.
+/// A line holding only spaces/tabs is still blank: horizontal whitespace
+/// between terminators is consumed with the run (`"\n \t\n"` separates
+/// paragraphs just like `"\n\n"`).
 ///
 /// Every emitted offset sits immediately after an ASCII `\n` byte, which is
 /// always a valid UTF-8 boundary (`b'\n'` never appears inside a multi-byte
@@ -195,14 +198,21 @@ fn paragraph_split_points(source: &str) -> Vec<usize> {
                 continue;
             }
         };
-        // Consume the whole run of consecutive terminators.
+        // Consume the whole run of terminators, skipping spaces/tabs
+        // between them. The skip only commits when another terminator
+        // follows, so indentation at the start of a non-blank line stays
+        // with that line.
         let mut terminators = 1;
         i += first;
         loop {
-            if i < len && bytes[i] == b'\n' {
-                i += 1;
-            } else if i + 1 < len && bytes[i] == b'\r' && bytes[i + 1] == b'\n' {
-                i += 2;
+            let mut j = i;
+            while j < len && (bytes[j] == b' ' || bytes[j] == b'\t') {
+                j += 1;
+            }
+            if j < len && bytes[j] == b'\n' {
+                i = j + 1;
+            } else if j + 1 < len && bytes[j] == b'\r' && bytes[j + 1] == b'\n' {
+                i = j + 2;
             } else {
                 break;
             }
@@ -489,6 +499,27 @@ content c
         assert_eq!(points.len(), 4, "points: {points:?}");
         assert_eq!(points[0], 0);
         assert_eq!(*points.last().unwrap(), src.len());
+    }
+
+    #[test]
+    fn paragraph_split_treats_whitespace_only_lines_as_blank() {
+        // A "blank" line holding spaces or tabs still separates paragraphs,
+        // for both LF and CRLF files — and coverage stays byte-exact.
+        for src in [
+            "function A {}\n \nfunction B {}\n\t\nfunction C {}\n",
+            "function A {}\r\n \t \r\nfunction B {}\r\n\t\r\nfunction C {}\r\n",
+        ] {
+            let points = paragraph_split_points(src);
+            assert_eq!(points.len(), 4, "src: {src:?}, points: {points:?}");
+            assert_eq!(points[0], 0);
+            assert_eq!(*points.last().unwrap(), src.len());
+            let chunks = chunk_source(src, "f", ChunkerKind::Plain("toml"));
+            let joined: String = chunks.iter().map(|c| c.content.as_str()).collect();
+            assert_eq!(joined, src, "chunks must cover the source exactly");
+        }
+        // Indentation on a *non-blank* line stays with that line: no split.
+        let src = "a = 1\n    indented = 2\nb = 3\n";
+        assert_eq!(paragraph_split_points(src).len(), 2, "no blank line, no split");
     }
 
     #[test]

@@ -981,8 +981,8 @@ fn _positional_field_to_decl<'a, D: Doc>(
         docs: Vec::new(),
         docs_inside: false,
         // A positional field with no tracked modifier is module-private,
-        // same rule as named fields.
-        visibility: if visibility.is_empty() {
+        // same rule as named fields (`pub(self)` included).
+        visibility: if visibility.is_empty() || _is_pub_self(&visibility) {
             "private".to_string()
         } else {
             visibility
@@ -1066,11 +1066,23 @@ fn _visibility<'a, D: Doc>(node: &Node<'a, D>, _src: &[u8]) -> String {
 /// canonical `"private"` is what lets `--no-private` (and the digest
 /// preset's public-only view) work for Rust — every renderer filters on
 /// that exact string.
+///
+/// `pub(self)` grants no reach beyond the module — it *is* `private` and
+/// normalizes to it. Wider restricted forms (`pub(crate)`, `pub(super)`,
+/// `pub(in path)`) stay as written: they are the moral equivalent of C#
+/// `internal` / Java package-private, which the public-only view has
+/// never hidden.
 fn _visibility_or_private<'a, D: Doc>(node: &Node<'a, D>, src: &[u8]) -> String {
     let v = _visibility(node, src);
-    if v.is_empty() {
+    if v.is_empty() || _is_pub_self(&v) {
         "private".to_string()
     } else {
         v
     }
+}
+
+/// `pub(self)` / `pub(in self)`, whitespace-insensitively.
+fn _is_pub_self(v: &str) -> bool {
+    let collapsed: String = v.chars().filter(|c| !c.is_whitespace()).collect();
+    collapsed == "pub(self)" || collapsed == "pub(inself)"
 }

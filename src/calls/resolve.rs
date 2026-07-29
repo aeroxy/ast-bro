@@ -115,21 +115,18 @@ pub fn run_with_table(
                     raw.receiver.as_deref().and_then(|recv| {
                         // Receivers can arrive namespace-qualified
                         // (`Foo\Greeter::m()` in PHP, `a::b::Type::m()`
-                        // elsewhere). Normalize the separators and try the
-                        // full path first, then fall back to the terminal
-                        // segment so a self-referencing FQN still binds.
+                        // elsewhere). Normalize the separators and require
+                        // the *complete* receiver path to match a local qn.
+                        // No terminal-segment fallback: `other::Type::m()`
+                        // explicitly names another scope's `Type`, and
+                        // discarding the qualifiers would hand the edge to
+                        // an unrelated same-file homonym tagged Exact. A
+                        // miss falls through to pass B/C, where the dep
+                        // graph either confirms the target (`Inferred`) or
+                        // the edge stays honestly `Ambiguous`.
                         let normalized = recv.replace(['\\', '.'], "::");
                         let full = format!("::{}::{}", normalized, raw.bare_name);
-                        fp.defined
-                            .iter()
-                            .find(|q| q.0.ends_with(&full))
-                            .or_else(|| {
-                                let last =
-                                    normalized.rsplit("::").next().unwrap_or(normalized.as_str());
-                                let scoped = format!("::{}::{}", last, raw.bare_name);
-                                fp.defined.iter().find(|q| q.0.ends_with(&scoped))
-                            })
-                            .cloned()
+                        fp.defined.iter().find(|q| q.0.ends_with(&full)).cloned()
                     })
                 };
                 if let Some(qn) = local_target {
