@@ -1911,18 +1911,20 @@ fn callers_limit_bounds_the_unattributed_section_too() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path();
     write(&root.join("Cargo.toml"), "[package]\nname=\"x\"\nversion=\"0.0.0\"\nedition=\"2021\"\n");
-    // `target` has one resolved caller and three unattributed call sites
-    // (explicit receivers that can't be typed, with a homonym in another
-    // file keeping them ambiguous).
+    // Three call sites in lib.rs whose receivers can't be typed; the
+    // homonym in other.rs is in lib.rs's dep closure, so pass C keeps
+    // both candidates and every site stays honestly Ambiguous —
+    // unattributed from T.target's point of view.
     write(
         &root.join("src/lib.rs"),
         "pub mod other;\npub struct T;\nimpl T { pub fn target(&self) {} }\n\
-         pub fn direct() { let t = T; t.target(); }\n",
+         pub fn direct1(t: &T) { t.target(); }\n\
+         pub fn direct2(t: &T) { t.target(); }\n\
+         pub fn direct3(t: &T) { t.target(); }\n",
     );
     write(
         &root.join("src/other.rs"),
-        "pub struct U;\nimpl U { pub fn target(&self) {} }\n\
-         pub fn a(u: &U) { u.target(); }\npub fn b(u: &U) { u.target(); }\npub fn c(u: &U) { u.target(); }\n",
+        "pub struct U;\nimpl U { pub fn target(&self) {} }\n",
     );
 
     let (out, code) = run_in(root, &["callers", "T.target", ".", "--limit", "1", "--json", "--compact", "--rebuild"]);
@@ -1930,14 +1932,18 @@ fn callers_limit_bounds_the_unattributed_section_too() {
     let doc: serde_json::Value = serde_json::from_str(out.trim()).expect("valid json");
     let shown = doc["unattributed"].as_array().unwrap().len();
     let total = doc["unattributed_total"].as_u64().unwrap() as usize;
+    // The fixture exists to exercise the budget: if the resolver ever
+    // starts attributing these sites, this must fail loudly, not pass
+    // vacuously with an empty section.
+    assert!(
+        total >= 2,
+        "fixture must yield enough unattributed sites to exercise truncation: {out}"
+    );
     assert!(
         shown <= 1,
         "unattributed section must respect the remaining --limit budget: {out}"
     );
-    assert!(total >= shown, "{out}");
-    if total > shown {
-        assert_eq!(doc["unattributed_truncated"], true, "{out}");
-    }
+    assert_eq!(doc["unattributed_truncated"], true, "{out}");
 }
 
 #[test]

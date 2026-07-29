@@ -31,60 +31,60 @@ sb callers Player.TakeDamage
 Stop at the step that answers the question:
 
 1. **Unfamiliar directory** — `sb digest <dir>`: one-page map of every file's types and public methods. (`digest` is an alias for `sb map --preset digest`; it accepts every `map` flag.)
-   ```
+   ```bash
    sb digest src/
    sb digest src/ --glob '*.java' --max-members 8
    ```
 
 2. **One file's shape** — `sb map <file>`: signatures with line ranges, no bodies (5–10× smaller than a full read). Three orthogonal axes: detail (`--detail names|signatures|full`), visibility (`--no-private`, `--no-fields`, `--no-docs`, …), and scope (`--glob`, `--max-members`). `--detail signatures --max-members N` is the middle ground when a directory-wide `map` is too big and `digest`'s bare names are too little.
-   ```
+   ```bash
    sb map src/file_filter.rs
    sb map src/ --detail signatures --max-members 8
    ```
 
 3. **One symbol's source** — `sb show <file> <Symbol>`: suffix matching, multiple at once. Explicitly-passed extensionless files fall back to shebang detection (`#!/usr/bin/env python3` → Python, `#!/usr/bin/env node` → TypeScript, etc.) — useful for CLI scripts in `bin/` or `~/.local/bin/`. Directory walks skip extensionless files to keep the walk fast.
-   ```
+   ```bash
    sb show src/main_helpers.rs parse_file_for_hook
    sb show Player.cs TakeDamage Heal Die
    ```
 
 4. **Who implements a type** — `sb implements <Type> <dir>`: AST-accurate (skip `grep`), transitive by default with `[via Parent]` tags. Add `--direct` for level-1 only.
-   ```
+   ```bash
    sb implements LanguageAdapter src/
    ```
 
 5. **You don't know the file or symbol name** — `sb search "<query>"`: bare identifiers lean BM25 (`HandlerStack`), full sentences lean semantic ("how does login work"). First call builds the index at `.ast-bro/index/`.
-   ```
+   ```bash
    sb search "token-budgeted context"
    ```
 
 6. **Code similar to a chunk you already have** — `sb find-related <file>:<line>`: pastes directly from `search` output (`path:start-end`).
-   ```
+   ```bash
    sb find-related src/context.rs:144
    ```
 
 7. **The actual published API of a package** — `sb surface <dir>`: resolves `pub use` (Rust), `__all__` (Python), barrel files (TS/JS), `export` (Scala). `--tree` for hierarchy, `--include-chain` for re-export paths.
-   ```
+   ```bash
    sb surface .
    ```
 
 8. **File-level deps** — `sb deps <file>`: forward BFS of what `<file>` imports. Footer lists unresolved imports tagged `[external]` so you see what the file tries to pull in from outside the project.
-   ```
+   ```bash
    sb deps src/impact.rs
    ```
 
 9. **Who imports a file** — `sb reverse-deps <file>`: backward BFS, with `--tests` / `--exclude-tests` to filter by test-file heuristics. Blast radius before a refactor.
-   ```
+   ```bash
    sb reverse-deps src/impact.rs --exclude-tests
    ```
 
 10. **Import cycles** — `sb cycles [<dir>]`: Tarjan SCC; exits non-zero when cycles exist (CI gate).
-    ```
+    ```bash
     sb cycles
     ```
 
 11. **The full dependency graph** — `sb graph [<dir>] [--hide-external]`: external imports shown by default (tagged `[external]`); `--json` for `ast-bro.graph.v1`.
-    ```
+    ```bash
     sb graph . --json
     ```
 
@@ -93,38 +93,38 @@ Stop at the step that answers the question:
     Edges are tagged `Exact` / `Inferred` / `Ambiguous` by a three-pass resolver (same-file → global symbol table → dep-graph disambiguation). **Ambiguous callers and unresolved/external callees are shown by default** (red/cyan) so you see the full set without re-running. Pass `--hide-ambiguous` (callers) or `--hide-external` (callees) to drop them when you want the cleaner bucket. `callers` additionally lists **unresolved call sites naming the target** (call chains whose receiver couldn't be typed) in a separate section — treat those as possible extra callers when costing a rename; the resolved count alone can undercount.
 
     - `sb callers <Symbol>`: in-edges. Kind-aware: a function gets call-sites; a type gets implementors / constructions / ancestors.
-      ```
+      ```bash
       sb callers run_impact
       sb callers --tests run_impact         # test-file callers only
       sb callers LanguageAdapter            # implementors + constructions
       ```
     - `sb callees <Symbol>`: out-edges.
-      ```
+      ```bash
       sb callees run_impact --hide-external
       ```
     - `sb trace <FROM> <TO>`: shortest static call path, each hop's body inlined. No-path fallback to both endpoints + target file siblings.
-      ```
+      ```bash
       sb trace run_impact build_context
       ```
 
 13. **Blast radius of touching a symbol** — `sb impact <Symbol>`: combines callers + callees + file `deps` + `reverse-deps` + test detection; for types, includes implementors and file-level reverse-deps. Four modes: `--mode all|deps|dependents|tests`. **Prefer `impact` over separate calls.** Schema: `ast-bro.impact.v1`.
-    ```
+    ```bash
     sb impact LanguageAdapter --mode tests
     sb impact run_impact --exclude-tests --depth 3
     ```
 
 14. **Token-budgeted context** — `sb context <Symbol>`: target body + direct callees (bodies→signatures) + callers + transitive at depth 2 (signatures only). Types walk: target → implementors → methods → method callers. Flags `truncated` / `target_omitted` when budget runs short. **Prefer over chains of show + callers + callees.** Default `--budget 8000`. Schema: `ast-bro.context.v1`.
-    ```
+    ```bash
     sb context LanguageAdapter --budget 2000
     ```
 
 15. **Find or rewrite by AST pattern** — `sb run -p '<pattern>' [-r '<rewrite>'] [--write] [--lang <lang>]`: metavariable patterns (`$VAR`, `$$$` for splats). `--write` mutates files — always dry-run first.
-    ```
+    ```bash
     sb run -p 'println!($$$)' --lang rust
     ```
 
 16. **Compress a repetitive log/text file** — `sb squeeze <file> [from:to]`: for **logs/text, not code**. Replaces repeated timestamps/tags with short tags plus a reversible legend; falls back to raw when it wouldn't help. `--raw` skips compression. Schema: `ast-bro.squeeze.v1`.
-    ```
+    ```bash
     sb squeeze app.log
     ```
 

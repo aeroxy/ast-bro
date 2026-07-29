@@ -696,11 +696,7 @@ fn _render_decl(decl: &Declaration, opts: &MapOptions, indent: usize, out: &mut 
         }
     };
 
-    let is_field = matches!(decl.kind, Field | Property | Event | Indexer);
-    if is_field && !opts.include_fields {
-        return;
-    }
-    if decl.visibility == "private" && !opts.include_private {
+    if !_map_eligible(decl, opts) {
         return;
     }
 
@@ -747,11 +743,7 @@ fn _render_decl(decl: &Declaration, opts: &MapOptions, indent: usize, out: &mut 
     } else {
         usize::MAX
     };
-    let visible = |d: &Declaration| {
-        let is_field = matches!(d.kind, Field | Property | Event | Indexer);
-        (!is_field || opts.include_fields)
-            && (d.visibility != "private" || opts.include_private)
-    };
+    let visible = |d: &Declaration| _map_eligible(d, opts);
     let mut shown = 0usize;
     let mut hidden = 0usize;
     for child in &decl.children {
@@ -1462,9 +1454,9 @@ fn _filter_decls(
         .collect()
 }
 
-/// Whether a declaration survives the MapOptions projection — one
-/// predicate for the parent-level filter and the pre-cap child count, so
-/// the cap counts exactly what would have rendered.
+/// Whether a declaration survives the MapOptions projection — the one
+/// predicate shared by the text renderer (both its early-return and its
+/// member-cap counting) and the JSON filter, so the two cannot drift.
 fn _map_eligible(d: &Declaration, opts: &MapOptions) -> bool {
     use DeclarationKind::*;
     let is_field = matches!(d.kind, Field | Property | Event | Indexer);

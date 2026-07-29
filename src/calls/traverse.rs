@@ -220,7 +220,16 @@ where
         if depth >= max_depth {
             // The walk stopped here, not the graph: distinguish "ends at
             // the depth cap with edges left" from "the graph ends" (#32).
-            if !frontier_truncated && !edges_at(&cur).is_empty() {
+            // Only claim a truncated frontier when something genuinely
+            // unexplored lies beyond the cap — edges pointing back at
+            // already-visited nodes (or already-reported externals) are
+            // not "more", and the raise---depth hint would be a lie.
+            if !frontier_truncated
+                && edges_at(&cur).into_iter().any(|(next, edge)| match next {
+                    Some(n) => !seen.contains(&n),
+                    None => !reported_ext.contains(&edge.target.name_or_raw()),
+                })
+            {
                 frontier_truncated = true;
             }
             continue;

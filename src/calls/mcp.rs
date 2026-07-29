@@ -81,8 +81,20 @@ pub fn run_callers_text(target: &str, root: &Path, depth: usize, limit: usize, i
             true,
         )
     } else {
+        // Same gating as the CLI's stderr note: only an explicitly
+        // deepened walk gets the frontier line (JSON always carries the
+        // flag). MCP's one channel is the response text.
+        let frontier_note = if frontier_truncated && depth > 1 {
+            format!(
+                "# note: --depth {} reached with unexplored edges beyond it; raise --depth to walk further\n",
+                depth
+            )
+        } else {
+            String::new()
+        };
         format!(
-            "{}{}",
+            "{}{}{}",
+            frontier_note,
             hidden_note,
             render::render_callers_text(target, &hits, &unattributed, unattributed_total, &trunc)
         )
