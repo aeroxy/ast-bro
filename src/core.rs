@@ -1418,36 +1418,41 @@ fn _filter_decls(
     opts: &MapOptions,
     dropped: &mut usize,
 ) -> Vec<Declaration> {
-    use DeclarationKind::*;
     if decls.is_empty() {
         return Vec::new();
     }
     decls
         .iter()
         .filter_map(|d| {
-            let is_field = matches!(d.kind, Field | Property | Event | Indexer);
-            if is_field && !opts.include_fields {
-                return None;
-            }
-            if d.visibility == "private" && !opts.include_private {
-                return None;
-            }
-            if matches!(d.kind, Heading | CodeBlock) && !opts.include_docs {
+            if !_map_eligible(d, opts) {
                 return None;
             }
             let mut clone = d.clone();
-            let mut children = _filter_decls(&d.children, opts, dropped);
             // Same member definition as the text renderer: the cap applies
-            // to *type* members only, so `--max-members` answers the same
-            // question with and without --json.
+            // to *type* members only. The cap is applied to the eligible
+            // direct children BEFORE recursing, so a subtree removed by
+            // this cap contributes nothing to `dropped` — keeping JSON
+            // `dropped_members` equal to the sum of the text renderer's
+            // `+N more` lines even when a capped type is itself cut by an
+            // ancestor's cap.
+            let mut kept: Vec<&Declaration> =
+                d.children.iter().filter(|c| _map_eligible(c, opts)).collect();
             if _is_capped_type(&d.kind) {
                 if let Some(cap) = opts.max_members {
-                    if children.len() > cap {
-                        *dropped += children.len() - cap;
-                        children.truncate(cap);
+                    if kept.len() > cap {
+                        *dropped += kept.len() - cap;
+                        kept.truncate(cap);
                     }
                 }
             }
+            let children: Vec<Declaration> = kept
+                .into_iter()
+                .filter_map(|c| {
+                    // Recurse per retained child; eligibility was already
+                    // checked, so this only descends and caps deeper levels.
+                    _filter_decls(std::slice::from_ref(c), opts, dropped).pop()
+                })
+                .collect();
             if !opts.include_docs {
                 clone.docs = Vec::new();
             }
@@ -1455,6 +1460,24 @@ fn _filter_decls(
             Some(clone)
         })
         .collect()
+}
+
+/// Whether a declaration survives the MapOptions projection — one
+/// predicate for the parent-level filter and the pre-cap child count, so
+/// the cap counts exactly what would have rendered.
+fn _map_eligible(d: &Declaration, opts: &MapOptions) -> bool {
+    use DeclarationKind::*;
+    let is_field = matches!(d.kind, Field | Property | Event | Indexer);
+    if is_field && !opts.include_fields {
+        return false;
+    }
+    if d.visibility == "private" && !opts.include_private {
+        return false;
+    }
+    if matches!(d.kind, Heading | CodeBlock) && !opts.include_docs {
+        return false;
+    }
+    true
 }
 
 #[derive(Serialize)]

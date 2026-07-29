@@ -2071,3 +2071,48 @@ fn qualified_receiver_does_not_rebind_to_local_homonym() {
         "qualified receiver must not bind Exact to the same-file homonym: {out}"
     );
 }
+
+#[test]
+fn type_qualified_call_resolves_to_the_callers_lexical_scope() {
+    // Two modules each declare `Foo::method`. An unqualified `Foo::method()`
+    // inside `mod a` means a's Foo — never whichever suffix match came
+    // first — and a caller outside both scopes must get an honest
+    // non-Exact edge instead of an arbitrary pick.
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(&root.join("Cargo.toml"), "[package]\nname=\"x\"\nversion=\"0.0.0\"\nedition=\"2021\"\n");
+    write(
+        &root.join("src/lib.rs"),
+        r#"pub mod a {
+    pub struct Foo;
+    impl Foo { pub fn method() {} }
+    pub fn caller_in_a() { Foo::method(); }
+}
+pub mod b {
+    pub struct Foo;
+    impl Foo { pub fn method() {} }
+}
+pub fn caller_outside() { Foo::method(); }
+"#,
+    );
+    let (out, code) = run_in(root, &["callees", "caller_in_a", ".", "--json", "--compact", "--rebuild"]);
+    assert_eq!(code, 0, "{out}");
+    let doc: serde_json::Value = serde_json::from_str(out.trim()).expect("valid json");
+    let m = &doc["matches"][0];
+    assert_eq!(m["confidence"], "Exact", "{out}");
+    assert!(
+        m["target"].as_str().unwrap_or("").contains("::a::Foo::method"),
+        "must bind to the enclosing scope's Foo, got: {out}"
+    );
+
+    let (out, code) = run_in(root, &["callees", "caller_outside", ".", "--json", "--compact"]);
+    assert_eq!(code, 0, "{out}");
+    let doc: serde_json::Value = serde_json::from_str(out.trim()).expect("valid json");
+    let outside_exact = doc["matches"].as_array().unwrap().iter().any(|m| {
+        m["confidence"] == "Exact"
+    });
+    assert!(
+        !outside_exact,
+        "a caller outside both scopes must not get an arbitrary Exact pick: {out}"
+    );
+}
