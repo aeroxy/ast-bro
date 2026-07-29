@@ -914,6 +914,46 @@ fn require_paths(command: &str, paths: &[PathBuf], json_mode: bool) -> Vec<PathB
     existing
 }
 
+/// MCP-side counterpart of `require_paths` (#33): the server has no stderr
+/// channel to the client and must not exit, so validation failures come
+/// back as `Err(message)` for the tool to wrap in `CallResult::Error`.
+/// `Ok` carries the original arguments that resolved plus a note line for
+/// partial misses (text responses prepend it; JSON responses drop it).
+pub(crate) fn resolve_paths_for_mcp(
+    command: &str,
+    paths: &[PathBuf],
+) -> Result<(Vec<PathBuf>, Option<String>), String> {
+    if paths.is_empty() {
+        return Err(format!(
+            "`{}` received no paths (empty argument list): an empty list is not an empty codebase — nothing was inspected",
+            command
+        ));
+    }
+    let mut existing: Vec<PathBuf> = Vec::new();
+    let mut missing: Vec<String> = Vec::new();
+    for p in paths {
+        if path_glob::expand_existing(p).is_empty() {
+            missing.push(p.display().to_string());
+        } else {
+            existing.push(p.clone());
+        }
+    }
+    if existing.is_empty() {
+        return Err(format!(
+            "`{}` resolved 0 of {} path(s); nothing was inspected. missing: {}. An empty result here would mean the paths are wrong, not that the code has no declarations",
+            command,
+            paths.len(),
+            missing.join(", ")
+        ));
+    }
+    let note = if missing.is_empty() {
+        None
+    } else {
+        Some(format!("# note: path not found: {}", missing.join(", ")))
+    };
+    Ok((existing, note))
+}
+
 /// One handler behind both `map` and `digest` (issue #37). Resolves the
 /// preset first, then lets explicitly-passed flags override it, so
 /// `digest --include-private` and `map --preset digest --max-members 8`
