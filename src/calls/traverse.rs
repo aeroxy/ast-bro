@@ -3,7 +3,7 @@
 //! Mirrors `src/deps/traverse.rs` shape so the rendering code stays
 //! symmetric. Both directions traverse over `CallEdge`s.
 
-use crate::calls::graph::{CallEdge, CallGraph, Qn};
+use crate::calls::graph::{CallEdge, CallGraph, CallTarget, Qn};
 use crate::UNLIMITED;
 use std::collections::{BTreeMap, HashSet, VecDeque};
 
@@ -26,11 +26,21 @@ pub struct TraversalInfo {
 
 /// Forward — what does `start` call (transitively, deduped by target qn).
 pub fn callees(graph: &CallGraph, start: &Qn, max_depth: usize) -> Vec<CallHit> {
-    callees_info(graph, start, max_depth).hits
+    callees_info(graph, start, max_depth, true).hits
 }
 
-/// `callees` + frontier reporting.
-pub fn callees_info(graph: &CallGraph, start: &Qn, max_depth: usize) -> TraversalInfo {
+/// `callees` + frontier reporting. `include_external` is the query's own
+/// `--hide-external` setting, applied *here* rather than by filtering the
+/// hits afterwards: an external callee that the caller will not display is
+/// not evidence of a truncated frontier either, and filtering after the walk
+/// leaves the flag claiming there is more to see when raising `--depth` would
+/// show nothing.
+pub fn callees_info(
+    graph: &CallGraph,
+    start: &Qn,
+    max_depth: usize,
+    include_external: bool,
+) -> TraversalInfo {
     let edges_at = |qn: &Qn| graph.forward.get(qn).cloned().unwrap_or_default();
     bfs(
         start,
@@ -44,15 +54,31 @@ pub fn callees_info(graph: &CallGraph, start: &Qn, max_depth: usize) -> Traversa
                     // recurse into (`None`); resolved targets are both
                     // emitted and expanded.
                     let next = match &e.target {
-                        crate::calls::graph::CallTarget::Resolved(t) => Some(t.clone()),
+                        CallTarget::Resolved(t) => Some(t.clone()),
                         _ => None,
                     };
                     (next, e)
                 })
                 .collect()
         },
-        |_| true,
+        move |e| include_external || matches!(e.target, CallTarget::Resolved(_)),
     )
+}
+
+/// Does a one-hop callee list leave a frontier behind? `--depth 1` stopped a
+/// walk that had somewhere to go only when a resolved direct callee has an
+/// outgoing edge that would be *visible*: with `--hide-external`, external
+/// and bare continuations are not "more to see", so claiming a frontier
+/// would make the raise-`--depth` hint a lie. Shared by the CLI and MCP
+/// one-hop fast paths so the two can't drift.
+pub fn one_hop_frontier(graph: &CallGraph, edges: &[CallEdge], include_external: bool) -> bool {
+    edges.iter().any(|e| match &e.target {
+        CallTarget::Resolved(t) => graph.forward.get(t).is_some_and(|out| {
+            out.iter()
+                .any(|next| include_external || matches!(next.target, CallTarget::Resolved(_)))
+        }),
+        _ => false,
+    })
 }
 
 /// Reverse — who calls `start` (transitively).
@@ -325,10 +351,16 @@ where
             // unexplored lies beyond the cap — edges pointing back at
             // already-visited nodes (or already-reported externals) are
             // not "more", and the raise---depth hint would be a lie.
+            //
+            // Expandable edges count whatever the predicate says: a rejected
+            // edge can still lead to a qualifying node deeper (that's why
+            // `callers --tests` walks through non-test intermediates). An
+            // emit-only edge has no deeper side, so it only counts when it
+            // would actually be emitted.
             if !frontier_truncated
                 && edges_at(&cur).into_iter().any(|(next, edge)| match next {
                     Some(n) => !seen.contains(&n),
-                    None => !reported_ext.contains(&edge.target.name_or_raw()),
+                    None => predicate(&edge) && !reported_ext.contains(&edge.target.name_or_raw()),
                 })
             {
                 frontier_truncated = true;

@@ -2021,6 +2021,54 @@ fn callees_depth1_reports_frontier_in_json() {
 }
 
 #[test]
+fn hide_external_frontier_counts_only_visible_continuations() {
+    // `frontier_truncated` is the promise that raising --depth shows more.
+    // Under --hide-external an external continuation is not more to see, so
+    // counting one makes the promise false — on both the depth-1 fast path
+    // and the deeper walk, which used to compute the flag before applying
+    // the filter.
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(&root.join("Cargo.toml"), "[package]\nname=\"x\"\nversion=\"0.0.0\"\nedition=\"2021\"\n");
+    write(&root.join("src/lib.rs"), "pub mod a;\npub mod b;\npub mod c;\n");
+    write(&root.join("src/a.rs"), "use crate::b;\npub fn a() { b::b(); }\n");
+    write(&root.join("src/b.rs"), "use crate::c;\npub fn b() { c::c(); }\n");
+    // `c`'s only outgoing call leaves the project.
+    write(&root.join("src/c.rs"), "pub fn c() { some_external_thing(); }\n");
+
+    let frontier = |args: &[&str]| -> bool {
+        let (out, code) = run_in(root, args);
+        assert_eq!(code, 0, "{out}");
+        let doc: serde_json::Value = serde_json::from_str(out.trim()).expect("valid json");
+        doc["frontier_truncated"].as_bool().expect("frontier flag")
+    };
+
+    // Depth-1 fast path: one hop from `b` is `c`, whose continuation is
+    // external.
+    assert!(
+        frontier(&["callees", "b", ".", "--depth", "1", "--json", "--compact", "--rebuild"]),
+        "the external continuation is real when externals are shown"
+    );
+    assert!(
+        !frontier(&["callees", "b", ".", "--depth", "1", "--hide-external", "--json", "--compact"]),
+        "with externals hidden, raising --depth would show nothing new"
+    );
+
+    // Deeper walk: the depth-2 cap lands on `c`, same asymmetry.
+    assert!(frontier(&["callees", "a", ".", "--depth", "2", "--json", "--compact"]));
+    assert!(!frontier(&[
+        "callees", "a", ".", "--depth", "2", "--hide-external", "--json", "--compact"
+    ]));
+
+    // A resolved continuation past the cap still counts with externals
+    // hidden — the fix must not silence the flag wholesale.
+    assert!(
+        frontier(&["callees", "a", ".", "--depth", "1", "--hide-external", "--json", "--compact"]),
+        "b → c is a visible continuation beyond depth 1"
+    );
+}
+
+#[test]
 fn callers_limit_bounds_type_groups_too() {
     // A trait with three implementors and three construction sites: --limit 2
     // must bound the *combined* display, with true totals in the JSON.
