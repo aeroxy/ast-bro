@@ -263,8 +263,12 @@ pub fn apply_delta_to_calls(
             let has_receiver =
                 !crate::calls::resolve::receiver_is_self_like(e.receiver.as_deref());
             if cands.len() == 1 && !has_receiver {
+                // Same tag pass B gives this case on a cold build
+                // (`resolve.rs`, single global match, no receiver) — parity
+                // is the whole point of this step, and confidence is part of
+                // the answer `callers --json` reports.
                 e.target = CallTarget::Resolved(cands[0].clone());
-                e.confidence = crate::calls::graph::Confidence::Inferred;
+                e.confidence = crate::calls::graph::Confidence::Exact;
                 e.candidates.clear();
                 continue;
             }

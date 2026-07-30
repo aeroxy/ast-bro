@@ -273,13 +273,35 @@ fn map_json_stdout_is_pure_json_even_on_partial_miss() {
     assert_eq!(doc["schema"], "ast-bro.map.v1");
 }
 
+/// A directory whose `map` output clears the 25 KB hint threshold several
+/// times over. Generated rather than borrowed from `src/` so neither test
+/// below depends on how large this repository happens to be today.
+fn oversized_map_fixture() -> tempfile::TempDir {
+    let dir = tempfile::tempdir().expect("tempdir");
+    for f in 0..20 {
+        let mut src = String::new();
+        for i in 0..60 {
+            src.push_str(&format!(
+                "pub fn generated_function_{f}_{i}(argument: usize) -> usize {{ argument }}\n"
+            ));
+        }
+        std::fs::write(dir.path().join(format!("file_{f}.rs")), src).expect("write fixture");
+    }
+    dir
+}
+
 #[test]
 fn map_on_large_directory_hints_at_digest_preset() {
     // #35: a directory-wide map past the size threshold points at the
     // digest preset on stderr — a hint beside the result, never a redirect.
-    let (code, stdout, stderr) = run(&["map", "src/"]);
+    let dir = oversized_map_fixture();
+    let (code, stdout, stderr) = run(&["map", dir.path().to_str().unwrap()]);
     assert_eq!(code, Some(0));
-    assert!(stdout.len() > 25_000, "fixture dir should exceed threshold");
+    assert!(
+        stdout.len() > 25_000,
+        "fixture must exceed the threshold, got {} bytes",
+        stdout.len()
+    );
     assert!(
         stderr.contains("# hint:") && stderr.contains("--preset digest"),
         "expected digest-preset hint on stderr:\n{stderr}"
@@ -288,7 +310,15 @@ fn map_on_large_directory_hints_at_digest_preset() {
 
 #[test]
 fn map_on_small_input_stays_quiet() {
-    let (_, _, stderr) = run(&["map", "src/hook/"]);
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(
+        dir.path().join("tiny.rs"),
+        "pub fn one() {}\npub fn two() {}\n",
+    )
+    .expect("write fixture");
+    let (code, stdout, stderr) = run(&["map", dir.path().to_str().unwrap()]);
+    assert_eq!(code, Some(0));
+    assert!(stdout.len() < 25_000, "fixture must stay under the threshold");
     assert!(
         !stderr.contains("# hint:"),
         "small directories must not nag:\n{stderr}"

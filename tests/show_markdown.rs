@@ -52,6 +52,11 @@ fn code_symbol_match_stays_exact() {
         .output()
         .expect("run");
     assert_eq!(out.status.code(), Some(2), "substring must not match a code symbol");
+    assert!(
+        out.stdout.is_empty(),
+        "a rejected call puts nothing on stdout (#36): {:?}",
+        String::from_utf8_lossy(&out.stdout)
+    );
     let stderr = String::from_utf8(out.stderr).expect("utf8");
     assert!(
         stderr.contains("no symbol matching"),

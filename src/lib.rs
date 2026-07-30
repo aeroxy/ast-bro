@@ -818,9 +818,14 @@ fn exit_with_parse_error(e: clap::Error) -> ! {
         .take_while(|a| a != "--")
         .collect();
     let json_mode = raw.iter().any(|a| a == "--json");
+    let cmd = Cli::command();
+    // Match the real subcommand list rather than "first token that isn't a
+    // flag": a flag *value* sits in the same position a subcommand would
+    // (`ast-bro map --glob '*.rs' --bogus`), and naming `*.rs` as the
+    // command in the error envelope would be worse than naming nothing.
     let subcommand = raw
         .iter()
-        .find(|a| !a.starts_with('-'))
+        .find(|a| cmd.get_subcommands().any(|sc| sc.get_name() == a.as_str()))
         .cloned()
         .unwrap_or_else(|| "ast-bro".to_string());
 
@@ -835,7 +840,6 @@ fn exit_with_parse_error(e: clap::Error) -> ! {
     if e.kind() == ErrorKind::UnknownArgument {
         if let Some(flag) = invalid_arg.as_deref().and_then(|f| f.strip_prefix("--")) {
             let flag = flag.split('=').next().unwrap_or(flag);
-            let cmd = Cli::command();
             let hosts: Vec<String> = cmd
                 .get_subcommands()
                 .filter(|sc| {
