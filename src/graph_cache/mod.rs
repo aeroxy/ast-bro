@@ -63,6 +63,28 @@ pub fn ensure_with_calls(
     promote_calls(root, |g| crate::calls::build::build_call_graph(root, &g.deps))
 }
 
+/// A unified graph whose calls half is known to be present. Only
+/// `load_for_symbol_query` builds one, and it rejects a missing call graph
+/// before returning, so the "calls are present" contract lives here next to
+/// the check that establishes it instead of as an `expect` repeated at every
+/// symbol-query call site.
+pub struct SymbolGraph(std::sync::Arc<UnifiedGraph>);
+
+impl SymbolGraph {
+    /// The call graph. Infallible by construction — see the type's docs.
+    pub fn calls(&self) -> &CallGraph {
+        match &self.0.calls {
+            Some(c) => c,
+            None => unreachable!("SymbolGraph constructed without its calls half"),
+        }
+    }
+
+    /// The file-level dep graph, always populated.
+    pub fn deps(&self) -> &DepGraph {
+        &self.0.deps
+    }
+}
+
 /// Shared prologue for the symbol-query commands (`callers`, `callees`,
 /// `trace`, `impact`, `context`): find the project root and load the
 /// unified graph with the calls half present. Failures follow the error
@@ -74,7 +96,7 @@ pub fn load_for_symbol_query(
     path: &std::path::Path,
     rebuild: bool,
     json: bool,
-) -> Result<(std::path::PathBuf, std::sync::Arc<UnifiedGraph>), i32> {
+) -> Result<(std::path::PathBuf, SymbolGraph), i32> {
     use crate::cli_error::{CliError, ErrorKind};
     let root = match crate::project_root::find_root_for(path) {
         Ok(r) => r,
@@ -93,5 +115,5 @@ pub fn load_for_symbol_query(
             CliError::new(command, ErrorKind::IndexError, "call graph is empty").emit(json),
         );
     }
-    Ok((root, graph))
+    Ok((root, SymbolGraph(graph)))
 }

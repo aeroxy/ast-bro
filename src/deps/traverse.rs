@@ -7,6 +7,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 
 use crate::deps::graph::{DepEdge, DepGraph, ImportKind};
+use crate::UNLIMITED;
 
 #[derive(Debug, Clone)]
 pub struct DepHit {
@@ -20,7 +21,7 @@ pub struct DepHit {
 /// Forward BFS — what does `start` import (transitively).
 pub fn forward(graph: &DepGraph, start: &Path, max_depth: usize) -> Vec<DepHit> {
     let edges_at = |p: &Path| graph.forward.get(p).cloned().unwrap_or_default();
-    bfs(start, max_depth, usize::MAX, edges_at, |_| true)
+    bfs(start, max_depth, UNLIMITED, edges_at, |_| true)
 }
 
 /// Reverse BFS — who imports `start` (transitively).

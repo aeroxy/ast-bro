@@ -153,7 +153,7 @@ pub fn run_context(
             Ok(pair) => pair,
             Err(code) => return code,
         };
-    let calls = graph.calls.as_ref().expect("calls half present");
+    let calls = graph.calls();
     let candidates = resolve_target_full(calls, target);
     if candidates.is_empty() {
         return crate::cli_error::symbol_not_found("context", target, opts.json);

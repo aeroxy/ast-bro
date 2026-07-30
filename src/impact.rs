@@ -22,6 +22,7 @@ use crate::deps::traverse as dep_traverse;
 use crate::deps::DepGraph;
 use crate::file_filter::is_test_file;
 use crate::graph_cache;
+use crate::UNLIMITED;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ImpactMode {
@@ -99,7 +100,7 @@ pub fn run_impact(
             Ok(pair) => pair,
             Err(code) => return code,
         };
-    let calls = graph.calls.as_ref().expect("calls half present");
+    let calls = graph.calls();
     let candidates = resolve_target_full(calls, target);
     if candidates.is_empty() {
         return crate::cli_error::symbol_not_found("impact", target, opts.json);
@@ -115,7 +116,7 @@ pub fn run_impact(
 
     let mut reports = Vec::new();
     for c in &candidates {
-        reports.push(compute_impact(c, calls, &graph.deps, &root, opts));
+        reports.push(compute_impact(c, calls, graph.deps(), &root, opts));
     }
 
     if opts.json {
@@ -184,7 +185,7 @@ fn compute_impact(
     // --hide-ambiguous is set, matching the direct sections' retain.
     // Unbounded: `transitive_count` must be the true total; the transitive
     // section applies --limit at display time (issue #32).
-    let all_callers = traverse::callers(calls, &c.qn, opts.depth.max(1), usize::MAX, |e| {
+    let all_callers = traverse::callers(calls, &c.qn, opts.depth.max(1), UNLIMITED, |e| {
         if !opts.include_ambiguous && matches!(e.confidence, Confidence::Ambiguous) {
             return false;
         }
@@ -652,7 +653,7 @@ fn build_callers_section(
     // Walk unbounded so the section can report the true total; `--limit`
     // trims the display below (issue #32). Filter inside the traversal so
     // dropped edges don't distort the count.
-    hits.extend(traverse::callers(calls, &c.qn, 1, usize::MAX, |e| {
+    hits.extend(traverse::callers(calls, &c.qn, 1, UNLIMITED, |e| {
         if !opts.include_ambiguous && matches!(e.confidence, Confidence::Ambiguous) {
             return false;
         }
@@ -765,7 +766,7 @@ fn build_file_reverse_deps_section(
     // Walk unbounded so the section reports the true importer count;
     // `--limit` trims the display (issue #32). Test filtering happens
     // inside the traversal so excluded importers don't distort it.
-    let mut hits = dep_traverse::reverse(deps, &deps_file, 1, usize::MAX, |e| {
+    let mut hits = dep_traverse::reverse(deps, &deps_file, 1, UNLIMITED, |e| {
         passes_test_flags(&e.target, root, opts)
     });
     let total = hits.len();

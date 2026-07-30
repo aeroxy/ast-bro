@@ -16,6 +16,7 @@ use crate::calls::cli_helpers::{resolve_target_full, SymbolKind};
 use crate::calls::graph::{CallEdge, CallGraph, CallKindCompat, CallTarget, Confidence, Qn};
 use crate::calls::{render, traverse};
 use crate::graph_cache;
+use crate::UNLIMITED;
 
 #[allow(clippy::too_many_arguments)]
 pub fn run_callers(
@@ -34,7 +35,7 @@ pub fn run_callers(
         Ok(pair) => pair,
         Err(code) => return code,
     };
-    let calls = graph.calls.as_ref().expect("calls half present");
+    let calls = graph.calls();
 
     let candidates = resolve_target_full(calls, target);
     if candidates.is_empty() {
@@ -53,7 +54,7 @@ pub fn run_callers(
                     calls,
                     &c.qn,
                     depth.max(1),
-                    usize::MAX,
+                    UNLIMITED,
                     |edge| {
                         if !include_ambiguous && matches!(edge.confidence, Confidence::Ambiguous) {
                             return false;
@@ -242,7 +243,7 @@ pub fn run_callees(
         Ok(pair) => pair,
         Err(code) => return code,
     };
-    let calls = graph.calls.as_ref().expect("calls half present");
+    let calls = graph.calls();
 
     let candidates = resolve_target_full(calls, target);
     if candidates.is_empty() {
@@ -655,7 +656,7 @@ pub fn run_trace(
         Ok(pair) => pair,
         Err(code) => return code,
     };
-    let calls = graph.calls.as_ref().expect("calls half present");
+    let calls = graph.calls();
     let (out, outcome) = render_trace(calls, &root, from, to, depth, json, pretty);
     match outcome {
         // Found a path, or both symbols resolved but no static path exists

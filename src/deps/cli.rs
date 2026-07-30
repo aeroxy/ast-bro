@@ -114,7 +114,7 @@ pub fn run_reverse_deps(
     };
     // Walk unbounded so the output can report the true total; `--limit`
     // trims the display below (issue #32).
-    let mut hits = traverse::reverse(&graph, &canonical, depth.max(1), usize::MAX, |e| {
+    let mut hits = traverse::reverse(&graph, &canonical, depth.max(1), crate::UNLIMITED, |e| {
         if !tests && !exclude_tests {
             return true;
         }

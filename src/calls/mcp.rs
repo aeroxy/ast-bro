@@ -32,7 +32,7 @@ pub fn run_callers_text(target: &str, root: &Path, depth: usize, limit: usize, i
         // Walk unbounded so the header carries the true total; `--limit`
         // trims the display (issue #32). Filter inside the traversal so
         // dropped ambiguous edges don't consume the limit.
-        let info = traverse::callers_info(calls, qn, depth.max(1), usize::MAX, |e| {
+        let info = traverse::callers_info(calls, qn, depth.max(1), crate::UNLIMITED, |e| {
             include_ambiguous
                 || !matches!(e.confidence, crate::calls::graph::Confidence::Ambiguous)
         });
