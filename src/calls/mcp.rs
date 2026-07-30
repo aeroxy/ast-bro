@@ -185,15 +185,10 @@ pub fn run_callees_text(target: &str, root: &Path, depth: usize, external: bool,
     for qn in &qns {
         if depth <= 1 {
             let edges = traverse::callees_one_hop(calls, qn);
-            frontier_truncated |= edges.iter().any(|e| match &e.target {
-                crate::calls::graph::CallTarget::Resolved(t) => {
-                    calls.forward.get(t).is_some_and(|out| !out.is_empty())
-                }
-                _ => false,
-            });
+            frontier_truncated |= traverse::one_hop_frontier(calls, &edges, external);
             all_edges.extend(edges);
         } else {
-            let info = traverse::callees_info(calls, qn, depth.max(1));
+            let info = traverse::callees_info(calls, qn, depth.max(1), external);
             frontier_truncated |= info.frontier_truncated;
             for h in info.hits {
                 all_edges.push(h.edge);

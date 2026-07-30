@@ -264,16 +264,12 @@ pub fn run_callees(
                     // The one-hop fast path must still report the frontier:
                     // a resolved direct callee with outgoing calls of its
                     // own means --depth 1 stopped a walk that had edges
-                    // left. JSON consumers read this flag at any depth.
-                    frontier_truncated |= edges.iter().any(|e| match &e.target {
-                        CallTarget::Resolved(qn) => {
-                            calls.forward.get(qn).is_some_and(|out| !out.is_empty())
-                        }
-                        _ => false,
-                    });
+                    // left. JSON consumers read this flag at any depth, and
+                    // under --hide-external only visible continuations count.
+                    frontier_truncated |= traverse::one_hop_frontier(calls, &edges, external);
                     all_edges.extend(edges);
                 } else {
-                    let info = traverse::callees_info(calls, &c.qn, depth.max(1));
+                    let info = traverse::callees_info(calls, &c.qn, depth.max(1), external);
                     frontier_truncated |= info.frontier_truncated;
                     for h in info.hits {
                         all_edges.push(h.edge);
