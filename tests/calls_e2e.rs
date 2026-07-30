@@ -1754,15 +1754,25 @@ fn java_local_homonym_does_not_shadow_explicit_receiver() {
     // The chain head `connection.getCtx()` must not be claimed by the local
     // `Caller::getCtx` with Exact confidence, and the mid-chain `getPrefs`
     // must keep resolving to `Ctx::getPrefs`.
-    let (out, code) = run_in(root, &["callees", "viaChain", ".", "--rebuild"]);
+    // Asserted over JSON, not rendered text: a text `contains` check for
+    // "Caller::getCtx  (Exact)" passes the moment the renderer changes its
+    // column spacing, which would hide the very regression this pins.
+    let (out, code) = run_in(root, &["callees", "viaChain", ".", "--rebuild", "--json", "--compact"]);
     assert_eq!(code, 0, "callees exited non-zero: {}", out);
+    let doc: serde_json::Value = serde_json::from_str(out.trim()).expect("valid json");
+    let matches = doc["matches"].as_array().expect("matches array");
     assert!(
-        !out.contains("Caller::getCtx  (Exact)"),
+        !matches.iter().any(|m| {
+            m["target"].as_str().unwrap_or("").ends_with("Caller::getCtx")
+                && m["confidence"] == "Exact"
+        }),
         "local homonym must not claim the explicit-receiver call as Exact, got:\n{}",
         out
     );
     assert!(
-        out.contains("Ctx::getPrefs"),
+        matches
+            .iter()
+            .any(|m| m["target"].as_str().unwrap_or("").contains("Ctx::getPrefs")),
         "mid-chain link should still resolve, got:\n{}",
         out
     );
@@ -2590,4 +2600,60 @@ fn incremental_update_matches_a_cold_build_of_the_same_content() {
              before={cold}\nafter={cold_again}"
         );
     }
+}
+
+#[test]
+fn incremental_promotion_matches_cold_build_confidence() {
+    // Parity covers the confidence tag, not just the target. A bare edge in
+    // an *unchanged* file that a later delta finally resolves is promoted by
+    // `apply_delta_to_calls`, and that promotion used to tag `Inferred`
+    // where pass B tags the same single-global-match-no-receiver case
+    // `Exact` — so the same content answered differently depending on
+    // whether you had rebuilt.
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(&root.join("Cargo.toml"), "[package]\nname=\"x\"\nversion=\"0.0.0\"\nedition=\"2021\"\n");
+    write(&root.join("src/lib.rs"), "pub mod b;\n");
+    write(&root.join("src/b.rs"), "pub fn caller() { only_one_of_these(); }\n");
+
+    // Nothing declares the name yet: the edge is bare, and the query is a
+    // legitimate miss.
+    let (_, code) = run_in(root, &["callers", "only_one_of_these", ".", "--rebuild"]);
+    assert_eq!(code, 2, "premise: the symbol does not exist yet");
+
+    // The definition arrives in a later delta; b.rs is untouched.
+    write(&root.join("src/lib.rs"), "pub mod a;\npub mod b;\n");
+    write(&root.join("src/a.rs"), "pub fn only_one_of_these() {}\n");
+
+    let query = |args: &[&str]| -> serde_json::Value {
+        let (out, code) = run_in(root, args);
+        assert_eq!(code, 0, "{out}");
+        serde_json::from_str(out.trim()).expect("valid json")
+    };
+    let incremental = query(&["callers", "only_one_of_these", ".", "--json", "--compact"]);
+    let cold = query(&["callers", "only_one_of_these", ".", "--json", "--compact", "--rebuild"]);
+
+    let edges = |doc: &serde_json::Value| -> Vec<(String, String)> {
+        doc["matches"]
+            .as_array()
+            .expect("matches array")
+            .iter()
+            .map(|m| {
+                (
+                    m["target"].as_str().unwrap_or_default().to_string(),
+                    m["confidence"].as_str().unwrap_or_default().to_string(),
+                )
+            })
+            .collect()
+    };
+    assert_eq!(
+        edges(&incremental),
+        edges(&cold),
+        "per-edge confidence diverged between a partial update and a cold build:\n\
+         incremental={incremental}\ncold={cold}"
+    );
+    assert_eq!(
+        incremental["matches"][0]["confidence"], "Exact",
+        "a single global match with no receiver is pass B's `Exact`:\n{incremental}"
+    );
 }

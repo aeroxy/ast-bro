@@ -349,10 +349,14 @@ pub fn run_with_table(
 /// Is this repo-relative file a Rust crate root — the module `crate::`
 /// names? Only there does the caller's file segment coincide with the crate
 /// root, which is what the `crate::` anchor needs (`src/bin/*.rs` binaries
-/// are roots of their own crates too).
+/// are roots of their own crates too). The `bin` test is anchored to Cargo's
+/// layout: `tools/bin/helper.rs` and `vendor/bin/x.rs` are ordinary files,
+/// not crate roots, and anchoring `crate::` at them mis-binds every call.
 fn is_crate_root(file: &str) -> bool {
     let name = file.rsplit('/').next().unwrap_or(file);
-    matches!(name, "lib.rs" | "main.rs") || file.contains("/bin/")
+    matches!(name, "lib.rs" | "main.rs")
+        || file.contains("/src/bin/")
+        || file.starts_with("src/bin/")
 }
 
 /// A receiver that still points at the enclosing scope: absent (`foo()`),
@@ -360,7 +364,9 @@ fn is_crate_root(file: &str) -> bool {
 /// field, or type name — means the call targets another object, so
 /// same-file and single-global-match promotion must not claim it.
 /// (`self`/`Self`/`crate`/`super` — Rust; `this` — Java/TS/C#/C++/Kotlin/
-/// Scala; `$this` — PHP. PHP's `self::`/`static::`/`parent::` scoped calls
+/// Scala; `$this` — PHP; `cls` — Python, the conventional first parameter of
+/// a `@classmethod`, where `cls.helper()` means the enclosing class exactly
+/// as `self.helper()` does. PHP's `self::`/`static::`/`parent::` scoped calls
 /// never reach here — the adapter normalizes those receivers to `None` —
 /// so listing the bare words would only ever match user variables named
 /// `static`/`parent`, which are common and NOT self-like.)
@@ -369,6 +375,7 @@ pub(crate) fn receiver_is_self_like(recv: Option<&str>) -> bool {
         recv,
         None | Some("self")
             | Some("Self")
+            | Some("cls")
             | Some("crate")
             | Some("super")
             | Some("this")

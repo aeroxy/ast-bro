@@ -5,7 +5,7 @@
 
 use crate::calls::graph::{CallEdge, CallGraph, Qn};
 use crate::UNLIMITED;
-use std::collections::{HashSet, VecDeque};
+use std::collections::{BTreeMap, HashSet, VecDeque};
 
 #[derive(Debug, Clone)]
 pub struct CallHit {
@@ -102,40 +102,49 @@ pub fn callers_multi<F: Fn(&CallEdge) -> bool>(
     max_total_depth: usize,
     predicate: F,
 ) -> Vec<CallHit> {
-    // Sorted seeds + FIFO expansion keep the queue depth-monotonic, so the
-    // first visit to a node is at its minimum total depth (the plain BFS
-    // invariant, extended to non-uniform starting depths).
-    let mut sorted: Vec<&(Qn, usize)> = seeds.iter().collect();
-    sorted.sort_by_key(|(_, d)| *d);
+    // Depth buckets, not one FIFO. A single queue is only depth-monotonic
+    // when every entry in it is within one depth of the next, which sorted
+    // seeds alone don't give: seeds at depth 2 and depth 5 make the queue
+    // pop the 5 before the 3s discovered under the 2, so a node reachable
+    // both ways gets `seen` (and reported) at 6 instead of 3 — the wrong
+    // depth, and dropped entirely if that exceeds `max_total_depth`. A map
+    // keyed by depth pops in nondecreasing order whatever the spread, which
+    // is what makes "first visit = minimum total depth" true.
     let mut seen: HashSet<Qn> = HashSet::new();
     let mut reported: HashSet<Qn> = HashSet::new();
-    let mut q: VecDeque<(Qn, usize)> = VecDeque::new();
+    let mut pending: BTreeMap<usize, Vec<Qn>> = BTreeMap::new();
+    let mut sorted: Vec<&(Qn, usize)> = seeds.iter().collect();
+    // Sorted so a qn seeded twice keeps its lower depth (`seen` admits the
+    // first one it sees).
+    sorted.sort_by_key(|(_, d)| *d);
     for (qn, depth) in sorted {
         if *depth < max_total_depth && seen.insert(qn.clone()) {
-            q.push_back((qn.clone(), *depth));
+            pending.entry(*depth).or_default().push(qn.clone());
         }
         reported.insert(qn.clone());
     }
     let mut out = Vec::new();
-    while let Some((cur, depth)) = q.pop_front() {
+    while let Some((depth, batch)) = pending.pop_first() {
         if depth >= max_total_depth {
             continue;
         }
-        for e in graph.reverse.get(&cur).cloned().unwrap_or_default() {
-            let next = e.source.clone();
-            let first_visit = seen.insert(next.clone());
-            // `reported` dedups output separately from traversal, so a node
-            // first reached via a predicate-rejected edge can still be
-            // reported when a later qualifying edge points at it.
-            if predicate(&e) && !reported.contains(&next) {
-                reported.insert(next.clone());
-                out.push(CallHit {
-                    depth: depth + 1,
-                    edge: e,
-                });
-            }
-            if first_visit {
-                q.push_back((next, depth + 1));
+        for cur in batch {
+            for e in graph.reverse.get(&cur).cloned().unwrap_or_default() {
+                let next = e.source.clone();
+                let first_visit = seen.insert(next.clone());
+                // `reported` dedups output separately from traversal, so a
+                // node first reached via a predicate-rejected edge can still
+                // be reported when a later qualifying edge points at it.
+                if predicate(&e) && !reported.contains(&next) {
+                    reported.insert(next.clone());
+                    out.push(CallHit {
+                        depth: depth + 1,
+                        edge: e,
+                    });
+                }
+                if first_visit {
+                    pending.entry(depth + 1).or_default().push(next);
+                }
             }
         }
     }

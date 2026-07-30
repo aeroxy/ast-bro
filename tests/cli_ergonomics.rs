@@ -26,6 +26,17 @@ fn run(args: &[&str]) -> (Option<i32>, String, String) {
     )
 }
 
+/// The `ast-bro.error.v1` envelope carried on stderr beside the human text.
+/// First line that starts with `{` — the human message and any hint come
+/// first, and only the envelope is JSON.
+fn envelope(stderr: &str) -> serde_json::Value {
+    let line = stderr
+        .lines()
+        .find(|l| l.starts_with('{'))
+        .expect("json envelope on stderr");
+    serde_json::from_str(line).expect("valid json")
+}
+
 // ---------------------------------------------------------------------------
 // Rejected calls: exit 2, stderr, empty stdout
 // ---------------------------------------------------------------------------
@@ -57,11 +68,7 @@ fn map_no_paths_json_emits_error_envelope_on_stderr() {
     let (code, stdout, stderr) = run(&["map", "--json"]);
     assert_eq!(code, Some(2));
     assert!(stdout.is_empty(), "stdout must be empty:\n{stdout}");
-    let envelope = stderr
-        .lines()
-        .find(|l| l.starts_with('{'))
-        .expect("json envelope on stderr");
-    let doc: serde_json::Value = serde_json::from_str(envelope).expect("valid json");
+    let doc = envelope(&stderr);
     assert_eq!(doc["schema"], "ast-bro.error.v1");
     assert_eq!(doc["command"], "map");
     assert_eq!(doc["kind"], "no_input");
@@ -109,11 +116,7 @@ fn show_missing_symbol_json_emits_error_envelope() {
     let (code, stdout, stderr) = run(&["show", "src/core.rs", "ZzNonexistentSymbolZz", "--json"]);
     assert_eq!(code, Some(2));
     assert!(stdout.is_empty(), "no valid-looking empty payload:\n{stdout}");
-    let envelope = stderr
-        .lines()
-        .find(|l| l.starts_with('{'))
-        .expect("json envelope on stderr");
-    let doc: serde_json::Value = serde_json::from_str(envelope).expect("valid json");
+    let doc = envelope(&stderr);
     assert_eq!(doc["kind"], "symbol_not_found");
 }
 
@@ -196,9 +199,14 @@ fn digest_accepts_map_scope_flags() {
 
 #[test]
 fn map_preset_digest_json_matches_digest_json() {
-    // #37: `digest` is exactly `map --preset digest`.
-    let (_, a, _) = run(&["map", "src/core.rs", "--preset", "digest", "--json", "--compact"]);
-    let (_, b, _) = run(&["digest", "src/core.rs", "--json", "--compact"]);
+    // #37: `digest` is exactly `map --preset digest`. Both calls must have
+    // *run* — two identical failures would otherwise satisfy the comparison.
+    let (code_a, a, err_a) = run(&["map", "src/core.rs", "--preset", "digest", "--json", "--compact"]);
+    let (code_b, b, err_b) = run(&["digest", "src/core.rs", "--json", "--compact"]);
+    assert_eq!(code_a, Some(0), "map --preset digest failed:\n{err_a}");
+    assert_eq!(code_b, Some(0), "digest failed:\n{err_b}");
+    assert!(!a.is_empty(), "map --preset digest produced nothing");
+    assert!(!b.is_empty(), "digest produced nothing");
     assert_eq!(a, b, "digest alias must be byte-identical to the preset");
 }
 
@@ -207,11 +215,7 @@ fn unknown_flag_json_emits_error_envelope() {
     let (code, stdout, stderr) = run(&["digest", "src/", "--json", "--not-a-flag"]);
     assert_eq!(code, Some(2));
     assert!(stdout.is_empty(), "stdout:\n{stdout}");
-    let envelope = stderr
-        .lines()
-        .find(|l| l.starts_with('{'))
-        .expect("json envelope on stderr");
-    let doc: serde_json::Value = serde_json::from_str(envelope).expect("valid json");
+    let doc = envelope(&stderr);
     assert_eq!(doc["schema"], "ast-bro.error.v1");
     assert_eq!(doc["kind"], "unknown_flag");
 }
@@ -369,11 +373,7 @@ fn implements_declares_paths_required_so_help_and_runtime_agree() {
 fn missing_required_argument_envelope_names_the_argument() {
     let (code, _, stderr) = run(&["implements", "SomeType", "--json"]);
     assert_eq!(code, Some(2));
-    let envelope = stderr
-        .lines()
-        .find(|l| l.starts_with('{'))
-        .expect("json envelope on stderr");
-    let doc: serde_json::Value = serde_json::from_str(envelope).expect("valid json");
+    let doc = envelope(&stderr);
     assert!(
         doc["detail"].as_str().unwrap_or("").contains("<PATHS>"),
         "envelope detail must name the missing argument, got: {doc}"
@@ -393,11 +393,7 @@ fn run_unresolved_path_is_a_rejection_not_an_empty_result() {
     ]);
     assert_eq!(code, Some(2), "stderr:\n{stderr}");
     assert!(stdout.is_empty(), "stdout must be empty:\n{stdout}");
-    let envelope = stderr
-        .lines()
-        .find(|l| l.starts_with('{'))
-        .expect("json envelope on stderr");
-    let doc: serde_json::Value = serde_json::from_str(envelope).expect("valid json");
+    let doc = envelope(&stderr);
     assert_eq!(doc["kind"], "path_not_found");
     assert_eq!(doc["command"], "run");
 }
@@ -421,11 +417,7 @@ fn search_unresolved_path_is_a_rejection() {
     let (code, stdout, stderr) = run(&["search", "zzz", "./ast-bro-no-such-dir-xyz", "--json"]);
     assert_eq!(code, Some(2), "stderr:\n{stderr}");
     assert!(stdout.is_empty(), "stdout must be empty:\n{stdout}");
-    let envelope = stderr
-        .lines()
-        .find(|l| l.starts_with('{'))
-        .expect("json envelope on stderr");
-    let doc: serde_json::Value = serde_json::from_str(envelope).expect("valid json");
+    let doc = envelope(&stderr);
     assert_eq!(doc["kind"], "path_not_found");
 }
 
@@ -453,11 +445,7 @@ fn find_related_missing_chunk_rejects_in_json_mode_too() {
     ]);
     assert_eq!(code, Some(2), "stderr:\n{stderr}");
     assert!(stdout.is_empty(), "stdout must be empty:\n{stdout}");
-    let envelope = stderr
-        .lines()
-        .find(|l| l.starts_with('{'))
-        .expect("json envelope on stderr");
-    let doc: serde_json::Value = serde_json::from_str(envelope).expect("valid json");
+    let doc = envelope(&stderr);
     assert_eq!(doc["command"], "find-related");
 }
 

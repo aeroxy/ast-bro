@@ -549,7 +549,10 @@ enum Commands {
 /// preset applies.
 #[derive(clap::Args)]
 struct MapArgs {
-    /// Files or directories to map.
+    /// Files or directories to map. May be omitted at the clap layer: an
+    /// empty list is a *rejection*, not a usage error, so `require_paths`
+    /// turns it into the `no_input` envelope (#33) — "nothing was inspected"
+    /// rather than an empty result that reads as an empty codebase.
     #[arg(num_args = 1..)]
     paths: Vec<PathBuf>,
 
@@ -1336,9 +1339,13 @@ pub fn run() {
                 // `helper` must not validate `implements helper`.
                 let target_exists = results.iter().any(|r| {
                     crate::core::find_symbols(r, target).iter().any(|m| {
+                        // Every type-shaped kind an adapter can emit — a C#
+                        // `delegate` is a declared type, so `implements
+                        // Handler` on one is the legitimate 0-match answer,
+                        // not "no such type".
                         matches!(
                             m.kind.as_str(),
-                            "class" | "struct" | "interface" | "record" | "enum"
+                            "class" | "struct" | "interface" | "record" | "enum" | "delegate"
                         )
                     })
                 });
@@ -1759,13 +1766,16 @@ pub fn run() {
         } => {
             let impact_mode = match crate::impact::ImpactMode::parse(mode) {
                 Some(m) => m,
-                None => {
-                    eprintln!(
-                        "# note: unknown --mode '{}'. Expected: deps, dependents, tests, all",
-                        mode
-                    );
-                    std::process::exit(2);
-                }
+                // A rejected argument is a rejection, not a `# note:` beside
+                // a result: it owes the same envelope as every other one
+                // (#36), so `--json` consumers need no per-command table.
+                None => crate::cli_error::CliError::new(
+                    "impact",
+                    crate::cli_error::ErrorKind::BadArgument,
+                    format!("unknown --mode '{}'", mode),
+                )
+                .hint("Expected: deps, dependents, tests, all")
+                .exit(*json),
             };
             let resolved = compose_target(target.as_deref(), file.as_deref(), symbol.as_deref());
             let opts = crate::impact::ImpactOptions {
