@@ -612,10 +612,19 @@ fn restricted_rust_visibility_forms_are_pinned() {
     .unwrap();
     let p = p.to_str().unwrap();
     let out = run(&["map", p, "--no-private"]);
-    for hidden in ["self_only", "in_self_only"] {
+    // Whole rendered tokens (`fn <name>(`), not bare names: `self_only` is a
+    // substring of `in_self_only` and `crate_wide` of `in_crate_wide`, so a
+    // bare-name check can report the wrong item — or pass because its
+    // longer neighbour is present.
+    for hidden in ["fn self_only(", "fn in_self_only("] {
         assert!(!out.contains(hidden), "`{hidden}` is private-equivalent:\n{out}");
     }
-    for shown in ["crate_wide", "parent_wide", "in_crate_wide", "open"] {
+    for shown in [
+        "fn crate_wide(",
+        "fn parent_wide(",
+        "fn in_crate_wide(",
+        "fn open(",
+    ] {
         assert!(out.contains(shown), "`{shown}` must stay visible:\n{out}");
     }
 }

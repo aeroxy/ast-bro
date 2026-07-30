@@ -50,7 +50,15 @@ fn section_suffix(total: usize, shown: usize) -> String {
 /// about every symbol sharing its name.
 pub struct Unattributed<'a> {
     pub edges: &'a [CallEdge],
+    /// True total behind `edges` *after* the `--hide-ambiguous` filter, so
+    /// `total == 0` means "no section to render" and the sample suffix
+    /// counts what the cap trimmed rather than what the filter removed.
+    /// Under `--hide-ambiguous` every site is hidden, so this is 0 and
+    /// `hidden` carries the count.
     pub total: usize,
+    /// Sites dropped by `--hide-ambiguous` — reported separately (stderr
+    /// note, `unattributed_hidden` in JSON) so hiding them never reads as
+    /// their not existing.
     pub hidden: usize,
     pub declarers: usize,
 }

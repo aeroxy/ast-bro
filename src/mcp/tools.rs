@@ -1018,13 +1018,23 @@ fn run_run(args: Value) -> CallResult {
         (None, None)
     };
 
-    let search_paths = if a.paths.is_empty() {
-        vec![PathBuf::from(".")]
+    // An empty list means "the current directory" for `run` (the CLI's
+    // `resolve_optional_paths`), so there is nothing to miss in that case.
+    let (search_paths, missing) = if a.paths.is_empty() {
+        (vec![PathBuf::from(".")], Vec::new())
     } else {
         match crate::resolve_paths_for_mcp("run", &a.paths) {
-            Ok((paths, _)) => paths,
+            Ok(pair) => pair,
             Err(e) => return CallResult::Error(e),
         }
+    };
+    let path_note = partial_note(&missing);
+    // Partial misses ride the text response; JSON gets `missing_paths`, so a
+    // report over three of four requested paths can't read as covering all
+    // four.
+    let note = |out: String| match &path_note {
+        Some(n) => CallResult::Text(format!("{}\n{}", n, out)),
+        None => CallResult::Text(out),
     };
     let files = crate::walk_paths(&search_paths, a.glob.as_deref());
     
@@ -1272,9 +1282,10 @@ fn run_run(args: Value) -> CallResult {
                 cap_limit: MCP_REWRITE_MAX_FILES,
                 files: &rewrite_records,
             };
-            return CallResult::Text(
+            return CallResult::Text(with_missing_paths(
                 serde_json::to_string_pretty(&doc).unwrap_or_default(),
-            );
+                &missing,
+            ));
         }
         if rewrite_count == 0 && !rewrite_capped && error_count == 0 {
             output.push_str("No matches found for rewrite.");
@@ -1285,7 +1296,7 @@ fn run_run(args: Value) -> CallResult {
         if error_count > 0 {
             output.push_str(&format!("\n({} files had errors)", error_count));
         }
-        return CallResult::Text(output);
+        return note(output);
     }
 
     // Search-only mode
@@ -1307,7 +1318,10 @@ fn run_run(args: Value) -> CallResult {
             capped: search_capped,
             cap_limit: MCP_SEARCH_MAX_MATCHES,
         };
-        CallResult::Text(serde_json::to_string_pretty(&doc).unwrap_or_default())
+        CallResult::Text(with_missing_paths(
+            serde_json::to_string_pretty(&doc).unwrap_or_default(),
+            &missing,
+        ))
     } else {
         if all_matches.is_empty() {
             output.push_str("No matches found.");
@@ -1333,7 +1347,7 @@ fn run_run(args: Value) -> CallResult {
         if search_capped {
             output.push_str(&format!("\n# warning: reached safety cap of {} matches; remaining files were not processed.", MCP_SEARCH_MAX_MATCHES));
         }
-        CallResult::Text(output)
+        note(output)
     }
 }
 

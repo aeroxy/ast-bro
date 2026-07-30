@@ -398,7 +398,7 @@ changes, so downstream tooling can guard on it:
 
 ```json
 {
-  "schema": "ast-bro.outline.v1",
+  "schema": "ast-bro.map.v1",
   "files": [
     {
       "path": "src/player.rs",
@@ -423,7 +423,7 @@ changes, so downstream tooling can guard on it:
 
 | Schema | Command |
 |--------|----------|
-| `ast-bro.outline.v1` | default outline, `digest --json` |
+| `ast-bro.map.v1` | `map --json`, `digest --json` |
 | `ast-bro.show.v1` | `show --json` |
 | `ast-bro.implements.v1` | `implements --json` |
 | `ast-bro.surface.v1` | `surface --json` |
