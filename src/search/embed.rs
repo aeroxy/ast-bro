@@ -425,6 +425,32 @@ mod tests {
         assert_eq!(decoded, vec![1.0f32, 0.0, -2.0]);
     }
 
+    #[test]
+    fn decode_f16_le_handles_ieee754_edge_cases() {
+        // The `half` crate gets these right; the point is that the *contract*
+        // is pinned, so a hand-rolled replacement can't quietly change it.
+        // A NaN or infinity smuggled into a vocab row poisons every cosine
+        // comparison it takes part in, and silently — hence the coverage.
+        let case = |lo: u8, hi: u8| decode_f16_le(&[lo, hi])[0];
+
+        // 0x0001 — smallest positive subnormal, exactly 2^-24.
+        assert_eq!(case(0x01, 0x00), 2f32.powi(-24));
+        // 0x03FF — largest subnormal, just under 2^-14.
+        assert_eq!(case(0xFF, 0x03), 1023.0 * 2f32.powi(-24));
+        // 0x7C00 / 0xFC00 — infinities keep their sign.
+        assert_eq!(case(0x00, 0x7C), f32::INFINITY);
+        assert_eq!(case(0x00, 0xFC), f32::NEG_INFINITY);
+        // 0x7E00 — quiet NaN stays NaN rather than decoding to a number.
+        assert!(case(0x00, 0x7E).is_nan());
+        // 0x8000 — negative zero keeps its sign bit (`-0.0 == 0.0`, so this
+        // has to be asserted on the bits, not the value).
+        let neg_zero = case(0x00, 0x80);
+        assert_eq!(neg_zero, 0.0);
+        assert!(neg_zero.is_sign_negative(), "0x8000 must decode to -0.0");
+        // 0x7BFF — largest finite binary16, 65504.
+        assert_eq!(case(0xFF, 0x7B), 65504.0);
+    }
+
     // ── cosine_topk (pure unit tests, no network) ──────────────────────────
 
     fn unit(values: &[f32]) -> Vec<f32> {
