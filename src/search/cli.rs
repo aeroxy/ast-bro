@@ -64,6 +64,21 @@ pub fn run_find_related(
     pretty: bool,
 ) -> i32 {
     let cwd = current_dir_or_dot();
+    // Check the source location exists on disk *before* opening the index:
+    // `Index::open` falls back to a full build when there is no cache, which
+    // downloads the embedding model and chunks the whole repository. A typo'd
+    // path shouldn't pay for that just to be told it was a typo, and the
+    // rejection is the same one the index-miss path would give (#33/#36).
+    let as_typed = Path::new(file_path);
+    if !as_typed.exists() && !path.join(as_typed).exists() {
+        return crate::cli_error::CliError::new(
+            "find-related",
+            crate::cli_error::ErrorKind::PathNotFound,
+            format!("no such file: {file_path}"),
+        )
+        .hint("`find-related <FILE>:<LINE>` takes a file that exists; its chunk is then looked up in the index by path.")
+        .emit(json);
+    }
     let index = match Index::open(path, &cwd) {
         Ok(i) => i,
         Err(e) => {
