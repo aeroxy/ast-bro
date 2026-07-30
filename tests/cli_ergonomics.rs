@@ -305,3 +305,147 @@ fn implements_function_name_exits_2() {
     assert!(stdout.is_empty(), "stdout:\n{stdout}");
     assert!(stderr.contains("no type named"), "stderr:\n{stderr}");
 }
+
+// ---------------------------------------------------------------------------
+// PR #38 review round 2 — the contract must hold where it claims to.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn implements_declares_paths_required_so_help_and_runtime_agree() {
+    // `require_paths` rejected a call that `--help` advertised as valid, and
+    // the message blamed a shell substitution for a plainly missing argument.
+    // Declaring it required in clap fixes both at once.
+    let (code, stdout, _) = run(&["implements", "--help"]);
+    assert_eq!(code, Some(0));
+    assert!(
+        stdout.contains("<PATHS>..."),
+        "help must show PATHS as required, not [PATHS]...:\n{stdout}"
+    );
+
+    let (code, stdout, stderr) = run(&["implements", "SomeType"]);
+    assert_eq!(code, Some(2), "stderr:\n{stderr}");
+    assert!(stdout.is_empty(), "stdout must be empty:\n{stdout}");
+    assert!(
+        stderr.contains("required arguments were not provided") && stderr.contains("<PATHS>"),
+        "clap must name the missing argument:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("substitution"),
+        "the message must describe the error that happened:\n{stderr}"
+    );
+}
+
+#[test]
+fn missing_required_argument_envelope_names_the_argument() {
+    let (code, _, stderr) = run(&["implements", "SomeType", "--json"]);
+    assert_eq!(code, Some(2));
+    let envelope = stderr
+        .lines()
+        .find(|l| l.starts_with('{'))
+        .expect("json envelope on stderr");
+    let doc: serde_json::Value = serde_json::from_str(envelope).expect("valid json");
+    assert!(
+        doc["detail"].as_str().unwrap_or("").contains("<PATHS>"),
+        "envelope detail must name the missing argument, got: {doc}"
+    );
+}
+
+#[test]
+fn run_unresolved_path_is_a_rejection_not_an_empty_result() {
+    // Was: exit 1 (which means internal failure) with a valid-looking empty
+    // `ast-bro.run.v1` payload on stdout.
+    let (code, stdout, stderr) = run(&[
+        "run",
+        "-p",
+        "fn $A(){$$$}",
+        "--json",
+        "/tmp/ast-bro-does-not-exist-xyz",
+    ]);
+    assert_eq!(code, Some(2), "stderr:\n{stderr}");
+    assert!(stdout.is_empty(), "stdout must be empty:\n{stdout}");
+    let envelope = stderr
+        .lines()
+        .find(|l| l.starts_with('{'))
+        .expect("json envelope on stderr");
+    let doc: serde_json::Value = serde_json::from_str(envelope).expect("valid json");
+    assert_eq!(doc["kind"], "path_not_found");
+    assert_eq!(doc["command"], "run");
+}
+
+#[test]
+fn run_with_no_paths_still_defaults_to_the_current_directory() {
+    // The path list is optional for `run` — only a *wrong* list is rejected.
+    let (code, stdout, stderr) = run(&["run", "-p", "fn require_path($$$) { $$$ }"]);
+    assert!(
+        code == Some(0) || code == Some(1),
+        "an empty path list must default to `.`, not reject: code={code:?}\n{stderr}"
+    );
+    assert!(
+        !stdout.contains("error"),
+        "stdout carries results only:\n{stdout}"
+    );
+}
+
+#[test]
+fn search_unresolved_path_is_a_rejection() {
+    let (code, stdout, stderr) = run(&["search", "zzz", "./ast-bro-no-such-dir-xyz", "--json"]);
+    assert_eq!(code, Some(2), "stderr:\n{stderr}");
+    assert!(stdout.is_empty(), "stdout must be empty:\n{stdout}");
+    let envelope = stderr
+        .lines()
+        .find(|l| l.starts_with('{'))
+        .expect("json envelope on stderr");
+    let doc: serde_json::Value = serde_json::from_str(envelope).expect("valid json");
+    assert_eq!(doc["kind"], "path_not_found");
+}
+
+#[test]
+fn find_related_unresolved_path_is_a_rejection() {
+    let (code, stdout, stderr) = run(&[
+        "find-related",
+        "f.rs:3",
+        "./ast-bro-no-such-dir-xyz",
+        "--json",
+    ]);
+    assert_eq!(code, Some(2), "stderr:\n{stderr}");
+    assert!(stdout.is_empty(), "stdout must be empty:\n{stdout}");
+}
+
+#[test]
+fn find_related_missing_chunk_rejects_in_json_mode_too() {
+    // Was: exit 0 with `results: []` on stdout under --json, which claims
+    // "nothing is similar" for a location the index never saw.
+    let (code, stdout, stderr) = run(&[
+        "find-related",
+        "no/such/file/anywhere.rs:3",
+        ".",
+        "--json",
+    ]);
+    assert_eq!(code, Some(2), "stderr:\n{stderr}");
+    assert!(stdout.is_empty(), "stdout must be empty:\n{stdout}");
+    let envelope = stderr
+        .lines()
+        .find(|l| l.starts_with('{'))
+        .expect("json envelope on stderr");
+    let doc: serde_json::Value = serde_json::from_str(envelope).expect("valid json");
+    assert_eq!(doc["command"], "find-related");
+}
+
+#[test]
+fn projected_payload_says_which_keys_it_dropped() {
+    // `digest --json` sheds `docs` because its preset implies
+    // `--detail names` — the caller never asked, so the payload has to carry
+    // the signal rather than leave an absence to infer.
+    let (code, stdout, stderr) = run(&["digest", "src/cli_error.rs", "--json", "--compact"]);
+    assert_eq!(code, Some(0), "stderr:\n{stderr}");
+    let doc: serde_json::Value = serde_json::from_str(stdout.trim()).expect("valid json");
+    assert_eq!(doc["projected"]["docs"], false, "{doc}");
+    assert_eq!(doc["projected"]["line_numbers"], true, "{doc}");
+
+    // Nothing projected → no key at all, so the unprojected payload stays
+    // byte-identical to what consumers already parse.
+    let (code, stdout, _) = run(&["map", "src/cli_error.rs", "--json", "--compact"]);
+    assert_eq!(code, Some(0));
+    let doc: serde_json::Value = serde_json::from_str(stdout.trim()).expect("valid json");
+    assert!(doc.get("projected").is_none(), "{doc}");
+}

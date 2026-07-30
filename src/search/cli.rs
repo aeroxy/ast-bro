@@ -77,17 +77,18 @@ pub fn run_find_related(
     let hits = match index.find_related(&key, line, top_k) {
         Some(h) => h,
         None => {
-            // In JSON mode print a parseable empty-results envelope to stdout
-            // (exit 0) so consumers always get the same schema; text mode keeps
-            // the human-readable hint on stderr and the exit-2 not-found signal.
-            if json {
-                println!("{}", render_related_json(file_path, line, &[], pretty));
-                return 0;
-            }
-            eprintln!(
-                "ast-bro: no chunk at {file_path}:{line} (was the file indexed?)"
-            );
-            return 2;
+            // One rule for both output modes: the location could not be
+            // found, so the query did not run — exit 2, nothing on stdout,
+            // and the `ast-bro.error.v1` envelope on stderr under `--json`.
+            // A `results: []` payload on stdout would say "nothing is
+            // similar to this chunk", a different and wrong claim (#33/#36).
+            return crate::cli_error::CliError::new(
+                "find-related",
+                crate::cli_error::ErrorKind::PathNotFound,
+                format!("no indexed chunk at {file_path}:{line}"),
+            )
+            .hint("Was the file indexed? `ast-bro index --stats` shows what the index covers; `--rebuild` refreshes it.")
+            .emit(json);
         }
     };
     if json {

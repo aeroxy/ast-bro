@@ -161,13 +161,25 @@ pub fn run_with_table(
                             let want_tail = format!("::{}::{}", rest, raw.bare_name);
                             let caller = raw.source.0.as_str();
                             return match rel {
-                                // `crate::P` anchors at the file segment
-                                // *only* — an intermediate scope declaring
-                                // the same path must not shadow the root.
+                                // `crate::P` anchors at the *crate root*
+                                // (`src/lib.rs` / `src/main.rs`), which is
+                                // the caller's own file only when the caller
+                                // lives there. Anywhere else the two differ,
+                                // and anchoring at the caller's file binds
+                                // `crate::inner::Foo::method()` to a
+                                // same-file `mod inner` decoy while the real
+                                // `crate::inner` is another file — so the
+                                // arm fires exactly where it would be wrong.
+                                // Off the crate root the edge falls through
+                                // to pass B/C, which resolve it against the
+                                // whole project.
                                 SelfRel::Crate => {
                                     let file = caller
                                         .split_once("::")
                                         .map_or(caller, |(f, _)| f);
+                                    if !is_crate_root(file) {
+                                        return None;
+                                    }
                                     let want = format!("{}{}", file, want_tail);
                                     fp.defined.iter().find(|q| q.0 == want).cloned()
                                 }
@@ -349,6 +361,15 @@ pub fn run_with_table(
         forward,
         symbol_table,
     }
+}
+
+/// Is this repo-relative file a Rust crate root — the module `crate::`
+/// names? Only there does the caller's file segment coincide with the crate
+/// root, which is what the `crate::` anchor needs (`src/bin/*.rs` binaries
+/// are roots of their own crates too).
+fn is_crate_root(file: &str) -> bool {
+    let name = file.rsplit('/').next().unwrap_or(file);
+    matches!(name, "lib.rs" | "main.rs") || file.contains("/bin/")
 }
 
 /// A receiver that still points at the enclosing scope: absent (`foo()`),

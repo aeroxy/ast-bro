@@ -1572,6 +1572,17 @@ pub fn render_json_map(results: &[ParseResult], opts: &MapOptions, pretty: bool)
             }
         }
     }
+    // Say which keys are gone. A projection is not always something the
+    // caller asked for directly — `digest --json` inherits `--detail names`
+    // from its preset and sheds `docs` with it — so a consumer that indexes
+    // `docs` needs a field to guard on rather than an absence to guess at
+    // (PR #38 review). Present only when something *was* stripped, which
+    // keeps the unprojected payload byte-identical.
+    val["projected"] = serde_json::json!({
+        "docs": !strip_docs,
+        "line_numbers": !strip_lines,
+        "attributes": !strip_attrs,
+    });
     if pretty {
         serde_json::to_string_pretty(&val).unwrap_or_default()
     } else {

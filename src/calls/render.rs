@@ -42,11 +42,41 @@ fn section_suffix(total: usize, shown: usize) -> String {
     }
 }
 
+/// Everything the "unresolved call sites" section needs to describe itself
+/// honestly (issue #31, PR #38 review): the rows to show, the true total
+/// behind them, how many were dropped by `--hide-ambiguous`, and how many
+/// project symbols declare the target's terminal name — the last being what
+/// decides whether a list of these sites is evidence about *this* symbol or
+/// about every symbol sharing its name.
+pub struct Unattributed<'a> {
+    pub edges: &'a [CallEdge],
+    pub total: usize,
+    pub hidden: usize,
+    pub declarers: usize,
+}
+
+impl Unattributed<'_> {
+    /// Does the target's terminal name still say something about *this*
+    /// symbol? A name a handful of symbols declare does: the sites are worth
+    /// triaging, and the ones that aren't callers are cheap to dismiss.
+    /// A name many symbols declare does not — the list is then evidence
+    /// about all of them and, worse, reads as this symbol's rename cost.
+    /// Measured against the review's numbers: `registry` (2 declarers, 5
+    /// sites, all real) and `getOid` (3, 112) stay listed, `new` in this repo
+    /// (9, 1020 — every `Vec::new()` in the tree) and `close` in pgjdbc
+    /// (39, 1124) collapse to a one-line count.
+    fn discriminating(&self) -> bool {
+        self.declarers <= MAX_DECLARERS_TO_LIST
+    }
+}
+
+/// See `Unattributed::discriminating`.
+pub const MAX_DECLARERS_TO_LIST: usize = 3;
+
 pub fn render_callers_text(
     target: &str,
     hits: &[CallHit],
-    unattributed: &[CallEdge],
-    unattributed_total: usize,
+    unattributed: &Unattributed<'_>,
     trunc: &Truncation,
 ) -> String {
     let mut out = String::new();
@@ -60,38 +90,79 @@ pub fn render_callers_text(
         out.push_str(&format_caller_line(h));
         out.push('\n');
     }
-    out.push_str(&unattributed_section(target, unattributed, unattributed_total));
+    out.push_str(&unattributed_section(target, unattributed));
     out
 }
 
 /// Call sites the resolver could not attribute (bare/ambiguous edges naming
 /// the target). Rendered below the resolved hits so a caller count is never
-/// silently low (issue #31). The section shares the `--limit` display
-/// budget, so its header carries its own true total.
-fn unattributed_section(target: &str, edges: &[CallEdge], total: usize) -> String {
+/// silently low (issue #31), with its own display cap independent of
+/// `--limit` so a badly-resolved target does not earn more screen than a
+/// well-resolved one.
+fn unattributed_section(target: &str, u: &Unattributed<'_>) -> String {
     let mut out = String::new();
-    if total == 0 {
+    if u.total == 0 {
         return out;
     }
-    let suffix = section_suffix(total, edges.len());
+    if !u.discriminating() {
+        // No list: with N declarers these sites are evidence about all N.
+        // The reason travels with the count so the number can't be quoted
+        // as this symbol's rename cost.
+        out.push_str(&format!(
+            "\n{} {} unresolved call site(s) name '{}' — receiver type unknown, and '{}' is declared by {} symbols in this project, so these sites are evidence about all of them, not this one (not listed)\n",
+            "##".dimmed(),
+            u.total.to_string().bold(),
+            target.yellow(),
+            terminal_name(target),
+            u.declarers,
+        ));
+        return out;
+    }
+    let suffix = sample_suffix(u.total, u.edges.len());
     out.push_str(&format!(
         "\n{} {} unresolved call site(s) naming '{}' (receiver not resolvable; possible additional callers){}:\n",
         "##".dimmed(),
-        total.to_string().bold(),
+        u.total.to_string().bold(),
         target.yellow(),
         suffix.dimmed(),
     ));
-    for e in edges {
+    for e in u.edges {
+        // The receiver as written is the one triage signal available with no
+        // type inference: `os.close()` and `connection.close()` are the same
+        // edge to the resolver and obviously different to a reader.
+        let recv = e
+            .receiver
+            .as_deref()
+            .map(|r| format!(" {}", format!("recv={}", r).dimmed()))
+            .unwrap_or_default();
         out.push_str(&format!(
-            "{}{} {} {}  {}\n",
+            "{}{} {} {}{}  {}\n",
             colorize_file(&file_str(&e.file)),
             colorize_line(e.line),
             "in".dimmed(),
             colorize_qn(&e.source),
+            recv,
             colorize_confidence(e.confidence),
         ));
     }
     out
+}
+
+/// Suffix for the unattributed sample, whose cap is deliberately *not*
+/// `--limit`: raising `--limit` widens the resolved list, not this sample,
+/// so the text must not promise otherwise.
+fn sample_suffix(total: usize, shown: usize) -> String {
+    if total > shown {
+        format!(" (showing the {} narrowest)", shown)
+    } else {
+        String::new()
+    }
+}
+
+/// Last segment of a user-supplied target (`Type.method` → `method`), for
+/// messages that talk about the name rather than the symbol.
+fn terminal_name(target: &str) -> &str {
+    target.rsplit(['.', ':']).next().unwrap_or(target)
 }
 
 /// Like `render_callers_text` but interleaves type-aware groups
@@ -102,8 +173,7 @@ pub fn render_callers_text_extended(
     target: &str,
     hits: &[CallHit],
     type_groups: &[crate::calls::cli::TypeCallersGroup],
-    unattributed: &[CallEdge],
-    unattributed_total: usize,
+    unattributed: &Unattributed<'_>,
     trunc: &Truncation,
 ) -> String {
     let mut out = String::new();
@@ -174,7 +244,7 @@ pub fn render_callers_text_extended(
             }
         }
     }
-    out.push_str(&unattributed_section(target, unattributed, unattributed_total));
+    out.push_str(&unattributed_section(target, unattributed));
     out
 }
 
@@ -186,28 +256,29 @@ pub fn render_callees_text_extended(
     target: &Qn,
     edges: &[CallEdge],
     type_groups: &[crate::calls::cli::TypeCalleesGroup],
+    total: usize,
+    shown: usize,
     include_external: bool,
 ) -> String {
     if type_groups.is_empty() {
-        return render_callees_text(graph, target, edges, include_external);
+        return render_callees_text(graph, target, edges, total, include_external);
     }
 
     let mut out = String::new();
-    let total_ancestors: usize = type_groups.iter().map(|g| g.ancestors.len()).sum();
-    let kept_flat: Vec<&CallEdge> = edges
-        .iter()
-        .filter(|e| include_external || matches!(e.target, CallTarget::Resolved(_)))
-        .collect();
-
-    out.push_str(&header_line(
+    // True total (flat edges + ancestor groups, pre-`--limit`) with the
+    // truncation suffix, so stdout alone says whether anything was cut — a
+    // reader who never sees stderr must not read a capped list as complete
+    // (issue #32).
+    out.push_str(&header_line_suffixed(
         "ancestor",
-        total_ancestors + kept_flat.len(),
+        total,
         target.as_str(),
+        &section_suffix(total, shown),
     ));
 
     // Function-target callee edges (only present when the target name
     // resolved to *both* a callable and a type — rare).
-    for e in &kept_flat {
+    for e in edges {
         out.push_str(&format!(
             "{}{} {}  {}\n",
             colorize_file(&file_str(&e.file)),
@@ -218,7 +289,7 @@ pub fn render_callees_text_extended(
     }
 
     for g in type_groups {
-        if g.ancestors.is_empty() && (!include_external || g.unresolved_bases.is_empty()) {
+        if g.ancestors_total == 0 && (!include_external || g.unresolved_bases.is_empty()) {
             out.push_str(&format!(
                 "\n{} {} {} has no ancestors in this project.\n",
                 "##".dimmed(),
@@ -229,10 +300,11 @@ pub fn render_callees_text_extended(
         }
 
         out.push_str(&format!(
-            "\n{} {} ancestor(s) of {}:\n",
+            "\n{} {} ancestor(s) of {}{}:\n",
             "##".dimmed(),
-            g.ancestors.len().to_string().bold(),
+            g.ancestors_total.to_string().bold(),
             format!("{} {}", g.kind, g.target_qn.name()).yellow(),
+            section_suffix(g.ancestors_total, g.ancestors.len()).dimmed(),
         ));
 
         for a in &g.ancestors {
@@ -283,14 +355,23 @@ pub fn render_callees_text(
     _graph: &CallGraph,
     target: &Qn,
     edges: &[CallEdge],
+    total: usize,
     include_external: bool,
 ) -> String {
     let mut out = String::new();
+    // The `include_external` filter is a safeguard for callers that hand over
+    // an unfiltered list (MCP); the CLI applies it before counting so
+    // `total`, the header and the stderr note all describe one population.
     let kept: Vec<&CallEdge> = edges
         .iter()
         .filter(|e| include_external || matches!(e.target, CallTarget::Resolved(_)))
         .collect();
-    out.push_str(&header_line("callee", kept.len(), target.as_str()));
+    out.push_str(&header_line_suffixed(
+        "callee",
+        total,
+        target.as_str(),
+        &section_suffix(total, kept.len()),
+    ));
     for e in kept {
         out.push_str(&format!(
             "{}{} {}  {}\n",
@@ -314,10 +395,6 @@ fn format_caller_line(h: &CallHit) -> String {
         colorize_qn(&e.source),
         colorize_confidence(e.confidence),
     )
-}
-
-fn header_line(label: &str, count: usize, target: &str) -> String {
-    header_line_suffixed(label, count, target, "")
 }
 
 /// `# 113 caller(s) for 'x' (showing 3; raise --limit to see the rest):`
@@ -405,6 +482,11 @@ struct JsonUnattributed<'a> {
     file: String,
     line: u32,
     confidence: &'static str,
+    /// Receiver as written at the call site — the same triage signal the
+    /// text rows carry, so a JSON consumer can tell `os.close()` from
+    /// `connection.close()` without re-reading the source.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    receiver: Option<&'a str>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     candidates: Vec<&'a Qn>,
 }
@@ -419,9 +501,37 @@ fn json_unattributed(edges: &[CallEdge]) -> Vec<JsonUnattributed<'_>> {
             file: file_str(&e.file),
             line: e.line,
             confidence: e.confidence.as_str(),
+            receiver: e.receiver.as_deref(),
             candidates: e.candidates.iter().collect(),
         })
         .collect()
+}
+
+/// The unattributed facts as JSON fields, shared by both `callers` payload
+/// shapes. `unattributed_declarers` plus `unattributed_suppressed` are what
+/// a machine consumer needs to avoid reading a big `unattributed_total` as a
+/// caller count: with N declarers the total is spread across all N, and the
+/// rows were withheld for that reason.
+fn json_unattributed_fields(u: &Unattributed<'_>) -> Vec<(String, serde_json::Value)> {
+    vec![
+        (
+            "unattributed".to_string(),
+            serde_json::to_value(json_unattributed(u.edges)).unwrap_or_default(),
+        ),
+        ("unattributed_total".to_string(), json!(u.total)),
+        (
+            "unattributed_truncated".to_string(),
+            json!(u.total > u.edges.len()),
+        ),
+        // Sites dropped by hide_ambiguous — kept in the body because JSON
+        // consumers (MCP especially) have no stderr to read the note from.
+        ("unattributed_hidden".to_string(), json!(u.hidden)),
+        ("unattributed_declarers".to_string(), json!(u.declarers)),
+        (
+            "unattributed_suppressed".to_string(),
+            json!(u.total > 0 && !u.discriminating()),
+        ),
+    ]
 }
 
 #[derive(Serialize)]
@@ -443,9 +553,7 @@ pub fn render_callers_json_extended(
     depth: usize,
     hits: &[CallHit],
     type_groups: &[crate::calls::cli::TypeCallersGroup],
-    unattributed: &[CallEdge],
-    unattributed_total: usize,
-    unattributed_hidden: usize,
+    unattributed: &Unattributed<'_>,
     trunc: &Truncation,
     pretty: bool,
 ) -> String {
@@ -505,7 +613,7 @@ pub fn render_callers_json_extended(
         })
         .collect();
 
-    let doc = json!({
+    let mut doc = json!({
         "schema": JSON_SCHEMA_CALLERS,
         "target": target,
         "depth": depth,
@@ -521,13 +629,10 @@ pub fn render_callers_json_extended(
         "frontier_truncated": trunc.frontier_truncated,
         "matches": matches,
         "types": type_views,
-        "unattributed": json_unattributed(unattributed),
-        "unattributed_total": unattributed_total,
-        "unattributed_truncated": unattributed_total > unattributed.len(),
-        // Sites dropped by hide_ambiguous — kept in the body because JSON
-        // consumers (MCP especially) have no stderr to read the note from.
-        "unattributed_hidden": unattributed_hidden,
     });
+    for (k, v) in json_unattributed_fields(unattributed) {
+        doc[k] = v;
+    }
     if pretty {
         serde_json::to_string_pretty(&doc).unwrap_or_default()
     } else {
@@ -535,14 +640,11 @@ pub fn render_callers_json_extended(
     }
 }
 
-#[allow(clippy::too_many_arguments)] // one arg per orthogonal output facet
 pub fn render_callers_json(
     target: &str,
     depth: usize,
     hits: &[CallHit],
-    unattributed: &[CallEdge],
-    unattributed_total: usize,
-    unattributed_hidden: usize,
+    unattributed: &Unattributed<'_>,
     trunc: &Truncation,
     pretty: bool,
 ) -> String {
@@ -559,7 +661,7 @@ pub fn render_callers_json(
             candidates: h.edge.candidates.iter().collect(),
         })
         .collect();
-    let doc = json!({
+    let mut doc = json!({
         "schema": JSON_SCHEMA_CALLERS,
         "target": target,
         "depth": depth,
@@ -567,11 +669,10 @@ pub fn render_callers_json(
         "truncated": trunc.total > hits.len(),
         "frontier_truncated": trunc.frontier_truncated,
         "matches": matches,
-        "unattributed": json_unattributed(unattributed),
-        "unattributed_total": unattributed_total,
-        "unattributed_truncated": unattributed_total > unattributed.len(),
-        "unattributed_hidden": unattributed_hidden,
     });
+    for (k, v) in json_unattributed_fields(unattributed) {
+        doc[k] = v;
+    }
     if pretty {
         serde_json::to_string_pretty(&doc).unwrap_or_default()
     } else {
@@ -579,12 +680,14 @@ pub fn render_callers_json(
     }
 }
 
+#[allow(clippy::too_many_arguments)] // one arg per orthogonal output facet
 pub fn render_callees_json_extended(
     target: &Qn,
     depth: usize,
     edges: &[CallEdge],
     type_groups: &[crate::calls::cli::TypeCalleesGroup],
     total: usize,
+    shown: usize,
     frontier_truncated: bool,
     pretty: bool,
 ) -> String {
@@ -634,6 +737,8 @@ pub fn render_callees_json_extended(
                 "qn": g.target_qn.as_str(),
                 "kind": g.kind,
                 "ancestors": ancestors,
+                "ancestors_total": g.ancestors_total,
+                "truncated": g.ancestors_total > g.ancestors.len(),
                 "unresolved_bases": g.unresolved_bases,
             })
         })
@@ -644,7 +749,10 @@ pub fn render_callees_json_extended(
         "target": target.as_str(),
         "depth": depth,
         "total": total,
-        "truncated": total > edges.len(),
+        // Combined-shown vs combined-total: ancestor groups count toward
+        // both sides, so a capped group is reported even when the flat edge
+        // list fit (PR #38 review).
+        "truncated": total > shown,
         "frontier_truncated": frontier_truncated,
         "matches": matches,
         "types": type_views,

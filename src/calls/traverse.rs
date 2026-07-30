@@ -141,16 +141,73 @@ pub fn callers_multi<F: Fn(&CallEdge) -> bool>(
     out
 }
 
+/// How many project symbols declare the terminal name of `targets` — the
+/// breadth an unattributed edge naming that name is ambiguous across. One
+/// means the name discriminates: an edge naming it can only have meant this
+/// symbol (or something outside the project). Nine (`new` in this repo) or
+/// thirty-nine (`close` in pgjdbc) means it names all of them equally, i.e.
+/// none of them in particular.
+pub fn name_declarers(graph: &CallGraph, targets: &[Qn]) -> usize {
+    targets
+        .iter()
+        .map(|q| {
+            graph
+                .symbol_table
+                .get(q.name())
+                .map_or(1, |qns| qns.len().max(1))
+        })
+        .max()
+        .unwrap_or(0)
+}
+
+/// Terminal segment of a receiver as written at the call site, with the
+/// language's separators normalized the way pass A normalizes them
+/// (`Foo\Bar::m()`, `a.b.C.m()`, `a::b::C::m()` all yield `C`).
+fn receiver_tail(recv: &str) -> &str {
+    let recv = recv.trim();
+    recv.rsplit(['\\', '.', ':']).next().unwrap_or(recv)
+}
+
+/// Enclosing-scope segment of a qn (`a/b.rs::Foo::method` → `Foo`), or
+/// `None` for a free function whose only scope is the file.
+fn enclosing_scope(qn: &Qn) -> Option<&str> {
+    let s = qn.as_str();
+    let name_start = s.rfind("::")?;
+    let scope = &s[..name_start];
+    match scope.rfind("::") {
+        Some(i) => Some(&scope[i + 2..]),
+        // Only the file segment is left — a free function has no type scope.
+        None => None,
+    }
+}
+
 /// Bare edges that *name* one of `targets` but were never attributed to a
 /// node, so the reverse index (and therefore the `callers` BFS) can't see
 /// them. An edge counts when a target qn survives in its candidate set,
 /// or — for candidate-less bare edges — when the raw callee name matches a
 /// target's terminal name. Dropping these silently makes `callers` report
 /// a rename as cheaper than it is (issue #31).
+///
+/// The name test alone is far too generous: candidate sets are keyed on the
+/// bare name, so every `Vec::new()` in the tree carries `CliError::new`
+/// among its candidates. Two things narrow it without inventing type
+/// inference:
+///
+///  1. **Receiver check** (here) — reuse pass A's rule: a receiver naming a
+///     project type other than the target's own says the call site meant
+///     that other type, so it is not evidence about the target.
+///  2. **Discrimination gate** (`name_declarers`, applied by this
+///     function's callers) — when many project symbols share the name, the
+///     whole list is evidence about all of them and the display degrades to
+///     a one-line count.
+///
+/// Results are ordered by evidence strength (narrowest candidate set first),
+/// so a capped sample keeps the rows worth triaging.
 pub fn unattributed_callers(graph: &CallGraph, targets: &[Qn]) -> Vec<CallEdge> {
     use crate::calls::graph::CallTarget;
     let target_set: HashSet<&Qn> = targets.iter().collect();
     let names: HashSet<&str> = targets.iter().map(|q| q.name()).collect();
+    let scopes: HashSet<&str> = targets.iter().filter_map(enclosing_scope).collect();
     let mut out: Vec<CallEdge> = Vec::new();
     for edges in graph.forward.values() {
         for e in edges {
@@ -160,19 +217,53 @@ pub fn unattributed_callers(graph: &CallGraph, targets: &[Qn]) -> Vec<CallEdge> 
             } else {
                 e.candidates.iter().any(|c| target_set.contains(c))
             };
-            if hit {
+            if hit && receiver_admits(graph, e, &scopes) {
                 out.push(e.clone());
             }
         }
     }
     out.sort_by(|a, b| {
-        a.file
-            .cmp(&b.file)
+        ambiguity_breadth(graph, a)
+            .cmp(&ambiguity_breadth(graph, b))
+            .then(a.file.cmp(&b.file))
             .then(a.line.cmp(&b.line))
             .then(a.source.0.cmp(&b.source.0))
     });
     out.dedup_by(|a, b| a.file == b.file && a.line == b.line && a.source == b.source);
     out
+}
+
+/// Can this call site's receiver still be one of the targets' enclosing
+/// types? `true` whenever the receiver leaves that open — self-like
+/// receivers, absent receivers, and receivers whose type we cannot know (a
+/// local, a parameter, an external type) all stay in. Only a receiver that
+/// *names a project type* different from the target's scope is rejected,
+/// which is pass A's rule applied one layer later. Rejecting on any
+/// unmatched receiver name would drop the real `connection.close()` sites
+/// along with the noise.
+fn receiver_admits(graph: &CallGraph, e: &CallEdge, target_scopes: &HashSet<&str>) -> bool {
+    use crate::calls::resolve::receiver_is_self_like;
+    let Some(recv) = e.receiver.as_deref() else {
+        return true;
+    };
+    if receiver_is_self_like(Some(recv)) {
+        return true;
+    }
+    let tail = receiver_tail(recv);
+    target_scopes.contains(tail) || !graph.type_by_name.contains_key(tail)
+}
+
+/// How many project symbols an unattributed edge is spread across: its
+/// candidate count when pass C left one, otherwise the number of project
+/// symbols sharing the callee name. Lower is stronger evidence.
+fn ambiguity_breadth(graph: &CallGraph, e: &CallEdge) -> usize {
+    if !e.candidates.is_empty() {
+        return e.candidates.len();
+    }
+    graph
+        .symbol_table
+        .get(e.target.name_or_raw().as_str())
+        .map_or(1, |qns| qns.len().max(1))
 }
 
 /// All resolved + external + bare edges originating at `start`. Useful for

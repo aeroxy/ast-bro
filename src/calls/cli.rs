@@ -169,13 +169,26 @@ pub fn run_callers(
         );
         unattributed.clear();
     }
-    // The unattributed section gets whatever display budget the resolved
-    // hits and type groups left; its header carries its own true total, so
-    // nothing is silently cut.
     let unattributed_total = unattributed.len();
-    if unattributed.len() > remaining {
-        unattributed.truncate(remaining);
+    let declarers = traverse::name_declarers(calls, &callable_qns);
+    // The section carries its own cap rather than inheriting the resolved
+    // list's leftover budget: the worse the resolver did, the *larger* the
+    // leftover, so `--limit` would hand the least trustworthy rows the most
+    // screen. `--limit` can still shrink the sample, never grow it.
+    let sample = if declarers > render::MAX_DECLARERS_TO_LIST {
+        0
+    } else {
+        UNATTRIBUTED_SAMPLE.min(limit)
+    };
+    if unattributed.len() > sample {
+        unattributed.truncate(sample);
     }
+    let unattributed = render::Unattributed {
+        edges: &unattributed,
+        total: unattributed_total,
+        hidden: unattributed_hidden,
+        declarers,
+    };
 
     let trunc = render::Truncation {
         total,
@@ -190,8 +203,6 @@ pub fn run_callers(
                 &hits,
                 &type_groups,
                 &unattributed,
-                unattributed_total,
-                unattributed_hidden,
                 &trunc,
                 pretty,
             )
@@ -204,13 +215,17 @@ pub fn run_callers(
                 &hits,
                 &type_groups,
                 &unattributed,
-                unattributed_total,
                 &trunc,
             )
         );
     }
     0
 }
+
+/// Display cap for the unresolved-call-site section. Small on purpose: the
+/// section is a triage sample ordered by evidence strength, not a list to
+/// page through — its header always carries the true total.
+pub const UNATTRIBUTED_SAMPLE: usize = 25;
 
 #[allow(clippy::too_many_arguments)]
 pub fn run_callees(
@@ -269,10 +284,28 @@ pub fn run_callees(
             }
         }
     }
-    let total = all_edges.len();
+    // `--hide-external` narrows the *query*, so drop those edges before any
+    // counting: otherwise the text header, the stderr note and the JSON
+    // `total` each describe a slightly different population (PR #38 review).
+    if !external {
+        all_edges.retain(|e| matches!(e.target, CallTarget::Resolved(_)));
+    }
+    // Ancestor groups are part of the answer, so they count toward the total
+    // and share the display budget — the same rule `callers <Type>` follows,
+    // otherwise `truncated` in `ast-bro.callees.v1` describes only `matches`.
+    let group_total: usize = type_groups.iter().map(|g| g.ancestors.len()).sum();
+    let total = all_edges.len() + group_total;
     if all_edges.len() > limit {
         all_edges.truncate(limit);
     }
+    let mut remaining = limit.saturating_sub(all_edges.len());
+    for g in &mut type_groups {
+        if g.ancestors.len() > remaining {
+            g.ancestors.truncate(remaining);
+        }
+        remaining -= g.ancestors.len();
+    }
+    let shown = all_edges.len() + type_groups.iter().map(|g| g.ancestors.len()).sum::<usize>();
     // Same rationale as run_callers: the frontier note only accompanies an
     // explicitly deepened walk; JSON always carries the flag.
     if frontier_truncated && depth > 1 {
@@ -281,11 +314,10 @@ pub fn run_callees(
             depth
         );
     }
-    if total > all_edges.len() {
+    if total > shown {
         eprintln!(
             "# note: {} callee(s) total; showing {} (raise --limit to see the rest)",
-            total,
-            all_edges.len()
+            total, shown
         );
     }
 
@@ -302,6 +334,7 @@ pub fn run_callees(
                 &all_edges,
                 &type_groups,
                 total,
+                shown,
                 frontier_truncated,
                 pretty,
             )
@@ -314,6 +347,8 @@ pub fn run_callees(
                 &first,
                 &all_edges,
                 &type_groups,
+                total,
+                shown,
                 external,
             )
         );
@@ -345,6 +380,10 @@ pub struct TypeCalleesGroup {
     pub target_qn: Qn,
     pub kind: String,
     pub ancestors: Vec<Ancestor>,
+    /// True ancestor count before `--limit` trimmed the display — so a group
+    /// capped to zero still says "3 ancestor(s)" rather than claiming the
+    /// type has none.
+    pub ancestors_total: usize,
     /// Bases written on the type that we couldn't resolve to a project
     /// type (stdlib traits, third-party crates). Surfaced when `--external`.
     pub unresolved_bases: Vec<String>,
@@ -538,6 +577,7 @@ fn collect_type_callees(calls: &CallGraph, type_qn: &Qn, max_depth: usize) -> Ty
     TypeCalleesGroup {
         target_qn: type_qn.clone(),
         kind,
+        ancestors_total: ancestors.len(),
         ancestors,
         unresolved_bases,
     }
