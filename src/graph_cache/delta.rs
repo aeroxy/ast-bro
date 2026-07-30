@@ -5,15 +5,16 @@
 //! in-memory graph, re-extract the changed files, and merge the result
 //! back. The deps half always patches; the calls half patches when present.
 //!
-//! Stale-edge tradeoff (calls half, v1): edges originating from *unchanged*
-//! files that point to a qn defined in a *changed* file may keep their
-//! pre-update target. For deletions this means the edge points to a qn
-//! that no longer exists; for renames it means the edge points to the old
-//! name. Both are recovered by `--rebuild`. The plan called for a
-//! bare-name re-resolution pass to fix this; that's a v2 add — current
-//! call sites observed in real edits are dominated by intra-file changes,
-//! and the lazy promotion path means a fresh `callers`/`callees` query
-//! after `--rebuild` is no slower than today's behaviour.
+//! Stale-edge handling (calls half): edges originating from *unchanged*
+//! files that point to a qn defined in a *changed* file are validated after
+//! the re-extract (step 8) and demoted when their target no longer exists,
+//! then re-resolved by name (step 9).
+//!
+//! The invariant step 9 has to hold is **parity**: a partial update and a
+//! cold build of the same content must produce the same graph, or an
+//! unrelated edit silently changes answers elsewhere in the project. That
+//! means reusing the cold build's own rules — `resolve::disambiguate` for
+//! pass C — rather than approximating them here.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -244,14 +245,17 @@ pub fn apply_delta_to_calls(
         }
     }
 
-    // 9. Bare-name re-resolution: same precision rule as Pass B in
-    //    `resolve.rs` — a single global match promotes to
-    //    Resolved/Inferred, but receiver-bearing calls (`obj.method()`)
-    //    require dep-graph confirmation we don't run here, so they stay
-    //    Bare. Mirrors Pass B's receiver suppression so cold builds and
-    //    incremental updates produce the same edge resolution; without
-    //    this, partial updates would over-promote receiver-bearing calls
-    //    that the cold build deliberately leaves Bare.
+    // 9. Bare-name re-resolution: the same rules the cold build applies, so
+    //    a partial update and a cold build of the same content agree.
+    //    Pass B's rule — a single global match promotes, receiver-bearing
+    //    calls don't (without a type for `obj`, single-name matches are too
+    //    noisy) — then pass C's rule for everything else: candidates are the
+    //    ones the caller's file can actually *reach*, via
+    //    `resolve::disambiguate`. Assigning the unfiltered symbol-table
+    //    entry here instead (what this used to do) handed every bare edge in
+    //    the project candidates the dep filter had ruled out, so one
+    //    unrelated file edit changed answers everywhere.
+    let mut closures = crate::calls::resolve::ClosureCache::default();
     for edges in calls.forward.values_mut() {
         for e in edges.iter_mut() {
             let CallTarget::Bare(name) = &e.target else { continue };
@@ -262,9 +266,23 @@ pub fn apply_delta_to_calls(
                 e.target = CallTarget::Resolved(cands[0].clone());
                 e.confidence = crate::calls::graph::Confidence::Inferred;
                 e.candidates.clear();
-            } else if !cands.is_empty() {
-                e.candidates = cands.clone();
+                continue;
             }
+            if cands.is_empty() {
+                continue;
+            }
+            let src_file = root.join(&e.file);
+            let (target, confidence, candidates) = crate::calls::resolve::disambiguate(
+                deps,
+                root,
+                &src_file,
+                name,
+                cands,
+                &mut closures,
+            );
+            e.target = target;
+            e.confidence = confidence;
+            e.candidates = candidates;
         }
     }
 

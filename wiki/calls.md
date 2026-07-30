@@ -310,7 +310,9 @@ The schema bump from `graph-index.v1` to `v2` happened mid-development to fix a 
 4. Splice new qns into the live indices **before** resolving — the resolver's pass A/B for a new edge needs to see qns just added by the same delta.
 5. Resolve only the new passes via `resolve::run_with_table` (the split-out resolver entrypoint that takes a prebuilt symbol table instead of constructing one).
 6. Validate every `Resolved` edge against the post-update qn set. Edges whose target qn no longer exists (deleted or renamed) get demoted to `Bare` with the original callee name preserved. Edges that *kept* their target — the common case for a modify without a rename — keep their original `Exact` confidence; we deliberately don't blanket-demote everything pointing into changed files because that would burn the high-trust tags for the 99% case.
-7. Bare-name re-resolution: for every `Bare` edge, look up its name in the (now updated) symbol table; promote single-match, no-receiver hits to `Resolved/Inferred`. Mirrors the receiver suppression in pass B exactly so cold and warm builds produce identical edge resolutions. Picks up two cases the partial path would otherwise miss: edges demoted in step 6 whose target moved to a different file, and pre-existing `Bare` edges in unchanged files that finally have a target because a *new* file in this delta defines it.
+7. Bare-name re-resolution: for every `Bare` edge, look up its name in the (now updated) symbol table. Single-match, no-receiver hits promote to `Resolved/Inferred` (pass B's rule, receiver suppression included); everything else goes through `resolve::disambiguate` — the *same* function pass C uses — so candidates are filtered to what the caller's file can reach through the dep graph, with a memoized per-file closure. Picks up two cases the partial path would otherwise miss: edges demoted in step 6 whose target moved to a different file, and pre-existing `Bare` edges in unchanged files that finally have a target because a *new* file in this delta defines it.
+
+   The invariant is parity — a partial update must produce the graph a cold build of the same content produces. This step used to assign the *unfiltered* symbol-table entry as an edge's candidate set, which broke that: it ran over the whole graph, so one edit to an unrelated file gave every bare edge in the project candidates the dep filter had ruled out. Measured on ast-bro itself, `callers CliError.new` reported 1023 unresolved sites cold and 1073 after appending a comment to `src/adapters/sql.rs` — every `Vec::new()` in the tree newly counted as a possible caller. Reusing pass C's own decision function is what keeps the two paths honest; `tests/calls_e2e.rs::incremental_update_matches_a_cold_build_of_the_same_content` pins it.
 8. Rebuild reverse adjacency + recompute stats. Both are derived; rebuilding fresh is cheaper than incremental maintenance.
 
 ### Cost numbers (ast-bro against itself, release build)
@@ -334,7 +336,6 @@ Same pattern as the search index: `fs2` advisory exclusive lock at `.ast-bro/dep
 
 ## Known gaps
 
-- Pass C is not re-run for surviving `Bare` edges in the partial-update path — only the pass-B-equivalent single-match promotion runs. If a delta introduces a new file with one of multiple homonyms and pass C would have disambiguated, the current path lands it as `Ambiguous`. `--rebuild` recovers; in practice this is the long tail of the long tail.
 - The suffix index gets a fresh full walk on every delta. The walk is the cheap part of a cold build (~hundreds of ms even on big repos); the per-file extract+resolve is the expensive part, which we now skip for unchanged files. A surgical suffix-index update would be more code than it saves.
 
 ## Adding a new language

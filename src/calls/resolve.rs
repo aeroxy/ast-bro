@@ -332,27 +332,10 @@ pub fn run_with_table(
     }
 
     // ---------- Pass C: dep-graph disambiguation for ambiguous bares. ----------
+    let mut closures = ClosureCache::default();
     for (raw, src_file, cands) in ambiguous_buffer {
-        let closure = forward_closure_files(deps, &src_file);
-        let filtered: Vec<Qn> = cands
-            .iter()
-            .filter(|qn| {
-                let cand_file = root.join(qn.file().replace('/', std::path::MAIN_SEPARATOR_STR));
-                closure.contains(&cand_file)
-            })
-            .cloned()
-            .collect();
-
-        let (target, confidence, candidates) = if filtered.len() == 1 {
-            (CallTarget::Resolved(filtered[0].clone()), Confidence::Inferred, Vec::new())
-        } else if filtered.is_empty() {
-            // No dep-relationship — fall back to ambiguous.
-            (CallTarget::Bare(raw.bare_name.clone()), Confidence::Ambiguous, cands)
-        } else {
-            // Multiple survivors — keep as ambiguous with surviving set.
-            (CallTarget::Bare(raw.bare_name.clone()), Confidence::Ambiguous, filtered)
-        };
-
+        let (target, confidence, candidates) =
+            disambiguate(deps, root, &src_file, &raw.bare_name, &cands, &mut closures);
         let edge = raw_to_edge(raw, target, confidence, rel_path(root, &src_file), candidates);
         forward.entry(edge.source.clone()).or_default().push(edge);
     }
@@ -430,6 +413,72 @@ fn resolve_via_imports(
     // Fall back: synthesize a file-scope qn (not always correct for nested
     // declarations, but better than dropping the edge).
     Some(Qn::new(format!("{}::{}", rel, bare_name)))
+}
+
+/// Per-file forward-dep closures, memoized. A file's closure is the same for
+/// every ambiguous edge inside it, and the incremental updater re-asks for it
+/// across a whole sweep.
+#[derive(Default)]
+pub(crate) struct ClosureCache(HashMap<PathBuf, HashSet<PathBuf>>);
+
+impl ClosureCache {
+    fn get(&mut self, deps: &DepGraph, from: &Path) -> &HashSet<PathBuf> {
+        self.0
+            .entry(from.to_path_buf())
+            .or_insert_with(|| forward_closure_files(deps, from))
+    }
+}
+
+/// Pass C's decision for one ambiguous bare edge: filter the candidates to
+/// those the caller's file can actually reach through the dep graph, then
+/// resolve (single survivor) or stay honestly ambiguous.
+///
+/// Shared with the incremental updater in `graph_cache::delta` so a partial
+/// update and a cold build of the same content produce the same edge. That
+/// mattered concretely: the updater used to assign the *unfiltered* global
+/// symbol-table entry as an edge's candidate set, so one unrelated file edit
+/// gave every `Vec::new()` in the project a candidate the dep filter had
+/// ruled out — inflating `callers CliError.new`'s unresolved-site count from
+/// 1023 to 1073 with no source change behind it.
+pub(crate) fn disambiguate(
+    deps: &DepGraph,
+    root: &Path,
+    src_file: &Path,
+    bare_name: &str,
+    cands: &[Qn],
+    closures: &mut ClosureCache,
+) -> (CallTarget, Confidence, Vec<Qn>) {
+    let closure = closures.get(deps, src_file);
+    let filtered: Vec<Qn> = cands
+        .iter()
+        .filter(|qn| {
+            let cand_file = root.join(qn.file().replace('/', std::path::MAIN_SEPARATOR_STR));
+            closure.contains(&cand_file)
+        })
+        .cloned()
+        .collect();
+
+    if filtered.len() == 1 {
+        (
+            CallTarget::Resolved(filtered[0].clone()),
+            Confidence::Inferred,
+            Vec::new(),
+        )
+    } else if filtered.is_empty() {
+        // No dep-relationship — fall back to ambiguous over the full set.
+        (
+            CallTarget::Bare(bare_name.to_string()),
+            Confidence::Ambiguous,
+            cands.to_vec(),
+        )
+    } else {
+        // Multiple survivors — keep as ambiguous with the surviving set.
+        (
+            CallTarget::Bare(bare_name.to_string()),
+            Confidence::Ambiguous,
+            filtered,
+        )
+    }
 }
 
 fn forward_closure_files(deps: &DepGraph, from: &Path) -> HashSet<PathBuf> {
