@@ -48,9 +48,9 @@ pub struct ModelInfo {
 }
 
 impl ModelInfo {
-    pub fn potion_code_16m() -> Self {
+    pub fn potion_code_16m_v2() -> Self {
         Self {
-            id: "minishlab/potion-code-16M".to_string(),
+            id: "minishlab/potion-code-16M-v2".to_string(),
             files: vec!["config.json", "tokenizer.json", "model.safetensors"],
         }
     }
@@ -129,7 +129,7 @@ pub fn cache_root() -> io::Result<PathBuf> {
 
 /// Local directory for a single model. Created on demand by `ensure_model`.
 pub fn model_dir(info: &ModelInfo) -> io::Result<PathBuf> {
-    // Model id like "minishlab/potion-code-16M" -> use only the repo name as
+    // Model id like "minishlab/potion-code-16M-v2" -> use only the repo name as
     // the leaf so we don't have to escape the slash.
     let leaf = info.id.split('/').next_back().unwrap_or(&info.id);
     Ok(cache_root()?.join(leaf))
@@ -403,8 +403,8 @@ mod tests {
 
     #[test]
     fn potion_info_lists_three_files() {
-        let info = ModelInfo::potion_code_16m();
-        assert_eq!(info.id, "minishlab/potion-code-16M");
+        let info = ModelInfo::potion_code_16m_v2();
+        assert_eq!(info.id, "minishlab/potion-code-16M-v2");
         assert_eq!(info.files.len(), 3);
         assert!(info.files.contains(&"model.safetensors"));
     }
@@ -420,19 +420,19 @@ mod tests {
         std::env::set_var("AST_BRO_MODEL_DIR", &path);
 
         let resolved_root = cache_root().unwrap();
-        let resolved_model = model_dir(&ModelInfo::potion_code_16m()).unwrap();
+        let resolved_model = model_dir(&ModelInfo::potion_code_16m_v2()).unwrap();
 
         std::env::remove_var("AST_BRO_MODEL_DIR");
 
         assert_eq!(resolved_root, path);
         assert!(resolved_model.starts_with(&path));
-        assert!(resolved_model.ends_with("potion-code-16M"));
+        assert!(resolved_model.ends_with("potion-code-16M-v2"));
     }
 
     #[test]
     fn cache_invalid_when_manifest_missing() {
         let tmp = tempfile::tempdir().unwrap();
-        let info = ModelInfo::potion_code_16m();
+        let info = ModelInfo::potion_code_16m_v2();
         // Empty dir: no manifest → invalid.
         assert!(!cache_is_valid(tmp.path(), &info).unwrap());
     }
@@ -497,7 +497,7 @@ mod tests {
     fn network_real_download() {
         let tmp = tempfile::tempdir().unwrap();
         std::env::set_var("AST_BRO_MODEL_DIR", tmp.path());
-        let info = ModelInfo::potion_code_16m();
+        let info = ModelInfo::potion_code_16m_v2();
         let dir = ensure_model(&info).expect("download failed");
         // Re-validate: should be a no-op because manifest now matches.
         let dir2 = ensure_model(&info).expect("revalidate failed");
