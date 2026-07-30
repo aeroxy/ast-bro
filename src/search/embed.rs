@@ -56,7 +56,10 @@ pub struct Embedder {
 
 // SAFETY: both `Backing` variants are immutable after `Embedder::open` returns
 // (mmap'd file bytes, or a `Vec<f32>` nothing else holds a mutable reference
-// to), so shared reads from many threads are safe.
+// to), so shared reads from many threads are safe. The other field is the
+// HuggingFace `Tokenizer`, which is itself `Sync` and only ever used through
+// `&self` (`encode_one`), so concurrent encodes share it without interior
+// mutation — the raw pointer is the only reason these impls are needed at all.
 unsafe impl Send for Embedder {}
 unsafe impl Sync for Embedder {}
 
@@ -449,6 +452,43 @@ mod tests {
         assert!(neg_zero.is_sign_negative(), "0x8000 must decode to -0.0");
         // 0x7BFF — largest finite binary16, 65504.
         assert_eq!(case(0xFF, 0x7B), 65504.0);
+    }
+
+    // ── Embedder::open dtype rejection (no network, no model needed) ───────
+
+    /// Minimal safetensors file: 8-byte LE header length, JSON header, data.
+    fn safetensors_bytes(dtype: &str, rows: usize, elem_bytes: usize) -> Vec<u8> {
+        let len = rows * DIM * elem_bytes;
+        let header = format!(
+            r#"{{"embeddings":{{"dtype":"{dtype}","shape":[{rows},{DIM}],"data_offsets":[0,{len}]}}}}"#
+        );
+        let mut out = Vec::new();
+        out.extend_from_slice(&(header.len() as u64).to_le_bytes());
+        out.extend_from_slice(header.as_bytes());
+        out.resize(out.len() + len, 0);
+        out
+    }
+
+    #[test]
+    fn open_rejects_an_unsupported_embedding_dtype() {
+        // The dtype arm runs before the tokenizer is loaded, so this needs
+        // neither tokenizer.json nor a downloaded model.
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            dir.path().join("model.safetensors"),
+            safetensors_bytes("I64", 2, 8),
+        )
+        .expect("write fixture");
+
+        let err = match Embedder::open(dir.path()) {
+            Err(e) => e,
+            Ok(_) => panic!("I64 embeddings must be rejected"),
+        };
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        assert!(
+            err.to_string().contains("expected F32 or F16 embeddings"),
+            "unexpected rejection message: {err}"
+        );
     }
 
     // ── cosine_topk (pure unit tests, no network) ──────────────────────────

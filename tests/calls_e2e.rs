@@ -1915,9 +1915,10 @@ fn callees_limit_is_available_and_reported() {
 
 #[test]
 fn callers_limit_bounds_the_unattributed_section_too() {
-    // The unattributed section shares the --limit display budget: a capped
-    // query must not be followed by an unbounded list (review finding on
-    // issue #31/#32).
+    // The unattributed section has its own UNATTRIBUTED_SAMPLE (25) cap,
+    // which --limit can only *lower*: `min(--limit, 25)`. A capped query
+    // must not be followed by an unbounded list, but raising --limit past 25
+    // doesn't widen this section either (review finding on issue #31/#32).
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path();
     write(&root.join("Cargo.toml"), "[package]\nname=\"x\"\nversion=\"0.0.0\"\nedition=\"2021\"\n");

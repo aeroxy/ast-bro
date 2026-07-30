@@ -258,12 +258,16 @@ pub fn unattributed_callers(graph: &CallGraph, targets: &[Qn]) -> Vec<CallEdge> 
             }
         }
     }
-    out.sort_by(|a, b| {
-        ambiguity_breadth(graph, a)
-            .cmp(&ambiguity_breadth(graph, b))
-            .then(a.file.cmp(&b.file))
-            .then(a.line.cmp(&b.line))
-            .then(a.source.0.cmp(&b.source.0))
+    // Cached key: `ambiguity_breadth` is a symbol-table lookup, and a plain
+    // `sort_by` would pay it twice per comparison (O(n log n) lookups) on a
+    // list that can run to four figures for a name like `new`.
+    out.sort_by_cached_key(|e| {
+        (
+            ambiguity_breadth(graph, e),
+            e.file.clone(),
+            e.line,
+            e.source.0.clone(),
+        )
     });
     out.dedup_by(|a, b| a.file == b.file && a.line == b.line && a.source == b.source);
     out

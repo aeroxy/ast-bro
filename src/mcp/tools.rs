@@ -237,6 +237,7 @@ pub fn list() -> Value {
                         "target":         { "type": "string",  "description": "Symbol name to look up." },
                         "path":           { "type": "string",  "description": "Repo root (default \".\")." },
                         "depth":          { "type": "integer", "description": "Max BFS depth (default 1).", "minimum": 1 },
+                        "limit":          { "type": "integer", "description": "Cap result count (default 200). The reported total stays exact.", "minimum": 1 },
                         "hide_external":  { "type": "boolean", "description": "Drop unresolved/external callees. Default: false (shown with [unresolved]/[external] tags)." },
                         "rebuild":        { "type": "boolean" },
                         "json":           { "type": "boolean" }
@@ -386,6 +387,8 @@ struct CalleesArgs {
     path: PathBuf,
     #[serde(default = "default_one")]
     depth: usize,
+    #[serde(default = "default_two_hundred")]
+    limit: usize,
     /// Hide unresolved/external callees (default: false — show them tagged).
     #[serde(default)]
     hide_external: bool,
@@ -442,7 +445,14 @@ fn run_callees(mut args: Value) -> CallResult {
         Ok(r) => r,
         Err(e) => return CallResult::Error(e),
     };
-    let out = crate::calls::mcp::run_callees_text(&a.target, &root, a.depth, !a.hide_external, a.json);
+    let out = crate::calls::mcp::run_callees_text(
+        &a.target,
+        &root,
+        a.depth,
+        a.limit,
+        !a.hide_external,
+        a.json,
+    );
     CallResult::Text(out)
 }
 

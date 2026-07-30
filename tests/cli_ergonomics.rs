@@ -437,16 +437,30 @@ fn find_related_unresolved_path_is_a_rejection() {
 fn find_related_missing_chunk_rejects_in_json_mode_too() {
     // Was: exit 0 with `results: []` on stdout under --json, which claims
     // "nothing is similar" for a location the index never saw.
+    //
+    // Runs against a throwaway repo rather than this checkout: pointing at a
+    // root with no `.ast-bro/index` makes `Index::open` fall back to a full
+    // build — model download included — and the location check now happens
+    // before that, so the rejection needs neither an index nor a network.
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(dir.path().join("present.rs"), "pub fn f() {}\n").expect("write fixture");
+    let root = dir.path().to_str().expect("utf8 path");
     let (code, stdout, stderr) = run(&[
         "find-related",
         "no/such/file/anywhere.rs:3",
-        ".",
+        root,
         "--json",
     ]);
     assert_eq!(code, Some(2), "stderr:\n{stderr}");
     assert!(stdout.is_empty(), "stdout must be empty:\n{stdout}");
     let doc = envelope(&stderr);
     assert_eq!(doc["command"], "find-related");
+    assert_eq!(doc["kind"], "path_not_found");
+    // Nothing was built on the way to the rejection.
+    assert!(
+        !dir.path().join(".ast-bro/index").exists(),
+        "a rejected location must not trigger an index build"
+    );
 }
 
 #[test]

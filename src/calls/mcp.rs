@@ -153,7 +153,14 @@ pub fn run_trace_text(from: &str, to: &str, root: &Path, depth: usize, json: boo
     }
 }
 
-pub fn run_callees_text(target: &str, root: &Path, depth: usize, external: bool, json: bool) -> String {
+pub fn run_callees_text(
+    target: &str,
+    root: &Path,
+    depth: usize,
+    limit: usize,
+    external: bool,
+    json: bool,
+) -> String {
     use crate::calls::build::build_call_graph;
     use crate::calls::graph::Qn;
     use crate::calls::{render, traverse};
@@ -202,24 +209,28 @@ pub fn run_callees_text(target: &str, root: &Path, depth: usize, external: bool,
         all_edges.retain(|e| matches!(e.target, crate::calls::graph::CallTarget::Resolved(_)));
     }
     let first = qns.first().cloned().unwrap_or_else(|| Qn::new(target.to_string()));
+    // `limit` bounds the payload, not the walk: the total stays exact so a
+    // consumer can tell a capped answer from a complete one (issue #32).
+    let total = all_edges.len();
+    if all_edges.len() > limit {
+        all_edges.truncate(limit);
+    }
     if json {
-        // No `--limit` here, so shown == total and `truncated` is always
-        // false — but the fields must be present, since a consumer reading
+        // Same renderer as the CLI, with no type groups: a consumer reading
         // `ast-bro.callees.v1` can't tell a missing key from a complete
-        // answer. Same renderer as the CLI, with no type groups.
+        // answer, so `total` / `truncated` / `frontier_truncated` are always
+        // present here too.
         render::render_callees_json_extended(
             &first,
             depth.max(1),
             &all_edges,
             &[],
-            all_edges.len(),
+            total,
             all_edges.len(),
             frontier_truncated,
             true,
         )
     } else {
-        // No `--limit` on the MCP path, so every remaining edge is shown and
-        // the header total is simply the count.
-        render::render_callees_text(calls, &first, &all_edges, all_edges.len(), external)
+        render::render_callees_text(calls, &first, &all_edges, total, external)
     }
 }
