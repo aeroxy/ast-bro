@@ -416,6 +416,12 @@ fn free_functions_are_not_capped_by_max_members() {
             "free fn {f} must not be capped:\n{text}"
         );
     }
+    // Nothing was cut, so the cap note must not appear either — its exact
+    // wording, not a stand-in symbol, since that is what a reader sees.
+    assert!(
+        !text.contains("more member(s)"),
+        "free functions were not capped, so no cap note belongs here:\n{text}"
+    );
 }
 
 #[test]
@@ -429,12 +435,17 @@ fn names_detail_honors_no_attrs_and_no_lines() {
     .unwrap();
     let p = p.to_str().unwrap();
 
-    let with = run(&["map", p, "--detail", "names"]);
+    // Negative assertions inspect rendered declarations, not the random
+    // temp path the header line carries — strip it first, as
+    // `rust_missing_pub_means_private_except_inherited_contexts` does.
+    let sans_path = |s: String| s.replace(p, "<fixture>");
+
+    let with = sans_path(run(&["map", p, "--detail", "names"]));
     assert!(
         with.contains("derive") && with.contains("L2-4"),
         "attrs + line ranges expected by default:\n{with}"
     );
-    let without = run(&["map", p, "--detail", "names", "--no-attrs", "--no-lines"]);
+    let without = sans_path(run(&["map", p, "--detail", "names", "--no-attrs", "--no-lines"]));
     assert!(
         !without.contains("derive"),
         "--no-attrs must drop attrs in names detail:\n{without}"
@@ -457,10 +468,12 @@ fn json_honors_projection_flags() {
     )
     .unwrap();
     let p = p.to_str().unwrap();
-    let decl = |args: &[&str]| -> serde_json::Value {
+    let payload = |args: &[&str]| -> serde_json::Value {
         let out = run(&[&["map", p, "--json", "--compact"], args].concat());
-        let doc: serde_json::Value = serde_json::from_str(out.trim()).expect("valid json");
-        doc["files"][0]["declarations"][0].clone()
+        serde_json::from_str(out.trim()).expect("valid json")
+    };
+    let decl = |args: &[&str]| -> serde_json::Value {
+        payload(args)["files"][0]["declarations"][0].clone()
     };
 
     let full = decl(&[]);
@@ -483,6 +496,28 @@ fn json_honors_projection_flags() {
     let no_attrs = decl(&["--no-attrs"]);
     assert!(no_attrs.get("attrs").is_none(), "--no-attrs must drop `attrs`: {no_attrs}");
     assert!(no_attrs.get("docs").is_some());
+
+    // A projected payload announces itself, so a consumer guards on the
+    // `projected` block instead of guessing from an absent key; an
+    // unprojected one carries no such key at all.
+    assert!(
+        payload(&[]).get("projected").is_none(),
+        "an unprojected payload must stay byte-identical (no `projected` key)"
+    );
+    for (flag, key) in [
+        ("--no-docs", "docs"),
+        ("--no-lines", "line_numbers"),
+        ("--no-attrs", "attributes"),
+    ] {
+        let doc = payload(&[flag]);
+        let projected = doc
+            .get("projected")
+            .unwrap_or_else(|| panic!("{flag} must announce itself in `projected`: {doc}"));
+        assert_eq!(
+            projected[key], false,
+            "{flag} must report `{key}: false`: {projected}"
+        );
+    }
 }
 
 #[test]
@@ -530,7 +565,10 @@ mod tests {
     for shown in ["trait Speak", "speak()", "struct Loud", "public_helper()", "free_public()"] {
         assert!(digest.contains(shown), "`{shown}` must survive the public view:\n{digest}");
     }
-    for hidden in ["private_helper", "Hidden", "free_private", "inner()", "gain"] {
+    // `gain` is not in this list: digest hides fields wholesale, so its
+    // absence here says nothing about visibility. It is checked under
+    // `map --no-private` below, where fields are on.
+    for hidden in ["private_helper", "Hidden", "free_private", "inner()"] {
         assert!(!digest.contains(hidden), "`{hidden}` must be hidden in the public view:\n{digest}");
     }
 
@@ -541,7 +579,9 @@ mod tests {
     }
     let no_private = sans_path(run(&["map", p, "--no-private"]));
     assert!(
-        !no_private.contains("private_helper") && !no_private.contains("free_private"),
+        !no_private.contains("private_helper")
+            && !no_private.contains("free_private")
+            && !no_private.contains("gain"),
         "--no-private must drop Rust private items:\n{no_private}"
     );
     assert!(

@@ -474,14 +474,12 @@ fn compute_impact(
         if truncated {
             entries.truncate(opts.limit);
         }
-        let title = if truncated {
-            format!(
-                "! {} symbols transitively affected (depth {}; showing {} — raise --limit to see the rest)",
-                total, opts.depth, entries.len()
-            )
-        } else {
-            format!("! {} symbols transitively affected (depth {})", total, opts.depth)
-        };
+        let title = format!(
+            "! {} symbols transitively affected (depth {}{})",
+            total,
+            opts.depth,
+            limit_suffix(total, entries.len())
+        );
         sections.push(ImpactSection {
             title,
             total,
@@ -554,6 +552,17 @@ fn passes_test_flags(file: &Path, root: &Path, opts: &ImpactOptions) -> bool {
     }
 }
 
+/// `--limit` tail for a section title. `--limit` caps the *display* while
+/// sections are walked in full (see `ImpactOptions::limit`), so every capped
+/// section says so the same way, in one place.
+fn limit_suffix(total: usize, shown: usize) -> String {
+    if total > shown {
+        format!("; showing {} — raise --limit to see the rest", shown)
+    } else {
+        String::new()
+    }
+}
+
 fn build_callees_section(
     c: &ResolvedTarget,
     calls: &CallGraph,
@@ -604,10 +613,18 @@ fn build_callees_section(
                 })
             })
             .collect();
+    // `--limit` caps display in every other section; a symbol with 300
+    // callees must not print 300 rows here just because the walk was cheap.
+    let total = entries.len();
+    let mut entries = entries;
+    let truncated = total > opts.limit;
+    if truncated {
+        entries.truncate(opts.limit);
+    }
     ImpactSection {
-        title: format!("→ calls ({})", entries.len()),
-        total: entries.len(),
-        truncated: false,
+        title: format!("→ calls ({}{})", total, limit_suffix(total, entries.len())),
+        total,
+        truncated,
         entries,
     }
 }
@@ -684,16 +701,7 @@ fn build_callers_section(
         "← called by"
     };
     ImpactSection {
-        title: if truncated {
-            format!(
-                "{} ({}; showing {} — raise --limit to see the rest)",
-                label,
-                total,
-                hits.len()
-            )
-        } else {
-            format!("{} ({})", label, total)
-        },
+        title: format!("{} ({}{})", label, total, limit_suffix(total, hits.len())),
         total,
         truncated,
         entries: hits
@@ -734,10 +742,20 @@ fn build_file_deps_section(
         .into_iter()
         .filter(|h| passes_test_flags(&h.file, root, opts))
         .collect();
+    let total = hits.len();
+    let mut hits = hits;
+    let truncated = total > opts.limit;
+    if truncated {
+        hits.truncate(opts.limit);
+    }
     ImpactSection {
-        title: format!("→ imports (file, {})", hits.len()),
-        total: hits.len(),
-        truncated: false,
+        title: format!(
+            "→ imports (file, {}{})",
+            total,
+            limit_suffix(total, hits.len())
+        ),
+        total,
+        truncated,
         entries: hits
             .into_iter()
             .map(|h| {
@@ -775,15 +793,11 @@ fn build_file_reverse_deps_section(
         hits.truncate(opts.limit);
     }
     ImpactSection {
-        title: if truncated {
-            format!(
-                "← imported by (file, {}; showing {} — raise --limit to see the rest)",
-                total,
-                hits.len()
-            )
-        } else {
-            format!("← imported by (file, {})", total)
-        },
+        title: format!(
+            "← imported by (file, {}{})",
+            total,
+            limit_suffix(total, hits.len())
+        ),
         total,
         truncated,
         entries: hits

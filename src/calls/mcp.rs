@@ -177,11 +177,25 @@ pub fn run_callees_text(target: &str, root: &Path, depth: usize, external: bool,
     };
     let qns = crate::calls::cli_helpers::resolve_target_qns(calls, target);
     let mut all_edges = Vec::new();
+    // Same frontier accounting as `cli::run_callees`: the one-hop fast path
+    // reports a frontier when a resolved direct callee has outgoing calls of
+    // its own, deeper walks read it off the traversal. `ast-bro.callees.v1`
+    // promises the flag at any depth, on this surface too.
+    let mut frontier_truncated = false;
     for qn in &qns {
         if depth <= 1 {
-            all_edges.extend(traverse::callees_one_hop(calls, qn));
+            let edges = traverse::callees_one_hop(calls, qn);
+            frontier_truncated |= edges.iter().any(|e| match &e.target {
+                crate::calls::graph::CallTarget::Resolved(t) => {
+                    calls.forward.get(t).is_some_and(|out| !out.is_empty())
+                }
+                _ => false,
+            });
+            all_edges.extend(edges);
         } else {
-            for h in traverse::callees(calls, qn, depth.max(1)) {
+            let info = traverse::callees_info(calls, qn, depth.max(1));
+            frontier_truncated |= info.frontier_truncated;
+            for h in info.hits {
                 all_edges.push(h.edge);
             }
         }
@@ -194,7 +208,20 @@ pub fn run_callees_text(target: &str, root: &Path, depth: usize, external: bool,
     }
     let first = qns.first().cloned().unwrap_or_else(|| Qn::new(target.to_string()));
     if json {
-        render::render_callees_json(&first, depth.max(1), &all_edges, true)
+        // No `--limit` here, so shown == total and `truncated` is always
+        // false — but the fields must be present, since a consumer reading
+        // `ast-bro.callees.v1` can't tell a missing key from a complete
+        // answer. Same renderer as the CLI, with no type groups.
+        render::render_callees_json_extended(
+            &first,
+            depth.max(1),
+            &all_edges,
+            &[],
+            all_edges.len(),
+            all_edges.len(),
+            frontier_truncated,
+            true,
+        )
     } else {
         // No `--limit` on the MCP path, so every remaining edge is shown and
         // the header total is simply the count.

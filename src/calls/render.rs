@@ -772,29 +772,3 @@ pub fn render_callees_json_extended(
     }
 }
 
-pub fn render_callees_json(target: &Qn, depth: usize, edges: &[CallEdge], pretty: bool) -> String {
-    let matches: Vec<JsonCallee> = edges
-        .iter()
-        .map(|e| JsonCallee {
-            source: e.source.to_string(),
-            target: e.target.display(),
-            kind: e.kind.as_str(),
-            file: file_str(&e.file),
-            line: e.line,
-            depth: None,
-            confidence: e.confidence.as_str(),
-            candidates: e.candidates.iter().collect(),
-        })
-        .collect();
-    let doc = json!({
-        "schema": JSON_SCHEMA_CALLEES,
-        "target": target.as_str(),
-        "depth": depth,
-        "matches": matches,
-    });
-    if pretty {
-        serde_json::to_string_pretty(&doc).unwrap_or_default()
-    } else {
-        serde_json::to_string(&doc).unwrap_or_default()
-    }
-}

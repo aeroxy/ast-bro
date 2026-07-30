@@ -497,6 +497,15 @@ fn partial_note(missing: &[String]) -> Option<String> {
     }
 }
 
+/// Text response with the partial-miss note in front of it, if there is one.
+/// The four text-mode tools that accept a path list all say it this way.
+fn with_note(note: &Option<String>, out: String) -> CallResult {
+    match note {
+        Some(n) => CallResult::Text(format!("{}\n{}", n, out)),
+        None => CallResult::Text(out),
+    }
+}
+
 /// JSON responses can't prepend a note without breaking parsers, and MCP
 /// has no stderr — inject the unresolved originals as a `missing_paths`
 /// field so a partial payload can never read as covering inputs it never
@@ -536,10 +545,7 @@ fn run_map(args: Value) -> CallResult {
     }
     let results = crate::walk_and_parse(&paths, a.glob.as_deref());
     // Partial misses ride the text response (JSON responses stay pure).
-    let note = |out: String| match &path_note {
-        Some(n) => CallResult::Text(format!("{}\n{}", n, out)),
-        None => CallResult::Text(out),
-    };
+    let note = |out: String| with_note(&path_note, out);
     let include_docs = detail == "full" && !a.no_docs;
     let opts = MapOptions {
         include_private: !a.no_private,
@@ -637,14 +643,7 @@ fn run_digest(args: Value) -> CallResult {
         } else {
             None
         };
-        match &path_note {
-            Some(n) => CallResult::Text(format!(
-                "{}\n{}",
-                n,
-                core::render_digest(&results, &opts, root)
-            )),
-            None => CallResult::Text(core::render_digest(&results, &opts, root)),
-        }
+        with_note(&path_note, core::render_digest(&results, &opts, root))
     }
 }
 
@@ -779,13 +778,12 @@ fn run_implements(args: Value) -> CallResult {
             &missing,
         ))
     } else {
-        let mut out = match &path_note {
-            Some(n) => format!("{}\n", n),
-            None => String::new(),
-        };
+        let mut out = String::new();
         out.push_str(&format!(
-            "# {} match(es) for '{}' (incl. transitive):\n",
-            matches.len(), a.target
+            "# {} match(es) for '{}'{}:\n",
+            matches.len(),
+            a.target,
+            if transitive { " (incl. transitive)" } else { "" }
         ));
         for m in &matches {
             let via = if m.via.is_empty() {
@@ -795,7 +793,7 @@ fn run_implements(args: Value) -> CallResult {
             };
             out.push_str(&format!("{}:{}  {} {}{}\n", m.path, m.start_line, m.kind, m.name, via));
         }
-        CallResult::Text(out)
+        with_note(&path_note, out)
     }
 }
 
@@ -1032,10 +1030,7 @@ fn run_run(args: Value) -> CallResult {
     // Partial misses ride the text response; JSON gets `missing_paths`, so a
     // report over three of four requested paths can't read as covering all
     // four.
-    let note = |out: String| match &path_note {
-        Some(n) => CallResult::Text(format!("{}\n{}", n, out)),
-        None => CallResult::Text(out),
-    };
+    let note = |out: String| with_note(&path_note, out);
     let files = crate::walk_paths(&search_paths, a.glob.as_deref());
     
     #[derive(serde::Serialize)]
