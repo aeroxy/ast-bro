@@ -896,7 +896,7 @@ fn run_reverse_deps(args: Value) -> CallResult {
     // Walk unbounded so the output reports the true total; `limit` trims
     // the display (issue #32).
     let mut hits =
-        crate::deps::traverse::reverse(&graph, &canon, a.depth.max(1), usize::MAX, |_| true);
+        crate::deps::traverse::reverse(&graph, &canon, a.depth.max(1), crate::UNLIMITED, |_| true);
     let total = hits.len();
     if hits.len() > a.limit {
         hits.truncate(a.limit);

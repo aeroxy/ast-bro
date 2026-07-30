@@ -25,6 +25,14 @@ mod surface;
 
 use crate::core::{DigestOptions, MapOptions, ParseResult};
 
+/// Traversal `limit` meaning "collect the whole cone". The `limit`
+/// arguments in `calls::traverse` / `deps::traverse` bound how many hits are
+/// *collected*, and the callers that must report an exact total before
+/// `--limit` trims the display (issue #32) may not stop early. One shared
+/// constant so the intent is named at the call site instead of a bare
+/// `usize::MAX` reading as "a very large cap".
+pub(crate) const UNLIMITED: usize = usize::MAX;
+
 #[derive(Parser)]
 #[command(name = "ast-bro")]
 #[command(version)]
@@ -796,11 +804,18 @@ fn exit_with_parse_error(e: clap::Error) -> ! {
     use clap::error::{ContextKind, ContextValue, ErrorKind};
     use clap::CommandFactory;
 
+    // The parse failed, so there is no `Cli` to read `--json` or the
+    // subcommand from, and clap's error context carries neither — hence the
+    // raw scan. It stops at `--`: everything past the separator is
+    // positional data (a pattern, a path), so a literal `--json` there was
+    // never a request for JSON output.
+    //
     // args_os + lossy conversion: a non-UTF-8 argument must follow the
     // exit-2 contract, not panic the rejection path itself.
     let raw: Vec<String> = std::env::args_os()
         .skip(1)
         .map(|a| a.to_string_lossy().into_owned())
+        .take_while(|a| a != "--")
         .collect();
     let json_mode = raw.iter().any(|a| a == "--json");
     let subcommand = raw
@@ -885,9 +900,12 @@ fn exit_with_parse_error(e: clap::Error) -> ! {
 /// Validate path arguments before walking (issue #33). An empty argument
 /// list (a collapsed shell substitution) or a list where nothing resolves
 /// rejects with exit 2 on stderr; partial misses proceed with a stderr
-/// note. Returns the *original* arguments that resolved (not their
-/// expansions) — the walker expands exactly once, so glob expansion is
-/// never applied twice to the same string.
+/// note. Returns the *original* arguments that resolved, not their
+/// expansions: the walker expands what it is handed, so returning
+/// expansions would run a second glob pass over names that may themselves
+/// contain glob metacharacters. The cost is that a glob argument is
+/// expanded twice — once here to test existence, once in the walker — which
+/// is deliberate: correctness over one saved directory read.
 fn require_paths(command: &str, paths: &[PathBuf], json_mode: bool) -> Vec<PathBuf> {
     use crate::cli_error::{CliError, ErrorKind};
     if paths.is_empty() {

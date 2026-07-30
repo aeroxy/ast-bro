@@ -108,6 +108,11 @@ impl CliError {
     /// Print the rejection to stderr — human text always, plus the JSON
     /// envelope when the caller asked for `--json` — and return the exit
     /// code to use. Never touches stdout.
+    ///
+    /// The human text is unconditional, so a call site that has already
+    /// rendered its own message (the clap parse path, which lets
+    /// `clap::Error::print` do it) must use `emit_json_only` instead or the
+    /// rejection prints twice.
     pub fn emit(&self, json_mode: bool) -> i32 {
         eprintln!("error: {}", self.detail);
         if let Some(h) = &self.hint {

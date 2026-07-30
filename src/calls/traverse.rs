@@ -4,6 +4,7 @@
 //! symmetric. Both directions traverse over `CallEdge`s.
 
 use crate::calls::graph::{CallEdge, CallGraph, Qn};
+use crate::UNLIMITED;
 use std::collections::{HashSet, VecDeque};
 
 #[derive(Debug, Clone)]
@@ -34,7 +35,7 @@ pub fn callees_info(graph: &CallGraph, start: &Qn, max_depth: usize) -> Traversa
     bfs(
         start,
         max_depth,
-        usize::MAX,
+        UNLIMITED,
         |qn| {
             edges_at(qn)
                 .into_iter()
