@@ -78,9 +78,9 @@ src/search/
 
 The `cli.rs` / `mcp.rs` shims keep dispatch in [main.rs](../src/main.rs) and [mcp/tools.rs](../src/mcp/tools.rs) thin: each subcommand is a one-line forward into the shared `Index::search` / `Index::find_related`.
 
-## Embedding model: model2vec / potion-code-16M
+## Embedding model: model2vec / potion-code-16M-v2
 
-A "static" embedder — no neural-net inference, just a `vocab × 256` float32 lookup table:
+A "static" embedder — no neural-net inference, just a `vocab × 256` lookup table:
 
 ```
 encode_one(text):
@@ -91,7 +91,7 @@ encode_one(text):
 
 That's it. Cost is dominated by tokenization (~10–100 µs); embedding lookup is essentially free. Output is always L2-normalized so cosine similarity reduces to a dot product.
 
-`Embedder::open(model_dir)` mmaps `model.safetensors` (~64 MB) — the matrix stays paged in but never copied. `vocab × 256 × 4 bytes` = ~64 MB regardless of repo size.
+`Embedder::open(model_dir)` mmaps `model.safetensors` (~31 MB). The v2 matrix ships as `f16` (63,457 vocab × 256 dims × 2 bytes), decoded once into an owned `f32` buffer at open time — everything downstream (`row`, `all_rows`, `cosine_topk`) only ever sees `f32`, so the on-disk dtype is invisible past `Embedder::open`. An `f32` tensor (like v1's, still accepted) instead stays mmap'd zero-copy — the matrix is paged in but never copied.
 
 ## Cosine top-k: brute-force SIMD
 
@@ -166,10 +166,10 @@ On `Index::open`, a non-empty delta is applied incrementally (`apply_delta`): th
 
 ## Adding a new model
 
-`ModelInfo::potion_code_16m()` is the only model wired in. To add another:
+`ModelInfo::potion_code_16m_v2()` is the only model wired in. To add another:
 
 1. Add a constructor to `download::ModelInfo` listing its files (config.json, tokenizer.json, model.safetensors).
-2. Verify the embedding tensor inside the safetensors is named `embeddings` and is f32 (model2vec convention).
+2. Verify the embedding tensor inside the safetensors is named `embeddings` and is `f32` or `f16` (model2vec convention). `f16` tensors are decoded to `f32` once at open time (`decode_f16_le` in `embed.rs`); any other dtype is rejected.
 3. If the dimension differs from 256, the `DIM` constant in [`src/search/embed.rs`](../src/search/embed.rs) needs to follow. Most of the code is generic over `DIM`, but the const is the single source of truth — bumping it requires re-indexing existing repos (the schema check in `Meta::model.dim` will catch this and force a rebuild).
 
 The `AST_OUTLINE_MODEL_SOURCE` env var lets ops point at a custom HF-compatible mirror without code changes.

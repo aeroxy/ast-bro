@@ -1,14 +1,20 @@
-//! Static-embedding model loader (model2vec / potion-code-16M).
+//! Static-embedding model loader (model2vec / potion-code-16M-v2).
 //!
 //! `Embedder::open(model_dir)` mmaps `model.safetensors`, loads `tokenizer.json`
 //! via the HuggingFace `tokenizers` crate, and exposes `encode_one(text)` which
 //! returns a normalized `[f32; DIM]` for a single string.
 //!
 //! The model is a "static" embedder: no neural-net inference, just a `vocab × dim`
-//! float32 matrix. Encoding is `tokenize → mean-pool → L2-normalize`. Cost per
-//! call is dominated by tokenization (~10–100 µs depending on string length);
-//! the embedding lookup itself is essentially free.
+//! matrix. Encoding is `tokenize → mean-pool → L2-normalize`. Cost per call is
+//! dominated by tokenization (~10–100 µs depending on string length); the
+//! embedding lookup itself is essentially free.
+//!
+//! The matrix ships as either `f32` or `f16` depending on the model (v2 ships
+//! `f16` to halve download/cache size). `f16` tensors are decoded to an owned
+//! `Vec<f32>` once at open time so every consumer downstream of `Embedder`
+//! (`row`, `all_rows`, `cosine_topk`) only ever deals with `f32`.
 
+use half::f16;
 use memmap2::Mmap;
 use safetensors::{Dtype, SafeTensors};
 use std::fs::File;
@@ -17,33 +23,47 @@ use std::path::Path;
 use std::sync::Arc;
 use tokenizers::Tokenizer;
 
-/// Output dimension of `potion-code-16M`. Embedded as a const so callers can
+/// Output dimension of `potion-code-16M-v2`. Embedded as a const so callers can
 /// stack-allocate result buffers.
 pub const DIM: usize = 256;
 
 /// Tensor name inside `model.safetensors`. model2vec's convention.
 const EMBEDDINGS_TENSOR: &str = "embeddings";
 
+/// Backing memory for `Embedder::embeddings_ptr`. `F32` tensors are read
+/// zero-copy straight out of the mmap; `F16` tensors are decoded once into an
+/// owned buffer (see `decode_f16_le`) so the rest of the codebase never has to
+/// think about the on-disk dtype.
+///
+/// Neither variant's payload is read directly — each just needs to stay alive
+/// (and be dropped) for as long as `embeddings_ptr` points into it.
+#[allow(dead_code)]
+enum Backing {
+    Mmap(Arc<Mmap>),
+    Owned(Vec<f32>),
+}
+
 pub struct Embedder {
-    /// Keep the mmap alive for the lifetime of the embedder so the embedding
-    /// slice stays valid.
-    _mmap: Arc<Mmap>,
-    /// Borrow into `_mmap`: vocab_size × DIM rows of f32, row-major.
+    /// Keeps whichever memory `embeddings_ptr` points into alive for the
+    /// lifetime of the embedder.
+    _backing: Backing,
+    /// vocab_size × DIM rows of f32, row-major, borrowed from `_backing`.
     /// Stored as a raw pointer + length so `Embedder` can be `Send + Sync`.
     embeddings_ptr: *const f32,
     vocab_size: usize,
     tokenizer: Tokenizer,
 }
 
-// SAFETY: the underlying bytes are immutable mmap'd file data; reads from many
-// threads are safe.
+// SAFETY: both `Backing` variants are immutable after `Embedder::open` returns
+// (mmap'd file bytes, or a `Vec<f32>` nothing else holds a mutable reference
+// to), so shared reads from many threads are safe.
 unsafe impl Send for Embedder {}
 unsafe impl Sync for Embedder {}
 
 impl Embedder {
     /// Open the cached model files from `model_dir`. Expects:
-    /// - `<model_dir>/model.safetensors` containing a single `f32` tensor named
-    ///   `embeddings` with shape `[vocab_size, DIM]`.
+    /// - `<model_dir>/model.safetensors` containing a single `f32` or `f16`
+    ///   tensor named `embeddings` with shape `[vocab_size, DIM]`.
     /// - `<model_dir>/tokenizer.json` in HuggingFace tokenizers format.
     pub fn open(model_dir: &Path) -> io::Result<Self> {
         let safetensors_path = model_dir.join("model.safetensors");
@@ -66,12 +86,6 @@ impl Embedder {
                 ),
             )
         })?;
-        if tensor.dtype() != Dtype::F32 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("expected F32 embeddings, got {:?}", tensor.dtype()),
-            ));
-        }
         let shape = tensor.shape();
         if shape.len() != 2 || shape[1] != DIM {
             return Err(io::Error::new(
@@ -81,27 +95,54 @@ impl Embedder {
         }
         let vocab_size = shape[0];
         let data = tensor.data();
-        if data.len() != vocab_size * DIM * 4 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!(
-                    "tensor data length {} != {} = vocab_size * DIM * 4",
-                    data.len(),
-                    vocab_size * DIM * 4
-                ),
-            ));
-        }
-        // SAFETY: mmap'd file data; safetensors guarantees the byte length is a
-        // multiple of size_of::<f32>(); 4-byte alignment is guaranteed because
-        // mmap always returns page-aligned pointers and the safetensors header
-        // pads the data offset to a multiple of 8 (so adding the offset keeps
-        // 4-byte alignment).
-        let ptr = data.as_ptr() as *const f32;
-        debug_assert_eq!(
-            (ptr as usize) % std::mem::align_of::<f32>(),
-            0,
-            "embedding tensor must be f32-aligned"
-        );
+
+        let (backing, ptr) = match tensor.dtype() {
+            Dtype::F32 => {
+                if data.len() != vocab_size * DIM * 4 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!(
+                            "tensor data length {} != {} = vocab_size * DIM * 4",
+                            data.len(),
+                            vocab_size * DIM * 4
+                        ),
+                    ));
+                }
+                // SAFETY: mmap'd file data; safetensors guarantees the byte length is
+                // a multiple of size_of::<f32>(); 4-byte alignment is guaranteed
+                // because mmap always returns page-aligned pointers and the
+                // safetensors header pads the data offset to a multiple of 8 (so
+                // adding the offset keeps 4-byte alignment).
+                let ptr = data.as_ptr() as *const f32;
+                debug_assert_eq!(
+                    (ptr as usize) % std::mem::align_of::<f32>(),
+                    0,
+                    "embedding tensor must be f32-aligned"
+                );
+                (Backing::Mmap(Arc::clone(&mmap)), ptr)
+            }
+            Dtype::F16 => {
+                if data.len() != vocab_size * DIM * 2 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!(
+                            "tensor data length {} != {} = vocab_size * DIM * 2",
+                            data.len(),
+                            vocab_size * DIM * 2
+                        ),
+                    ));
+                }
+                let owned = decode_f16_le(data);
+                let ptr = owned.as_ptr();
+                (Backing::Owned(owned), ptr)
+            }
+            other => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("expected F32 or F16 embeddings, got {other:?}"),
+                ));
+            }
+        };
 
         let tokenizer = Tokenizer::from_file(&tokenizer_path).map_err(|e| {
             io::Error::new(
@@ -111,7 +152,7 @@ impl Embedder {
         })?;
 
         Ok(Self {
-            _mmap: mmap,
+            _backing: backing,
             embeddings_ptr: ptr,
             vocab_size,
             tokenizer,
@@ -123,10 +164,10 @@ impl Embedder {
         self.vocab_size
     }
 
-    /// All embedding rows as one big slice. Read-only; backed by the mmap.
+    /// All embedding rows as one big slice. Read-only; backed by `_backing`.
     fn all_rows(&self) -> &[f32] {
         // SAFETY: `embeddings_ptr` is valid for `vocab_size * DIM` f32s for the
-        // lifetime of `self._mmap`.
+        // lifetime of `self._backing`.
         unsafe {
             std::slice::from_raw_parts(self.embeddings_ptr, self.vocab_size * DIM)
         }
@@ -182,6 +223,16 @@ impl Embedder {
         out
     }
 
+}
+
+/// Decode a little-endian `f16` (IEEE-754 binary16) byte buffer into `f32`
+/// values, one per 2-byte pair. Callers validate `bytes.len()` is even (and
+/// matches the expected `vocab_size * DIM * 2`) before calling this.
+fn decode_f16_le(bytes: &[u8]) -> Vec<f32> {
+    bytes
+        .chunks_exact(2)
+        .map(|c| f16::from_le_bytes([c[0], c[1]]).to_f32())
+        .collect()
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -316,7 +367,7 @@ mod tests {
     fn ensure_real_model() -> std::path::PathBuf {
         // Download once into a per-test cache; subsequent runs reuse the cache
         // and the SHA-256 manifest verification fast-paths.
-        let info = ModelInfo::potion_code_16m();
+        let info = ModelInfo::potion_code_16m_v2();
         ensure_model(&info).expect("model download failed; see network-security wiki")
     }
 
@@ -362,6 +413,16 @@ mod tests {
             ab > ac,
             "expected related code (cos {ab}) > unrelated code (cos {ac})"
         );
+    }
+
+    // ── decode_f16_le (pure unit test, no network) ──────────────────────────
+
+    #[test]
+    fn decode_f16_le_matches_known_bit_patterns() {
+        // 0x3C00 = 1.0, 0x0000 = 0.0, 0xC000 = -2.0 (IEEE-754 binary16).
+        let bytes = [0x00, 0x3C, 0x00, 0x00, 0x00, 0xC0];
+        let decoded = decode_f16_le(&bytes);
+        assert_eq!(decoded, vec![1.0f32, 0.0, -2.0]);
     }
 
     // ── cosine_topk (pure unit tests, no network) ──────────────────────────

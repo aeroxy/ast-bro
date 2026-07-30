@@ -53,6 +53,7 @@ sha2 = "0.10"
 tokenizers = { version = "0.21", default-features = false, features = ["onig"] }
 safetensors = "0.6"
 memmap2 = "0.9"
+half = "2"
 wide = "0.7"
 regex = "1"
 bincode = { version = "2", features = ["serde"] }
