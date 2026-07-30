@@ -2507,3 +2507,87 @@ fn crate_prefix_arm_only_fires_from_the_crate_root() {
         "the crate:: arm must not claim a same-file decoy as Exact: {out}"
     );
 }
+
+#[test]
+fn incremental_update_matches_a_cold_build_of_the_same_content() {
+    // A partial update used to assign each bare edge the *unfiltered* global
+    // symbol-table entry as its candidate set, while a cold build assigns
+    // only the candidates the caller's file can reach through the dep graph.
+    // One edit to an unrelated file therefore changed answers project-wide:
+    // measured on this repo, `callers CliError.new` reported 1023 unresolved
+    // sites cold and 1073 after touching src/adapters/sql.rs, with no source
+    // change behind the difference.
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(&root.join("Cargo.toml"), "[package]\nname=\"x\"\nversion=\"0.0.0\"\nedition=\"2021\"\n");
+    write(
+        &root.join("src/lib.rs"),
+        "pub mod target;\npub mod other;\npub mod third;\npub mod caller;\npub mod unrelated;\n",
+    );
+    // Three project types declare `shared`, so a bare `shared()` site is
+    // ambiguous across all three and pass C's dep filter is the only thing
+    // that narrows it.
+    write(
+        &root.join("src/target.rs"),
+        "pub struct T;\nimpl T { pub fn shared(&self) {} }\n",
+    );
+    write(
+        &root.join("src/other.rs"),
+        "pub struct U;\nimpl U { pub fn shared(&self) {} }\n",
+    );
+    write(
+        &root.join("src/third.rs"),
+        "pub struct V;\nimpl V { pub fn shared(&self) {} }\n",
+    );
+    // `caller.rs` imports two of the three, so pass C's filter leaves two
+    // survivors and drops `V::shared` — the site is not evidence about `V`.
+    // The pre-fix updater overwrote that filtered set with all three global
+    // matches, so after any unrelated edit the site started counting as a
+    // possible caller of `V::shared` too.
+    write(
+        &root.join("src/caller.rs"),
+        "use crate::target;\nuse crate::other;\n\
+         pub fn calls(v: &Vec<u8>) { v.shared(); }\n\
+         pub fn touch(t: &target::T, u: &other::U) { let _ = (t, u); }\n",
+    );
+    write(&root.join("src/unrelated.rs"), "pub fn noop() {}\n");
+
+    let query = |args: &[&str]| -> serde_json::Value {
+        let (out, code) = run_in(root, args);
+        assert_eq!(code, 0, "{out}");
+        serde_json::from_str(out.trim()).expect("valid json")
+    };
+
+    let cold = query(&["callers", "V.shared", ".", "--json", "--compact", "--rebuild"]);
+    assert_eq!(
+        cold["unattributed_total"], 0,
+        "premise: the dep filter excludes V::shared from that site's candidates:\n{cold}"
+    );
+
+    // Touch a file that has nothing to do with the query, then re-query
+    // *without* --rebuild so the delta path runs.
+    write(
+        &root.join("src/unrelated.rs"),
+        "pub fn noop() {}\n// an edit that changes nothing about V::shared\n",
+    );
+    let incremental = query(&["callers", "V.shared", ".", "--json", "--compact"]);
+    let cold_again = query(&["callers", "V.shared", ".", "--json", "--compact", "--rebuild"]);
+
+    for key in [
+        "total",
+        "unattributed_total",
+        "unattributed_declarers",
+        "unattributed_suppressed",
+    ] {
+        assert_eq!(
+            incremental[key], cold_again[key],
+            "{key} diverged between a partial update and a cold build of the same content:\n\
+             incremental={incremental}\ncold={cold_again}"
+        );
+        assert_eq!(
+            cold[key], cold_again[key],
+            "{key} changed across an edit that touched no relevant file:\n\
+             before={cold}\nafter={cold_again}"
+        );
+    }
+}
