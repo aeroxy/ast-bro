@@ -2245,3 +2245,265 @@ fn crate_prefix_anchors_at_the_file_root_only() {
         "crate:: must bind the file-root path, not an intermediate decoy: {out}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// PR #38 review round 2 — the unattributed section must be usable on common
+// method names, and `callees` must report truncation on stdout.
+// ---------------------------------------------------------------------------
+
+/// Five project types each declaring `close()`, plus call sites on receivers
+/// of unknowable type. The shape of `PgConnection.close` on pgjdbc (39
+/// declarers, 1124 sites) and `CliError.new` in this repo (9, 1020).
+fn many_declarers_fixture(root: &std::path::Path) {
+    write(&root.join("pom.xml"), "<project/>\n");
+    for t in ["Conn", "Stream", "Blob", "Cursor", "Socket"] {
+        write(
+            &root.join(format!("src/{t}.java")),
+            &format!("public class {t} {{ public void close() {{}} }}\n"),
+        );
+    }
+    write(
+        &root.join("src/Use.java"),
+        "public class Use {\n  void a(Object os) { os.close(); }\n  \
+         void b(Object lo) { lo.close(); }\n  \
+         void c(Object connection) { connection.close(); }\n}\n",
+    );
+}
+
+#[test]
+fn unattributed_section_collapses_when_the_name_does_not_discriminate() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    many_declarers_fixture(root);
+
+    let (out, code) = run_in(root, &["callers", "Conn.close", ".", "--rebuild"]);
+    assert_eq!(code, 0, "{out}");
+    // The count is still reported — dropping it would undercount a rename
+    // (issue #31) — but with the reason attached and no rows, because every
+    // site names all five `close` declarations equally.
+    assert!(
+        out.contains("declared by 5 symbols"),
+        "header must carry the reason:\n{out}"
+    );
+    assert!(
+        !out.contains("recv=os"),
+        "rows must be withheld for a non-discriminating name:\n{out}"
+    );
+
+    let (out, code) = run_in(root, &["callers", "Conn.close", ".", "--json", "--compact"]);
+    assert_eq!(code, 0, "{out}");
+    let doc: serde_json::Value = serde_json::from_str(out.trim()).expect("valid json");
+    assert!(
+        doc["unattributed_total"].as_u64().unwrap() >= 3,
+        "the sites are still counted: {out}"
+    );
+    assert_eq!(doc["unattributed_declarers"], 5, "{out}");
+    assert_eq!(doc["unattributed_suppressed"], true, "{out}");
+    assert_eq!(
+        doc["unattributed"].as_array().unwrap().len(),
+        0,
+        "a machine consumer must not receive rows it cannot attribute: {out}"
+    );
+}
+
+#[test]
+fn unattributed_rows_carry_the_receiver_when_the_name_is_specific() {
+    // One declarer, so the sites are real evidence — and each row shows the
+    // receiver as written, which is the only triage signal available without
+    // type inference.
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(&root.join("pom.xml"), "<project/>\n");
+    write(
+        &root.join("src/Prefs.java"),
+        "public class Prefs { public void prefersJavaTime() {} }\n",
+    );
+    write(
+        &root.join("src/Use.java"),
+        "public class Use { void a(Object cfg) { cfg.prefersJavaTime(); } }\n",
+    );
+
+    let (out, code) = run_in(root, &["callers", "prefersJavaTime", ".", "--rebuild"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(
+        out.contains("unresolved call site(s) naming") && out.contains("recv=cfg"),
+        "a discriminating name keeps its rows, receiver included:\n{out}"
+    );
+
+    let (out, code) = run_in(
+        root,
+        &["callers", "prefersJavaTime", ".", "--json", "--compact"],
+    );
+    assert_eq!(code, 0, "{out}");
+    let doc: serde_json::Value = serde_json::from_str(out.trim()).expect("valid json");
+    assert_eq!(doc["unattributed_suppressed"], false, "{out}");
+    assert_eq!(doc["unattributed"][0]["receiver"], "cfg", "{out}");
+}
+
+#[test]
+fn unattributed_sample_is_capped_independently_of_limit() {
+    // `--limit` sizes the resolved list; the leftover budget must not flow
+    // into the unattributed section, or the worse the resolver did the more
+    // noise a caller gets.
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(&root.join("pom.xml"), "<project/>\n");
+    write(
+        &root.join("src/Prefs.java"),
+        "public class Prefs { public void forDate() {} }\n",
+    );
+    let mut body = String::from("public class Use {\n");
+    for i in 0..40 {
+        body.push_str(&format!("  void m{i}(Object c) {{ c.forDate(); }}\n"));
+    }
+    body.push_str("}\n");
+    write(&root.join("src/Use.java"), &body);
+
+    let (out, code) = run_in(
+        root,
+        &[
+            "callers", "forDate", ".", "--limit", "500", "--json", "--compact", "--rebuild",
+        ],
+    );
+    assert_eq!(code, 0, "{out}");
+    let doc: serde_json::Value = serde_json::from_str(out.trim()).expect("valid json");
+    let total = doc["unattributed_total"].as_u64().unwrap();
+    assert!(total >= 30, "fixture must exceed the sample cap: {out}");
+    assert_eq!(
+        doc["unattributed"].as_array().unwrap().len(),
+        25,
+        "a generous --limit must not widen the sample past its own cap: {out}"
+    );
+    assert_eq!(doc["unattributed_truncated"], true, "{out}");
+}
+
+#[test]
+fn unattributed_drops_sites_whose_receiver_names_another_project_type() {
+    // Pass A's rule, applied one layer later: `Other.shared()` explicitly
+    // named `Other`, so it is not evidence about `Target.shared`.
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(&root.join("pom.xml"), "<project/>\n");
+    write(
+        &root.join("src/Target.java"),
+        "public class Target { public static void shared() {} }\n",
+    );
+    write(
+        &root.join("src/Other.java"),
+        "public class Other { public static void shared() {} }\n",
+    );
+    write(
+        &root.join("src/Use.java"),
+        "public class Use { void a() { Other.shared(); } }\n",
+    );
+
+    let (out, code) = run_in(root, &["callers", "Target.shared", ".", "--json", "--compact", "--rebuild"]);
+    assert_eq!(code, 0, "{out}");
+    let doc: serde_json::Value = serde_json::from_str(out.trim()).expect("valid json");
+    let rows = doc["unattributed"].as_array().unwrap();
+    assert!(
+        !rows.iter().any(|r| r["receiver"] == "Other"),
+        "a receiver naming another project type must not be listed: {out}"
+    );
+    assert_eq!(
+        doc["unattributed_total"], 0,
+        "and it must not be counted either: {out}"
+    );
+}
+
+#[test]
+fn callees_text_header_reports_the_true_total_when_limit_trims() {
+    // stdout is where `callees` gets read; a `# 2 callee(s)` header on a
+    // capped list reads as complete even though stderr and JSON said 7.
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(&root.join("Cargo.toml"), "[package]\nname=\"x\"\nversion=\"0.0.0\"\nedition=\"2021\"\n");
+    write(
+        &root.join("src/lib.rs"),
+        "pub fn a() {}\npub fn b() {}\npub fn c() {}\npub fn d() {}\n\
+         pub fn caller() { a(); b(); c(); d(); }\n",
+    );
+
+    let (out, code) = run_in(root, &["callees", "caller", ".", "--limit", "2", "--rebuild"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(
+        out.contains("# 4 callee(s)") && out.contains("showing 2"),
+        "header must report the true total and that it was cut:\n{out}"
+    );
+}
+
+#[test]
+fn callees_type_ancestor_groups_count_toward_total_and_limit() {
+    // Ancestor groups were neither bounded by --limit nor counted in
+    // `total`, so `truncated` described only `matches`.
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(&root.join("pom.xml"), "<project/>\n");
+    write(&root.join("src/A.java"), "public interface A {}\n");
+    write(&root.join("src/B.java"), "public interface B {}\n");
+    write(&root.join("src/C.java"), "public class C implements A, B {}\n");
+
+    let (out, code) = run_in(
+        root,
+        &["callees", "C", ".", "--limit", "1", "--json", "--compact", "--rebuild"],
+    );
+    assert_eq!(code, 0, "{out}");
+    let doc: serde_json::Value = serde_json::from_str(out.trim()).expect("valid json");
+    assert_eq!(doc["total"], 2, "both ancestors count toward total: {out}");
+    assert_eq!(doc["truncated"], true, "{out}");
+    assert_eq!(
+        doc["types"][0]["ancestors"].as_array().unwrap().len(),
+        1,
+        "ancestor groups share the --limit display budget: {out}"
+    );
+    assert_eq!(doc["types"][0]["ancestors_total"], 2, "{out}");
+
+    // The text header carries the same facts.
+    let (out, code) = run_in(root, &["callees", "C", ".", "--limit", "1"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(
+        out.contains("# 2 ancestor(s)") && out.contains("showing 1"),
+        "text header must report the true total:\n{out}"
+    );
+}
+
+#[test]
+fn crate_prefix_arm_only_fires_from_the_crate_root() {
+    // `crate::` anchors at the crate root, not at the caller's file, so the
+    // arm must not bind `crate::inner::Foo::method()` in src/other.rs to a
+    // same-file `mod inner` decoy — that is precisely where anchoring at the
+    // caller's file is wrong. Off the crate root the edge falls through to
+    // pass B/C, which may still guess, but never claims `Exact`.
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(&root.join("Cargo.toml"), "[package]\nname=\"x\"\nversion=\"0.0.0\"\nedition=\"2021\"\n");
+    write(&root.join("src/lib.rs"), "pub mod inner;\npub mod other;\n");
+    write(
+        &root.join("src/inner.rs"),
+        "pub struct Foo;\nimpl Foo { pub fn method() {} }\n",
+    );
+    write(
+        &root.join("src/other.rs"),
+        "pub mod inner {\n    pub struct Foo;\n    impl Foo { pub fn method() {} }\n}\n\
+         pub fn caller() { crate::inner::Foo::method(); }\n",
+    );
+
+    let (out, code) = run_in(
+        root,
+        &["callees", "other.rs:caller", ".", "--json", "--compact", "--rebuild"],
+    );
+    assert_eq!(code, 0, "{out}");
+    let doc: serde_json::Value = serde_json::from_str(out.trim()).expect("valid json");
+    let matches = doc["matches"].as_array().expect("matches array");
+    assert_eq!(
+        matches.len(),
+        1,
+        "the call site must still be reported at all: {out}"
+    );
+    let m = &matches[0];
+    let target = m["target"].as_str().unwrap_or("");
+    assert!(
+        !(m["confidence"] == "Exact" && target.contains("other.rs::inner::Foo::method")),
+        "the crate:: arm must not claim a same-file decoy as Exact: {out}"
+    );
+}

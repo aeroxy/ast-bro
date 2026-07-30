@@ -59,27 +59,31 @@ pub fn run_callers_text(target: &str, root: &Path, depth: usize, limit: usize, i
         );
         unattributed.clear();
     }
-    // Share the limit display budget, as in the CLI path.
+    // Own cap and discrimination gate, as in the CLI path: a bare name many
+    // symbols declare buys a one-line count, not 199 rows of another
+    // symbol's call sites landing in an agent's context.
     let unattributed_total = unattributed.len();
-    let remaining = limit.saturating_sub(hits.len());
-    if unattributed.len() > remaining {
-        unattributed.truncate(remaining);
+    let declarers = traverse::name_declarers(calls, &qns);
+    let sample = if declarers > render::MAX_DECLARERS_TO_LIST {
+        0
+    } else {
+        crate::calls::cli::UNATTRIBUTED_SAMPLE.min(limit)
+    };
+    if unattributed.len() > sample {
+        unattributed.truncate(sample);
     }
+    let unattributed = render::Unattributed {
+        edges: &unattributed,
+        total: unattributed_total,
+        hidden: unattributed_hidden,
+        declarers,
+    };
     let trunc = render::Truncation {
         total,
         frontier_truncated,
     };
     if json {
-        render::render_callers_json(
-            target,
-            depth.max(1),
-            &hits,
-            &unattributed,
-            unattributed_total,
-            unattributed_hidden,
-            &trunc,
-            true,
-        )
+        render::render_callers_json(target, depth.max(1), &hits, &unattributed, &trunc, true)
     } else {
         // Same gating as the CLI's stderr note: only an explicitly
         // deepened walk gets the frontier line (JSON always carries the
@@ -96,7 +100,7 @@ pub fn run_callers_text(target: &str, root: &Path, depth: usize, limit: usize, i
             "{}{}{}",
             frontier_note,
             hidden_note,
-            render::render_callers_text(target, &hits, &unattributed, unattributed_total, &trunc)
+            render::render_callers_text(target, &hits, &unattributed, &trunc)
         )
     }
 }
@@ -182,10 +186,18 @@ pub fn run_callees_text(target: &str, root: &Path, depth: usize, external: bool,
             }
         }
     }
+    // `hide_external` narrows the query, so apply it once, before counting,
+    // and in both output modes — the JSON branch used to ignore the flag the
+    // tool schema advertises (matches the CLI fix in `cli::run_callees`).
+    if !external {
+        all_edges.retain(|e| matches!(e.target, crate::calls::graph::CallTarget::Resolved(_)));
+    }
     let first = qns.first().cloned().unwrap_or_else(|| Qn::new(target.to_string()));
     if json {
         render::render_callees_json(&first, depth.max(1), &all_edges, true)
     } else {
-        render::render_callees_text(calls, &first, &all_edges, external)
+        // No `--limit` on the MCP path, so every remaining edge is shown and
+        // the header total is simply the count.
+        render::render_callees_text(calls, &first, &all_edges, all_edges.len(), external)
     }
 }

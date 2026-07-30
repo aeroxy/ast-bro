@@ -83,7 +83,12 @@ enum Commands {
     /// Find subclasses / implementations
     Implements {
         target: String,
-        #[arg(num_args = 1..)]
+        /// Files or directories to search. Required — `implements` walks
+        /// only what it is given, and an empty walk would answer "no
+        /// implementations" for a type that has them (issue #33). Declared
+        /// required so `--help` and the runtime agree, and so clap's own
+        /// message names the missing argument.
+        #[arg(required = true, num_args = 1..)]
         paths: Vec<PathBuf>,
 
         #[arg(short, long)]
@@ -256,6 +261,8 @@ enum Commands {
         file: PathBuf,
         #[arg(long, default_value_t = 3)]
         depth: usize,
+        /// Cap how many importers are *displayed*. The walk is unbounded so
+        /// the reported total is exact.
         #[arg(long, default_value_t = 200)]
         limit: usize,
         /// Show only importers from test files (path heuristic: tests/, __tests__/, *_test.*, *.spec.*, …).
@@ -348,7 +355,9 @@ enum Commands {
         /// Max BFS depth (1 = direct callers only).
         #[arg(long, default_value_t = 1)]
         depth: usize,
-        /// Cap result count (mirrors reverse-deps).
+        /// Cap how many callers are *displayed* (mirrors reverse-deps).
+        /// The walk itself is unbounded so the reported total is exact —
+        /// raising `--depth` costs work regardless of this cap.
         #[arg(long, default_value_t = 200)]
         limit: usize,
         /// Hide callers whose target is `Ambiguous` (multiple candidates).
@@ -387,8 +396,8 @@ enum Commands {
         symbol: Option<String>,
         #[arg(long, default_value_t = 1)]
         depth: usize,
-        /// Cap the number of callees shown (the header always reports the
-        /// true total).
+        /// Cap how many callees are *displayed* (the header always reports
+        /// the true total).
         #[arg(long, default_value_t = 200)]
         limit: usize,
         /// Hide unresolved callees (the `Bare`/`External` bucket).
@@ -449,7 +458,8 @@ enum Commands {
         /// Transitive depth (default 2).
         #[arg(long, default_value_t = 2)]
         depth: usize,
-        /// Cap number of results per section.
+        /// Cap how many results are *displayed* per section. Sections are
+        /// walked in full so their totals are exact.
         #[arg(long, default_value_t = 200)]
         limit: usize,
         /// Section to show: `deps`, `dependents`, `tests`, or `all` (default).
@@ -835,10 +845,24 @@ fn exit_with_parse_error(e: clap::Error) -> ! {
         ErrorKind::UnknownArgument => crate::cli_error::ErrorKind::UnknownFlag,
         _ => crate::cli_error::ErrorKind::BadArgument,
     };
+    // A missing required argument must say *which* one: clap's first line
+    // stops at "the following required arguments were not provided:" and the
+    // names live in the context, so the envelope would otherwise describe the
+    // shape of the error and not the error (PR #38 review).
+    let missing: Vec<String> = match e.get(ContextKind::InvalidArg) {
+        Some(ContextValue::Strings(v)) => v.clone(),
+        Some(ContextValue::String(s)) => vec![s.clone()],
+        _ => Vec::new(),
+    };
     let detail = match (&invalid_arg, e.kind()) {
         (Some(flag), ErrorKind::UnknownArgument) => {
             format!("`{}` has no `{}` flag", subcommand, flag)
         }
+        (_, ErrorKind::MissingRequiredArgument) if !missing.is_empty() => format!(
+            "`{}` is missing required argument(s): {}",
+            subcommand,
+            missing.join(", ")
+        ),
         _ => e
             .to_string()
             .lines()
@@ -909,6 +933,35 @@ fn require_paths(command: &str, paths: &[PathBuf], json_mode: bool) -> Vec<PathB
         eprintln!("# note: path not found: {}", m);
     }
     existing
+}
+
+/// `require_paths` for subcommands whose path list is genuinely optional
+/// (`run` walks the current directory when given none). An empty list is a
+/// real default here; a *wrong* list is still a rejection, so anything
+/// passed goes through the same existence check.
+fn resolve_optional_paths(command: &str, paths: &[PathBuf], json_mode: bool) -> Vec<PathBuf> {
+    if paths.is_empty() {
+        return vec![PathBuf::from(".")];
+    }
+    require_paths(command, paths, json_mode)
+}
+
+/// The shared "this path does not exist" rejection for subcommands that take
+/// a single root (`search`, `find-related`) instead of a path list. Without
+/// it an unresolved root yields an empty result set on stdout with exit 0 —
+/// "nothing matched" and "you named a directory that isn't there" must not
+/// look the same (issue #33).
+fn require_path(command: &str, path: &Path, json_mode: bool) {
+    use crate::cli_error::{CliError, ErrorKind};
+    if !path.exists() {
+        CliError::new(
+            command,
+            ErrorKind::PathNotFound,
+            format!("path not found: {}", path.display()),
+        )
+        .hint("An empty result here would mean the path is wrong, not that nothing matched.")
+        .exit(json_mode);
+    }
 }
 
 /// Partition path arguments into (resolvable originals, missing display
@@ -1364,6 +1417,7 @@ pub fn run() {
             json,
             compact,
         } => {
+            require_path("search", path, *json);
             if *rebuild {
                 let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
                 if let Err(e) = crate::search::index::Index::build(path, &cwd) {
@@ -1408,6 +1462,7 @@ pub fn run() {
                 (None, Some(f), Some(l)) => (f.clone(), *l),
                 _ => unreachable!("clap should have rejected this argument combination"),
             };
+            require_path("find-related", path, *json);
             let exit = crate::search::cli::run_find_related(
                 &file_path,
                 line_num,
@@ -1714,11 +1769,16 @@ pub fn run() {
             json,
             compact,
         } => {
+            // Same rejection rule as every other path-taking subcommand: a
+            // path that doesn't resolve is a failed call (exit 2, empty
+            // stdout), not a run that matched nothing (issue #33). The MCP
+            // side already did this via `resolve_paths_for_mcp`.
+            let paths = resolve_optional_paths("run", paths, *json);
             let exit = crate::run::cli::run(
                 pattern,
                 rewrite.as_deref(),
                 lang.as_deref(),
-                paths,
+                &paths,
                 glob.as_deref(),
                 *write,
                 *json,
