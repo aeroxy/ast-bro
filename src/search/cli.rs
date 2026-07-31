@@ -75,14 +75,23 @@ pub fn run_find_related(
     // isn't rejected just because `path` points at a subdirectory of it.
     let as_typed = Path::new(file_path);
     let (home, _found) = resolve_home(path, &cwd, Marker::SearchIndex);
-    if !as_typed.exists() && !home.join(as_typed).exists() {
-        return crate::cli_error::CliError::new(
-            "find-related",
-            crate::cli_error::ErrorKind::PathNotFound,
-            format!("no such file: {file_path}"),
-        )
-        .hint("`find-related <FILE>:<LINE>` takes a file that exists; its chunk is then looked up in the index by path.")
-        .emit(json);
+    if !as_typed.is_file() && !home.join(as_typed).is_file() {
+        // A directory is as unindexable as a typo — reject both before the
+        // index opens, distinguished by kind for machine consumers.
+        let (kind, detail) = if as_typed.exists() || home.join(as_typed).exists() {
+            (
+                crate::cli_error::ErrorKind::BadArgument,
+                format!("not a file: {file_path}"),
+            )
+        } else {
+            (
+                crate::cli_error::ErrorKind::PathNotFound,
+                format!("no such file: {file_path}"),
+            )
+        };
+        return crate::cli_error::CliError::new("find-related", kind, detail)
+            .hint("`find-related <FILE>:<LINE>` takes a file that exists; its chunk is then looked up in the index by path.")
+            .emit(json);
     }
     let index = match Index::open(path, &cwd) {
         Ok(i) => i,

@@ -156,7 +156,9 @@ fn _is_capped_type(kind: &DeclarationKind) -> bool {
 /// Whether a child declaration counts as a *member* for `--max-members`.
 /// Nested types are structure, not members — the digest renderer lists
 /// them as their own flattened entries (`_digest_members` skips them) —
-/// so the cap never cuts them or counts them, in text and JSON alike.
+/// and enum variants are the type's shape, not its API surface (the names
+/// renderer never lists them at all). Neither is cut or counted by the
+/// cap, in text and JSON alike, so `+N more` and `dropped_members` agree.
 fn _counts_toward_member_cap(kind: &DeclarationKind) -> bool {
     !matches!(
         kind,
@@ -166,6 +168,7 @@ fn _counts_toward_member_cap(kind: &DeclarationKind) -> bool {
             | DeclarationKind::Record
             | DeclarationKind::Enum
             | DeclarationKind::Namespace
+            | DeclarationKind::EnumMember
     )
 }
 
@@ -1138,10 +1141,10 @@ fn _digest_members<'a>(type_decl: &'a Declaration, opts: &DigestOptions) -> Vec<
     use DeclarationKind::*;
     let mut members = Vec::new();
     for c in &type_decl.children {
-        // Nested types via the shared predicate (they render as their own
-        // flattened entries); EnumMember is a digest-only display exclusion
-        // on top — variants are never listed in the one-page view.
-        if !_counts_toward_member_cap(&c.kind) || c.kind == EnumMember {
+        // Nested types and enum variants via the shared predicate: neither
+        // is a member for display or capping purposes (types render as
+        // their own flattened entries; variants are never listed here).
+        if !_counts_toward_member_cap(&c.kind) {
             continue;
         }
         if c.kind == Field && !opts.include_fields {

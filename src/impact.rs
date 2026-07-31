@@ -498,10 +498,15 @@ fn compute_impact(
                 Vec::new(),
             )
         } else {
+            // Same `--limit` contract as every other section (issue #32):
+            // the cap bounds display, `total` stays the true count, and the
+            // title says when rows were cut.
+            let shown = count.min(opts.limit);
             (
-                format!("affected tests ({})", count),
+                format!("affected tests ({}{})", count, limit_suffix(count, shown)),
                 test_calls
                     .iter()
+                    .take(opts.limit)
                     .map(|h| ImpactEntry {
                         qn: h.edge.source.as_str().to_string(),
                         file: h.edge.file.display().to_string(),
@@ -530,8 +535,8 @@ fn compute_impact(
         };
         sections.push(ImpactSection {
             title: display,
-            total: entries.len(),
-            truncated: false,
+            total: if excluded { 0 } else { count },
+            truncated: !excluded && count > entries.len(),
             entries,
         });
     }

@@ -393,12 +393,45 @@ fn max_members_counts_raw_declarations_even_with_overloads() {
         text.contains("+3 more"),
         "raw-declaration drop count expected:\n{text}"
     );
-    let json = run(&["map", p, "--max-members", "1", "--json", "--compact"]);
+    let json = run(&["map", p, "--detail", "names", "--max-members", "1", "--json", "--compact"]);
     let doc: serde_json::Value = serde_json::from_str(json.trim()).expect("valid json");
     assert_eq!(
         doc["files"][0]["dropped_members"], 3,
         "text +N and JSON dropped_members must agree: {json}"
     );
+}
+
+#[test]
+fn enum_variants_are_not_counted_by_the_member_cap() {
+    // Variants are the enum's shape, not its API surface: the names
+    // renderer never lists them, so the cap must not count them either —
+    // in text or JSON — or `dropped_members` would disagree with the
+    // `--detail names` output for any enum wider than the cap.
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path().join("wide.rs");
+    std::fs::write(
+        &p,
+        "pub enum Wide {\n    A, B, C, D, E,\n}\nimpl Wide {\n    pub fn m1(&self) {}\n    pub fn m2(&self) {}\n    pub fn m3(&self) {}\n}\n",
+    )
+    .unwrap();
+    let p = p.to_str().unwrap();
+
+    // Cap 2: the five variants pass through uncounted; methods cap 3 -> 2.
+    let text = run(&["map", p, "--detail", "names", "--max-members", "2"]);
+    assert!(text.contains("... +1 more"), "only methods count:\n{text}");
+    let json = run(&["map", p, "--detail", "names", "--max-members", "2", "--json", "--compact"]);
+    let doc: serde_json::Value = serde_json::from_str(json.trim()).expect("valid json");
+    assert_eq!(
+        doc["files"][0]["dropped_members"], 1,
+        "JSON must agree with the names output — variants uncounted: {json}"
+    );
+    let variants = doc["files"][0]["declarations"][0]["children"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|c| c["kind"] == "enum_member")
+        .count();
+    assert_eq!(variants, 5, "no variant may be cut by the cap: {json}");
 }
 
 #[test]
@@ -593,7 +626,7 @@ mod tests {
 }
 
 #[test]
-fn nested_cap_drop_counts_match_text_when_subtree_is_removed() {
+fn nested_types_are_never_cut_by_the_member_cap() {
     // Nested types are structure, not members: `--max-members` never cuts
     // or counts them — the digest renderer lists them as their own entries,
     // and map/JSON follow the same member definition. Each nested type's
@@ -694,7 +727,9 @@ fn methods_implementing_a_locally_private_trait_are_not_public() {
     .unwrap();
     let p = p.to_str().unwrap();
 
-    let digest = run(&["digest", p]);
+    // Negative assertions must not trip on the random temp path in the
+    // header line — strip it first.
+    let digest = run(&["digest", p]).replace(p, "<fixture>");
     assert!(digest.contains("Loud"), "the pub type stays:\n{digest}");
     assert!(
         !digest.contains("secret"),
@@ -719,7 +754,7 @@ fn path_qualified_private_trait_impl_is_hidden_too() {
     .unwrap();
     let p = p.to_str().unwrap();
 
-    let digest = run(&["digest", p]);
+    let digest = run(&["digest", p]).replace(p, "<fixture>");
     assert!(digest.contains("Loud"), "the pub type stays:\n{digest}");
     assert!(
         !digest.contains("secret"),

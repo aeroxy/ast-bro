@@ -1035,11 +1035,7 @@ fn _positional_field_to_decl<'a, D: Doc>(
         docs_inside: false,
         // A positional field with no tracked modifier is module-private,
         // same rule as named fields (`pub(self)` included).
-        visibility: if visibility.is_empty() || _is_pub_self(&visibility) {
-            "private".to_string()
-        } else {
-            visibility
-        },
+        visibility: _normalize_private(visibility),
         start_line: node.start_pos().line() + 1,
         end_line: node.end_pos().line() + 1,
         start_byte: node.range().start,
@@ -1125,13 +1121,20 @@ fn _visibility<'a, D: Doc>(node: &Node<'a, D>, _src: &[u8]) -> String {
 /// `pub(in path)`) stay as written: they are the moral equivalent of C#
 /// `internal` / Java package-private, which the public-only view has
 /// never hidden.
-fn _visibility_or_private<'a, D: Doc>(node: &Node<'a, D>, src: &[u8]) -> String {
-    let v = _visibility(node, src);
+/// The one rule for "no modifier means private": absent or `pub(self)` /
+/// `pub(in self)` visibility normalizes to `"private"`; anything else keeps
+/// its text. Shared by node-level lookups and pre-extracted modifier
+/// strings (tuple-struct positional fields) so the rule cannot fork.
+fn _normalize_private(v: String) -> String {
     if v.is_empty() || _is_pub_self(&v) {
         "private".to_string()
     } else {
         v
     }
+}
+
+fn _visibility_or_private<'a, D: Doc>(node: &Node<'a, D>, src: &[u8]) -> String {
+    _normalize_private(_visibility(node, src))
 }
 
 /// How a builder should read a missing `pub` on an item — call sites name

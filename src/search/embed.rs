@@ -32,9 +32,11 @@ pub const DIM: usize = 256;
 const EMBEDDINGS_TENSOR: &str = "embeddings";
 
 /// Backing memory for `Embedder::embeddings_ptr`. `F32` tensors are read
-/// zero-copy straight out of the mmap; `F16` tensors are decoded once into an
-/// owned buffer (see `decode_f16_le`) so the rest of the codebase never has to
-/// think about the on-disk dtype.
+/// zero-copy straight out of the mmap when 4-byte aligned, and decoded into
+/// an owned buffer (`decode_f32_le`) when a malformed file misaligns them;
+/// `F16` tensors are always decoded once into an owned buffer
+/// (`decode_f16_le`) — so the rest of the codebase never has to think about
+/// the on-disk dtype.
 ///
 /// Neither variant's payload is read directly — each just needs to stay alive
 /// (and be dropped) for as long as `embeddings_ptr` points into it.
@@ -234,11 +236,9 @@ impl Embedder {
 
 }
 
-/// Decode a little-endian `f16` (IEEE-754 binary16) byte buffer into `f32`
-/// values, one per 2-byte pair. Callers validate `bytes.len()` is even (and
-/// matches the expected `vocab_size * DIM * 2`) before calling this.
-/// Aligned-copy fallback for a misaligned F32 tensor. The mmap fast path
-/// reads the same little-endian layout in place; keep the two in sync.
+/// Decode a little-endian `f32` byte buffer, one value per 4-byte group —
+/// the aligned-copy fallback for a misaligned F32 tensor. The mmap fast
+/// path reads the same little-endian layout in place; keep the two in sync.
 fn decode_f32_le(bytes: &[u8]) -> Vec<f32> {
     bytes
         .chunks_exact(4)
@@ -246,6 +246,9 @@ fn decode_f32_le(bytes: &[u8]) -> Vec<f32> {
         .collect()
 }
 
+/// Decode a little-endian `f16` (IEEE-754 binary16) byte buffer into `f32`
+/// values, one per 2-byte pair. Callers validate `bytes.len()` is even (and
+/// matches the expected `vocab_size * DIM * 2`) before calling this.
 fn decode_f16_le(bytes: &[u8]) -> Vec<f32> {
     bytes
         .chunks_exact(2)

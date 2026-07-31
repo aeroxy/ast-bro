@@ -424,15 +424,17 @@ fn run_callers(mut args: Value) -> CallResult {
         Ok(r) => r,
         Err(e) => return CallResult::Error(e),
     };
-    let out = crate::calls::mcp::run_callers_text(
+    match crate::calls::mcp::run_callers_text(
         &a.target,
         &root,
         a.depth,
         a.limit,
         !a.hide_ambiguous,
         a.json,
-    );
-    CallResult::Text(out)
+    ) {
+        Ok(out) => CallResult::Text(out),
+        Err(e) => CallResult::Error(e),
+    }
 }
 
 fn run_callees(mut args: Value) -> CallResult {
@@ -445,15 +447,17 @@ fn run_callees(mut args: Value) -> CallResult {
         Ok(r) => r,
         Err(e) => return CallResult::Error(e),
     };
-    let out = crate::calls::mcp::run_callees_text(
+    match crate::calls::mcp::run_callees_text(
         &a.target,
         &root,
         a.depth,
         a.limit,
         !a.hide_external,
         a.json,
-    );
-    CallResult::Text(out)
+    ) {
+        Ok(out) => CallResult::Text(out),
+        Err(e) => CallResult::Error(e),
+    }
 }
 
 #[derive(serde::Deserialize)]

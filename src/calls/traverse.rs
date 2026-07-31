@@ -269,7 +269,13 @@ pub fn unattributed_callers(graph: &CallGraph, targets: &[Qn]) -> Vec<CallEdge> 
             e.source.0.clone(),
         )
     });
-    out.dedup_by(|a, b| a.file == b.file && a.line == b.line && a.source == b.source);
+    // One row per source location, independent of the breadth ordering:
+    // same-location edges with different breadths are not adjacent after
+    // the sort above (breadth groups first), so an adjacency dedup could
+    // miss them. The seen-set retain keeps the first — lowest-breadth,
+    // i.e. strongest — occurrence.
+    let mut seen: HashSet<(std::path::PathBuf, u32, String)> = HashSet::new();
+    out.retain(|e| seen.insert((e.file.clone(), e.line, e.source.0.clone())));
     out
 }
 
