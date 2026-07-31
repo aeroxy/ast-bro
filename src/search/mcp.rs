@@ -137,10 +137,17 @@ pub fn run_find_related(args: Value) -> CallResult {
         &args.root,
         crate::project_root::Marker::SearchIndex,
     );
-    if !as_typed.exists() && !home.join(as_typed).exists() {
+    if !as_typed.is_file() && !home.join(as_typed).is_file() {
+        // A directory is as unindexable as a typo — reject both before the
+        // index opens (which would otherwise build, model download and all).
+        let what = if as_typed.exists() || home.join(as_typed).exists() {
+            "not a file"
+        } else {
+            "no such file"
+        };
         return CallResult::Error(format!(
-            "no such file: {} — `find_related` takes a file that exists; its chunk is then looked up in the index by path",
-            args.path
+            "{}: {} — `find_related` takes a file that exists; its chunk is then looked up in the index by path",
+            what, args.path
         ));
     }
     let index = match shared::open_shared(&args.root, &args.root) {

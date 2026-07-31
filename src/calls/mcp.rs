@@ -1,30 +1,44 @@
-//! MCP-side wrappers reused by `src/mcp/tools.rs` for `callers` / `callees`.
+//! MCP-side wrappers reused by `src/mcp/tools.rs` for `callers` / `callees`
+//! / `trace`.
 //!
-//! Returns `String` so the MCP layer can wrap with its own `CallResult`.
+//! Each returns `Result<String, String>`: `Ok` is the response text, `Err`
+//! the diagnostic the MCP layer surfaces as `isError: true` — MCP has no
+//! stderr channel, and a failure encoded as a successful-looking `# error:`
+//! text would read as an answer (#33 on the MCP surface).
 
 use std::path::Path;
 
-pub fn run_callers_text(target: &str, root: &Path, depth: usize, limit: usize, include_ambiguous: bool, json: bool) -> String {
+/// Shared prologue: the unified graph with the calls half present, or the
+/// diagnostic to surface as `isError`.
+fn load_calls_graph(
+    root: &Path,
+) -> Result<std::sync::Arc<crate::graph_cache::UnifiedGraph>, String> {
     use crate::calls::build::build_call_graph;
-    use crate::calls::{render, traverse};
     use crate::graph_cache;
-
-    let unified = match graph_cache::get_or_init(root) {
-        Ok(u) => u,
-        Err(e) => return format!("# error: {}", e),
-    };
-    let promoted = if unified.calls.is_some() {
-        unified
+    let unified = graph_cache::get_or_init(root).map_err(|e| e.to_string())?;
+    if unified.calls.is_some() {
+        Ok(unified)
     } else {
-        match graph_cache::promote_calls(root, |g| build_call_graph(root, &g.deps)) {
-            Ok(p) => p,
-            Err(e) => return format!("# error: {}", e),
-        }
-    };
-    let calls = match &promoted.calls {
-        Some(c) => c,
-        None => return "# error: call graph unavailable".to_string(),
-    };
+        graph_cache::promote_calls(root, |g| build_call_graph(root, &g.deps))
+            .map_err(|e| e.to_string())
+    }
+}
+
+pub fn run_callers_text(
+    target: &str,
+    root: &Path,
+    depth: usize,
+    limit: usize,
+    include_ambiguous: bool,
+    json: bool,
+) -> Result<String, String> {
+    use crate::calls::{render, traverse};
+
+    let promoted = load_calls_graph(root)?;
+    let calls = promoted
+        .calls
+        .as_ref()
+        .ok_or_else(|| "call graph unavailable".to_string())?;
     let qns = crate::calls::cli_helpers::resolve_target_qns(calls, target);
     let mut hits = Vec::new();
     let mut frontier_truncated = false;
@@ -60,7 +74,14 @@ pub fn run_callers_text(target: &str, root: &Path, depth: usize, limit: usize, i
         frontier_truncated,
     };
     if json {
-        render::render_callers_json(target, depth.max(1), &hits, &unattributed, &trunc, true)
+        Ok(render::render_callers_json(
+            target,
+            depth.max(1),
+            &hits,
+            &unattributed,
+            &trunc,
+            true,
+        ))
     } else {
         // Same gating as the CLI's stderr note: only an explicitly
         // deepened walk gets the frontier line (JSON always carries the
@@ -73,12 +94,12 @@ pub fn run_callers_text(target: &str, root: &Path, depth: usize, limit: usize, i
         } else {
             String::new()
         };
-        format!(
+        Ok(format!(
             "{}{}{}",
             frontier_note,
             hidden_note,
             render::render_callers_text(target, &hits, &unattributed, &trunc)
-        )
+        ))
     }
 }
 
@@ -89,21 +110,13 @@ pub fn run_trace_text(
     depth: usize,
     json: bool,
 ) -> Result<String, String> {
-    use crate::calls::build::build_call_graph;
     use crate::calls::trace::render_trace;
-    use crate::graph_cache;
 
-    let unified = graph_cache::get_or_init(root).map_err(|e| e.to_string())?;
-    let promoted = if unified.calls.is_some() {
-        unified
-    } else {
-        graph_cache::promote_calls(root, |g| build_call_graph(root, &g.deps))
-            .map_err(|e| e.to_string())?
-    };
-    let calls = match &promoted.calls {
-        Some(c) => c,
-        None => return Err("call graph unavailable".to_string()),
-    };
+    let promoted = load_calls_graph(root)?;
+    let calls = promoted
+        .calls
+        .as_ref()
+        .ok_or_else(|| "call graph unavailable".to_string())?;
     let (out, outcome) = render_trace(calls, root, from, to, depth.max(1), json, false);
     match outcome {
         // An endpoint that matches no symbol is a rejected call, not an
@@ -124,28 +137,15 @@ pub fn run_callees_text(
     limit: usize,
     external: bool,
     json: bool,
-) -> String {
-    use crate::calls::build::build_call_graph;
+) -> Result<String, String> {
     use crate::calls::graph::Qn;
     use crate::calls::{render, traverse};
-    use crate::graph_cache;
 
-    let unified = match graph_cache::get_or_init(root) {
-        Ok(u) => u,
-        Err(e) => return format!("# error: {}", e),
-    };
-    let promoted = if unified.calls.is_some() {
-        unified
-    } else {
-        match graph_cache::promote_calls(root, |g| build_call_graph(root, &g.deps)) {
-            Ok(p) => p,
-            Err(e) => return format!("# error: {}", e),
-        }
-    };
-    let calls = match &promoted.calls {
-        Some(c) => c,
-        None => return "# error: call graph unavailable".to_string(),
-    };
+    let promoted = load_calls_graph(root)?;
+    let calls = promoted
+        .calls
+        .as_ref()
+        .ok_or_else(|| "call graph unavailable".to_string())?;
     let qns = crate::calls::cli_helpers::resolve_target_qns(calls, target);
     let mut all_edges = Vec::new();
     // Same frontier accounting as `cli::run_callees`: the one-hop fast path
@@ -184,7 +184,7 @@ pub fn run_callees_text(
         // `ast-bro.callees.v1` can't tell a missing key from a complete
         // answer, so `total` / `truncated` / `frontier_truncated` are always
         // present here too.
-        render::render_callees_json_extended(
+        Ok(render::render_callees_json_extended(
             &first,
             depth.max(1),
             &all_edges,
@@ -193,8 +193,10 @@ pub fn run_callees_text(
             all_edges.len(),
             frontier_truncated,
             true,
-        )
+        ))
     } else {
-        render::render_callees_text(calls, &first, &all_edges, total, external)
+        Ok(render::render_callees_text(
+            calls, &first, &all_edges, total, external,
+        ))
     }
 }
