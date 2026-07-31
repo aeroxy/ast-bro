@@ -226,6 +226,34 @@ fn mcp_find_related_unknown_location_is_an_error_in_json_mode_too() {
 }
 
 #[test]
+fn mcp_callees_limit_truncates_display_but_keeps_the_true_total() {
+    // `limit` bounds the payload, not the walk (issue #32): the JSON must
+    // carry the exact pre-cap `total` and `truncated: true` so a consumer
+    // can tell a capped answer from a complete one.
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        tmp.path().join("lib.rs"),
+        "pub fn f0() {}\npub fn f1() {}\npub fn f2() {}\npub fn hub() { f0(); f1(); f2(); }\n",
+    )
+    .unwrap();
+    let resp = call_tool(
+        tmp.path(),
+        "callees",
+        serde_json::json!({"target": "hub", "limit": 2, "json": true}),
+    );
+    let (_, is_error, text) = result_of(&resp);
+    assert!(!is_error, "{resp}");
+    let doc: serde_json::Value = serde_json::from_str(text).expect("payload parses");
+    assert_eq!(doc["total"], 3, "true pre-cap total: {text}");
+    assert_eq!(doc["truncated"], true, "{text}");
+    assert_eq!(
+        doc["matches"].as_array().map(|m| m.len()),
+        Some(2),
+        "display capped at limit: {text}"
+    );
+}
+
+#[test]
 fn mcp_json_partial_miss_carries_missing_paths() {
     // JSON responses can't prepend a note; the unresolved originals ride
     // as a machine-readable `missing_paths` field instead, for map and

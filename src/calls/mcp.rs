@@ -43,41 +43,18 @@ pub fn run_callers_text(target: &str, root: &Path, depth: usize, limit: usize, i
     if hits.len() > limit {
         hits.truncate(limit);
     }
-    // Same unattributed-edge surfacing as the CLI path (issue #31). MCP has
-    // no stderr channel, so when `include_ambiguous` is off the hidden count
-    // is prepended to the response text instead of printed as a note —
-    // silently dropping it would make "0 callers" read as authoritative.
-    let mut unattributed = traverse::unattributed_callers(calls, &qns);
-    let mut hidden_note = String::new();
-    let mut unattributed_hidden = 0usize;
-    if !include_ambiguous && !unattributed.is_empty() {
-        unattributed_hidden = unattributed.len();
-        hidden_note = format!(
-            "# note: {} unresolved call site(s) naming '{}' hidden (include_ambiguous: false); they may be additional callers\n",
-            unattributed_hidden,
-            target
-        );
-        unattributed.clear();
-    }
-    // Own cap and discrimination gate, as in the CLI path: a bare name many
-    // symbols declare buys a one-line count, not 199 rows of another
-    // symbol's call sites landing in an agent's context.
-    let unattributed_total = unattributed.len();
-    let declarers = traverse::name_declarers(calls, &qns);
-    let sample = if declarers > render::MAX_DECLARERS_TO_LIST {
-        0
-    } else {
-        crate::calls::cli::UNATTRIBUTED_SAMPLE.min(limit)
-    };
-    if unattributed.len() > sample {
-        unattributed.truncate(sample);
-    }
-    let unattributed = render::Unattributed {
-        edges: &unattributed,
-        total: unattributed_total,
-        hidden: unattributed_hidden,
-        declarers,
-    };
+    // Same unattributed-edge policy as the CLI path (issue #31), through
+    // the one shared constructor so the two surfaces cannot drift. MCP has
+    // no stderr channel, so when `include_ambiguous` is off the hidden
+    // count is prepended to the response text instead of printed as a note
+    // — silently dropping it would make "0 callers" read as authoritative.
+    let facts =
+        render::UnattributedFacts::collect(calls, &qns, include_ambiguous, limit, &|_| true);
+    let hidden_note = facts
+        .hidden_note(target, "include_ambiguous: false")
+        .map(|n| format!("{n}\n"))
+        .unwrap_or_default();
+    let unattributed = facts.view();
     let trunc = render::Truncation {
         total,
         frontier_truncated,

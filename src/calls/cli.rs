@@ -149,47 +149,27 @@ pub fn run_callers(
         .filter(|c| matches!(c.kind, SymbolKind::Callable))
         .map(|c| c.qn.clone())
         .collect();
-    let mut unattributed = traverse::unattributed_callers(calls, &callable_qns);
-    if tests || exclude_tests {
-        unattributed.retain(|e| {
+    let facts = render::UnattributedFacts::collect(
+        calls,
+        &callable_qns,
+        include_ambiguous,
+        limit,
+        &|e| {
+            if !(tests || exclude_tests) {
+                return true;
+            }
             let is_test = crate::file_filter::is_test_file(&root.join(&e.file), &root);
             if exclude_tests {
                 !is_test
             } else {
                 is_test
             }
-        });
+        },
+    );
+    if let Some(note) = facts.hidden_note(target, "--hide-ambiguous") {
+        eprintln!("{note}");
     }
-    let mut unattributed_hidden = 0usize;
-    if !include_ambiguous && !unattributed.is_empty() {
-        unattributed_hidden = unattributed.len();
-        eprintln!(
-            "# note: {} unresolved call site(s) naming '{}' hidden (--hide-ambiguous); they may be additional callers",
-            unattributed_hidden,
-            target
-        );
-        unattributed.clear();
-    }
-    let unattributed_total = unattributed.len();
-    let declarers = traverse::name_declarers(calls, &callable_qns);
-    // The section carries its own cap rather than inheriting the resolved
-    // list's leftover budget: the worse the resolver did, the *larger* the
-    // leftover, so `--limit` would hand the least trustworthy rows the most
-    // screen. `--limit` can still shrink the sample, never grow it.
-    let sample = if declarers > render::MAX_DECLARERS_TO_LIST {
-        0
-    } else {
-        UNATTRIBUTED_SAMPLE.min(limit)
-    };
-    if unattributed.len() > sample {
-        unattributed.truncate(sample);
-    }
-    let unattributed = render::Unattributed {
-        edges: &unattributed,
-        total: unattributed_total,
-        hidden: unattributed_hidden,
-        declarers,
-    };
+    let unattributed = facts.view();
 
     let trunc = render::Truncation {
         total,
