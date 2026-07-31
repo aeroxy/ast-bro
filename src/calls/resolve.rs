@@ -97,10 +97,22 @@ pub fn run_with_table(
             // `Foo.bar()`) binds only to a local qn actually scoped under
             // that type.
             let self_like = receiver_is_self_like(raw.receiver.as_deref());
+            // `crate`/`super` stay self-like for pass B (path keywords, not
+            // object receivers — a single global match is still a safe
+            // promotion), but for same-file binding they name a *different*
+            // scope than the caller's own: `crate::helper()` means the crate
+            // root and `super::helper()` the parent module, never a sibling.
+            // Route them through the anchored SelfRel walk below instead of
+            // sibling preference, which would hand `crate::helper()` to the
+            // caller-scope homonym tagged Exact. (In OO languages a bare
+            // `super.m()` receiver names the parent type — also never the
+            // caller's own scope.)
+            let scope_shifting =
+                matches!(raw.receiver.as_deref(), Some("crate") | Some("super"));
 
             // -------- Pass A: same-file -------- //
             if file_qns.contains(&raw.bare_name) {
-                let local_target = if self_like {
+                let local_target = if self_like && !scope_shifting {
                     // Prefer the sibling under the caller's own scope:
                     // `self.shared()` inside `Greeter::caller` is
                     // `Greeter::shared`, not a same-file homonym from
@@ -157,13 +169,21 @@ pub fn run_with_table(
                                 // A chain ending in the bare keyword has no
                                 // trailing `::` for the arm above to strip:
                                 // `super::super::helper()` arrives with
-                                // receiver "super::super". Consume it like
-                                // its prefixed form, leaving an empty rest.
+                                // receiver "super::super", and a plain
+                                // `super::helper()` as just "super". Consume
+                                // it like its prefixed form, leaving an
+                                // empty rest.
                                 rest = "";
                                 rel = Some(match rel {
                                     Some(SelfRel::Super(n)) => SelfRel::Super(n + 1),
                                     _ => SelfRel::Super(1),
                                 });
+                            } else if rest == "crate" {
+                                // Same bare-keyword form for the crate
+                                // anchor: `crate::helper()` arrives with
+                                // receiver "crate".
+                                rest = "";
+                                rel = Some(SelfRel::Crate);
                             } else {
                                 break;
                             }
@@ -271,8 +291,10 @@ pub fn run_with_table(
 
             // -------- Pass A (cont): import resolution -------- //
             // Same gate: `obj.parse()` must not bind to an imported free
-            // function `parse`.
-            if self_like {
+            // function `parse`. Scope-shifting receivers bypass imports too:
+            // `crate::helper()` explicitly names a path, not the imported
+            // `helper` binding.
+            if self_like && !scope_shifting {
                 if let Some(spec) = import_lookup.get(&raw.bare_name) {
                     if let Some(target) = resolve_via_imports(
                         spec,
@@ -373,10 +395,10 @@ fn is_crate_root(file: &str) -> bool {
         || file.starts_with("src/bin/")
 }
 
-/// A receiver that still points at the enclosing scope: absent (`foo()`),
-/// or one of the language self/scope keywords. Anything else — a variable,
-/// field, or type name — means the call targets another object, so
-/// same-file and single-global-match promotion must not claim it.
+/// A receiver that is a scope keyword rather than an object: absent
+/// (`foo()`), or one of the language self/scope keywords. Anything else —
+/// a variable, field, or type name — means the call targets another object,
+/// so same-file and single-global-match promotion must not claim it.
 /// (`self`/`Self`/`crate`/`super` — Rust; `this` — Java/TS/C#/C++/Kotlin/
 /// Scala; `$this` — PHP; `cls` — Python, the conventional first parameter of
 /// a `@classmethod`, where `cls.helper()` means the enclosing class exactly
@@ -384,6 +406,13 @@ fn is_crate_root(file: &str) -> bool {
 /// never reach here — the adapter normalizes those receivers to `None` —
 /// so listing the bare words would only ever match user variables named
 /// `static`/`parent`, which are common and NOT self-like.)
+///
+/// Nuance: `crate` and `super` are keywords but name a scope *other than*
+/// the caller's own, so pass A's same-file binding refines this gate with
+/// `scope_shifting` and routes them through the anchored SelfRel walk
+/// instead of sibling preference. Pass B keeps them here — a path keyword
+/// is not an object receiver, so a single global match is still a safe
+/// promotion — and `delta.rs` mirrors pass B through this same function.
 pub(crate) fn receiver_is_self_like(recv: Option<&str>) -> bool {
     matches!(
         recv,
