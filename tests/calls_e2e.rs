@@ -2383,6 +2383,53 @@ pub mod a {
 }
 
 #[test]
+fn scope_keywords_do_not_promote_a_single_match_from_a_ruled_out_scope() {
+    // `crate::helper()` names `src/lib.rs::helper`, which does not exist —
+    // the only `helper` lives in a sibling module the keyword explicitly
+    // rules out. Pass B's single-global-match promotion must not claim it
+    // Exact (pass A already declines); the edge defers to pass C, whose
+    // dep filter can at most call it Inferred. Same for a bare `super::`
+    // whose parent scope lacks the name.
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(&root.join("Cargo.toml"), "[package]\nname=\"x\"\nversion=\"0.0.0\"\nedition=\"2021\"\n");
+    write(
+        &root.join("src/lib.rs"),
+        r#"pub mod a {
+    pub fn helper() {}
+    pub fn via_crate() { crate::helper(); }
+}
+pub mod b {
+    pub mod deep {
+        pub fn via_super() { super::sibling_only(); }
+    }
+}
+pub mod c {
+    pub fn sibling_only() {}
+}
+"#,
+    );
+    for (caller, first) in [("via_crate", true), ("via_super", false)] {
+        let mut args = vec!["callees", caller, ".", "--json", "--compact"];
+        if first {
+            args.push("--rebuild");
+        }
+        let (out, code) = run_in(root, &args);
+        assert_eq!(code, 0, "{out}");
+        let doc: serde_json::Value = serde_json::from_str(out.trim()).expect("valid json");
+        let any_exact = doc["matches"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|m| m["confidence"] == "Exact");
+        assert!(
+            !any_exact,
+            "{caller}: a single match in a scope the keyword rules out must not bind Exact: {out}"
+        );
+    }
+}
+
+#[test]
 fn bare_super_prefix_binds_the_parent_not_the_callers_scope() {
     // `super::helper()` from inside `a::deep` names the *parent* module's
     // helper. Sibling preference would bind the caller-level decoy

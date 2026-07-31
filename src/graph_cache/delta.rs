@@ -260,8 +260,12 @@ pub fn apply_delta_to_calls(
         for e in edges.iter_mut() {
             let CallTarget::Bare(name) = &e.target else { continue };
             let Some(cands) = calls.symbol_table.get(name) else { continue };
-            let has_receiver =
-                !crate::calls::resolve::receiver_is_self_like(e.receiver.as_deref());
+            // Same gate as pass B on a cold build: scope-shifting keyword
+            // receivers (`crate`/`super`) withhold single-match promotion —
+            // the one match may sit in a scope the keyword rules out.
+            let recv = e.receiver.as_deref();
+            let has_receiver = !crate::calls::resolve::receiver_is_self_like(recv)
+                || crate::calls::resolve::receiver_is_scope_shifting(recv);
             if cands.len() == 1 && !has_receiver {
                 // Same tag pass B gives this case on a cold build
                 // (`resolve.rs`, single global match, no receiver) — parity
