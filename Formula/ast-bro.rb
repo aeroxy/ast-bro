@@ -1,8 +1,8 @@
 class AstBro < Formula
   desc "Fast AST-based code navigation, search, rewrite, and log squeezing"
   homepage "https://github.com/aeroxy/ast-bro"
-  url "https://github.com/aeroxy/ast-bro/releases/download/3.0.0/ast-bro-macos-arm64.zip"
-  sha256 "d93ca8d650cc1e62ddd14cbe8d36165749da241fabef5f0eee2e33f8f6f40447"
+  url "https://github.com/aeroxy/ast-bro/releases/download/4.0.0/ast-bro-macos-arm64.zip"
+  sha256 "19e0e5066d8b972028b4ab88812df4ccdcb64e0fcd8ad18f81410fd4720e308a"
   license "MIT"
 
   def install
