@@ -153,6 +153,22 @@ fn _is_capped_type(kind: &DeclarationKind) -> bool {
     )
 }
 
+/// Whether a child declaration counts as a *member* for `--max-members`.
+/// Nested types are structure, not members — the digest renderer lists
+/// them as their own flattened entries (`_digest_members` skips them) —
+/// so the cap never cuts them or counts them, in text and JSON alike.
+fn _counts_toward_member_cap(kind: &DeclarationKind) -> bool {
+    !matches!(
+        kind,
+        DeclarationKind::Class
+            | DeclarationKind::Struct
+            | DeclarationKind::Interface
+            | DeclarationKind::Record
+            | DeclarationKind::Enum
+            | DeclarationKind::Namespace
+    )
+}
+
 /// One unresolved call-site as observed during AST walking. Resolution to
 /// a project-qualified name happens later in `src/calls/resolve.rs`.
 #[derive(Debug, Clone, Serialize, Default)]
@@ -747,7 +763,7 @@ fn _render_decl(decl: &Declaration, opts: &MapOptions, indent: usize, out: &mut 
     let mut shown = 0usize;
     let mut hidden = 0usize;
     for child in &decl.children {
-        if visible(child) {
+        if visible(child) && _counts_toward_member_cap(&child.kind) {
             if shown >= cap {
                 hidden += 1;
                 continue;
@@ -1254,6 +1270,24 @@ fn _trail_matches(trail: &[String], parts: &[&str], substring: bool) -> bool {
     true
 }
 
+/// Whether any *type* declaration in `results` matches `target` — the gate
+/// that distinguishes "this type has no implementations" (a real answer)
+/// from "no such type anywhere" (a rejected query, issue #36). Shared by
+/// the CLI and MCP `implements` surfaces so the two cannot drift. Only
+/// type-shaped kinds count as proof: a function named `helper` must not
+/// validate `implements helper` — and a C# `delegate` is a declared type,
+/// so a 0-match answer on one is legitimate.
+pub fn implements_target_exists(results: &[ParseResult], target: &str) -> bool {
+    results.iter().any(|r| {
+        find_symbols(r, target).iter().any(|m| {
+            matches!(
+                m.kind.as_str(),
+                "class" | "struct" | "interface" | "record" | "enum" | "delegate"
+            )
+        })
+    })
+}
+
 #[derive(Clone, Serialize)]
 pub struct ImplMatch {
     pub path: String,
@@ -1410,48 +1444,44 @@ fn _filter_decls(
     opts: &MapOptions,
     dropped: &mut usize,
 ) -> Vec<Declaration> {
-    if decls.is_empty() {
-        return Vec::new();
-    }
     decls
         .iter()
-        .filter_map(|d| {
-            if !_map_eligible(d, opts) {
-                return None;
-            }
-            let mut clone = d.clone();
-            // Same member definition as the text renderer: the cap applies
-            // to *type* members only. The cap is applied to the eligible
-            // direct children BEFORE recursing, so a subtree removed by
-            // this cap contributes nothing to `dropped` — keeping JSON
-            // `dropped_members` equal to the sum of the text renderer's
-            // `+N more` lines even when a capped type is itself cut by an
-            // ancestor's cap.
-            let mut kept: Vec<&Declaration> =
-                d.children.iter().filter(|c| _map_eligible(c, opts)).collect();
-            if _is_capped_type(&d.kind) {
-                if let Some(cap) = opts.max_members {
-                    if kept.len() > cap {
-                        *dropped += kept.len() - cap;
-                        kept.truncate(cap);
-                    }
-                }
-            }
-            let children: Vec<Declaration> = kept
-                .into_iter()
-                .filter_map(|c| {
-                    // Recurse per retained child; eligibility was already
-                    // checked, so this only descends and caps deeper levels.
-                    _filter_decls(std::slice::from_ref(c), opts, dropped).pop()
-                })
-                .collect();
-            if !opts.include_docs {
-                clone.docs = Vec::new();
-            }
-            clone.children = children;
-            Some(clone)
-        })
+        .filter(|d| _map_eligible(d, opts))
+        .map(|d| _filter_one(d, opts, dropped))
         .collect()
+}
+
+/// Project one (already-eligible) declaration through MapOptions. Same
+/// member definition as both text renderers: the cap applies to *type*
+/// members only, and nested types neither consume nor count toward it
+/// (`_counts_toward_member_cap`). A child cut by the cap is not recursed
+/// into, so its subtree contributes nothing to `dropped` — keeping JSON
+/// `dropped_members` equal to the sum of the text renderers' `+N more`
+/// lines even when a capped type is itself cut by an ancestor's cap.
+fn _filter_one(d: &Declaration, opts: &MapOptions, dropped: &mut usize) -> Declaration {
+    let cap = if _is_capped_type(&d.kind) {
+        opts.max_members.unwrap_or(usize::MAX)
+    } else {
+        usize::MAX
+    };
+    let mut members_kept = 0usize;
+    let mut children = Vec::new();
+    for c in d.children.iter().filter(|c| _map_eligible(c, opts)) {
+        if _counts_toward_member_cap(&c.kind) {
+            if members_kept >= cap {
+                *dropped += 1;
+                continue;
+            }
+            members_kept += 1;
+        }
+        children.push(_filter_one(c, opts, dropped));
+    }
+    let mut clone = d.clone();
+    if !opts.include_docs {
+        clone.docs = Vec::new();
+    }
+    clone.children = children;
+    clone
 }
 
 /// Whether a declaration survives the MapOptions projection — the one

@@ -416,10 +416,12 @@ fn free_functions_are_not_capped_by_max_members() {
             "free fn {f} must not be capped:\n{text}"
         );
     }
-    // Nothing was cut, so the cap note must not appear either — its exact
-    // wording, not a stand-in symbol, since that is what a reader sees.
+    // Nothing was cut, so the cap note must not appear either. The names
+    // renderer's wording is "... +N more" — "more member(s)" is the map
+    // renderer's note, which this detail level never emits — so check the
+    // wording this output would actually carry.
     assert!(
-        !text.contains("more member(s)"),
+        !text.contains("... +"),
         "free functions were not capped, so no cap note belongs here:\n{text}"
     );
 }
@@ -592,9 +594,11 @@ mod tests {
 
 #[test]
 fn nested_cap_drop_counts_match_text_when_subtree_is_removed() {
-    // A capped nested type that is itself removed by an ancestor's cap
-    // must contribute nothing to JSON dropped_members — the text renderer
-    // never shows a `+N` for it either.
+    // Nested types are structure, not members: `--max-members` never cuts
+    // or counts them — the digest renderer lists them as their own entries,
+    // and map/JSON follow the same member definition. Each nested type's
+    // *own* members still cap, and the text `+N` lines must sum to JSON's
+    // dropped_members.
     let dir = tempfile::tempdir().unwrap();
     let p = dir.path().join("Nested.java");
     std::fs::write(
@@ -608,16 +612,22 @@ fn nested_cap_drop_counts_match_text_when_subtree_is_removed() {
     .unwrap();
     let p = p.to_str().unwrap();
 
-    // Cap 2: Outer keeps [A, B], drops C entirely (+1). A caps 3 -> 2 (+1).
-    // C's four members must NOT count. Total = 2.
+    // Cap 2: Outer's nested classes A/B/C all survive (types are not
+    // members). A caps 3 -> 2 (+1), C caps 4 -> 2 (+2). Total = 3.
     let json = run(&["map", p, "--max-members", "2", "--json", "--compact"]);
     let doc: serde_json::Value = serde_json::from_str(json.trim()).expect("valid json");
     assert_eq!(
-        doc["files"][0]["dropped_members"], 2,
-        "drops inside a removed subtree must not be counted: {json}"
+        doc["files"][0]["dropped_members"], 3,
+        "only type members count toward the cap: {json}"
+    );
+    let outer = &doc["files"][0]["declarations"][0];
+    assert_eq!(
+        outer["children"].as_array().unwrap().len(),
+        3,
+        "nested types must never be cut by the member cap: {json}"
     );
 
-    // And the text +N lines sum to the same 2.
+    // And the text +N lines sum to the same 3.
     let text = run(&["map", p, "--max-members", "2"]);
     let total: usize = text
         .lines()
@@ -626,7 +636,7 @@ fn nested_cap_drop_counts_match_text_when_subtree_is_removed() {
             l[i + 5..].split_whitespace().next()?.parse::<usize>().ok()
         })
         .sum();
-    assert_eq!(total, 2, "text +N lines must sum to dropped_members:\n{text}");
+    assert_eq!(total, 3, "text +N lines must sum to dropped_members:\n{text}");
 }
 
 #[test]

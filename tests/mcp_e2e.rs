@@ -142,6 +142,88 @@ fn mcp_digest_all_missing_paths_is_an_error() {
 }
 
 #[test]
+fn mcp_trace_unresolved_target_is_an_error() {
+    // An endpoint that matches no symbol is a rejected call (#36) — it must
+    // ride the error channel, not come back as a valid-looking trace doc.
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        tmp.path().join("lib.rs"),
+        "pub fn a() { b(); }\npub fn b() {}\n",
+    )
+    .unwrap();
+    for json in [false, true] {
+        let resp = call_tool(
+            tmp.path(),
+            "trace",
+            serde_json::json!({"from": "a", "to": "no_such_symbol_xyz", "json": json}),
+        );
+        let (_, is_error, text) = result_of(&resp);
+        assert!(is_error, "unresolved trace target must be isError (json={json}): {resp}");
+        assert!(
+            text.contains("no_such_symbol_xyz"),
+            "diagnostic must name the missing symbol: {text}"
+        );
+    }
+}
+
+#[test]
+fn mcp_implements_unknown_type_is_an_error() {
+    // Same gate as the CLI (#36): 0 matches for a type that exists is an
+    // answer; 0 matches because the type exists nowhere is a rejection.
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        tmp.path().join("lib.rs"),
+        "pub trait Base {}\npub struct Leaf;\nimpl Base for Leaf {}\n",
+    )
+    .unwrap();
+    let resp = call_tool(
+        tmp.path(),
+        "implements",
+        serde_json::json!({"target": "NoSuchType", "paths": ["."]}),
+    );
+    let (_, is_error, text) = result_of(&resp);
+    assert!(is_error, "unknown type must not read as an empty answer: {resp}");
+    assert!(text.contains("NoSuchType"), "{text}");
+
+    // A real type with no implementors stays a legitimate 0-match success.
+    let resp = call_tool(
+        tmp.path(),
+        "implements",
+        serde_json::json!({"target": "Leaf", "paths": ["."]}),
+    );
+    let (_, is_error, text) = result_of(&resp);
+    assert!(!is_error, "an empty answer for an existing type is still an answer: {resp}");
+    assert!(text.contains("0 match(es)"), "{text}");
+}
+
+#[test]
+fn mcp_find_related_unknown_location_is_an_error_in_json_mode_too() {
+    // The JSON empty-envelope special case said "nothing is similar to this
+    // chunk" for a location that was never indexed — a different and wrong
+    // claim (#33). Both output modes must reject.
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(tmp.path().join("lib.rs"), "pub fn f() {}\n").unwrap();
+    // No index exists and the file was never indexed; use a path that does
+    // not exist so the lookup misses without a model download.
+    let resp = call_tool(
+        tmp.path(),
+        "find_related",
+        serde_json::json!({"path": "nope/missing.rs", "line": 1, "root": ".", "json": true}),
+    );
+    let (_, is_error, text) = result_of(&resp);
+    assert!(is_error, "json mode must not return a valid-looking empty results list: {resp}");
+    assert!(
+        !text.contains("\"results\""),
+        "no ast-bro.related.v1 payload for a rejected call: {text}"
+    );
+    // Nothing was built on the way to the rejection (no model download).
+    assert!(
+        !tmp.path().join(".ast-bro/index").exists(),
+        "a rejected location must not trigger an index build"
+    );
+}
+
+#[test]
 fn mcp_json_partial_miss_carries_missing_paths() {
     // JSON responses can't prepend a note; the unresolved originals ride
     // as a machine-readable `missing_paths` field instead, for map and

@@ -479,8 +479,10 @@ fn run_trace(args: Value) -> CallResult {
         Ok(r) => r,
         Err(e) => return CallResult::Error(e),
     };
-    let out = crate::calls::mcp::run_trace_text(&a.from, &a.to, &root, a.depth, a.json);
-    CallResult::Text(out)
+    match crate::calls::mcp::run_trace_text(&a.from, &a.to, &root, a.depth, a.json) {
+        Ok(out) => CallResult::Text(out),
+        Err(e) => CallResult::Error(e),
+    }
 }
 
 #[derive(Deserialize, Default)]
@@ -781,6 +783,16 @@ fn run_implements(args: Value) -> CallResult {
     let results = crate::walk_and_parse(&paths, None);
     let transitive = !a.direct;
     let matches = core::find_implementations(&results, &a.target, transitive);
+
+    // Same gate as the CLI (#36): a 0-match answer is only reported for
+    // types that exist — "no such type anywhere" is a rejected call, and
+    // MCP's one error channel is `isError`.
+    if matches.is_empty() && !core::implements_target_exists(&results, &a.target) {
+        return CallResult::Error(format!(
+            "no type named '{}' in the given path(s); check the spelling or widen the search path",
+            a.target
+        ));
+    }
 
     if a.json {
         CallResult::Text(with_missing_paths(

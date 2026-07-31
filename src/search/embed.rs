@@ -112,18 +112,23 @@ impl Embedder {
                         ),
                     ));
                 }
-                // SAFETY: mmap'd file data; safetensors guarantees the byte length is
-                // a multiple of size_of::<f32>(); 4-byte alignment is guaranteed
-                // because mmap always returns page-aligned pointers and the
-                // safetensors header pads the data offset to a multiple of 8 (so
-                // adding the offset keeps 4-byte alignment).
-                let ptr = data.as_ptr() as *const f32;
-                debug_assert_eq!(
-                    (ptr as usize) % std::mem::align_of::<f32>(),
-                    0,
-                    "embedding tensor must be f32-aligned"
-                );
-                (Backing::Mmap(Arc::clone(&mmap)), ptr)
+                // mmap returns page-aligned pointers and the safetensors
+                // header pads the data offset to a multiple of 8, so this
+                // tensor is normally 4-byte aligned — but the file is
+                // downloaded external input, and a preceding odd-length
+                // tensor in a malformed file can misalign it. Reading
+                // through a misaligned *const f32 is UB, so check at
+                // runtime and fall back to an owned, aligned copy (same
+                // shape as the F16 branch) instead of trusting a
+                // debug-only assertion that vanishes in release builds.
+                if (data.as_ptr() as usize).is_multiple_of(std::mem::align_of::<f32>()) {
+                    let ptr = data.as_ptr() as *const f32;
+                    (Backing::Mmap(Arc::clone(&mmap)), ptr)
+                } else {
+                    let owned = decode_f32_le(data);
+                    let ptr = owned.as_ptr();
+                    (Backing::Owned(owned), ptr)
+                }
             }
             Dtype::F16 => {
                 if data.len() != vocab_size * DIM * 2 {
@@ -232,6 +237,15 @@ impl Embedder {
 /// Decode a little-endian `f16` (IEEE-754 binary16) byte buffer into `f32`
 /// values, one per 2-byte pair. Callers validate `bytes.len()` is even (and
 /// matches the expected `vocab_size * DIM * 2`) before calling this.
+/// Aligned-copy fallback for a misaligned F32 tensor. The mmap fast path
+/// reads the same little-endian layout in place; keep the two in sync.
+fn decode_f32_le(bytes: &[u8]) -> Vec<f32> {
+    bytes
+        .chunks_exact(4)
+        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+        .collect()
+}
+
 fn decode_f16_le(bytes: &[u8]) -> Vec<f32> {
     bytes
         .chunks_exact(2)

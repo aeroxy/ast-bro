@@ -138,6 +138,14 @@ mod tests {
                     1,
                     "substitution notice must appear exactly once:\n{content}"
                 );
+                // The notice must tell the agent what it got and how to
+                // recover detail — not just that a substitution happened.
+                for phrase in ["structure map", "offset/limit", "ast-bro show"] {
+                    assert!(
+                        content.contains(phrase),
+                        "notice must mention '{phrase}':\n{content}"
+                    );
+                }
             }
             other => panic!("unexpected: {:?}", other),
         }
