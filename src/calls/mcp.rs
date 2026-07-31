@@ -105,51 +105,38 @@ pub fn run_callers_text(target: &str, root: &Path, depth: usize, limit: usize, i
     }
 }
 
-pub fn run_trace_text(from: &str, to: &str, root: &Path, depth: usize, json: bool) -> String {
+pub fn run_trace_text(
+    from: &str,
+    to: &str,
+    root: &Path,
+    depth: usize,
+    json: bool,
+) -> Result<String, String> {
     use crate::calls::build::build_call_graph;
     use crate::calls::trace::render_trace;
     use crate::graph_cache;
 
-    let unified = match graph_cache::get_or_init(root) {
-        Ok(u) => u,
-        Err(e) => return format!("# error: {}", e),
-    };
+    let unified = graph_cache::get_or_init(root).map_err(|e| e.to_string())?;
     let promoted = if unified.calls.is_some() {
         unified
     } else {
-        match graph_cache::promote_calls(root, |g| build_call_graph(root, &g.deps)) {
-            Ok(p) => p,
-            Err(e) => return format!("# error: {}", e),
-        }
+        graph_cache::promote_calls(root, |g| build_call_graph(root, &g.deps))
+            .map_err(|e| e.to_string())?
     };
     let calls = match &promoted.calls {
         Some(c) => c,
-        None => return "# error: call graph unavailable".to_string(),
+        None => return Err("call graph unavailable".to_string()),
     };
     let (out, outcome) = render_trace(calls, root, from, to, depth.max(1), json, false);
     match outcome {
-        // MCP has no stderr channel, so the diagnostic must be the response
-        // itself — as a valid `ast-bro.trace.v1` doc under `json` so the
-        // schema promise holds even for a rejected call.
-        crate::calls::trace::TraceOutcome::Unresolved(missing) => {
-            if json {
-                serde_json::json!({
-                    "schema": crate::core::JSON_SCHEMA_TRACE,
-                    "from": from,
-                    "to": to,
-                    "found": false,
-                    "error": format!("no callable symbol matches '{}'", missing),
-                    "hops": [],
-                })
-                .to_string()
-            } else {
-                format!(
-                    "# note: no callable symbol matches '{}' (try a more specific suffix like 'Type.method').\n",
-                    missing
-                )
-            }
-        }
-        _ => out,
+        // An endpoint that matches no symbol is a rejected call, not an
+        // answer — the CLI exits 2 (#36), and MCP's one error channel is
+        // `isError`, same as `map`/`digest` missing-input handling.
+        crate::calls::trace::TraceOutcome::Unresolved(missing) => Err(format!(
+            "no callable symbol matches '{}' (try a more specific suffix like 'Type.method')",
+            missing
+        )),
+        _ => Ok(out),
     }
 }
 

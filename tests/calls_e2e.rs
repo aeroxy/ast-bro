@@ -1982,7 +1982,24 @@ class Other:
         pass
 "#,
     );
-    let (out, code) = run_in(root, &["callers", "Node.add_child", ".", "--rebuild"]);
+    // Pin that both call sites are actually reported before checking their
+    // labels — a resolver that dropped them entirely would also contain no
+    // "(Exact)", passing the label check vacuously.
+    let (out, code) = run_in(root, &["callers", "Node.add_child", ".", "--rebuild", "--json", "--compact"]);
+    assert_eq!(code, 0, "{out}");
+    let doc: serde_json::Value = serde_json::from_str(out.trim()).expect("valid json");
+    assert_eq!(
+        doc["unattributed_total"], 2,
+        "both keyword-named-receiver sites must be reported: {out}"
+    );
+    for site in doc["unattributed"].as_array().unwrap() {
+        assert_ne!(
+            site["confidence"], "Exact",
+            "receivers named `parent`/`static` must not bind Exact: {out}"
+        );
+    }
+
+    let (out, code) = run_in(root, &["callers", "Node.add_child", "."]);
     assert_eq!(code, 0, "{out}");
     assert!(
         !out.contains("(Exact)"),
@@ -2182,6 +2199,37 @@ pub fn caller_outside() { Foo::method(); }
     assert!(
         !outside_exact,
         "a caller outside both scopes must not get an arbitrary Exact pick: {out}"
+    );
+}
+
+#[test]
+fn single_same_file_decoy_does_not_bind_exact() {
+    // Same rule as above with only ONE same-file candidate: a lone
+    // `Foo::method` in a sibling module must not get same-file Exact
+    // binding just for being alone — the caller's scope does not enclose
+    // it, so the edge defers to pass B/C.
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(&root.join("Cargo.toml"), "[package]\nname=\"x\"\nversion=\"0.0.0\"\nedition=\"2021\"\n");
+    write(
+        &root.join("src/lib.rs"),
+        r#"pub mod b {
+    pub struct Foo;
+    impl Foo { pub fn method() {} }
+}
+pub fn caller_outside() { Foo::method(); }
+"#,
+    );
+    let (out, code) = run_in(root, &["callees", "caller_outside", ".", "--json", "--compact", "--rebuild"]);
+    assert_eq!(code, 0, "{out}");
+    let doc: serde_json::Value = serde_json::from_str(out.trim()).expect("valid json");
+    let decoy_exact = doc["matches"].as_array().unwrap().iter().any(|m| {
+        m["confidence"] == "Exact"
+            && m["target"].as_str().unwrap_or("").contains("::b::Foo::method")
+    });
+    assert!(
+        !decoy_exact,
+        "a single same-file decoy in a sibling module must not bind Exact: {out}"
     );
 }
 

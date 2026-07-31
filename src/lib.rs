@@ -1335,21 +1335,7 @@ pub fn run() {
                 // Distinguish "this type has no implementations" (a real,
                 // interesting answer: exit 0) from "no such type anywhere"
                 // (the query could not run as asked: exit 2) — issue #36.
-                // Only *type* declarations count as proof: a function named
-                // `helper` must not validate `implements helper`.
-                let target_exists = results.iter().any(|r| {
-                    crate::core::find_symbols(r, target).iter().any(|m| {
-                        // Every type-shaped kind an adapter can emit — a C#
-                        // `delegate` is a declared type, so `implements
-                        // Handler` on one is the legitimate 0-match answer,
-                        // not "no such type".
-                        matches!(
-                            m.kind.as_str(),
-                            "class" | "struct" | "interface" | "record" | "enum" | "delegate"
-                        )
-                    })
-                });
-                if !target_exists {
+                if !crate::core::implements_target_exists(&results, target) {
                     crate::cli_error::CliError::new(
                         "implements",
                         crate::cli_error::ErrorKind::SymbolNotFound,

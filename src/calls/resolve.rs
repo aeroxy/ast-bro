@@ -212,32 +212,27 @@ pub fn run_with_table(
                             };
                         }
                         let full = format!("::{}::{}", normalized, raw.bare_name);
-                        let matches: Vec<&Qn> =
-                            fp.defined.iter().filter(|q| q.0.ends_with(&full)).collect();
-                        match matches.len() {
-                            0 => None,
-                            1 => Some(matches[0].clone()),
-                            // Several lexical scopes declare this suffix
-                            // (`mod a`/`mod b` each with `Foo::method`).
-                            // Bind only a candidate whose scope encloses
-                            // the *caller* (innermost wins) — that is what
-                            // the unqualified path means in the source.
-                            // Otherwise defer to pass B/C so the edge
-                            // stays honestly Ambiguous instead of taking
-                            // whichever match came first.
-                            _ => {
-                                let caller = raw.source.0.as_str();
-                                matches
-                                    .iter()
-                                    .filter(|q| {
-                                        let scope = &q.0[..q.0.len() - full.len()];
-                                        caller == scope
-                                            || caller.starts_with(&format!("{}::", scope))
-                                    })
-                                    .max_by_key(|q| q.0.len())
-                                    .map(|q| (*q).clone())
-                            }
-                        }
+                        // Bind only a candidate whose lexical scope encloses
+                        // the *caller* (innermost wins) — that is what the
+                        // path means in the source. The filter applies to a
+                        // single match too: one `Foo::method` declared in a
+                        // sibling module is a decoy, not the target, and
+                        // must defer to pass B/C rather than take same-file
+                        // Exact just for being alone. With several matches
+                        // (`mod a`/`mod b` each with `Foo::method`) the same
+                        // rule keeps the edge honestly Ambiguous instead of
+                        // taking whichever match came first.
+                        let caller = raw.source.0.as_str();
+                        fp.defined
+                            .iter()
+                            .filter(|q| q.0.ends_with(&full))
+                            .filter(|q| {
+                                let scope = &q.0[..q.0.len() - full.len()];
+                                caller == scope
+                                    || caller.starts_with(&format!("{}::", scope))
+                            })
+                            .max_by_key(|q| q.0.len())
+                            .cloned()
                     })
                 };
                 if let Some(qn) = local_target {

@@ -111,9 +111,12 @@ pub fn load_for_symbol_query(
         }
     };
     if graph.calls.is_none() {
-        return Err(
-            CliError::new(command, ErrorKind::IndexError, "call graph is empty").emit(json),
-        );
+        return Err(CliError::new(
+            command,
+            ErrorKind::IndexError,
+            "call graph unavailable: the cache's calls section is absent or failed to load",
+        )
+        .emit(json));
     }
     Ok((root, SymbolGraph(graph)))
 }

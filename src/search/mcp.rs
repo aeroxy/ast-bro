@@ -126,6 +126,23 @@ pub fn run_find_related(args: Value) -> CallResult {
     if args.path.is_empty() || args.line == 0 {
         return CallResult::Error("path and line (1-indexed) are required".to_string());
     }
+    // Check the source location exists on disk *before* opening the index,
+    // mirroring the CLI: `open_shared` falls back to a full build when there
+    // is no cache, which downloads the embedding model and chunks the whole
+    // repository. A typo'd path shouldn't pay for that just to be told it
+    // was a typo. Validate against the same home `Index::open` will resolve.
+    let as_typed = Path::new(&args.path);
+    let (home, _found) = crate::project_root::resolve_home(
+        &args.root,
+        &args.root,
+        crate::project_root::Marker::SearchIndex,
+    );
+    if !as_typed.exists() && !home.join(as_typed).exists() {
+        return CallResult::Error(format!(
+            "no such file: {} — `find_related` takes a file that exists; its chunk is then looked up in the index by path",
+            args.path
+        ));
+    }
     let index = match shared::open_shared(&args.root, &args.root) {
         Ok(i) => i,
         Err(e) => return CallResult::Error(format!("failed to open index: {e}")),
@@ -134,13 +151,12 @@ pub fn run_find_related(args: Value) -> CallResult {
     let hits = match index.find_related(&key, args.line, args.top_k) {
         Some(h) => h,
         None => {
-            // In JSON mode return a parseable empty-results envelope rather
-            // than an error string, so callers get the same schema either way.
-            if args.json {
-                return CallResult::Text(render_related_json(&args.path, args.line, &[], false));
-            }
+            // The location could not be found, so the query did not run —
+            // a `results: []` envelope would say "nothing is similar to
+            // this chunk", a different and wrong claim (#33/#36). Same
+            // rejection in both output modes, matching the CLI contract.
             return CallResult::Error(format!(
-                "no chunk at {}:{} (was the file indexed?)",
+                "no indexed chunk at {}:{} (was the file indexed?)",
                 args.path, args.line
             ));
         }
