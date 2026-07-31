@@ -57,28 +57,18 @@ fn _walk_mod<'a, D: Doc>(node: &Node<'a, D>, src: &[u8], out: &mut Vec<Declarati
         // a locally-declared private trait are not public API even when
         // the implementing type is pub. Traits we can't see (other files,
         // std) keep the inherited "" — their modifier is unknowable here.
-        if let Some(trait_bare) = impl_decl.bases.first().map(|b| {
-            // Shed generics, then any path qualifier: `impl self::PrivTrait
-            // for Foo` names the same local trait as the bare form, and the
-            // lookup below compares against the declaration's bare name.
-            let no_generics = b.split('<').next().unwrap_or(b).trim();
-            no_generics
-                .rsplit("::")
-                .next()
-                .unwrap_or(no_generics)
-                .trim()
-                .to_string()
-        }) {
-            let trait_private = out.iter().any(|d| {
-                d.kind == DeclarationKind::Interface
-                    && d.name == trait_bare
-                    && d.visibility == "private"
-            });
-            if trait_private {
-                for c in impl_decl.children.iter_mut() {
-                    if c.visibility.is_empty() {
-                        c.visibility = "private".to_string();
-                    }
+        let trait_private = impl_decl
+            .bases
+            .first()
+            .map(|b| {
+                let no_generics = b.split('<').next().unwrap_or(b).trim();
+                _local_trait_is_private(no_generics, out)
+            })
+            .unwrap_or(false);
+        if trait_private {
+            for c in impl_decl.children.iter_mut() {
+                if c.visibility.is_empty() {
+                    c.visibility = "private".to_string();
                 }
             }
         }
@@ -109,6 +99,40 @@ fn _walk_mod<'a, D: Doc>(node: &Node<'a, D>, src: &[u8], out: &mut Vec<Declarati
             out.push(impl_decl);
         }
     }
+}
+
+/// Does a (possibly path-qualified) trait reference resolve to a trait
+/// declared `private` in the scope this walk can see? The path is
+/// interpreted, never collapsed: `self::` names the current scope and is
+/// stripped; `a::b::Trait` descends the scope's `mod` (Namespace) children
+/// segment by segment; a lone `Trait` reads the current scope directly.
+/// `crate::`/`super::`/absolute paths anchor outside this walk's view, and
+/// a path whose segments don't resolve here names a trait we can't see —
+/// in both cases the answer is `false`: never guess by bare name, a
+/// same-named local trait is not the trait the impl qualified its way to.
+fn _local_trait_is_private(path: &str, scope: &[Declaration]) -> bool {
+    let path = path.strip_prefix("self::").unwrap_or(path);
+    if path.starts_with("crate::") || path.starts_with("super::") || path.starts_with("::") {
+        return false;
+    }
+    let mut segments = path.split("::").map(str::trim);
+    let Some(mut name) = segments.next() else {
+        return false;
+    };
+    let mut cur = scope;
+    for seg in segments {
+        let Some(ns) = cur
+            .iter()
+            .find(|d| d.kind == DeclarationKind::Namespace && d.name == name)
+        else {
+            return false;
+        };
+        cur = &ns.children;
+        name = seg;
+    }
+    cur.iter().any(|d| {
+        d.kind == DeclarationKind::Interface && d.name == name && d.visibility == "private"
+    })
 }
 
 fn _is_regroup_target(kind: &DeclarationKind) -> bool {
