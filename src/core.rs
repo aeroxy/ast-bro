@@ -1594,7 +1594,13 @@ pub fn render_json_map(results: &[ParseResult], opts: &MapOptions, pretty: bool)
     if !(strip_docs || strip_lines || strip_attrs) {
         return _to_json(&doc, pretty);
     }
-    let mut val = serde_json::to_value(&doc).unwrap_or_default();
+    // Same failure envelope as the unprojected `_to_json` path: a
+    // serialization error must not degrade into a schema-less
+    // `{"projected": ...}` stub that reads as a valid (empty) answer.
+    let mut val = match serde_json::to_value(&doc) {
+        Ok(v) => v,
+        Err(e) => return format!("{{\"error\":\"{}\"}}", e),
+    };
     if let Some(files) = val.get_mut("files").and_then(|f| f.as_array_mut()) {
         for file in files {
             if let Some(decls) = file.get_mut("declarations") {
@@ -1614,10 +1620,11 @@ pub fn render_json_map(results: &[ParseResult], opts: &MapOptions, pretty: bool)
         "attributes": !strip_attrs,
     });
     if pretty {
-        serde_json::to_string_pretty(&val).unwrap_or_default()
+        serde_json::to_string_pretty(&val)
     } else {
-        serde_json::to_string(&val).unwrap_or_default()
+        serde_json::to_string(&val)
     }
+    .unwrap_or_else(|e| format!("{{\"error\":\"{}\"}}", e))
 }
 
 /// Remove the keys a projection flag opted out of, recursively through

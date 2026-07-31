@@ -2319,6 +2319,40 @@ fn super_prefix_skips_the_callers_own_scope() {
 }
 
 #[test]
+fn multi_level_super_chain_binds_the_right_ancestor() {
+    // `super::super::helper()` arrives with receiver "super::super" — the
+    // last keyword has no trailing `::`, so a prefix-only strip loop leaves
+    // a literal "super" segment behind and the lookup can never match. The
+    // chain must count both levels and bind the grandparent's helper, not
+    // fall through, and not bind either decoy on the way up.
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(&root.join("Cargo.toml"), "[package]\nname=\"x\"\nversion=\"0.0.0\"\nedition=\"2021\"\n");
+    write(
+        &root.join("src/lib.rs"),
+        r#"pub fn helper() {}
+pub mod a {
+    pub fn helper() {}
+    pub mod deep {
+        pub fn helper() {}
+        pub fn two_level() { super::super::helper(); }
+    }
+}
+"#,
+    );
+    let (out, code) = run_in(root, &["callees", "two_level", ".", "--json", "--compact", "--rebuild"]);
+    assert_eq!(code, 0, "{out}");
+    let doc: serde_json::Value = serde_json::from_str(out.trim()).expect("valid json");
+    let m = &doc["matches"][0];
+    assert_eq!(m["confidence"], "Exact", "{out}");
+    let target = m["target"].as_str().unwrap_or("");
+    assert!(
+        target.ends_with("src/lib.rs::helper"),
+        "super::super must bind the crate-root helper, not a::helper or deep::helper: {out}"
+    );
+}
+
+#[test]
 fn crate_prefix_anchors_at_the_file_root_only() {
     // `crate::a::Foo` from inside `a::deep` must anchor at the file root —
     // an intermediate scope declaring the same `a::Foo` path (here,

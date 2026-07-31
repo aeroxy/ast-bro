@@ -153,12 +153,31 @@ pub fn run_with_table(
                                     Some(SelfRel::Super(n)) => SelfRel::Super(n + 1),
                                     _ => SelfRel::Super(1),
                                 });
+                            } else if rest == "super" {
+                                // A chain ending in the bare keyword has no
+                                // trailing `::` for the arm above to strip:
+                                // `super::super::helper()` arrives with
+                                // receiver "super::super". Consume it like
+                                // its prefixed form, leaving an empty rest.
+                                rest = "";
+                                rel = Some(match rel {
+                                    Some(SelfRel::Super(n)) => SelfRel::Super(n + 1),
+                                    _ => SelfRel::Super(1),
+                                });
                             } else {
                                 break;
                             }
                         }
                         if let Some(rel) = rel {
-                            let want_tail = format!("::{}::{}", rest, raw.bare_name);
+                            // rest is empty when the receiver was nothing
+                            // but prefix keywords ("super::super") — the
+                            // target then sits directly in the anchored
+                            // scope, with no path segments in between.
+                            let want_tail = if rest.is_empty() {
+                                format!("::{}", raw.bare_name)
+                            } else {
+                                format!("::{}::{}", rest, raw.bare_name)
+                            };
                             let caller = raw.source.0.as_str();
                             return match rel {
                                 // `crate::P` anchors at the *crate root*
