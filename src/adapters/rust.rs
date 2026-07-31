@@ -57,11 +57,18 @@ fn _walk_mod<'a, D: Doc>(node: &Node<'a, D>, src: &[u8], out: &mut Vec<Declarati
         // a locally-declared private trait are not public API even when
         // the implementing type is pub. Traits we can't see (other files,
         // std) keep the inherited "" — their modifier is unknowable here.
-        if let Some(trait_bare) = impl_decl
-            .bases
-            .first()
-            .map(|b| b.split('<').next().unwrap_or(b).trim().to_string())
-        {
+        if let Some(trait_bare) = impl_decl.bases.first().map(|b| {
+            // Shed generics, then any path qualifier: `impl self::PrivTrait
+            // for Foo` names the same local trait as the bare form, and the
+            // lookup below compares against the declaration's bare name.
+            let no_generics = b.split('<').next().unwrap_or(b).trim();
+            no_generics
+                .rsplit("::")
+                .next()
+                .unwrap_or(no_generics)
+                .trim()
+                .to_string()
+        }) {
             let trait_private = out.iter().any(|d| {
                 d.kind == DeclarationKind::Interface
                     && d.name == trait_bare

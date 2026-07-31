@@ -285,8 +285,14 @@ pub fn render_callees_text_extended(
     ));
 
     // Function-target callee edges (only present when the target name
-    // resolved to *both* a callable and a type — rare).
-    for e in edges {
+    // resolved to *both* a callable and a type — rare). Same safeguard
+    // filter as `render_callees_text`: the CLI pre-filters, but a caller
+    // handing over an unfiltered list must not leak external/bare edges
+    // past `--hide-external`.
+    for e in edges
+        .iter()
+        .filter(|e| include_external || matches!(e.target, CallTarget::Resolved(_)))
+    {
         out.push_str(&format!(
             "{}{} {}  {}\n",
             colorize_file(&file_str(&e.file)),

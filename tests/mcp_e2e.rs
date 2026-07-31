@@ -49,12 +49,14 @@ fn call_tool(dir: &std::path::Path, name: &str, arguments: serde_json::Value) ->
         .expect("mcp output");
     let stdout = String::from_utf8(out.stdout).expect("utf8");
     let stderr = String::from_utf8_lossy(&out.stderr);
-    let last = stdout
+    // Select the tools/call response by its id, not by line position — a
+    // stray notification or reordered write must fail loudly here rather
+    // than let every downstream assertion check the initialize response.
+    stdout
         .lines()
-        .last()
-        .unwrap_or_else(|| panic!("no response line; stderr:\n{stderr}"));
-    serde_json::from_str(last)
-        .unwrap_or_else(|e| panic!("invalid json-rpc response ({e}): {last}\nstderr:\n{stderr}"))
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .find(|v| v["id"] == 2)
+        .unwrap_or_else(|| panic!("no response with id 2; stdout:\n{stdout}\nstderr:\n{stderr}"))
 }
 
 fn result_of(resp: &serde_json::Value) -> (&serde_json::Value, bool, &str) {

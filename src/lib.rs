@@ -820,7 +820,10 @@ fn exit_with_parse_error(e: clap::Error) -> ! {
         .map(|a| a.to_string_lossy().into_owned())
         .take_while(|a| a != "--")
         .collect();
-    let json_mode = raw.iter().any(|a| a == "--json");
+    // `--json=true` never parses (the flag takes no value), but the
+    // rejection it triggers should still carry the envelope the caller was
+    // plainly asking for — hence the prefix form beside the exact match.
+    let json_mode = raw.iter().any(|a| a == "--json" || a.starts_with("--json="));
     let cmd = Cli::command();
     // Match the real subcommand list rather than "first token that isn't a
     // flag": a flag *value* sits in the same position a subcommand would

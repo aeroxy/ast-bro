@@ -704,3 +704,25 @@ fn methods_implementing_a_locally_private_trait_are_not_public() {
     let full = run(&["map", p]);
     assert!(full.contains("secret"), "{full}");
 }
+
+#[test]
+fn path_qualified_private_trait_impl_is_hidden_too() {
+    // `impl self::Hidden for Loud` names the same local private trait as
+    // the bare form — the path qualifier must not defeat the visibility
+    // inheritance that hides its impl methods from the public view.
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path().join("qtrait.rs");
+    std::fs::write(
+        &p,
+        "trait Hidden {\n    fn secret(&self);\n}\npub struct Loud;\nimpl self::Hidden for Loud {\n    fn secret(&self) {}\n}\n",
+    )
+    .unwrap();
+    let p = p.to_str().unwrap();
+
+    let digest = run(&["digest", p]);
+    assert!(digest.contains("Loud"), "the pub type stays:\n{digest}");
+    assert!(
+        !digest.contains("secret"),
+        "a path-qualified private trait's impl methods are not public API:\n{digest}"
+    );
+}
