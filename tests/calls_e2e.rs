@@ -2353,6 +2353,67 @@ pub mod a {
 }
 
 #[test]
+fn bare_crate_prefix_binds_the_root_not_the_callers_scope() {
+    // `crate::helper()` from inside `mod a` names the crate-root helper.
+    // The receiver arrives as the single keyword "crate" — it must take
+    // the anchored walk, not self-like sibling preference, which would
+    // hand the edge to `a::helper` tagged Exact.
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(&root.join("Cargo.toml"), "[package]\nname=\"x\"\nversion=\"0.0.0\"\nedition=\"2021\"\n");
+    write(
+        &root.join("src/lib.rs"),
+        r#"pub fn helper() {}
+pub mod a {
+    pub fn helper() {}
+    pub fn via_crate() { crate::helper(); }
+}
+"#,
+    );
+    let (out, code) = run_in(root, &["callees", "via_crate", ".", "--json", "--compact", "--rebuild"]);
+    assert_eq!(code, 0, "{out}");
+    let doc: serde_json::Value = serde_json::from_str(out.trim()).expect("valid json");
+    let m = &doc["matches"][0];
+    assert_eq!(m["confidence"], "Exact", "{out}");
+    let target = m["target"].as_str().unwrap_or("");
+    assert!(
+        target.ends_with("src/lib.rs::helper"),
+        "crate:: must bind the root helper, not the caller-scope sibling: {out}"
+    );
+}
+
+#[test]
+fn bare_super_prefix_binds_the_parent_not_the_callers_scope() {
+    // `super::helper()` from inside `a::deep` names the *parent* module's
+    // helper. Sibling preference would bind the caller-level decoy
+    // `deep::helper` — the walk must skip the caller's own scope.
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(&root.join("Cargo.toml"), "[package]\nname=\"x\"\nversion=\"0.0.0\"\nedition=\"2021\"\n");
+    write(
+        &root.join("src/lib.rs"),
+        r#"pub mod a {
+    pub fn helper() {}
+    pub mod deep {
+        pub fn helper() {}
+        pub fn via_super() { super::helper(); }
+    }
+}
+"#,
+    );
+    let (out, code) = run_in(root, &["callees", "via_super", ".", "--json", "--compact", "--rebuild"]);
+    assert_eq!(code, 0, "{out}");
+    let doc: serde_json::Value = serde_json::from_str(out.trim()).expect("valid json");
+    let m = &doc["matches"][0];
+    assert_eq!(m["confidence"], "Exact", "{out}");
+    let target = m["target"].as_str().unwrap_or("");
+    assert!(
+        target.contains("::a::helper") && !target.contains("::deep::"),
+        "super:: must bind the parent's helper, not the caller-level decoy: {out}"
+    );
+}
+
+#[test]
 fn crate_prefix_anchors_at_the_file_root_only() {
     // `crate::a::Foo` from inside `a::deep` must anchor at the file root —
     // an intermediate scope declaring the same `a::Foo` path (here,
