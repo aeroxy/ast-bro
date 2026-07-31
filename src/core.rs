@@ -1138,10 +1138,10 @@ fn _digest_members<'a>(type_decl: &'a Declaration, opts: &DigestOptions) -> Vec<
     use DeclarationKind::*;
     let mut members = Vec::new();
     for c in &type_decl.children {
-        if matches!(
-            c.kind,
-            Class | Struct | Interface | Record | Enum | Namespace | EnumMember
-        ) {
+        // Nested types via the shared predicate (they render as their own
+        // flattened entries); EnumMember is a digest-only display exclusion
+        // on top — variants are never listed in the one-page view.
+        if !_counts_toward_member_cap(&c.kind) || c.kind == EnumMember {
             continue;
         }
         if c.kind == Field && !opts.include_fields {

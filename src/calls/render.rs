@@ -81,6 +81,81 @@ impl Unattributed<'_> {
 /// See `Unattributed::discriminating`.
 pub const MAX_DECLARERS_TO_LIST: usize = 3;
 
+/// Owned result of the unattributed-callers policy: collect → optional
+/// caller-supplied filter → `--hide-ambiguous` clearing → declarer count →
+/// sample cap. One implementation shared by the CLI and MCP surfaces so the
+/// policy cannot drift between them; each surface only decides how to
+/// *deliver* the hidden count (stderr note vs. response prefix) and what
+/// per-surface filter to apply (the CLI's `--tests`/`--exclude-tests`).
+pub struct UnattributedFacts {
+    pub edges: Vec<CallEdge>,
+    pub total: usize,
+    pub hidden: usize,
+    pub declarers: usize,
+}
+
+impl UnattributedFacts {
+    pub fn collect(
+        calls: &CallGraph,
+        qns: &[Qn],
+        include_ambiguous: bool,
+        limit: usize,
+        keep: &dyn Fn(&CallEdge) -> bool,
+    ) -> Self {
+        use crate::calls::traverse;
+        let mut edges = traverse::unattributed_callers(calls, qns);
+        edges.retain(|e| keep(e));
+        let mut hidden = 0usize;
+        if !include_ambiguous && !edges.is_empty() {
+            hidden = edges.len();
+            edges.clear();
+        }
+        let total = edges.len();
+        let declarers = traverse::name_declarers(calls, qns);
+        // The section carries its own cap rather than inheriting the
+        // resolved list's leftover budget: the worse the resolver did, the
+        // *larger* the leftover, so `--limit` would hand the least
+        // trustworthy rows the most screen. `--limit` can still shrink the
+        // sample, never grow it — and a bare name many symbols declare buys
+        // a one-line count, not rows of another symbol's call sites.
+        let sample = if declarers > MAX_DECLARERS_TO_LIST {
+            0
+        } else {
+            crate::calls::cli::UNATTRIBUTED_SAMPLE.min(limit)
+        };
+        if edges.len() > sample {
+            edges.truncate(sample);
+        }
+        Self {
+            edges,
+            total,
+            hidden,
+            declarers,
+        }
+    }
+
+    /// The renderer-facing borrow of these facts.
+    pub fn view(&self) -> Unattributed<'_> {
+        Unattributed {
+            edges: &self.edges,
+            total: self.total,
+            hidden: self.hidden,
+            declarers: self.declarers,
+        }
+    }
+
+    /// The hidden-count wording both surfaces must deliver when non-zero —
+    /// only the flag spelling differs per surface.
+    pub fn hidden_note(&self, target: &str, flag: &str) -> Option<String> {
+        (self.hidden > 0).then(|| {
+            format!(
+                "# note: {} unresolved call site(s) naming '{}' hidden ({}); they may be additional callers",
+                self.hidden, target, flag
+            )
+        })
+    }
+}
+
 pub fn render_callers_text(
     target: &str,
     hits: &[CallHit],
