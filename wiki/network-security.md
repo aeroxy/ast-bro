@@ -10,13 +10,13 @@ A single embedding model:
 
 | Item | Source | Size |
 |---|---|---|
-| `config.json` | `https://huggingface.co/minishlab/potion-code-16M-v2` | 59 B |
-| `tokenizer.json` | same | ~1.0 MB |
-| `model.safetensors` | same | ~31 MB |
+| `config.json` | `https://huggingface.co/minishlab/potion-code-16M` | ~600 B |
+| `tokenizer.json` | same | ~2 MB |
+| `model.safetensors` | same | ~64 MB |
 
-Stored under `~/.cache/ast-bro/models/potion-code-16M-v2/` (see [cache layout](#cache-layout) below).
+Stored under `~/.cache/ast-bro/models/potion-code-16M/` (see [cache layout](#cache-layout) below).
 
-The model is `minishlab/potion-code-16M-v2` — a static model2vec embedding (no neural net inference, just a vocab × 256 lookup table, shipped as `f16` and decoded to `f32` once at load time). It runs on CPU in microseconds and stays resident in memory while ast-bro is running.
+The model is `minishlab/potion-code-16M` — a static model2vec embedding (no neural net inference, just a vocab × 256 float32 lookup table). It runs on CPU in microseconds and stays mmap'd in memory while ast-bro is running.
 
 ## Mirror fallback
 
@@ -70,10 +70,10 @@ ast-bro search "anything" .   # validates against the corp CA
 ## Cache layout
 
 ```text
-~/.cache/ast-bro/models/potion-code-16M-v2/
+~/.cache/ast-bro/models/potion-code-16M/
 ├── config.json           # model config
 ├── tokenizer.json        # huggingface tokenizers serialized form
-├── model.safetensors     # ~31 MB of f16 weights, decoded to f32 once at load
+├── model.safetensors     # ~64 MB of f32 weights, mmap'd at runtime
 └── manifest.json         # { "sha256": {...}, "source": "hf" | "hf-mirror" }
 ```
 

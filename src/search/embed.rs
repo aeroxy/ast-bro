@@ -1,4 +1,4 @@
-//! Static-embedding model loader (model2vec / potion-code-16M-v2).
+//! Static-embedding model loader (model2vec / potion-code-16M).
 //!
 //! `Embedder::open(model_dir)` mmaps `model.safetensors`, loads `tokenizer.json`
 //! via the HuggingFace `tokenizers` crate, and exposes `encode_one(text)` which
@@ -9,10 +9,11 @@
 //! dominated by tokenization (~10–100 µs depending on string length); the
 //! embedding lookup itself is essentially free.
 //!
-//! The matrix ships as either `f32` or `f16` depending on the model (v2 ships
-//! `f16` to halve download/cache size). `f16` tensors are decoded to an owned
-//! `Vec<f32>` once at open time so every consumer downstream of `Embedder`
-//! (`row`, `all_rows`, `cosine_topk`) only ever deals with `f32`.
+//! The matrix ships as either `f32` or `f16` depending on the model (some
+//! model2vec exports ship `f16` to halve download/cache size). `f16` tensors
+//! are decoded to an owned `Vec<f32>` once at open time so every consumer
+//! downstream of `Embedder` (`row`, `all_rows`, `cosine_topk`) only ever deals
+//! with `f32`.
 
 use half::f16;
 use memmap2::Mmap;
@@ -23,7 +24,7 @@ use std::path::Path;
 use std::sync::Arc;
 use tokenizers::Tokenizer;
 
-/// Output dimension of `potion-code-16M-v2`. Embedded as a const so callers can
+/// Output dimension of `potion-code-16M`. Embedded as a const so callers can
 /// stack-allocate result buffers.
 pub const DIM: usize = 256;
 
@@ -370,7 +371,7 @@ mod tests {
     fn ensure_real_model() -> std::path::PathBuf {
         // Download once into a per-test cache; subsequent runs reuse the cache
         // and the SHA-256 manifest verification fast-paths.
-        let info = ModelInfo::potion_code_16m_v2();
+        let info = ModelInfo::potion_code_16m();
         ensure_model(&info).expect("model download failed; see network-security wiki")
     }
 
