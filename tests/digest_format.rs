@@ -726,3 +726,53 @@ fn path_qualified_private_trait_impl_is_hidden_too() {
         "a path-qualified private trait's impl methods are not public API:\n{digest}"
     );
 }
+
+#[test]
+fn qualified_trait_path_is_resolved_not_collapsed_to_its_bare_name() {
+    // `impl other::Hidden for Loud` names a trait this file cannot see —
+    // a same-named local private trait is a decoy, not that trait, and
+    // must not drag the impl methods into the private view by bare-name
+    // coincidence. Unknowable trait → inherited visibility stays.
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path().join("decoy.rs");
+    std::fs::write(
+        &p,
+        "trait Hidden {\n    fn secret(&self);\n}\npub struct Loud;\nimpl other::Hidden for Loud {\n    fn secret(&self) {}\n}\n",
+    )
+    .unwrap();
+    let p = p.to_str().unwrap();
+    let digest = run(&["digest", p]);
+    assert!(
+        digest.contains("secret"),
+        "a foreign qualified trait must not inherit a local decoy's privacy:\n{digest}"
+    );
+
+    // The inverse: a path that *does* resolve through a local `mod` chain
+    // reads that trait's own visibility, wherever it lives in the tree.
+    let p2 = dir.path().join("nested.rs");
+    std::fs::write(
+        &p2,
+        "mod inner {\n    pub(in self) trait Hidden {\n        fn secret(&self);\n    }\n}\npub struct Loud;\nimpl inner::Hidden for Loud {\n    fn secret(&self) {}\n}\n",
+    )
+    .unwrap();
+    let p2 = p2.to_str().unwrap();
+    let digest = run(&["digest", p2]);
+    assert!(
+        !digest.contains("secret"),
+        "a locally-resolved private trait hides its impl methods through a qualified path too:\n{digest}"
+    );
+
+    // `crate::`-anchored paths sit outside this walk's view: never guess.
+    let p3 = dir.path().join("anchored.rs");
+    std::fs::write(
+        &p3,
+        "trait Hidden {\n    fn secret(&self);\n}\npub struct Loud;\nimpl crate::elsewhere::Hidden for Loud {\n    fn secret(&self) {}\n}\n",
+    )
+    .unwrap();
+    let p3 = p3.to_str().unwrap();
+    let digest = run(&["digest", p3]);
+    assert!(
+        digest.contains("secret"),
+        "crate::-anchored trait paths are unknowable here; keep inherited visibility:\n{digest}"
+    );
+}
