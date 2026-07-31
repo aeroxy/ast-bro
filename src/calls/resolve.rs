@@ -97,18 +97,15 @@ pub fn run_with_table(
             // `Foo.bar()`) binds only to a local qn actually scoped under
             // that type.
             let self_like = receiver_is_self_like(raw.receiver.as_deref());
-            // `crate`/`super` stay self-like for pass B (path keywords, not
-            // object receivers — a single global match is still a safe
-            // promotion), but for same-file binding they name a *different*
-            // scope than the caller's own: `crate::helper()` means the crate
-            // root and `super::helper()` the parent module, never a sibling.
-            // Route them through the anchored SelfRel walk below instead of
+            // `crate`/`super` name a *different* scope than the caller's
+            // own: `crate::helper()` means the crate root and
+            // `super::helper()` the parent module, never a sibling. Route
+            // them through the anchored SelfRel walk below instead of
             // sibling preference, which would hand `crate::helper()` to the
             // caller-scope homonym tagged Exact. (In OO languages a bare
             // `super.m()` receiver names the parent type — also never the
             // caller's own scope.)
-            let scope_shifting =
-                matches!(raw.receiver.as_deref(), Some("crate") | Some("super"));
+            let scope_shifting = receiver_is_scope_shifting(raw.receiver.as_deref());
 
             // -------- Pass A: same-file -------- //
             if file_qns.contains(&raw.bare_name) {
@@ -326,7 +323,12 @@ pub fn run_with_table(
             // a resolved type for `obj`, single-name matches are too noisy
             // (e.g. `builder.hidden()` would resolve to any project method
             // happening to be called `hidden`). Defer them to pass C.
-            let has_receiver = !self_like;
+            // Scope-shifting receivers defer too: `crate::helper()` whose
+            // one global `helper` sits in a sibling module names a symbol
+            // that does not exist — promoting the single match binds Exact
+            // to a scope the keyword explicitly rules out. Pass B cannot
+            // check the anchor, so the edge goes to pass C's dep filter.
+            let has_receiver = !self_like || scope_shifting;
             match symbol_table.get(&raw.bare_name) {
                 Some(cands) if cands.len() == 1 && !has_receiver => {
                     let edge = raw_to_edge(
@@ -408,11 +410,12 @@ fn is_crate_root(file: &str) -> bool {
 /// `static`/`parent`, which are common and NOT self-like.)
 ///
 /// Nuance: `crate` and `super` are keywords but name a scope *other than*
-/// the caller's own, so pass A's same-file binding refines this gate with
-/// `scope_shifting` and routes them through the anchored SelfRel walk
-/// instead of sibling preference. Pass B keeps them here — a path keyword
-/// is not an object receiver, so a single global match is still a safe
-/// promotion — and `delta.rs` mirrors pass B through this same function.
+/// the caller's own, so both pass A and pass B refine this gate with
+/// [`receiver_is_scope_shifting`]: same-file binding routes them through
+/// the anchored SelfRel walk instead of sibling preference, and pass B
+/// withholds single-global-match promotion — the one match may sit in a
+/// scope the keyword explicitly rules out, and pass B cannot check the
+/// anchor. `delta.rs` mirrors pass B through both functions.
 pub(crate) fn receiver_is_self_like(recv: Option<&str>) -> bool {
     matches!(
         recv,
@@ -424,6 +427,15 @@ pub(crate) fn receiver_is_self_like(recv: Option<&str>) -> bool {
             | Some("this")
             | Some("$this")
     )
+}
+
+/// A scope-keyword receiver that names a scope *other than* the caller's
+/// own — the refinement pass A and pass B apply on top of
+/// [`receiver_is_self_like`] (see its doc). Keyword *chains*
+/// ("super::super") never appear here: they are not self-like in the first
+/// place, so both passes already treat them as receiver-bearing.
+pub(crate) fn receiver_is_scope_shifting(recv: Option<&str>) -> bool {
+    matches!(recv, Some("crate") | Some("super"))
 }
 
 /// Resolve `from <module> import <name>` (or equivalent) by mapping `module`
