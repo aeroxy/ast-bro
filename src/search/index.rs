@@ -354,7 +354,7 @@ impl Index {
         );
 
         // 3. Load model + embed all chunks (parallel via rayon).
-        let model_dir = ensure_model(&ModelInfo::potion_code_16m_v2())?;
+        let model_dir = ensure_model(&ModelInfo::potion_code_16m())?;
         let embedder = Arc::new(Embedder::open(&model_dir)?);
         let started_embed = std::time::Instant::now();
         let embeddings: Vec<f32> = chunks
@@ -386,7 +386,7 @@ impl Index {
             schema: SCHEMA.to_string(),
             ast_bro_version: env!("CARGO_PKG_VERSION").to_string(),
             model: ModelMeta {
-                id: ModelInfo::potion_code_16m_v2().id,
+                id: ModelInfo::potion_code_16m().id,
                 dim: DIM as u32,
             },
             created_unix: SystemTime::now()
@@ -614,7 +614,7 @@ impl Index {
         // rather than silently mixing query vectors from one model with chunk
         // vectors from another. Checked before the binaries/model load so a
         // mismatch costs only the meta read.
-        let active_model_id = ModelInfo::potion_code_16m_v2().id;
+        let active_model_id = ModelInfo::potion_code_16m().id;
         if meta.model.id != active_model_id {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -641,7 +641,7 @@ impl Index {
             ));
         }
 
-        let model_dir = ensure_model(&ModelInfo::potion_code_16m_v2())?;
+        let model_dir = ensure_model(&ModelInfo::potion_code_16m())?;
         let embedder = Arc::new(Embedder::open(&model_dir)?);
         let live_mask = build_live_mask(chunks.len(), &meta.tombstones);
 
