@@ -1,9 +1,14 @@
 //! Project-manifest reading for resolver hints:
 //!
-//! - `go.mod`: extract `module <prefix>` directive.
 //! - `tsconfig.json`: extract `compilerOptions.paths` + `baseUrl`.
 //! - `Cargo.toml`: extract `[package].name` (with hyphen→underscore).
 //! - `composer.json`: extract `autoload.psr-4` map (PHP).
+//! - `go.mod`: extract the `module <prefix>` directive.
+//!
+//! The first three are read at the graph root only. `go.mod` is the
+//! exception: a repository may keep its module in a subdirectory or
+//! declare several, so the resolver's index walk calls `parse_go_module`
+//! for every `go.mod` it meets — see `resolver::build::build_suffix_index`.
 
 use std::path::{Path, PathBuf};
 
@@ -13,8 +18,6 @@ pub struct ProjectAliases {
     /// when resolving `crate::x::y` in inter-crate workspaces.
     #[allow(dead_code)]
     pub rust_crate_name: Option<String>,
-    /// Go module name from `go.mod`.
-    pub go_module: Option<String>,
     /// TS path aliases — `(prefix, replacement)` pairs.
     pub ts_path_aliases: Vec<(String, String)>,
     /// PHP PSR-4 namespace prefix → directory pairs from `composer.json`.
@@ -25,7 +28,6 @@ pub struct ProjectAliases {
 pub fn detect_aliases(root: &Path) -> ProjectAliases {
     ProjectAliases {
         rust_crate_name: parse_cargo_name(&root.join("Cargo.toml")),
-        go_module: parse_go_module(&root.join("go.mod")),
         ts_path_aliases: parse_tsconfig_paths(&root.join("tsconfig.json")),
         php_psr4: parse_composer_psr4(&root.join("composer.json")),
     }

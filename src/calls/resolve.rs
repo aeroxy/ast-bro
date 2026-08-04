@@ -457,7 +457,6 @@ fn resolve_via_imports(
     let ctx = ResolveCtx {
         from_file,
         lang,
-        alias_prefix: aliases.go_module.as_deref(),
         path_aliases: &aliases.ts_path_aliases,
         php_psr4: &aliases.php_psr4,
     };

@@ -620,7 +620,7 @@ Resolution is per-language but shares one suffix-index resolver:
 - **Python**: relative imports (`from .x import y`), `__init__.py` packages, bare `import a.b`.
 - **TypeScript / JavaScript**: relative paths with extension probing (`.ts → .tsx → .mts → .cts → .d.ts → .js → ... → .json`), `index.*` fallback, `tsconfig.json` `paths` aliases.
 - **Java / Kotlin / Scala / C#**: FQN suffix index built from each file's `package` / `namespace` declaration. Inner classes resolve via strip-and-retry.
-- **Go**: `go.mod` `module` prefix is stripped; `import "mymod/pkg/foo"` resolves to `pkg/foo/*.go` (directory-as-package).
+- **Go**: `go.mod` `module` prefix is stripped; `import "mymod/pkg/foo"` resolves to `pkg/foo/*.go` (directory-as-package). Every `go.mod` in the repository counts, so a module in a subdirectory — or several modules side by side — resolves the same way.
 
 The four commands are also exposed as MCP tools for agents. For internals (suffix index, Tarjan SCC, per-file invalidation, find-related dep boost) see the [deps wiki page](https://github.com/aeroxy/ast-bro/blob/main/wiki/deps.md) on GitHub.
 
