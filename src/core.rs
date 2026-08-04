@@ -4,7 +4,11 @@ use std::path::{Path, PathBuf};
 
 // Stable JSON schema identifiers — bump on breaking changes.
 pub const JSON_SCHEMA_MAP: &str = "ast-bro.map.v1";
-pub const JSON_SCHEMA_SHOW: &str = "ast-bro.show.v1";
+/// `show` became a multi-file command (it accepts a file list, a directory,
+/// or a glob), so its payload is a `files` array like `map`'s rather than a
+/// single top-level `path` / `language` / `matches`. v1 was the single-file
+/// shape; the bump is how a consumer tells which one it received.
+pub const JSON_SCHEMA_SHOW: &str = "ast-bro.show.v2";
 pub const JSON_SCHEMA_IMPLEMENTS: &str = "ast-bro.implements.v1";
 pub const JSON_SCHEMA_SURFACE: &str = "ast-bro.surface.v1";
 pub const JSON_SCHEMA_DEPS: &str = "ast-bro.deps.v1";
@@ -48,6 +52,11 @@ pub enum DeclarationKind {
     Operator,
     Heading,
     CodeBlock,
+    /// A markdown file's leading `---…---` YAML metadata block. Structure,
+    /// not prose: for a task card or a Jekyll / Hugo / Astro / Obsidian page
+    /// the frontmatter often *is* the file's whole content, and without a
+    /// declaration for it such a file maps as empty.
+    Frontmatter,
 }
 
 impl DeclarationKind {
@@ -72,6 +81,7 @@ impl DeclarationKind {
             Self::Operator => "operator",
             Self::Heading => "heading",
             Self::CodeBlock => "code_block",
+            Self::Frontmatter => "frontmatter",
         }
     }
 }
@@ -635,7 +645,13 @@ fn _format_file_header(prefix: &str, result: &ParseResult) -> String {
     ];
 
     if result.language == "markdown" {
-        let order = [("headings", "headings"), ("code_blocks", "code blocks")];
+        // Frontmatter first: it leads the file and leads the outline, so the
+        // header should read in the same order the body does.
+        let order = [
+            ("frontmatter", "frontmatter"),
+            ("headings", "headings"),
+            ("code_blocks", "code blocks"),
+        ];
         for (key, label) in order {
             let n = counts.get(key).copied().unwrap_or(0);
             if n > 0 {
@@ -681,6 +697,7 @@ fn _collect_counts(decls: &[Declaration]) -> std::collections::HashMap<&'static 
     out.insert("fields", 0);
     out.insert("headings", 0);
     out.insert("code_blocks", 0);
+    out.insert("frontmatter", 0);
 
     let mut stack: Vec<&Declaration> = decls.iter().collect();
     while let Some(d) = stack.pop() {
@@ -693,6 +710,7 @@ fn _collect_counts(decls: &[Declaration]) -> std::collections::HashMap<&'static 
             Field | Property | Event | Indexer => *out.get_mut("fields").unwrap() += 1,
             Heading => *out.get_mut("headings").unwrap() += 1,
             CodeBlock => *out.get_mut("code_blocks").unwrap() += 1,
+            Frontmatter => *out.get_mut("frontmatter").unwrap() += 1,
             _ => {}
         }
         for child in &d.children {
@@ -1420,6 +1438,11 @@ fn _digest_markdown(
             out.extend(_digest_markdown(&d.children, opts, indent + 2, depth + 1));
         } else if matches!(d.kind, DeclarationKind::CodeBlock) && opts.include_fields {
             out.push(format!("{}{}{}", pad, d.signature, d.lines_suffix()));
+        } else if matches!(d.kind, DeclarationKind::Frontmatter) {
+            // Unconditional: for a file that is *only* frontmatter, dropping
+            // this line under a preset would render the file as empty, which
+            // is the miss this declaration exists to fix.
+            out.push(format!("{}{}{}", pad, d.signature, d.lines_suffix()));
         }
     }
     out
@@ -1537,14 +1560,6 @@ fn _is_zero(n: &usize) -> bool {
 }
 
 #[derive(Serialize)]
-struct JsonShowDoc<'a> {
-    schema: &'static str,
-    path: String,
-    language: &'static str,
-    matches: Vec<&'a SymbolMatch>,
-}
-
-#[derive(Serialize)]
 struct JsonImplementsDoc<'a> {
     schema: &'static str,
     target: &'a str,
@@ -1659,17 +1674,6 @@ fn _strip_projected_keys(decls: &mut serde_json::Value, docs: bool, lines: bool,
             _strip_projected_keys(children, docs, lines, attrs);
         }
     }
-}
-
-/// Render `show --json`.
-pub fn render_json_show(result: &ParseResult, matches: &[SymbolMatch], pretty: bool) -> String {
-    let doc = JsonShowDoc {
-        schema: JSON_SCHEMA_SHOW,
-        path: result.path.to_string_lossy().into_owned(),
-        language: result.language,
-        matches: matches.iter().collect(),
-    };
-    _to_json(&doc, pretty)
 }
 
 /// Render `implements --json`.

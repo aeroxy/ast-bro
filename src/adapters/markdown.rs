@@ -15,6 +15,11 @@ pub fn parse_markdown(path: &Path, source: &[u8]) -> ParseResult {
 
     let mut decls = Vec::new();
 
+    // Frontmatter first, so it leads the outline the way it leads the file.
+    if let Some(fm) = _frontmatter_decl(source) {
+        decls.push(fm);
+    }
+
     // Instead of ast_grep Nodes, we have to use tree_sitter nodes and convert manually
     // or implement the full tree-sitter walk without ast_grep abstraction for this one file.
     _walk_ts(tree.root_node(), source, &mut decls);
@@ -28,6 +33,88 @@ pub fn parse_markdown(path: &Path, source: &[u8]) -> ParseResult {
         error_count: 0, // Simplified for manual ts
         imports: Vec::new(),
     }
+}
+
+/// Detect a leading YAML frontmatter block and turn it into one declaration.
+///
+/// A `---…---` metadata block is where a task card, a Jekyll / Hugo / Astro /
+/// Docusaurus page or an Obsidian note keeps its actual signal, and until now
+/// it was invisible: a file whose whole content is frontmatter mapped as
+/// empty. It is deliberately kept opaque — one node spanning the block, with
+/// the keys left inside rather than parsed into a tree — because the payload
+/// is arbitrary YAML and `show card.md frontmatter` returns the raw text
+/// anyway, values included.
+///
+/// Only a `---` fence on the file's very first line counts. A `---` further
+/// down is an ordinary horizontal rule and stays one; without that anchor,
+/// any document using thematic breaks would sprout phantom metadata. A UTF-8
+/// BOM before the opening fence is skipped (editors on Windows add one) and
+/// trailing whitespace on either fence is tolerated, since every generator
+/// that reads frontmatter tolerates it.
+///
+/// Scans bytes rather than `str`: only the fence lines are ever compared, so
+/// there is no reason to make the whole file's encoding a precondition for
+/// finding its metadata.
+fn _frontmatter_decl(src: &[u8]) -> Option<Declaration> {
+    /// Strip the line terminator and any trailing spaces/tabs.
+    fn fence(line: &[u8]) -> &[u8] {
+        let mut end = line.len();
+        while end > 0 && matches!(line[end - 1], b'\n' | b'\r' | b' ' | b'\t') {
+            end -= 1;
+        }
+        &line[..end]
+    }
+
+    // A BOM sits before the fence, so the fence is still "on line 1".
+    const BOM: &[u8] = &[0xEF, 0xBB, 0xBF];
+    let bom = if src.starts_with(BOM) { BOM.len() } else { 0 };
+    let mut lines = src[bom..].split_inclusive(|&b| b == b'\n');
+
+    let first = lines.next()?;
+    if fence(first) != b"---" {
+        return None;
+    }
+
+    let mut offset = bom + first.len();
+    let mut line_no = 1usize; // 1-indexed; the opening fence is line 1
+    for line in lines {
+        line_no += 1;
+        let trimmed = fence(line);
+        offset += line.len();
+        // `...` is YAML's alternative document terminator, accepted by every
+        // static-site generator that reads frontmatter.
+        if trimmed == b"---" || trimmed == b"..." {
+            // End at the closing fence, not past its newline: every other
+            // declaration's range stops at its last non-terminator byte, and
+            // including it would make `show` print a trailing blank line.
+            let offset = offset - (line.len() - trimmed.len());
+            return Some(Declaration {
+                kind: DeclarationKind::Frontmatter,
+                name: "frontmatter".to_string(),
+                signature: "--- frontmatter".to_string(),
+                bases: Vec::new(),
+                attrs: Vec::new(),
+                docs: Vec::new(),
+                docs_inside: false,
+                visibility: "public".to_string(),
+                start_line: 1,
+                end_line: line_no,
+                // After the BOM, if any: the extracted block should be the
+                // fence and its keys, not a stray byte-order mark.
+                start_byte: bom,
+                end_byte: offset,
+                doc_start_byte: bom,
+                native_kind: None,
+                modifiers: Vec::new(),
+                deprecated: false,
+                children: Vec::new(),
+                calls: Vec::new(),
+            });
+        }
+    }
+    // An opening fence with no closing one is not frontmatter — reporting it
+    // would claim a block whose extent we cannot know.
+    None
 }
 
 fn _walk_ts(node: tree_sitter::Node, src: &[u8], out: &mut Vec<Declaration>) {

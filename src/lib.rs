@@ -16,10 +16,12 @@ mod installers;
 mod main_helpers;
 mod mcp;
 mod path_glob;
+mod path_repair;
 mod project_root;
 mod prompt;
 mod run;
 mod search;
+mod show;
 mod squeeze;
 mod surface;
 
@@ -51,12 +53,24 @@ enum Commands {
     /// `--max-members`). `--preset digest` = `--detail names --no-private
     /// --no-fields --max-members 50`; explicit flags override the preset.
     Map(MapArgs),
-    /// Extract source of a symbol
+    /// Extract source of a symbol from a file, several files, a directory, or a glob.
+    ///
+    /// Grammar is `show <target>... <symbol>...`: leading arguments that name a
+    /// parseable file, a directory, or a matching glob are targets, and the rest
+    /// are symbols. That makes `show src/ Widget` and `show 'src/*.cs' Widget`
+    /// work, and it recovers the unquoted spelling — the shell expands
+    /// `show src/*.cs Widget` before we see it, which used to search only the
+    /// first file and silently drop the symbol's other definitions.
     Show {
         path: PathBuf,
         symbol: String,
         #[arg(num_args = 0..)]
         others: Vec<String>,
+        /// Cap on rendered bodies when more than one file is searched.
+        /// Single-file `show` is never capped; the header always reports
+        /// the true total.
+        #[arg(long, default_value_t = crate::show::DEFAULT_LIMIT)]
+        limit: usize,
         /// Emit output as JSON instead of text
         #[arg(long)]
         json: bool,
@@ -938,6 +952,16 @@ fn require_paths(command: &str, paths: &[PathBuf], json_mode: bool) -> Vec<PathB
     }
     let (existing, missing) = split_existing(paths);
     if existing.is_empty() {
+        let mut hint = format!(
+            "missing: {}\n\
+             An empty result here means the paths are wrong, not that the code has no declarations.",
+            missing.join(", ")
+        );
+        // A verifiable repair beats a blind retry or a detour through `find`.
+        if let Some(repair) = crate::path_repair::hints(&missing) {
+            hint.push('\n');
+            hint.push_str(&repair);
+        }
         CliError::new(
             command,
             ErrorKind::PathNotFound,
@@ -947,18 +971,23 @@ fn require_paths(command: &str, paths: &[PathBuf], json_mode: bool) -> Vec<PathB
                 paths.len()
             ),
         )
-        .hint(format!(
-            "missing: {}\n\
-             An empty result here means the paths are wrong, not that the code has no declarations.",
-            missing.join(", ")
-        ))
+        .hint(hint)
         .extra("requested", serde_json::json!(paths.len()))
         .extra("resolved", serde_json::json!(0))
         .extra("missing", serde_json::json!(missing))
         .exit(json_mode);
     }
+    // Each repair costs one bounded walk, so they are offered only for a
+    // short miss list. A long one is a wrong-list problem, not a wrong-path
+    // problem, and a wall of hints would bury the notes themselves.
+    const MAX_REPAIRS: usize = 3;
     for m in &missing {
         eprintln!("# note: path not found: {}", m);
+        if missing.len() <= MAX_REPAIRS {
+            if let Some(repair) = crate::path_repair::hint_for_one(m) {
+                eprintln!("# hint: {}", repair);
+            }
+        }
     }
     existing
 }
@@ -982,12 +1011,19 @@ fn resolve_optional_paths(command: &str, paths: &[PathBuf], json_mode: bool) -> 
 fn require_path(command: &str, path: &Path, json_mode: bool) {
     use crate::cli_error::{CliError, ErrorKind};
     if !path.exists() {
+        let mut hint =
+            "An empty result here would mean the path is wrong, not that nothing matched."
+                .to_string();
+        if let Some(repair) = crate::path_repair::hints(&[path.to_string_lossy().into_owned()]) {
+            hint.push('\n');
+            hint.push_str(&repair);
+        }
         CliError::new(
             command,
             ErrorKind::PathNotFound,
             format!("path not found: {}", path.display()),
         )
-        .hint("An empty result here would mean the path is wrong, not that nothing matched.")
+        .hint(hint)
         .exit(json_mode);
     }
 }
@@ -1026,12 +1062,19 @@ pub(crate) fn resolve_paths_for_mcp(
     }
     let (existing, missing) = split_existing(paths);
     if existing.is_empty() {
-        return Err(format!(
+        let mut msg = format!(
             "`{}` resolved 0 of {} path(s); nothing was inspected. missing: {}. An empty result here would mean the paths are wrong, not that the code has no declarations",
             command,
             paths.len(),
             missing.join(", ")
-        ));
+        );
+        // The server has no stderr channel to the client, so a repair that
+        // the CLI would print as a hint has to ride on the error itself.
+        if let Some(repair) = crate::path_repair::hints(&missing) {
+            msg.push_str(". ");
+            msg.push_str(&repair.replace('\n', "; "));
+        }
+        return Err(msg);
     }
     Ok((existing, missing))
 }
@@ -1179,87 +1222,139 @@ pub fn run() {
             path,
             symbol,
             others,
+            limit,
             json,
             compact,
         } => {
             use crate::cli_error::{CliError, ErrorKind as CliErrorKind};
-            if !path.exists() {
-                CliError::new(
-                    "show",
-                    CliErrorKind::PathNotFound,
-                    format!("path not found: {}", path.display()),
-                )
-                .exit(*json);
+            // Re-flatten the positionals clap split for us: the target/symbol
+            // boundary depends on what is on disk, not on argument position,
+            // so it can only be decided here.
+            let raw: Vec<String> = std::iter::once(path.to_string_lossy().into_owned())
+                .chain(std::iter::once(symbol.clone()))
+                .chain(others.iter().cloned())
+                .collect();
+            let (targets, symbols) = crate::show::partition(&raw);
+
+            if targets.is_empty() {
+                // The first argument is neither a parseable file, a directory,
+                // nor a glob that matched: nothing can be searched.
+                let (kind, detail) = if path.exists() {
+                    (
+                        CliErrorKind::BadArgument,
+                        format!("unsupported file type for `show`: {}", path.display()),
+                    )
+                } else {
+                    (
+                        CliErrorKind::PathNotFound,
+                        format!("path not found: {}", path.display()),
+                    )
+                };
+                let mut err = CliError::new("show", kind, detail);
+                if let Some(h) = crate::path_repair::hints(&raw) {
+                    err = err.hint(h);
+                }
+                err.exit(*json);
             }
-            let Some(res) = parse_file(path) else {
+            if symbols.is_empty() {
+                // Every argument named a file. Usually an unquoted glob whose
+                // last expansion collided with the symbol slot; guessing which
+                // one was meant to be the symbol would be a coin flip.
                 CliError::new(
                     "show",
                     CliErrorKind::BadArgument,
-                    format!("unsupported file type for `show`: {}", path.display()),
+                    format!(
+                        "`show` received {} file argument(s) and no symbol",
+                        targets.len()
+                    ),
                 )
+                .hint(
+                    "Grammar is `show <target>... <symbol>`. If the shell expanded an unquoted\n\
+                     glob and swallowed the symbol, quote it: show 'src/*.cs' MyClass.\n\
+                     If the symbol genuinely shares its name with a parseable file, qualify it\n\
+                     (`Type.method`) so it cannot be read as a path.",
+                )
+                .extra("targets", serde_json::json!(targets.len()))
                 .exit(*json);
-            };
-            let mut symbols = vec![symbol.as_str()];
-            symbols.extend(others.iter().map(|s| s.as_str()));
-            // Per-symbol matches, deduped across overlapping suffixes.
-            let mut seen = std::collections::HashSet::new();
-            let mut all_matches = Vec::new();
-            let mut unmatched: Vec<&str> = Vec::new();
-            for sym in &symbols {
-                let found = crate::core::find_symbols(&res, sym);
-                if found.is_empty() {
-                    unmatched.push(sym);
-                }
-                for m in found {
-                    let key = (m.start_line, m.end_line, m.qualified_name.clone());
-                    if seen.insert(key) {
-                        all_matches.push(m);
-                    }
-                }
             }
-            if all_matches.is_empty() {
-                // No requested symbol exists: the query could not run as
-                // asked. An empty payload would read as "the file has no
-                // such declarations", which is a different claim (#36).
+            // A mistyped path in the symbol slot must be diagnosed as a path,
+            // not answered as an absent symbol.
+            if let Some(bad) = crate::show::misread_path(&symbols) {
+                let mut hint =
+                    "This argument reads as a path, not a symbol, so it was not searched for.\n\
+                     Fix the path, or drop it if you meant a symbol."
+                        .to_string();
+                if let Some(repair) = crate::path_repair::hints(&[bad.to_string()]) {
+                    hint.push('\n');
+                    hint.push_str(&repair);
+                }
+                CliError::new(
+                    "show",
+                    CliErrorKind::PathNotFound,
+                    format!("path not found: {}", bad),
+                )
+                .hint(hint)
+                .exit(*json);
+            }
+
+            // Multi-target mode: anything other than one explicit file. Its
+            // answer carries a coverage header, because a caller who did not
+            // name the file cannot otherwise tell an absent symbol from a
+            // capped display.
+            let multi = targets.len() > 1 || targets.iter().any(|t| !t.is_file());
+            if targets.len() > 1 && targets.iter().all(|t| t.is_file()) {
+                eprintln!(
+                    "# note: {} file argument(s) — searching '{}' across all of them. \
+                     If the shell expanded an unquoted glob, quote it (e.g. 'src/*.java') to say so.",
+                    targets.len(),
+                    symbols.join(", ")
+                );
+            }
+
+            let results = crate::show::collect(&targets);
+            if results.is_empty() {
+                CliError::new(
+                    "show",
+                    CliErrorKind::BadArgument,
+                    format!(
+                        "no parseable file among the {} target(s) given to `show`",
+                        targets.len()
+                    ),
+                )
+                .hint("An empty result here means the targets hold no file of a supported language, not that the symbol is absent.")
+                .exit(*json);
+            }
+
+            let outcome = crate::show::resolve(results, &symbols, *limit, multi);
+            if outcome.total == 0 {
+                // No requested symbol exists anywhere in scope: the query
+                // could not run as asked. An empty payload would read as
+                // "these files have no such declarations", which is a
+                // different claim (#36).
                 CliError::new(
                     "show",
                     CliErrorKind::SymbolNotFound,
                     format!(
-                        "no symbol matching '{}' in {}",
+                        "no symbol matching '{}' in {} file(s) searched",
                         symbols.join(", "),
-                        path.display()
+                        outcome.files_scanned
                     ),
                 )
-                .hint("Suffix matching is supported: try 'Type.method' or check `ast-bro map <file>` for the declared names.")
+                .hint("Suffix matching is supported: try 'Type.method' or check `ast-bro map <target>` for the declared names.")
+                .extra("files_scanned", serde_json::json!(outcome.files_scanned))
                 .exit(*json);
             }
-            if !unmatched.is_empty() {
+            if !outcome.unmatched.is_empty() {
                 eprintln!(
-                    "# note: no symbol matching '{}' in {} (other symbol(s) shown)",
-                    unmatched.join(", "),
-                    path.display()
+                    "# note: no symbol matching '{}' in {} file(s) searched (other symbol(s) shown)",
+                    outcome.unmatched.join(", "),
+                    outcome.files_scanned
                 );
             }
             if *json {
-                println!(
-                    "{}",
-                    crate::core::render_json_show(&res, &all_matches, !(*compact))
-                );
+                println!("{}", crate::show::render_json(&outcome, !(*compact)));
             } else {
-                for m in &all_matches {
-                    println!(
-                        "# {}:{}-{} {} ({})",
-                        res.path.display(),
-                        m.start_line,
-                        m.end_line,
-                        m.qualified_name,
-                        m.kind
-                    );
-                    if !m.ancestor_signatures.is_empty() {
-                        println!("# in: {}", m.ancestor_signatures.join(" → "));
-                    }
-                    println!("{}", m.source);
-                }
+                print!("{}", crate::show::render_text(&outcome));
             }
         }
         Commands::Squeeze {
@@ -1271,12 +1366,19 @@ pub fn run() {
         } => {
             use crate::cli_error::{CliError, ErrorKind as CliErrorKind};
             if !path.exists() {
-                CliError::new(
+                // `squeeze` names one explicit file, which is exactly where a
+                // mistyped or relocated path is worth repairing.
+                let mut err = CliError::new(
                     "squeeze",
                     CliErrorKind::PathNotFound,
                     format!("path not found: {}", path.display()),
-                )
-                .exit(*json);
+                );
+                if let Some(h) =
+                    crate::path_repair::hints(&[path.to_string_lossy().into_owned()])
+                {
+                    err = err.hint(h);
+                }
+                err.exit(*json);
             }
             let text = match std::fs::read_to_string(path) {
                 Ok(t) => t,
