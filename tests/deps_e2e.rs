@@ -172,6 +172,53 @@ fn go_module_prefix_strips_correctly() {
     assert!(!s.contains("fmt.go"), "unexpected stdlib resolution:\n{s}");
 }
 
+#[test]
+fn go_nested_module_wins_over_enclosing_one() {
+    let s = run_ok(&[
+        "deps",
+        "tests/fixtures/deps/go_multi_module/main.go",
+        "--depth",
+        "1",
+        "--rebuild",
+    ]);
+    // `example.com/multi/util` belongs to the outer module.
+    assert!(s.contains("util/util.go"), "expected util/util.go:\n{s}");
+    // `example.com/multi/tools/helper` matches both module prefixes; the
+    // nested `toolkit/go.mod` declares the longer one and must win, so the
+    // import lands in `toolkit/helper/`, not in a `tools/` directory that
+    // does not exist.
+    assert!(
+        s.contains("toolkit/helper/helper.go"),
+        "expected toolkit/helper/helper.go:\n{s}"
+    );
+}
+
+#[test]
+fn go_duplicate_module_resolves_within_the_importers_copy() {
+    // `backup/` and `service/` both declare `example.com/dup` — the shape a
+    // nested checkout or a vendored copy leaves in the tree. Each importer
+    // must stay inside its own copy. Both directions are checked because
+    // directory-walk order is not alphabetical: picking a fixed copy would
+    // satisfy one direction by luck.
+    for (own, other) in [("service", "backup"), ("backup", "service")] {
+        let s = run_ok(&[
+            "deps",
+            &format!("tests/fixtures/deps/go_dup_module/{own}/main.go"),
+            "--depth",
+            "1",
+            "--rebuild",
+        ]);
+        assert!(
+            s.contains(&format!("{own}/util/util.go")),
+            "expected {own}/util/util.go:\n{s}"
+        );
+        assert!(
+            !s.contains(&format!("{other}/util/util.go")),
+            "import from {own} escaped into {other}:\n{s}"
+        );
+    }
+}
+
 // ---- Graph emission ----
 
 #[test]

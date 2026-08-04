@@ -20,10 +20,6 @@ pub struct ResolveCtx<'a> {
     /// The importer file (used for relative resolution and pick-closest).
     pub from_file: &'a Path,
     pub lang: Lang,
-    /// Optional alias prefix (e.g. `mymod` from `go.mod`, the crate name from
-    /// `Cargo.toml`). When the import path starts with this prefix, it's
-    /// stripped before the suffix lookup.
-    pub alias_prefix: Option<&'a str>,
     /// Manifest path-alias mappings (TS `tsconfig.json` `paths` field).
     /// Keys are bare prefixes (`@app/`); values are the substitution paths
     /// (`src/app/`) that the prefix expands to before suffix lookup.
@@ -40,7 +36,6 @@ impl<'a> ResolveCtx<'a> {
         Self {
             from_file,
             lang,
-            alias_prefix: None,
             path_aliases: &[],
             php_psr4: &[],
         }
@@ -124,25 +119,53 @@ pub fn resolve(spec: &str, ctx: &ResolveCtx<'_>, idx: &SuffixIndex) -> Option<Pa
         }
     }
 
-    // Go `import "mymod/pkg/foo"` — strip the module prefix.
+    // Go `import "mymod/pkg/foo"` — strip the module prefix. The module may
+    // live in a subdirectory of the root, and a root may hold several, so
+    // every `go.mod` under it is a candidate. Two orderings decide which one
+    // the import belongs to:
+    //
+    //  - longest module path first, so a nested module beats the one that
+    //    contains it;
+    //  - among equal prefixes, the copy nearest the importer, the way
+    //    `pick_closest` picks among suffix hits. A root can hold the same
+    //    module twice (a nested checkout, a vendored copy, `testdata`), and
+    //    an import must not jump into the other copy.
+    //
+    // A candidate whose directory holds no such package is skipped rather
+    // than ending the search: the module path a nested module declares need
+    // not mirror its directory.
     if ctx.lang == Lang::Go {
-        if let Some(prefix) = ctx.alias_prefix {
-            let trimmed = spec.trim_matches('"');
-            let prefix_slash = format!("{}/", prefix);
-            if trimmed == prefix {
-                return None; // self-reference; nothing to resolve.
-            }
-            if let Some(rest) = trimmed.strip_prefix(&prefix_slash) {
-                // Look for any file in `<root>/<rest>/` directory.
-                if let Some(found) = find_dir_file(idx, rest) {
-                    return Some(found);
-                }
-                return None;
-            }
-            // Not in this module → external.
-            return None;
+        let trimmed = spec.trim_matches('"');
+        let mut candidates: Vec<(usize, usize, String)> = Vec::new();
+        for (prefix, dir) in &idx.go_modules {
+            // `trimmed == prefix` names the module's own root package, which
+            // the directory-as-package lookup below cannot express.
+            let Some(rest) = trimmed
+                .strip_prefix(prefix.as_str())
+                .and_then(|r| r.strip_prefix('/'))
+            else {
+                continue;
+            };
+            // Look for any file in the `<module dir>/<rest>/` directory.
+            let key = if dir.is_empty() {
+                rest.to_string()
+            } else {
+                format!("{}/{}", dir, rest)
+            };
+            let closeness = shared_leading_segments(ctx.from_file, &idx.root.join(dir));
+            candidates.push((prefix.len(), closeness, key));
         }
-        // No go.mod found — drop everything; we can't tell what's local.
+        candidates.sort_by(|a, b| {
+            b.0.cmp(&a.0)
+                .then_with(|| b.1.cmp(&a.1))
+                .then_with(|| a.2.cmp(&b.2))
+        });
+        for (_, _, key) in candidates {
+            if let Some(found) = find_dir_file(idx, &key) {
+                return Some(found);
+            }
+        }
+        // Stdlib, a third-party dependency, or no go.mod at all → external.
         return None;
     }
 
@@ -368,6 +391,15 @@ fn find_dir_file(idx: &SuffixIndex, rel_dir: &str) -> Option<PathBuf> {
     best
 }
 
+/// How many leading components two paths share. The measure of "nearest
+/// the importer" used whenever several candidates are equally valid.
+fn shared_leading_segments(a: &Path, b: &Path) -> usize {
+    a.components()
+        .zip(b.components())
+        .take_while(|(x, y)| x == y)
+        .count()
+}
+
 /// When multiple files match a suffix, prefer the one whose path shares
 /// the most leading components with the importer.
 fn pick_closest(candidates: Option<&[PathBuf]>, from_file: &Path) -> Option<PathBuf> {
@@ -378,21 +410,9 @@ fn pick_closest(candidates: Option<&[PathBuf]>, from_file: &Path) -> Option<Path
     if cands.len() == 1 {
         return Some(cands[0].clone());
     }
-    let from_segs: Vec<String> = from_file
-        .components()
-        .map(|c| c.as_os_str().to_string_lossy().into_owned())
-        .collect();
     let mut best: Option<(usize, &PathBuf)> = None;
     for c in cands {
-        let segs: Vec<String> = c
-            .components()
-            .map(|c| c.as_os_str().to_string_lossy().into_owned())
-            .collect();
-        let common = from_segs
-            .iter()
-            .zip(segs.iter())
-            .take_while(|(a, b)| a == b)
-            .count();
+        let common = shared_leading_segments(from_file, c);
         match best {
             None => best = Some((common, c)),
             Some((prev_common, prev_c)) => {

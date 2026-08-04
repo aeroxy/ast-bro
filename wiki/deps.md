@@ -6,8 +6,8 @@ Four subcommands — `deps`, `reverse-deps`, `cycles`, `graph` — and a per-rep
 
 ```
 build_graph(root):
-  detect_aliases(root)              # go.mod module name, tsconfig paths, Cargo crate name
-  build_suffix_index(root)          # one parallel walk → SuffixIndex { by_suffix, by_file }
+  detect_aliases(root)              # tsconfig paths, Cargo crate name, composer PSR-4
+  build_suffix_index(root)          # one parallel walk → SuffixIndex { by_suffix, by_file, go_modules }
   par_iter(files):                  # rayon: per-file extract + resolve
     raw = extract(file, lang)       # tree-sitter pass; reuses surface/imports.rs where it can
     for ri in raw:
@@ -91,7 +91,7 @@ Each `RawImport` carries `spec` (slash-joined module path), `kind`, source `line
 - **Python**: relative paths (`./x` / `../x`) walk from the importer's parent dir; tries `.py` / `.pyi` / `__init__.py`. Falls back to dropping the trailing imported-name segment when the full path doesn't resolve (so `from .helpers import greet` finds `helpers.py`, not `helpers/greet.py`).
 - **TS/JS**: relative `./x` walks the importer's parent; tries extensions in order `.ts → .tsx → .mts → .cts → .d.ts → .js → .jsx → .mjs → .cjs → .json`, then `index.*`. Bare specifiers consult `tsconfig.json` `compilerOptions.paths` aliases via `manifest::parse_tsconfig_paths`. Anything still unresolved → external bucket.
 - **Java / Kotlin / Scala / C#**: dot→slash transform, then suffix lookup against the FQN-augmented index. Inner-class fallback: on miss, strip the trailing segment and retry (handles `import com.foo.Bar.Inner` → `com/foo/Bar`).
-- **Go**: strips the `go.mod` module-name prefix, then locates any source file inside the resulting directory (directory-as-package semantics). External imports without the module prefix → external bucket.
+- **Go**: strips the `go.mod` module-name prefix, then locates any source file inside the resulting directory (directory-as-package semantics). External imports without the module prefix → external bucket. The prefixes come from every `go.mod` under the root, not just `<root>/go.mod`: the graph root is the repository, and a repository may keep its module in a subdirectory or declare several. `build_suffix_index` collects them during the walk it already makes, and `resolve` tries them longest-module-path first, so a nested module wins over the one containing it. Equal prefixes are ranked by distance from the importer, the same rule `pick_closest` applies to suffix hits: one root can hold two copies of a module (a nested checkout, a vendored tree, `testdata`), and an import must not cross into the other copy. A candidate whose directory holds no matching package is skipped rather than ending the search, since a nested module's path need not mirror its directory.
 
 `pick_closest` resolves ambiguity when multiple files match a suffix — pick the candidate sharing the most leading components with the importer; break ties lexicographically. Prevents false cross-project edges in monorepos.
 
@@ -154,7 +154,7 @@ Loader refuses if `CacheFile.schema != JSON_SCHEMA_DEPS_INDEX`.
 1. Add a variant to `Lang` in `src/deps/resolver/build.rs` and a case in `Lang::from_path` for its file extensions.
 2. Add an arm to the `match` in `src/deps/extract.rs::extract` returning `Vec<RawImport>` for the new language.
 3. If the language has FQN-based imports (`com.foo.Bar`), add it to the `Lang::Java | Lang::Kotlin | Lang::Scala | Lang::CSharp` branches in `extract_package_and_types` (build.rs) and the resolver (resolve.rs).
-4. If the language has a manifest-driven module prefix (like Go's `go.mod`), add a parser to `src/deps/manifest.rs` and a branch in `resolve.rs`.
+4. If the language has a manifest-driven module prefix (like Go's `go.mod`), add a parser to `src/deps/manifest.rs` and a branch in `resolve.rs`. A manifest that can appear anywhere in the tree — not only at the root — is collected in `build_suffix_index`'s walk, the way `go_modules` is.
 5. Add a fixture under `tests/fixtures/deps/<lang>_<scenario>/` and an integration test in `tests/deps_e2e.rs`.
 
 The four "FQN" languages (Java, Kotlin, Scala, C#) all share the same suffix-index code path — adding a similar one (e.g. F#) is mostly an `extract` pass plus a one-line resolver case.

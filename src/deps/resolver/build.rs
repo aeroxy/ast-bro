@@ -11,6 +11,7 @@ use ignore::WalkBuilder;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use crate::deps::manifest::parse_go_module;
 use crate::file_filter::{add_filters, should_skip_path};
 
 /// Per-file metadata collected during the walk.
@@ -84,6 +85,17 @@ pub struct SuffixIndex {
     /// File → its own metadata (language, package, types). Populated for
     /// every walked file.
     pub by_file: HashMap<PathBuf, IndexedFile>,
+    /// Every Go module declared under the root: `(module path, module
+    /// directory)`. The directory is relative to the root in POSIX form
+    /// (`""` when `go.mod` sits at the root). Sorted longest-module-path
+    /// first — the order `resolve` starts from, which then re-ranks equal
+    /// prefixes by distance from the importer. The sort also keeps the
+    /// vector independent of directory-walk order, which is not alphabetical.
+    ///
+    /// Collected during the walk rather than read from `<root>/go.mod`
+    /// alone: the graph root is the repository, and a repository may hold
+    /// its module in a subdirectory (or hold several modules).
+    pub go_modules: Vec<(String, String)>,
     pub root: PathBuf,
 }
 
@@ -112,6 +124,17 @@ pub fn build_suffix_index(root: &Path) -> SuffixIndex {
             continue;
         }
         if should_skip_path(path, root) {
+            continue;
+        }
+        if path.file_name().and_then(|s| s.to_str()) == Some("go.mod") {
+            if let Some(prefix) = parse_go_module(path) {
+                let dir = path
+                    .parent()
+                    .and_then(|p| p.strip_prefix(root).ok())
+                    .map(to_posix)
+                    .unwrap_or_default();
+                idx.go_modules.push((prefix, dir));
+            }
             continue;
         }
         let Some(lang) = Lang::from_path(path) else {
@@ -184,7 +207,25 @@ pub fn build_suffix_index(root: &Path) -> SuffixIndex {
         v.dedup();
     }
 
+    // Longest module path first: `example.com/app/tools` must be tried
+    // before `example.com/app`, which is a prefix of it.
+    idx.go_modules.sort_by(|a, b| {
+        b.0.len()
+            .cmp(&a.0.len())
+            .then_with(|| a.0.cmp(&b.0))
+            .then_with(|| a.1.cmp(&b.1))
+    });
+
     idx
+}
+
+/// A path relative to the root, rendered with `/` separators on every
+/// platform (the form the suffix index and `find_dir_file` speak).
+fn to_posix(p: &Path) -> String {
+    p.components()
+        .map(|c| c.as_os_str().to_string_lossy().into_owned())
+        .collect::<Vec<_>>()
+        .join("/")
 }
 
 fn index_path_suffixes(

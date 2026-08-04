@@ -74,7 +74,6 @@ pub fn apply_delta_to_deps(
                 let ctx = ResolveCtx {
                     from_file: file,
                     lang: info.language,
-                    alias_prefix: aliases.go_module.as_deref(),
                     path_aliases: &aliases.ts_path_aliases,
                     php_psr4: &aliases.php_psr4,
                 };
