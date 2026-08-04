@@ -89,6 +89,15 @@ For "what does this package actually expose?" — historically the most expensiv
 
 *More coming soon! Adding another language is a single new adapter file leveraging the massive `ast-grep` language ecosystem.*
 
+For Markdown the "symbols" are headings and fenced code blocks, plus a leading
+YAML frontmatter block: `--- frontmatter` shows up in `map` and `digest` with
+its line range, and `frontmatter` is a `show` handle
+(`ast-bro show tasks/ frontmatter` collects every card's block in one call).
+Only a `---` fence on the file's first line counts — a `---` further down stays
+an ordinary horizontal rule. Trailing whitespace on either fence and a leading
+UTF-8 BOM are tolerated; `...` closes a block as well as `---`. TOML
+frontmatter (`+++`) is not surfaced.
+
 ---
 
 ## What gets walked
@@ -182,6 +191,10 @@ ast-bro map src/
 
 # Print the exact source of one specific method
 ast-bro show Player.cs TakeDamage
+
+# Don't know which file it's in? Point at the directory (or a quoted glob)
+ast-bro show src/ TakeDamage
+ast-bro show 'src/**/*.cs' TakeDamage
 
 # Compact public-API map of a whole module
 ast-bro digest src/Services
@@ -363,9 +376,33 @@ pub struct Declaration  L10-120
     pub fn lines_suffix(&self) -> String  L30-48
 ```
 
+### `show` across a file, a directory, or a glob
+
+A `show` target is a file, a directory, or a quoted glob, so you can extract a
+symbol you can name from a tree you haven't mapped yet:
+
+```bash
+ast-bro show src/ TakeDamage            # searches every parseable file
+ast-bro show 'src/**/*.cs' TakeDamage   # quote it — see below
+ast-bro show a.java b.java greet        # an explicit list works too
+```
+
+A multi-file answer leads with its coverage, and caps rendered bodies at
+`--limit 20` while still reporting the true total:
+
+```
+# 3 match(es) for 'greet' in 2 of 47 file(s) searched
+```
+
+**Unquoted globs are recovered, not misread.** The shell expands
+`show src/*.cs Widget` before `ast-bro` starts, so the extra file names arrive
+in the argument list; they are taken as targets rather than as symbol names,
+and a note reminds you to quote the glob. Previously that spelling searched
+only the first file and dropped the symbol's other definitions silently.
+
 ### `show` with ancestor context
 
-`ast-bro show <file> <Symbol>` prints a `# in: ...` breadcrumb
+`ast-bro show <target> <Symbol>` prints a `# in: ...` breadcrumb
 between the header and the body so you know what the extracted code is
 nested inside, without a second `map` call:
 
@@ -424,7 +461,7 @@ changes, so downstream tooling can guard on it:
 | Schema | Command |
 |--------|----------|
 | `ast-bro.map.v1` | `map --json`, `digest --json` |
-| `ast-bro.show.v1` | `show --json` |
+| `ast-bro.show.v2` | `show --json` |
 | `ast-bro.implements.v1` | `implements --json` |
 | `ast-bro.surface.v1` | `surface --json` |
 | `ast-bro.deps.v1` | `deps --json` |
@@ -476,7 +513,7 @@ tools that map 1:1 to the CLI commands:
 |------|----------------|---------|
 | `map`          | `ast-bro map <paths>`                | text, or `ast-bro.map.v1` with `json: true` |
 | `digest`       | `ast-bro digest <paths>`             | text, or `ast-bro.map.v1` with `json: true` |
-| `show`         | `ast-bro show <path> <syms>`         | text, or `ast-bro.show.v1` with `json: true` |
+| `show`         | `ast-bro show <target> <syms>`       | text, or `ast-bro.show.v2` with `json: true`; target may be a file, directory, or glob |
 | `implements`   | `ast-bro implements <type> <paths>`  | text, or `ast-bro.implements.v1` with `json: true` |
 | `callers`      | `ast-bro callers <symbol>`           | text, or `ast-bro.callers.v1` with `json: true` |
 | `callees`      | `ast-bro callees <symbol>`           | text, or `ast-bro.callees.v1` with `json: true` |

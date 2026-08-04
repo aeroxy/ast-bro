@@ -60,17 +60,18 @@ pub fn list() -> Value {
             },
             {
                 "name": "show",
-                "description": "Extract source of one or more symbols from a single file. Suffix matching: `TakeDamage`, or `Player.TakeDamage` when ambiguous. For markdown the symbol is a heading. Returns text by default; set `json: true` for `ast-bro.show.v1`.",
+                "description": "Extract source of one or more symbols from a file, a directory, or a glob — pass a directory when you know the symbol but not the file. Suffix matching: `TakeDamage`, or `Player.TakeDamage` when ambiguous. For markdown the symbol is a heading or `frontmatter`. Returns text by default; set `json: true` for `ast-bro.show.v2`.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "path":    { "type": "string", "description": "File to search." },
+                        "path":    { "type": "string", "description": "File, directory, or glob to search." },
                         "symbols": {
                             "type": "array",
                             "items": { "type": "string" },
                             "description": "One or more symbol names to extract.",
                             "minItems": 1
                         },
+                        "limit":   { "type": "integer", "description": "Cap on rendered bodies when the target is a directory or glob (default 20). The reported total is always exact." },
                         "json":    { "type": "boolean" }
                     },
                     "required": ["path", "symbols"]
@@ -665,9 +666,17 @@ fn run_digest(args: Value) -> CallResult {
 
 #[derive(Deserialize)]
 struct ShowArgs {
+    /// A file, a directory, or a glob — the same three target kinds the CLI
+    /// accepts. Kept as one field so the tool schema is unchanged.
     path: PathBuf,
     symbols: Vec<String>,
+    #[serde(default = "default_show_limit")]
+    limit: usize,
     #[serde(default)] json: bool,
+}
+
+fn default_show_limit() -> usize {
+    crate::show::DEFAULT_LIMIT
 }
 
 fn run_show(args: Value) -> CallResult {
@@ -678,37 +687,48 @@ fn run_show(args: Value) -> CallResult {
     if a.symbols.is_empty() {
         return CallResult::Error("`symbols` must not be empty".into());
     }
-    let res = match crate::parse_file(&a.path) {
-        Some(r) => r,
-        None => return CallResult::Error(format!("could not parse file: {}", a.path.display())),
-    };
+    if !crate::show::is_target(&a.path) {
+        return CallResult::Error(format!(
+            "not a `show` target: {} (expected a parseable file, a directory, or a matching glob)",
+            a.path.display()
+        ));
+    }
+    let targets = vec![a.path.clone()];
+    let results = crate::show::collect(&targets);
+    if results.is_empty() {
+        return CallResult::Error(format!(
+            "no parseable file at: {} (no file of a supported language, not a missing symbol)",
+            a.path.display()
+        ));
+    }
 
-    let mut seen = std::collections::HashSet::new();
-    let mut all = Vec::new();
-    for sym in &a.symbols {
-        for m in core::find_symbols(&res, sym) {
-            let key = (m.start_line, m.end_line, m.qualified_name.clone());
-            if seen.insert(key) {
-                all.push(m);
-            }
-        }
+    // Same engine as the CLI, so the two cannot drift on what a target is or
+    // on how a capped answer reports its total.
+    let multi = !a.path.is_file();
+    let outcome = crate::show::resolve(results, &a.symbols, a.limit, multi);
+    if outcome.total == 0 {
+        return CallResult::Error(format!(
+            "no symbol matching '{}' in {} file(s) searched under {}",
+            a.symbols.join(", "),
+            outcome.files_scanned,
+            a.path.display()
+        ));
     }
 
     if a.json {
-        CallResult::Text(core::render_json_show(&res, &all, true))
+        CallResult::Text(crate::show::render_json(&outcome, true))
     } else {
+        // The client has no stderr channel, so the note that would be a
+        // stderr line on the CLI is prepended to the text instead.
         let mut out = String::new();
-        for m in &all {
+        if !outcome.unmatched.is_empty() {
             out.push_str(&format!(
-                "# {}:{}-{} {} ({})\n",
-                res.path.display(), m.start_line, m.end_line, m.qualified_name, m.kind
+                "# note: no symbol matching '{}' in {} file(s) searched (other symbol(s) shown)\n",
+                outcome.unmatched.join(", "),
+                outcome.files_scanned
             ));
-            if !m.ancestor_signatures.is_empty() {
-                out.push_str(&format!("# in: {}\n", m.ancestor_signatures.join(" → ")));
-            }
-            out.push_str(&m.source);
-            out.push('\n');
         }
+        out.push_str(&crate::show::render_text(&outcome));
         CallResult::Text(out)
     }
 }
@@ -1080,6 +1100,10 @@ fn run_run(args: Value) -> CallResult {
     let mut error_count: usize = 0;
     let mut rewrite_capped = false;
     let mut search_capped = false;
+    // How many files the pattern was actually run against — the coverage of
+    // a "No matches found." answer, which is otherwise identical whether the
+    // walk saw four hundred files or four.
+    let mut files_scanned: usize = 0;
     // Cache compiled patterns per language when lang is auto-detected,
     // so files of the same language reuse the compiled pattern.
     // Stores Result<Pattern, String> — Err when the pattern is invalid for that language.
@@ -1095,6 +1119,7 @@ fn run_run(args: Value) -> CallResult {
                 None => continue,
             }
         };
+        files_scanned += 1;
         // Cap file size before slurping into memory. Same error-reporting
         // shape as read_to_string failures so the consumer sees a uniform
         // skipped-file record.
@@ -1289,6 +1314,7 @@ fn run_run(args: Value) -> CallResult {
                 mode: &'static str,
                 dry_run: bool,
                 rewrite_count: usize,
+                files_scanned: usize,
                 error_count: usize,
                 capped: bool,
                 cap_limit: usize,
@@ -1298,6 +1324,7 @@ fn run_run(args: Value) -> CallResult {
                 mode: "rewrite",
                 dry_run: !a.write,
                 rewrite_count,
+                files_scanned,
                 error_count,
                 capped: rewrite_capped,
                 cap_limit: MCP_REWRITE_MAX_FILES,
@@ -1309,7 +1336,10 @@ fn run_run(args: Value) -> CallResult {
             ));
         }
         if rewrite_count == 0 && !rewrite_capped && error_count == 0 {
-            output.push_str("No matches found for rewrite.");
+            output.push_str(&format!(
+                "No matches found for rewrite ({} file(s) scanned).",
+                files_scanned
+            ));
         }
         if rewrite_capped {
             output.push_str(&format!("\n# warning: reached safety cap of {} files; remaining files were not processed.", MCP_REWRITE_MAX_FILES));
@@ -1327,6 +1357,7 @@ fn run_run(args: Value) -> CallResult {
             schema: &'static str,
             matches: &'a [crate::run::RunMatch],
             errors: &'a [String],
+            files_scanned: usize,
             error_count: usize,
             capped: bool,
             cap_limit: usize,
@@ -1335,6 +1366,7 @@ fn run_run(args: Value) -> CallResult {
             schema: crate::core::JSON_SCHEMA_RUN,
             matches: &all_matches,
             errors: &search_errors,
+            files_scanned,
             error_count,
             capped: search_capped,
             cap_limit: MCP_SEARCH_MAX_MATCHES,
@@ -1345,7 +1377,7 @@ fn run_run(args: Value) -> CallResult {
         ))
     } else {
         if all_matches.is_empty() {
-            output.push_str("No matches found.");
+            output.push_str(&format!("No matches found ({} file(s) scanned).", files_scanned));
         } else {
             let matched_files: std::collections::HashSet<&str> =
                 all_matches.iter().map(|m| m.file.as_str()).collect();

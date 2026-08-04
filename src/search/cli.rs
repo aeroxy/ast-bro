@@ -89,8 +89,13 @@ pub fn run_find_related(
                 format!("no such file: {file_path}"),
             )
         };
+        let mut hint = "`find-related <FILE>:<LINE>` takes a file that exists; its chunk is then looked up in the index by path.".to_string();
+        if let Some(repair) = crate::path_repair::hint_for_one(file_path) {
+            hint.push('\n');
+            hint.push_str(&repair);
+        }
         return crate::cli_error::CliError::new("find-related", kind, detail)
-            .hint("`find-related <FILE>:<LINE>` takes a file that exists; its chunk is then looked up in the index by path.")
+            .hint(hint)
             .emit(json);
     }
     let index = match Index::open(path, &cwd) {

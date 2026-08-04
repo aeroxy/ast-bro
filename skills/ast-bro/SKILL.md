@@ -12,7 +12,7 @@ Each command accepts `--json` for a stable, versioned schema (e.g. `ast-bro.map.
 
 **Error contract** (uniform across every subcommand): stdout carries results only; every note, hint, and error goes to stderr. Exit `0` = the query ran (even when the answer is legitimately empty), exit `2` = the query could not run as asked (no such path/symbol, unknown flag, missing argument, empty argument list — e.g. a `$(...)` substitution that produced nothing), exit `1` = internal failure. Two deliberate additions: `cycles` exits `3` when cycles exist, and `run` exits `1` when a valid pattern matched nothing (`grep` convention) — a rejected `run` still exits 2 with empty stdout. With `--json`, a rejected call also emits a machine-readable `ast-bro.error.v1` object on stderr. Recovery rule: *stdout empty or exit non-zero → the call was wrong; read stderr; fix the call.* Never silence stderr with `2>/dev/null` — for some commands it carries the only copy of the diagnostic.
 
-**Result caps** (defaults; truncation is always reported, never silent): `--limit 200` on `callers` / `callees` / `impact` / `reverse-deps`, `--max-members 50` under the digest preset, `--budget 8000` on `context`, `-k 10` on `search`; `--depth` defaults are 1 (`callers`/`callees`), 2 (`impact`), 3 (`deps`), 12 (`trace`); `context` exposes no `--depth` — it walks to depth 2 internally under its `--budget`. When a cap is hit the header on **stdout** carries the true total (`# 113 caller(s) … (showing 3; raise --limit to see the rest)`) — for every section, including `callees` ancestor groups and `callers` type groups — and JSON carries `total` / `truncated` (plus `frontier_truncated` when `--depth` stopped a walk that still had edges to follow). `--limit` caps the display, not the walk: `callers` / `impact` / `reverse-deps` traverse the full cone to make the total exact, so `--depth` is what costs time.
+**Result caps** (defaults; truncation is always reported, never silent): `--limit 200` on `callers` / `callees` / `impact` / `reverse-deps`, `--limit 20` on a multi-file `show` (a single explicit file is never capped), `--max-members 50` under the digest preset, `--budget 8000` on `context`, `-k 10` on `search`; `--depth` defaults are 1 (`callers`/`callees`), 2 (`impact`), 3 (`deps`), 12 (`trace`); `context` exposes no `--depth` — it walks to depth 2 internally under its `--budget`. When a cap is hit the header on **stdout** carries the true total (`# 113 caller(s) … (showing 3; raise --limit to see the rest)`) — for every section, including `callees` ancestor groups and `callers` type groups — and JSON carries `total` / `truncated` (plus `frontier_truncated` when `--depth` stopped a walk that still had edges to follow). `--limit` caps the display, not the walk: `callers` / `impact` / `reverse-deps` traverse the full cone to make the total exact, so `--depth` is what costs time.
 
 Read structure with `sb` before opening full contents. Pull method bodies only once you know which ones you need.
 
@@ -42,10 +42,13 @@ Stop at the step that answers the question:
    sb map src/ --detail signatures --max-members 8
    ```
 
-3. **One symbol's source** — `sb show <file> <Symbol>`: suffix matching, multiple at once. Explicitly-passed extensionless files fall back to shebang detection (`#!/usr/bin/env python3` → Python, `#!/usr/bin/env node` → TypeScript, etc.) — useful for CLI scripts in `bin/` or `~/.local/bin/`. Directory walks skip extensionless files to keep the walk fast.
+3. **One symbol's source** — `sb show <target>... <Symbol>...`: suffix matching, multiple symbols at once. A target is a **file, a directory, or a quoted glob** — pass a directory when you know the symbol but not the file, and skip the search-then-read round trip. Multi-file answers carry a coverage header (`# 3 match(es) for 'greet' in 2 of 47 file(s) searched`) and cap rendered bodies at `--limit 20` with the true total still reported. An unquoted glob is recovered rather than misread: the shell expands `sb show src/*.cs Widget` before `sb` sees it, and the extra files are taken as targets, not as symbol names. An argument that reads as a path but isn't there (`src/typo.rs`) is rejected as a path, never searched for as a symbol; if a symbol genuinely shares its name with a parseable file, qualify it (`Type.method`) so it can't be read as one. Explicitly-passed extensionless files fall back to shebang detection (`#!/usr/bin/env python3` → Python, `#!/usr/bin/env node` → TypeScript, etc.) — useful for CLI scripts in `bin/` or `~/.local/bin/`; directory walks skip extensionless files to keep the walk fast. For markdown the symbol is a heading or `frontmatter` (a leading `---` YAML block; `+++` TOML is not surfaced). Schema: `ast-bro.show.v2`.
    ```bash
    sb show src/main_helpers.rs parse_file_for_hook
    sb show Player.cs TakeDamage Heal Die
+   sb show src/ TakeDamage              # don't know the file
+   sb show 'src/**/*.cs' TakeDamage     # quote the glob
+   sb show tasks/ frontmatter           # every card's YAML block, one call
    ```
 
 4. **Who implements a type** — `sb implements <Type> <dir>`: AST-accurate (skip `grep`), transitive by default with `[via Parent]` tags. Add `--direct` for level-1 only.
@@ -118,7 +121,7 @@ Stop at the step that answers the question:
     sb context LanguageAdapter --budget 2000
     ```
 
-15. **Find or rewrite by AST pattern** — `sb run -p '<pattern>' [-r '<rewrite>'] [--write] [--lang <lang>]`: metavariable patterns (`$VAR`, `$$$` for splats). `--write` mutates files — always dry-run first.
+15. **Find or rewrite by AST pattern** — `sb run -p '<pattern>' [-r '<rewrite>'] [--write] [--lang <lang>]`: metavariable patterns (`$VAR`, `$$$` for splats). `--write` mutates files — always dry-run first. A zero result states its own coverage (`no matches for "foo($$$)" (412 file(s) scanned)`, `files_scanned` in `--json`) — read that number before trusting the zero, since a stray `--glob` or `--lang` can shrink the scan to almost nothing. Zero *files* scanned is a different message and a different fix (`no source files processed`).
     ```bash
     sb run -p 'println!($$$)' --lang rust
     ```
@@ -128,7 +131,10 @@ Stop at the step that answers the question:
     sb squeeze app.log
     ```
 
+**Wrong-path recovery**: a path that isn't where you said it was is rejected with exit 2, and the stderr hint offers a repair when one is verifiable on disk — the same file name found elsewhere in the tree, or the quoted form when an unquoted path with spaces got split into several arguments. No hint means nothing on disk corroborated a guess, so re-read the path rather than retrying blind.
+
 Path / argument expectations:
+- `show` → expects a file, directory, or quoted glob, then one or more symbol names
 - `deps`, `reverse-deps` → expect a file path
 - `graph`, `cycles` → expect a directory (repo root)
 - `callers`, `callees`, `impact`, `context` → expect a symbol name (function or type), not a path

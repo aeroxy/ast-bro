@@ -236,6 +236,9 @@ pub fn run(
                 mode: &'static str,
                 dry_run: bool,
                 rewrite_count: usize,
+                /// Same reason as the search document: a zero-rewrite dry run
+                /// says nothing about coverage on its own.
+                files_scanned: usize,
                 error_count: usize,
                 files: &'a [RewriteRecord],
             }
@@ -244,6 +247,7 @@ pub fn run(
                 mode: "rewrite",
                 dry_run: !write_changes,
                 rewrite_count,
+                files_scanned: attempted_files,
                 error_count,
                 files: &json_rewrites,
             };
@@ -257,11 +261,16 @@ pub fn run(
             struct SearchDoc<'a> {
                 schema: &'static str,
                 matches: &'a [super::RunMatch],
+                /// How much ground an empty `matches` covers. Without it a
+                /// zero-match document is identical whether 412 files were
+                /// searched or three were.
+                files_scanned: usize,
                 error_count: usize,
             }
             let doc = SearchDoc {
                 schema: crate::core::JSON_SCHEMA_RUN,
                 matches: &json_matches,
+                files_scanned: attempted_files,
                 error_count,
             };
             if pretty {
@@ -288,6 +297,26 @@ pub fn run(
         eprintln!(
             "ast-bro run: no source files processed (check paths, --glob, or --lang)"
         );
+    } else if !json {
+        // An honest zero used to print nothing at all on either stream: exit
+        // 1 and silence. Silence cannot distinguish "searched 412 files, the
+        // pattern is genuinely absent" from "--glob or --lang narrowed this
+        // to 3 files and the answer covers almost nothing", and the caller
+        // needs the second reading to know the zero is worth trusting.
+        let rewriting = rewrite_template.is_some();
+        let empty = if rewriting {
+            rewrite_count == 0
+        } else {
+            match_count == 0
+        };
+        if empty {
+            eprintln!(
+                "ast-bro run: no {} for {:?} ({} file(s) scanned)",
+                if rewriting { "rewrites" } else { "matches" },
+                pattern,
+                attempted_files
+            );
+        }
     }
 
     // Exit code semantics:
