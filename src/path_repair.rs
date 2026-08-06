@@ -124,7 +124,7 @@ fn rejoined(args: &[String]) -> Option<(String, usize)> {
         // A rejoined *glob* counts too: `map The Sorting Bureau/*.py` unquoted
         // arrives split on spaces with the pattern intact but unmatched, so
         // the literal path never exists and only expansion proves the repair.
-        if p.exists() || !crate::path_glob::expand_pattern(p).is_empty() {
+        if p.exists() || crate::path_glob::pattern_matches_any(p) {
             return Some((candidate, end));
         }
     }

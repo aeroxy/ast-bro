@@ -115,7 +115,7 @@ pub fn is_target(arg: &Path) -> bool {
     if arg.exists() {
         return crate::main_helpers::can_parse_for_hook(arg);
     }
-    looks_like_glob(arg) && !crate::path_glob::expand_pattern(arg).is_empty()
+    looks_like_glob(arg) && crate::path_glob::pattern_matches_any(arg)
 }
 
 /// Split `show`'s positionals into leading targets and trailing symbols.
