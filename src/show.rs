@@ -186,8 +186,9 @@ pub fn misread_path(symbols: &[String]) -> Option<&str> {
 /// the filter pipeline exactly like `map` does.
 ///
 /// When both routes reach the same file the explicit parse is the one kept —
-/// it is added first and the dedup is stable — so naming a file alongside a
-/// directory that contains it cannot make the ignore rules hide it.
+/// it is inserted first and the dedup keeps the first spelling of each file —
+/// so naming a file alongside a directory that contains it cannot make the
+/// ignore rules hide it.
 pub fn collect(targets: &[PathBuf]) -> Vec<ParseResult> {
     let mut explicit: Vec<&PathBuf> = Vec::new();
     let mut walked: Vec<PathBuf> = Vec::new();
@@ -199,19 +200,50 @@ pub fn collect(targets: &[PathBuf]) -> Vec<ParseResult> {
         }
     }
 
+    let mut seen: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
     let mut results: Vec<ParseResult> = Vec::new();
     for f in explicit {
         if let Some(r) = crate::parse_file(f) {
-            results.push(r);
+            if seen.insert(identity(&r.path)) {
+                results.push(r);
+            }
         }
     }
     if !walked.is_empty() {
-        results.extend(crate::walk_and_parse(&walked, None));
+        for r in crate::walk_and_parse(&walked, None) {
+            if seen.insert(identity(&r.path)) {
+                results.push(r);
+            }
+        }
     }
 
     results.sort_by(|a, b| a.path.cmp(&b.path));
-    results.dedup_by(|a, b| a.path == b.path);
     results
+}
+
+/// A stable on-disk identity for a parsed file, used to dedup [`collect`].
+///
+/// `ParseResult.path` is whatever the caller spelled — adapters record the
+/// path they were handed, and a walk roots its results at the spelling of the
+/// root it was given — so it is a *display* string, not an identity.
+/// `src/a.rs`, `./src/a.rs` and the absolute form name one file in three
+/// ways, and overlapping targets reach it by more than one of them
+/// (`show src/a.rs ./src Sym`). Comparing the spellings therefore let the
+/// same file be rendered twice and counted twice, which inflated
+/// `files_scanned`, `total` and the coverage header — a duplicate answer that
+/// reads as two independent findings.
+///
+/// `canonicalize` is the comparison that actually answers "same file?": it
+/// resolves `.`, `..` and symlinks against the filesystem instead of guessing
+/// lexically, and lexical guessing is the unsafe direction here — collapsing
+/// `link/../a.rs` by string surgery can declare two *different* files equal
+/// and drop one. Its cost, one `realpath` per file, is noise beside the read
+/// and parse that already happened. It fails only when the path went away
+/// between parse and here; falling back to the spelling then keeps a
+/// duplicate rather than losing a file, which is the right way round to be
+/// wrong.
+fn identity(path: &Path) -> PathBuf {
+    path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
 }
 
 /// Match `symbols` against every parsed file and assemble the [`Outcome`].
@@ -545,6 +577,76 @@ mod tests {
         assert!(is_target(&pattern), "a matching glob is a valid target");
         let results = collect(&[pattern]);
         assert_eq!(results.len(), 2, "only the .rs files");
+    }
+
+    #[test]
+    fn collect_dedups_the_same_file_spelled_two_ways() {
+        // `<dir>/a.rs` and `<dir>/sub/../a.rs` are one file. `PathBuf` equality
+        // compares components, so it folds away an *interior* `.` on its own
+        // but keeps `..` (and a leading `./`) — those spellings compared
+        // unequal, and the file was parsed, counted and rendered twice.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.rs"), "fn greet() {}\n").unwrap();
+        std::fs::create_dir(dir.path().join("sub")).unwrap();
+        let bare = dir.path().join("a.rs");
+        let traversed = dir.path().join("sub").join("..").join("a.rs");
+        assert_ne!(bare, traversed, "the two spellings must compare unequal");
+
+        let results = collect(&[bare, traversed]);
+        assert_eq!(results.len(), 1, "one file, one parse");
+        let o = resolve(results, &["greet".to_string()], DEFAULT_LIMIT, true);
+        assert_eq!(o.files_scanned, 1);
+        assert_eq!(o.total, 1);
+        assert_eq!(o.files_matched(), 1);
+        assert_eq!(o.shown, 1);
+        assert_eq!(render_text(&o).matches("fn greet").count(), 1);
+    }
+
+    #[test]
+    fn collect_dedups_an_explicit_file_against_a_differently_spelled_directory() {
+        // The overlap that motivated the fix: an explicit file plus a
+        // directory that contains it, reached by two spellings. Both the
+        // duplicate body and the inflated `files_scanned` have to go.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.rs"), "fn greet() {}\n").unwrap();
+        std::fs::write(dir.path().join("b.rs"), "fn other() {}\n").unwrap();
+        std::fs::create_dir(dir.path().join("sub")).unwrap();
+        let explicit = dir.path().join("a.rs");
+        let walked = dir.path().join("sub").join("..");
+
+        let results = collect(&[explicit.clone(), walked]);
+        assert_eq!(results.len(), 2, "two files on disk, two results");
+        assert_eq!(
+            results.iter().filter(|r| r.path == explicit).count(),
+            1,
+            "the explicit spelling is the one kept"
+        );
+        let o = resolve(results, &["greet".to_string()], DEFAULT_LIMIT, true);
+        assert_eq!(o.files_scanned, 2, "coverage must not count a.rs twice");
+        assert_eq!(o.total, 1);
+        assert!(!o.truncated);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn collect_dedups_the_same_file_reached_through_a_symlink() {
+        // The case that decides the implementation: no amount of string
+        // surgery on `link/a.rs` reveals that it is `real/a.rs`. Only asking
+        // the filesystem does.
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real");
+        std::fs::create_dir(&real).unwrap();
+        std::fs::write(real.join("a.rs"), "fn greet() {}\n").unwrap();
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        let direct = real.join("a.rs");
+        let results = collect(&[direct.clone(), link.join("a.rs")]);
+        assert_eq!(results.len(), 1, "one file, two routes to it");
+        assert_eq!(
+            results[0].path, direct,
+            "the first spelling given is the one displayed"
+        );
     }
 
     #[test]
