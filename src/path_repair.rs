@@ -212,11 +212,30 @@ fn display_path(path: &Path, root: &Path) -> String {
 /// is what lets `map src/typo/file.rs` find `lib/file.rs` — a search from
 /// the argument's own (non-existent) parent would find nothing.
 fn search_root(missing: &Path) -> PathBuf {
+    // A relative argument is spelled from the cwd, so the cwd is the caller's
+    // frame of reference and the search must never be narrower than it.
+    // Anchoring such an argument on its nearest existing ancestor was: in a
+    // directory with no project marker, `show src/c.rs` searched only `src/`,
+    // so a `lib/c.rs` one directory over — plainly inside the tree the caller
+    // was working in — produced no hint at all. Silence there reads as "that
+    // file is nowhere", not "I looked in one subdirectory", which is the exact
+    // misreading the hint exists to prevent. `find_root_for` still widens to
+    // the enclosing project when a marker or `.git` exists; with none it
+    // returns the directory it was handed, which is what kept the narrow
+    // anchor invisible.
+    //
+    // Absolute arguments keep the ancestor anchor: `/elsewhere/x.rs` says
+    // nothing about where the shell sits, and searching the cwd for it would
+    // offer a file from an unrelated project.
+    if missing.is_relative() {
+        if let Ok(cwd) = std::env::current_dir() {
+            return crate::project_root::find_root_for(&cwd).unwrap_or(cwd);
+        }
+    }
     // Climb to the nearest ancestor that does exist, then let the usual root
     // detection take over from there. Anchoring at the argument's own parent
     // would find nothing precisely when the parent is the part that's wrong
-    // (`map src/typo/file.rs`), and anchoring at the cwd would search an
-    // unrelated project when the argument points outside it.
+    // (`map /abs/src/typo/file.rs`).
     let mut cur = missing.parent();
     while let Some(p) = cur {
         if !p.as_os_str().is_empty() && p.exists() {

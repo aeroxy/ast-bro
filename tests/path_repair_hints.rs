@@ -23,6 +23,23 @@ fn run(args: &[&str]) -> (Option<i32>, String, String) {
     )
 }
 
+/// Same, with `cwd` set. A relative argument only means anything against a
+/// cwd, and cwd is process-global, so the tests that need one drive it through
+/// the subprocess rather than `set_current_dir`, which would race the suite.
+fn run_in(cwd: &std::path::Path, args: &[&str]) -> (Option<i32>, String, String) {
+    let out = Command::new(bin())
+        .args(args)
+        .current_dir(cwd)
+        .env("NO_COLOR", "1")
+        .output()
+        .expect("run ast-bro");
+    (
+        out.status.code(),
+        String::from_utf8(out.stdout).expect("utf8"),
+        String::from_utf8(out.stderr).expect("utf8"),
+    )
+}
+
 /// A project root (so the search anchors inside the fixture) holding
 /// `lib/widget.rs` and `The Sorting Bureau/spaced.py`.
 fn fixture() -> tempfile::TempDir {
@@ -67,6 +84,35 @@ fn a_relocated_file_is_pointed_at() {
     assert!(
         stderr.contains("lib/widget.rs"),
         "expected the real location:\n{stderr}"
+    );
+}
+
+#[test]
+fn a_relative_path_searches_the_whole_cwd_not_just_its_own_subdirectory() {
+    // No project marker anywhere, so root detection has nothing to widen to and
+    // used to hand back `src/` — the argument's nearest existing ancestor. The
+    // file sits in a sibling directory the caller can plainly see, so anchoring
+    // there reported no repair for a file one `ls` away.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(dir.path().join("src")).unwrap();
+    std::fs::write(dir.path().join("src/a.rs"), "fn a() {}\n").unwrap();
+    std::fs::create_dir(dir.path().join("lib")).unwrap();
+    std::fs::write(dir.path().join("lib/c.rs"), "fn c() {}\n").unwrap();
+
+    let (code, _, stderr) = run_in(dir.path(), &["show", "src/c.rs", "x"]);
+    assert_eq!(code, Some(2), "stderr:\n{stderr}");
+    assert!(
+        stderr.contains("lib/c.rs"),
+        "a sibling directory is inside the caller's frame:\n{stderr}"
+    );
+
+    // The widened root must not turn into a guess: a basename that exists
+    // nowhere under the cwd still gets no hint.
+    let (code, _, stderr) = run_in(dir.path(), &["show", "src/absent_everywhere.rs", "x"]);
+    assert_eq!(code, Some(2), "stderr:\n{stderr}");
+    assert!(
+        !stderr.contains("found the same file name"),
+        "no evidence, no hint:\n{stderr}"
     );
 }
 
