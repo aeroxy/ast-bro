@@ -104,11 +104,27 @@ closure runs on every parallel worker: a shared set would need a lock taken
 once per file in *every* walk, to save duplicate work only in the rare
 overlapping one.
 
-`show` keeps its own identity set on top, because its two routes are different
+Which surviving spelling to *show* has no principled answer — two walk roots
+are equally "the" root — so the tie-break is the one that reads best rather
+than the one that falls out of the sort: **shortest wins**. That picks the bare
+form over `./`, the relative over the absolute, and the direct route over a
+`..` detour, every time. Equal lengths fall back to sort order, so the result
+is still deterministic.
+
+```bash
+ast-bro map ./src src      # displays src/a.rs
+ast-bro map "$PWD/src" src # displays src/a.rs
+```
+
+`show` runs the same dedup across its two routes, which are different
 *pipelines* — explicitly named files are parsed directly (a file you typed is a
 file you want, ignore rules notwithstanding) while directories and globs go
-through the walker — and no single walk can see across them. Same key, so the
-explicit parse wins and its spelling is the one displayed.
+through the walker — so no single walk can see across them. Naming a file
+alongside a directory containing it still cannot let the ignore rules hide it:
+the routes are merged rather than chosen between, and only the walk filters.
+When both reach the same file they produce the same parse, so shortest-wins
+decides the display there too — which is also what keeps an explicitly typed
+`src/a.rs` from being shown as the walk's `./src/a.rs`.
 
 This was a correctness fix, not a cosmetic one: before it, `run --write` read
 back its own output on the second visit and applied a re-matchable rewrite

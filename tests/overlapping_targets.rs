@@ -155,6 +155,53 @@ fn map_lists_a_shared_file_once() {
 }
 
 #[test]
+fn the_shortest_spelling_is_the_one_displayed() {
+    // Two walk roots are equally "the" root, so the survivor's spelling is a
+    // free choice; shortest is the one that reads best. Roots are given
+    // long-first so passing order cannot be what decides it.
+    let dir = fixture();
+    let (code, stdout, stderr) = run_in(dir.path(), &["map", "./sub", "sub"]);
+    assert_eq!(code, Some(0), "stderr:\n{stderr}");
+    assert!(
+        stdout.contains("# sub/a.rs"),
+        "expected the bare spelling:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("./sub/a.rs"),
+        "the `./` spelling is the longer one:\n{stdout}"
+    );
+}
+
+#[test]
+fn an_absolute_root_yields_to_a_relative_one() {
+    let dir = fixture();
+    let absolute = dir.path().join("sub");
+    let (code, stdout, stderr) = run_in(
+        dir.path(),
+        &[
+            "map",
+            absolute.to_str().unwrap(),
+            "sub",
+            "--json",
+            "--compact",
+        ],
+    );
+    assert_eq!(code, Some(0), "stderr:\n{stderr}");
+    let doc: serde_json::Value = serde_json::from_str(&stdout).expect("json");
+    let paths: Vec<&str> = doc["files"]
+        .as_array()
+        .expect("files array")
+        .iter()
+        .map(|f| f["path"].as_str().expect("path"))
+        .collect();
+    assert_eq!(paths.len(), 2, "sub/ holds two files: {paths:?}");
+    assert!(
+        paths.iter().all(|p| !p.starts_with('/')),
+        "the relative spelling is the shorter one: {paths:?}"
+    );
+}
+
+#[test]
 fn map_json_has_no_duplicate_file_entries() {
     let dir = fixture();
     let (code, stdout, stderr) = run_in(dir.path(), &["map", "sub", "sub", "--json", "--compact"]);

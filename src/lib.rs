@@ -782,7 +782,8 @@ pub(crate) fn walk_paths(paths: &[PathBuf], glob_str: Option<&str>) -> Vec<PathB
     results
 }
 
-/// Drop repeats of one on-disk file from a walk result, keeping the first.
+/// Drop repeats of one on-disk file from a walk result, keeping the entry
+/// whose path is spelled most briefly.
 ///
 /// Overlapping roots are the caller's normal spelling, not a mistake —
 /// `run -p … src src/hot`, `map . ./src`, `implements T src ./src` — but
@@ -793,14 +794,46 @@ pub(crate) fn walk_paths(paths: &[PathBuf], glob_str: Option<&str>) -> Vec<PathB
 /// one — `run --write` re-reading its own output and applying a re-matchable
 /// rewrite a second time (`log!(tag, tag, "a")`).
 ///
+/// Which of the surviving spellings to *show* has no principled answer — two
+/// walk roots are equally "the" root, unlike `show`'s explicit file — so the
+/// tie-break is the one that reads best rather than the one that falls out of
+/// the sort. Shortest wins, which picks the bare form over `./`, the relative
+/// form over the absolute, and the direct route over a `..` detour every time;
+/// equal lengths fall back to sort order, so the result is still deterministic.
+///
 /// Post-filter rather than a check inside the walk closure: the closure runs
 /// on every parallel worker, so the set would need a lock taken once per file
 /// in *every* walk to save duplicate work in the rare overlapping one. The
 /// results are already collected and sorted here, so filtering costs one
 /// [`file_filter::file_identity`] per file and nothing in contention.
-fn dedup_walk_results<T>(results: &mut Vec<T>, path_of: impl Fn(&T) -> &Path) {
-    let mut seen = std::collections::HashSet::new();
-    results.retain(|item| seen.insert(file_filter::file_identity(path_of(item))));
+pub(crate) fn dedup_walk_results<T>(results: &mut Vec<T>, path_of: impl Fn(&T) -> &Path) {
+    // (identity -> winning index, its spelling length). Recording the length
+    // beside the index keeps the comparison from having to borrow `results`
+    // again while it is already being iterated.
+    let mut best: std::collections::HashMap<PathBuf, (usize, usize)> =
+        std::collections::HashMap::new();
+    for (i, item) in results.iter().enumerate() {
+        let path = path_of(item);
+        let len = path.as_os_str().len();
+        best.entry(file_filter::file_identity(path))
+            .and_modify(|slot| {
+                if len < slot.1 {
+                    *slot = (i, len);
+                }
+            })
+            .or_insert((i, len));
+    }
+    if best.len() == results.len() {
+        return; // nothing overlapped, which is the overwhelmingly common case
+    }
+
+    let keep: std::collections::HashSet<usize> = best.into_values().map(|(i, _)| i).collect();
+    let mut i = 0;
+    results.retain(|_| {
+        let keep_this = keep.contains(&i);
+        i += 1;
+        keep_this
+    });
 }
 
 pub(crate) fn walk_and_parse(paths: &[PathBuf], glob_str: Option<&str>) -> Vec<ParseResult> {

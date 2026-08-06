@@ -73,12 +73,7 @@ fn first_file_only_is_not_an_answer() {
     let dir = fixture();
     let a = dir.path().join("Greeter.java");
     let b = dir.path().join("Second.java");
-    let (code, stdout, stderr) = run(&[
-        "show",
-        a.to_str().unwrap(),
-        b.to_str().unwrap(),
-        "greet",
-    ]);
+    let (code, stdout, stderr) = run(&["show", a.to_str().unwrap(), b.to_str().unwrap(), "greet"]);
     assert_eq!(code, Some(0), "stderr:\n{stderr}");
     assert!(
         stdout.contains("Greeter.greet") && stdout.contains("Second.greet"),
@@ -193,12 +188,7 @@ fn absent_symbol_in_a_directory_reports_the_scan_size() {
 #[test]
 fn absent_symbol_json_envelope_carries_files_scanned() {
     let dir = fixture();
-    let (code, _, stderr) = run(&[
-        "show",
-        dir.path().to_str().unwrap(),
-        "ZzNoSuchZz",
-        "--json",
-    ]);
+    let (code, _, stderr) = run(&["show", dir.path().to_str().unwrap(), "ZzNoSuchZz", "--json"]);
     assert_eq!(code, Some(2));
     let line = stderr
         .lines()
@@ -382,9 +372,10 @@ fn overlapping_targets_do_not_search_the_same_file_twice() {
 
 #[test]
 fn overlapping_targets_keep_the_explicitly_named_spelling() {
-    // Explicit-wins, unchanged by the dedup: a file the caller typed is parsed
-    // directly, so it survives even when the walk would have hidden it — and
-    // its spelling is the one reported back.
+    // A file the caller typed is parsed directly, so it survives even when the
+    // walk would have hidden it. Its spelling is also the one reported back,
+    // but that falls out of the shortest-spelling tie-break rather than being
+    // enforced separately: `Greeter.java` beats the walk's `./Greeter.java`.
     let dir = fixture();
     let (code, stdout, stderr) = run_in(
         dir.path(),
@@ -435,5 +426,8 @@ fn unparseable_single_target_still_says_unsupported() {
     let (code, stdout, stderr) = run(&["show", "Cargo.toml", "package"]);
     assert_eq!(code, Some(2), "stderr:\n{stderr}");
     assert!(stdout.is_empty());
-    assert!(stderr.contains("unsupported file type"), "stderr:\n{stderr}");
+    assert!(
+        stderr.contains("unsupported file type"),
+        "stderr:\n{stderr}"
+    );
 }
