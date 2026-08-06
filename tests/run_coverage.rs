@@ -49,7 +49,10 @@ fn an_honest_zero_reports_how_many_files_were_scanned() {
     ]);
     // grep convention: no matches is exit 1.
     assert_eq!(code, Some(1), "stderr:\n{stderr}");
-    assert!(stdout.is_empty(), "stdout must stay a pure result stream:\n{stdout}");
+    assert!(
+        stdout.is_empty(),
+        "stdout must stay a pure result stream:\n{stdout}"
+    );
     assert!(
         stderr.contains("no matches") && stderr.contains("3 file(s) scanned"),
         "the zero must carry its coverage:\n{stderr}"
@@ -131,5 +134,52 @@ fn a_real_match_is_unaffected() {
     assert!(
         !stderr.contains("no matches"),
         "a non-empty answer must not claim emptiness:\n{stderr}"
+    );
+}
+
+#[test]
+fn a_zero_over_a_partial_scan_says_it_is_partial() {
+    // `attempted_files` counts files we picked up, including ones that then
+    // errored out — so a scan that skipped an oversize file still reported
+    // "N file(s) scanned" and read as complete. A zero standing on a partial
+    // scan has to say so, or it cannot be told from an exhaustive one.
+    let dir = fixture();
+    let big = dir.path().join("big.rs");
+    std::fs::write(&big, "// pad\n".repeat(800_000)).unwrap();
+
+    let (code, _, stderr) = run(&[
+        "run",
+        "-p",
+        "zz_absent($$$)",
+        "--lang",
+        "rust",
+        dir.path().to_str().unwrap(),
+    ]);
+    assert_eq!(code, Some(1), "stderr:\n{stderr}");
+    assert!(
+        stderr.contains("skipped (size"),
+        "the oversize file must be reported:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("1 errored") && stderr.contains("not exhaustive"),
+        "the zero must admit the scan was partial:\n{stderr}"
+    );
+}
+
+#[test]
+fn a_clean_zero_does_not_claim_to_be_partial() {
+    let dir = fixture();
+    let (code, _, stderr) = run(&[
+        "run",
+        "-p",
+        "zz_absent($$$)",
+        "--lang",
+        "rust",
+        dir.path().to_str().unwrap(),
+    ]);
+    assert_eq!(code, Some(1), "stderr:\n{stderr}");
+    assert!(
+        stderr.contains("3 file(s) scanned") && !stderr.contains("errored"),
+        "nothing errored, so nothing should be hedged:\n{stderr}"
     );
 }

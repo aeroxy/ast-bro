@@ -71,7 +71,7 @@ pub fn list() -> Value {
                             "description": "One or more symbol names to extract.",
                             "minItems": 1
                         },
-                        "limit":   { "type": "integer", "description": "Cap on rendered bodies when the target is a directory or glob (default 20). The reported total is always exact." },
+                        "limit":   { "type": "integer", "minimum": 0, "description": "Cap on rendered bodies when the target is a directory or glob (default 20). The reported total is always exact." },
                         "json":    { "type": "boolean" }
                     },
                     "required": ["path", "symbols"]

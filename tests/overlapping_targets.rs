@@ -196,7 +196,7 @@ fn an_absolute_root_yields_to_a_relative_one() {
         .collect();
     assert_eq!(paths.len(), 2, "sub/ holds two files: {paths:?}");
     assert!(
-        paths.iter().all(|p| !p.starts_with('/')),
+        paths.iter().all(|p| !Path::new(p).is_absolute()),
         "the relative spelling is the shorter one: {paths:?}"
     );
 }
