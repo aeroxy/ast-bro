@@ -27,6 +27,24 @@ fn run(args: &[&str]) -> (Option<i32>, String, String) {
     )
 }
 
+/// Same, with `cwd` set. A relative target is the only way to spell a leading
+/// `./`, and cwd is process-global — so the tests that need one drive it
+/// through the subprocess rather than through `set_current_dir`, which would
+/// race the rest of the suite.
+fn run_in(cwd: &std::path::Path, args: &[&str]) -> (Option<i32>, String, String) {
+    let out = Command::new(bin())
+        .args(args)
+        .current_dir(cwd)
+        .env("NO_COLOR", "1")
+        .output()
+        .expect("run ast-bro");
+    (
+        out.status.code(),
+        String::from_utf8(out.stdout).expect("utf8"),
+        String::from_utf8(out.stderr).expect("utf8"),
+    )
+}
+
 /// Two Java files that each declare `greet`, plus a third file that doesn't.
 fn fixture() -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
@@ -339,6 +357,74 @@ fn a_glob_matching_nothing_is_a_path_error_not_a_symbol_error() {
     assert!(
         stderr.contains("path not found") && !stderr.contains("no symbol"),
         "an empty expansion is a wrong path, not an absent symbol:\n{stderr}"
+    );
+}
+
+#[test]
+fn overlapping_targets_do_not_search_the_same_file_twice() {
+    // `Greeter.java` and `./Greeter.java` are one file, and a walk of `.`
+    // reaches it by the second spelling while the explicit target names it by
+    // the first. It must be rendered once, and the coverage header must count
+    // the three files on disk, not four.
+    let dir = fixture();
+    let (code, stdout, stderr) = run_in(dir.path(), &["show", "Greeter.java", ".", "greet"]);
+    assert_eq!(code, Some(0), "stderr:\n{stderr}");
+    assert!(
+        stdout.contains("2 match(es) for 'greet' in 2 of 3 file(s) searched"),
+        "an overlapping target must not inflate coverage:\n{stdout}"
+    );
+    assert_eq!(
+        stdout.matches("Greeter.greet").count(),
+        1,
+        "the shared file must be rendered once:\n{stdout}"
+    );
+}
+
+#[test]
+fn overlapping_targets_keep_the_explicitly_named_spelling() {
+    // Explicit-wins, unchanged by the dedup: a file the caller typed is parsed
+    // directly, so it survives even when the walk would have hidden it — and
+    // its spelling is the one reported back.
+    let dir = fixture();
+    let (code, stdout, stderr) = run_in(
+        dir.path(),
+        &["show", "Greeter.java", ".", "greet", "--json", "--compact"],
+    );
+    assert_eq!(code, Some(0), "stderr:\n{stderr}");
+    let doc: serde_json::Value = serde_json::from_str(&stdout).expect("json");
+    assert_eq!(doc["files_scanned"], 3);
+    assert_eq!(doc["files_matched"], 2);
+    assert_eq!(doc["total"], 2);
+    let paths: Vec<&str> = doc["files"]
+        .as_array()
+        .expect("files array")
+        .iter()
+        .map(|f| f["path"].as_str().expect("path"))
+        .collect();
+    assert!(
+        paths.contains(&"Greeter.java"),
+        "the explicit spelling is the one kept: {paths:?}"
+    );
+}
+
+#[test]
+fn two_spellings_of_one_file_are_one_target() {
+    // The plainest form of the overlap: the same file named twice, once bare
+    // and once `./`-prefixed. Comparing path spellings made that two files.
+    let dir = fixture();
+    let (code, stdout, stderr) = run_in(
+        dir.path(),
+        &["show", "Greeter.java", "./Greeter.java", "greet"],
+    );
+    assert_eq!(code, Some(0), "stderr:\n{stderr}");
+    assert!(
+        stdout.contains("1 match(es) for 'greet' in 1 of 1 file(s) searched"),
+        "one file searched, not two:\n{stdout}"
+    );
+    assert_eq!(
+        stdout.matches("Greeter.greet").count(),
+        1,
+        "stdout:\n{stdout}"
     );
 }
 
