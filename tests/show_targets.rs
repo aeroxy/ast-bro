@@ -227,15 +227,8 @@ fn a_symbol_that_collides_with_a_bare_file_stays_a_symbol() {
     // that the default rather than a coin flip.
     let dir = fixture();
     std::fs::write(dir.path().join("greet"), "not source, no shebang\n").unwrap();
-    let out = Command::new(bin())
-        .args(["show", "Greeter.java", "greet"])
-        .current_dir(dir.path())
-        .env("NO_COLOR", "1")
-        .output()
-        .expect("run ast-bro");
-    let stdout = String::from_utf8(out.stdout).expect("utf8");
-    let stderr = String::from_utf8(out.stderr).expect("utf8");
-    assert_eq!(out.status.code(), Some(0), "stderr:\n{stderr}");
+    let (code, stdout, stderr) = run_in(dir.path(), &["show", "Greeter.java", "greet"]);
+    assert_eq!(code, Some(0), "stderr:\n{stderr}");
     assert!(
         stdout.contains("Greeter.greet"),
         "the colliding file name should have been read as the symbol:\n{stdout}"
@@ -254,15 +247,8 @@ fn a_symbol_that_shares_a_directorys_name_is_still_a_symbol() {
     )
     .unwrap();
     std::fs::create_dir(dir.path().join("tests")).unwrap();
-    let out = Command::new(bin())
-        .args(["show", "lib.rs", "tests"])
-        .current_dir(dir.path())
-        .env("NO_COLOR", "1")
-        .output()
-        .expect("run ast-bro");
-    let stdout = String::from_utf8(out.stdout).expect("utf8");
-    let stderr = String::from_utf8(out.stderr).expect("utf8");
-    assert_eq!(out.status.code(), Some(0), "stderr:\n{stderr}");
+    let (code, stdout, stderr) = run_in(dir.path(), &["show", "lib.rs", "tests"]);
+    assert_eq!(code, Some(0), "stderr:\n{stderr}");
     assert!(
         stdout.contains("mod tests"),
         "the directory must not consume the symbol slot:\n{stdout}"
@@ -422,8 +408,10 @@ fn two_spellings_of_one_file_are_one_target() {
 #[test]
 fn unparseable_single_target_still_says_unsupported() {
     // Unchanged contract: an existing file with no adapter is a bad argument,
-    // not a missing path.
-    let (code, stdout, stderr) = run(&["show", "Cargo.toml", "package"]);
+    // not a missing path. Anchored at the manifest directory so the assertion
+    // does not depend on where the test process happens to be running.
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
+    let (code, stdout, stderr) = run(&["show", manifest.to_str().unwrap(), "package"]);
     assert_eq!(code, Some(2), "stderr:\n{stderr}");
     assert!(stdout.is_empty());
     assert!(

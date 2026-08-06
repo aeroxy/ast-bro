@@ -140,6 +140,9 @@ fn run_counts_a_file_reached_by_root_and_by_name_once() {
         1,
         "stdout:\n{stdout}"
     );
+    // The count too, not just the matches: a file reached by both spellings
+    // could still be scanned twice while matching once.
+    assert_eq!(doc["files_scanned"], 2, "sub/ holds two files, not three");
 }
 
 #[test]

@@ -688,10 +688,19 @@ fn run_show(args: Value) -> CallResult {
         return CallResult::Error("`symbols` must not be empty".into());
     }
     if !crate::show::is_target(&a.path) {
-        return CallResult::Error(format!(
+        let mut msg = format!(
             "not a `show` target: {} (expected a parseable file, a directory, or a matching glob)",
             a.path.display()
-        ));
+        );
+        // A path that simply isn't there gets the same repair the CLI offers;
+        // a path that exists but has no adapter has nothing to repair.
+        if !a.path.exists() {
+            if let Some(hint) = crate::path_repair::hints(&[a.path.display().to_string()]) {
+                msg.push('\n');
+                msg.push_str(&hint);
+            }
+        }
+        return CallResult::Error(msg);
     }
     let targets = vec![a.path.clone()];
     let results = crate::show::collect(&targets);
@@ -1100,9 +1109,12 @@ fn run_run(args: Value) -> CallResult {
     let mut error_count: usize = 0;
     let mut rewrite_capped = false;
     let mut search_capped = false;
-    // How many files the pattern was actually run against — the coverage of
-    // a "No matches found." answer, which is otherwise identical whether the
-    // walk saw four hundred files or four.
+    // How many files the walk reached with a language an adapter handles —
+    // the coverage of a "No matches found." answer, which is otherwise
+    // identical whether the walk saw four hundred files or four. It counts
+    // every such file including the ones that then errored out (oversize,
+    // unreadable, pattern uncompilable for that language), which is why a
+    // zero reported next to a non-zero `error_count` is not exhaustive.
     let mut files_scanned: usize = 0;
     // Cache compiled patterns per language when lang is auto-detected,
     // so files of the same language reuse the compiled pattern.
@@ -1311,6 +1323,7 @@ fn run_run(args: Value) -> CallResult {
         if a.json {
             #[derive(serde::Serialize)]
             struct RewriteDoc<'a> {
+                schema: &'static str,
                 mode: &'static str,
                 dry_run: bool,
                 rewrite_count: usize,
@@ -1321,6 +1334,7 @@ fn run_run(args: Value) -> CallResult {
                 files: &'a [RewriteRecord],
             }
             let doc = RewriteDoc {
+                schema: crate::core::JSON_SCHEMA_RUN,
                 mode: "rewrite",
                 dry_run: !a.write,
                 rewrite_count,
@@ -1377,7 +1391,17 @@ fn run_run(args: Value) -> CallResult {
         ))
     } else {
         if all_matches.is_empty() {
-            output.push_str(&format!("No matches found ({} file(s) scanned).", files_scanned));
+            // `files_scanned` includes the files that errored out, so quoting
+            // it alone makes a partial scan read as a complete one — the same
+            // overstated coverage the count exists to prevent.
+            output.push_str(&if error_count > 0 {
+                format!(
+                    "No matches found ({} file(s) scanned, {} errored, so this zero is not exhaustive).",
+                    files_scanned, error_count
+                )
+            } else {
+                format!("No matches found ({} file(s) scanned).", files_scanned)
+            });
         } else {
             let matched_files: std::collections::HashSet<&str> =
                 all_matches.iter().map(|m| m.file.as_str()).collect();

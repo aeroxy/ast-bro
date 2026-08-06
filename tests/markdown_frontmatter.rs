@@ -47,6 +47,12 @@ fn fixture() -> tempfile::TempDir {
     .unwrap();
     // The alternative YAML document terminator.
     std::fs::write(dir.path().join("dots.md"), "---\nid: card-4\n...\n\n# H\n").unwrap();
+    // A UTF-8 BOM sits *before* the fence; editors on Windows add one.
+    std::fs::write(
+        dir.path().join("bom.md"),
+        "\u{feff}---\nid: card-5\nstatus: open\n---\n\n# Heading\n",
+    )
+    .unwrap();
     dir
 }
 
@@ -134,12 +140,18 @@ fn one_call_collects_every_cards_frontmatter() {
     // Every card in the fixture that *has* frontmatter, in one call — asserted
     // by content rather than by count, so adding a fixture can't make this
     // fail without a real behaviour change.
-    for id in ["card-1", "card-2", "card-3", "card-4"] {
+    let ids = ["card-1", "card-2", "card-3", "card-4", "card-5"];
+    for id in ids {
         assert!(stdout.contains(id), "{id} missing from:\n{stdout}");
     }
+    // The matched-file count is tied to the id list rather than written out,
+    // so adding a card updates both halves of the claim at once.
     assert!(
-        stdout.contains("match(es) for 'frontmatter' in 4 of "),
-        "coverage header should name the four matching files:\n{stdout}"
+        stdout.contains(&format!(
+            "match(es) for 'frontmatter' in {} of ",
+            ids.len()
+        )),
+        "coverage header should name every matching file:\n{stdout}"
     );
 }
 
@@ -161,6 +173,24 @@ fn crlf_frontmatter_is_detected_and_bounded_correctly() {
     let last = body.trim_end_matches('\n').lines().last().unwrap();
     assert_eq!(last.trim_end_matches('\r'), "---", "body:\n{body:?}");
     assert!(body.contains("card-3"), "body:\n{body}");
+}
+
+#[test]
+fn a_bom_does_not_push_the_fence_off_line_one() {
+    let dir = fixture();
+    let bom = dir.path().join("bom.md");
+    let (code, stdout, stderr) = run(&["map", bom.to_str().unwrap()]);
+    assert_eq!(code, Some(0), "stderr:\n{stderr}");
+    assert!(
+        stdout.contains("--- frontmatter") && stdout.contains("L1-4"),
+        "a BOM sits before the fence, which is still on line 1:\n{stdout}"
+    );
+
+    // The extracted block starts at the fence, not at the BOM.
+    let (code, body, stderr) = run(&["show", bom.to_str().unwrap(), "frontmatter"]);
+    assert_eq!(code, Some(0), "stderr:\n{stderr}");
+    assert!(!body.contains('\u{feff}'), "BOM leaked into the block:\n{body:?}");
+    assert!(body.contains("card-5"), "body:\n{body}");
 }
 
 #[test]
