@@ -236,6 +236,40 @@ fn a_symbol_that_collides_with_a_bare_file_stays_a_symbol() {
 }
 
 #[test]
+fn a_symbol_colliding_with_a_parseable_file_fails_loudly_and_has_an_escape_hatch() {
+    // The other side of `a_symbol_that_collides_with_a_bare_file_stays_a_symbol`:
+    // when the colliding file *is* parseable (here by shebang), it is a target,
+    // so every argument is a target and nothing is left to search for. That is
+    // the documented tradeoff — guessing which argument was meant as the symbol
+    // would be a coin flip — and it has to stay loud rather than silently
+    // resolving against one file. `Type.method` is the way out, so the test
+    // pins both halves.
+    let dir = fixture();
+    std::fs::write(
+        dir.path().join("greet"),
+        "#!/usr/bin/env python3\ndef greet(): pass\n",
+    )
+    .unwrap();
+
+    let (code, stdout, stderr) = run_in(dir.path(), &["show", "Greeter.java", "greet"]);
+    assert_eq!(code, Some(2), "stdout:\n{stdout}");
+    assert!(stdout.is_empty(), "a rejection puts nothing on stdout:\n{stdout}");
+    assert!(
+        stderr.contains("file argument(s) and no symbol"),
+        "the collision must be named, not guessed at:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("qualify it"),
+        "the hint must name the escape hatch:\n{stderr}"
+    );
+
+    // And the escape hatch the hint names actually works.
+    let (code, stdout, stderr) = run_in(dir.path(), &["show", "Greeter.java", "Greeter.greet"]);
+    assert_eq!(code, Some(0), "stderr:\n{stderr}");
+    assert!(stdout.contains("Greeter.greet"), "stdout:\n{stdout}");
+}
+
+#[test]
 fn a_symbol_that_shares_a_directorys_name_is_still_a_symbol() {
     // `tests` / `core` / `utils` name directories as often as they name
     // symbols. Only an all-files argument list is read as an expanded glob,

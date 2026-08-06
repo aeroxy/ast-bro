@@ -39,12 +39,22 @@ const MAX_REPAIRED_ARGS: usize = 3;
 pub fn hints(args: &[String]) -> Option<String> {
     let mut lines: Vec<String> = Vec::new();
 
-    if let Some(joined) = rejoined(args) {
-        lines.push(format!(
-            "that path exists when the arguments are rejoined — quote it: \"{}\"",
-            joined
-        ));
-    }
+    // A leading run that rejoins into a real path is *one* path the shell
+    // split, not several missing arguments, so its fragments are excluded from
+    // the lookups below. Left in, `Bureau/spaced.py` gets a basename walk of
+    // its own and reports the very file the rejoin line just named — two
+    // competing diagnoses of one mistake, the second built from a string the
+    // caller never typed as an argument.
+    let consumed = match rejoined(args) {
+        Some((joined, end)) => {
+            lines.push(format!(
+                "that path exists when the arguments are rejoined — quote it: \"{}\"",
+                joined
+            ));
+            end
+        }
+        None => 0,
+    };
 
     // Look up each missing argument, capped: three repairs still read as
     // repairs, thirty read as a wall of text hiding the diagnosis. Each costs
@@ -54,7 +64,7 @@ pub fn hints(args: &[String]) -> Option<String> {
     // hand over the whole argument list — `show` passes every positional,
     // existing files and the symbol included — so capping first lets args
     // that need no repair spend the budget and starve the one that does.
-    for arg in args
+    for arg in args[consumed..]
         .iter()
         .filter(|a| !Path::new(a.as_str()).exists())
         .take(MAX_REPAIRED_ARGS)
@@ -97,11 +107,14 @@ pub fn hint_for_one(missing: &str) -> Option<String> {
     })
 }
 
-/// If a leading run of `args` rejoins into an existing path, return it.
+/// If a leading run of `args` rejoins into an existing path, return it and how
+/// many arguments it consumed — the count is what lets the caller stop treating
+/// those fragments as arguments of their own.
+///
 /// Longest run first, so `show "The Sorting Bureau/x.py" Symbol` reports the
 /// three-argument path rather than stopping at a two-argument prefix that
 /// happens to exist as a directory.
-fn rejoined(args: &[String]) -> Option<String> {
+fn rejoined(args: &[String]) -> Option<(String, usize)> {
     if args.len() < 2 {
         return None;
     }
@@ -112,7 +125,7 @@ fn rejoined(args: &[String]) -> Option<String> {
         // arrives split on spaces with the pattern intact but unmatched, so
         // the literal path never exists and only expansion proves the repair.
         if p.exists() || !crate::path_glob::expand_pattern(p).is_empty() {
-            return Some(candidate);
+            return Some((candidate, end));
         }
     }
     None
@@ -238,6 +251,37 @@ mod tests {
         let hint = hints(&split).expect("a rejoinable path must be reported");
         assert!(hint.contains("rejoined"), "hint was: {}", hint);
         assert!(hint.contains("spaced.py"), "hint was: {}", hint);
+        // One mistake, one diagnosis: the tail fragment must not also be
+        // reported as a misplaced file naming the path just named above.
+        assert_eq!(
+            hint.lines().count(),
+            1,
+            "the rejoined fragments must not get lookups of their own: {}",
+            hint
+        );
+    }
+
+    #[test]
+    fn an_argument_past_the_rejoined_run_still_gets_its_lookup() {
+        // Only the run the rejoin consumed is exempt. A genuinely separate
+        // missing argument after it is a second mistake and keeps its repair.
+        let dir = tempfile::tempdir().unwrap();
+        let sub = dir.path().join("The Sorting Bureau");
+        std::fs::create_dir(&sub).unwrap();
+        std::fs::write(sub.join("spaced.py"), "def f(): pass\n").unwrap();
+        std::fs::create_dir(dir.path().join("lib")).unwrap();
+        std::fs::write(dir.path().join("lib/widget.rs"), "fn a() {}\n").unwrap();
+        std::fs::write(dir.path().join("Cargo.toml"), "[package]\n").unwrap();
+
+        let split = args(&[
+            dir.path().join("The").to_str().unwrap(),
+            "Sorting",
+            "Bureau/spaced.py",
+            dir.path().join("src/widget.rs").to_str().unwrap(),
+        ]);
+        let hint = hints(&split).expect("two repairs");
+        assert!(hint.contains("rejoined"), "hint was: {}", hint);
+        assert!(hint.contains("lib/widget.rs"), "hint was: {}", hint);
     }
 
     #[test]
