@@ -185,10 +185,13 @@ pub fn misread_path(symbols: &[String]) -> Option<&str> {
 /// go through the shared walker, so they honour `.gitignore` and the rest of
 /// the filter pipeline exactly like `map` does.
 ///
-/// When both routes reach the same file the explicit parse is the one kept —
-/// it is inserted first and the dedup keeps the first spelling of each file —
-/// so naming a file alongside a directory that contains it cannot make the
-/// ignore rules hide it.
+/// Naming a file alongside a directory that contains it cannot make the
+/// ignore rules hide it: the two routes are merged, not chosen between, and
+/// only the walk applies the filter pipeline. When both reach the same file
+/// they produce the same parse, so the survivor is picked the same way a walk
+/// picks between two of its own roots — shortest spelling wins, which is also
+/// what keeps an explicitly typed `src/a.rs` from being displayed as the
+/// walk's `./src/a.rs`.
 pub fn collect(targets: &[PathBuf]) -> Vec<ParseResult> {
     let mut explicit: Vec<&PathBuf> = Vec::new();
     let mut walked: Vec<PathBuf> = Vec::new();
@@ -200,29 +203,21 @@ pub fn collect(targets: &[PathBuf]) -> Vec<ParseResult> {
         }
     }
 
-    // `walk_and_parse` dedups within its own walk; this set is what spans the
-    // two routes, which no single walk can see. Same identity key either way:
-    // a path as spelled is not a path as it exists on disk, so
-    // `show src/a.rs ./src Sym` reaches one file twice and used to answer as
-    // if it were two. See [`crate::file_filter::file_identity`].
-    let mut seen: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
     let mut results: Vec<ParseResult> = Vec::new();
     for f in explicit {
         if let Some(r) = crate::parse_file(f) {
-            if seen.insert(crate::file_filter::file_identity(&r.path)) {
-                results.push(r);
-            }
+            results.push(r);
         }
     }
     if !walked.is_empty() {
-        for r in crate::walk_and_parse(&walked, None) {
-            if seen.insert(crate::file_filter::file_identity(&r.path)) {
-                results.push(r);
-            }
-        }
+        results.extend(crate::walk_and_parse(&walked, None));
     }
 
+    // `walk_and_parse` dedups within its own walk; this call is what spans the
+    // two routes, which no single walk can see — `show src/a.rs ./src Sym`
+    // reaches one file twice and used to answer as if it were two.
     results.sort_by(|a, b| a.path.cmp(&b.path));
+    crate::dedup_walk_results(&mut results, |r| r.path.as_path());
     results
 }
 
@@ -621,12 +616,33 @@ mod tests {
         std::os::unix::fs::symlink(&real, &link).unwrap();
 
         let direct = real.join("a.rs");
-        let results = collect(&[direct.clone(), link.join("a.rs")]);
+        let via_link = link.join("a.rs");
+        let results = collect(&[direct.clone(), via_link.clone()]);
         assert_eq!(results.len(), 1, "one file, two routes to it");
-        assert_eq!(
-            results[0].path, direct,
-            "the first spelling given is the one displayed"
+        // `real` and `link` are the same length, so which spelling survives is
+        // the documented tie-break (sort order), not the point of this test.
+        assert!(
+            results[0].path == direct || results[0].path == via_link,
+            "the survivor must be one of the two spellings given: {:?}",
+            results[0].path
         );
+    }
+
+    #[test]
+    fn collect_shows_the_shortest_spelling_of_a_shared_file() {
+        // Two walk roots are equally "the" root, so which spelling to display
+        // has no principled answer — shortest is the one that reads best, and
+        // it picks the direct route over a `..` detour.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.rs"), "fn greet() {}\n").unwrap();
+        std::fs::create_dir(dir.path().join("sub")).unwrap();
+        let short = dir.path().join("a.rs");
+        let long = dir.path().join("sub").join("..").join("a.rs");
+
+        // Given long-first, so passing order cannot be what decides it.
+        let results = collect(&[long, short.clone()]);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].path, short, "shortest spelling wins");
     }
 
     #[test]
