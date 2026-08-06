@@ -99,6 +99,28 @@ fn migrate_legacy_ignore_file(repo_root: &Path, new_name: &str, old_name: &str) 
     needs_fallback
 }
 
+/// A stable on-disk identity for a walked file — the key that answers "have I
+/// already seen this file?" when a walk is given overlapping roots.
+///
+/// A path as walked is a *display* string, not an identity: results are rooted
+/// at the spelling of the root they came from, so `map src ./src` reaches one
+/// file as both `src/a.rs` and `./src/a.rs`, and `map src src/sub` reaches one
+/// file twice by the same spelling. `PathBuf` equality compares components, so
+/// it folds an interior `.` away on its own but keeps a leading `./`, a `..`
+/// traversal, and of course a symlink.
+///
+/// `canonicalize` is the comparison that actually answers the question: it
+/// resolves `.`, `..` and symlinks against the filesystem instead of guessing
+/// lexically, and lexical guessing is the unsafe direction — collapsing
+/// `link/../a.rs` by string surgery can declare two *different* files equal
+/// and drop one. One `realpath` per walked file is noise beside the read and
+/// parse that follows. It fails only for a path that went away mid-walk;
+/// falling back to the spelling then keeps a duplicate rather than losing a
+/// file, which is the right way round to be wrong.
+pub fn file_identity(path: &Path) -> PathBuf {
+    path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
+}
+
 /// Return `true` if any component of `path` (relative to `repo_root`) matches
 /// the hardcoded denylist. Used as a post-filter — the `ignore` crate handles
 /// `.gitignore` and `.ast-bro-ignore` for us, but the denylist is our

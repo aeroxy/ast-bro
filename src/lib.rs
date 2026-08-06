@@ -778,7 +778,29 @@ pub(crate) fn walk_paths(paths: &[PathBuf], glob_str: Option<&str>) -> Vec<PathB
     drop(tx);
     let mut results: Vec<_> = rx.into_iter().collect();
     results.sort();
+    dedup_walk_results(&mut results, |p| p);
     results
+}
+
+/// Drop repeats of one on-disk file from a walk result, keeping the first.
+///
+/// Overlapping roots are the caller's normal spelling, not a mistake —
+/// `run -p … src src/hot`, `map . ./src`, `implements T src ./src` — but
+/// `ignore::WalkBuilder` visits each root independently and has no idea the
+/// second one is inside (or is) the first. Without this, one file is reported
+/// twice: duplicated `map` entries and `implements` hits, doubled `run` match
+/// counts, and — the reason this is a correctness fix rather than a cosmetic
+/// one — `run --write` re-reading its own output and applying a re-matchable
+/// rewrite a second time (`log!(tag, tag, "a")`).
+///
+/// Post-filter rather than a check inside the walk closure: the closure runs
+/// on every parallel worker, so the set would need a lock taken once per file
+/// in *every* walk to save duplicate work in the rare overlapping one. The
+/// results are already collected and sorted here, so filtering costs one
+/// [`file_filter::file_identity`] per file and nothing in contention.
+fn dedup_walk_results<T>(results: &mut Vec<T>, path_of: impl Fn(&T) -> &Path) {
+    let mut seen = std::collections::HashSet::new();
+    results.retain(|item| seen.insert(file_filter::file_identity(path_of(item))));
 }
 
 pub(crate) fn walk_and_parse(paths: &[PathBuf], glob_str: Option<&str>) -> Vec<ParseResult> {
@@ -809,6 +831,7 @@ pub(crate) fn walk_and_parse(paths: &[PathBuf], glob_str: Option<&str>) -> Vec<P
     drop(tx);
     let mut results: Vec<_> = rx.into_iter().collect();
     results.sort_by(|a, b| a.path.cmp(&b.path));
+    dedup_walk_results(&mut results, |r| r.path.as_path());
     results
 }
 
