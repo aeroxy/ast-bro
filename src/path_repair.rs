@@ -117,6 +117,15 @@ fn rejoined(args: &[String]) -> Option<String> {
 /// [`MAX_ENTRIES`] and [`MAX_CANDIDATES`].
 fn elsewhere(missing: &Path) -> Option<Vec<String>> {
     let name = missing.file_name()?;
+    // A glob that matched nothing is not a misplaced file: this walk compares
+    // basenames literally, so `*.rs` can only ever match a file *named* `*.rs`.
+    // Scanning up to MAX_ENTRIES for that is a certain miss, and the caller's
+    // real fix is a different pattern or a different directory, neither of
+    // which a basename lookup can suggest. `rejoined` still handles the split
+    // glob (`map The Sorting Bureau/*.py`), where expansion proves the repair.
+    if crate::show::looks_like_glob(Path::new(name)) {
+        return None;
+    }
     // A bare *word* with no extension is far more likely a mistyped symbol or
     // subcommand than a misplaced file, and a coincidental match there points
     // the caller further from the real fix. An extensionless name that carries
@@ -252,6 +261,36 @@ mod tests {
         // `map outlien` is a mistyped subcommand, not a misplaced file; a
         // coincidental hit on some extensionless `outlien` would mislead.
         assert!(elsewhere(Path::new("outlien")).is_none());
+    }
+
+    #[test]
+    fn does_not_scan_for_a_glob_basename() {
+        // `show 'src/*.nope' Sym` reaches here whenever the pattern matched
+        // nothing. A basename walk can only find a file literally named
+        // `*.nope`, so it must not run at all.
+        assert!(elsewhere(Path::new("src/*.nope")).is_none());
+        assert!(elsewhere(Path::new("*.rs")).is_none());
+        assert!(elsewhere(Path::new("src/widget[1].rs")).is_none());
+        assert!(hints(&args(&["src/*.nope"])).is_none());
+    }
+
+    #[test]
+    fn a_split_glob_still_gets_its_rejoin() {
+        // The guard above must not silence the one glob repair that *is*
+        // verifiable: an unquoted pattern the shell split on spaces.
+        let dir = tempfile::tempdir().unwrap();
+        let sub = dir.path().join("The Sorting Bureau");
+        std::fs::create_dir(&sub).unwrap();
+        std::fs::write(sub.join("spaced.py"), "def f(): pass\n").unwrap();
+
+        let split = args(&[
+            dir.path().join("The").to_str().unwrap(),
+            "Sorting",
+            "Bureau/*.py",
+        ]);
+        let hint = hints(&split).expect("an expandable rejoined glob is a repair");
+        assert!(hint.contains("rejoined"), "hint was: {}", hint);
+        assert!(hint.contains("Bureau/*.py"), "hint was: {}", hint);
     }
 
     #[test]
