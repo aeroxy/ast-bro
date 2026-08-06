@@ -688,17 +688,20 @@ fn run_show(args: Value) -> CallResult {
         return CallResult::Error("`symbols` must not be empty".into());
     }
     if !crate::show::is_target(&a.path) {
-        let mut msg = format!(
-            "not a `show` target: {} (expected a parseable file, a directory, or a matching glob)",
-            a.path.display()
-        );
-        // A path that simply isn't there gets the same repair the CLI offers;
-        // a path that exists but has no adapter has nothing to repair.
-        if !a.path.exists() {
-            if let Some(hint) = crate::path_repair::hints(&[a.path.display().to_string()]) {
-                msg.push('\n');
-                msg.push_str(&hint);
-            }
+        // Two different failures, and the caller's next move differs: a file
+        // that exists but has no adapter is a bad argument with nothing to
+        // repair, while an absent path is a path error that a repair hint can
+        // often fix outright. Same split the CLI makes, same wording.
+        if a.path.exists() {
+            return CallResult::Error(format!(
+                "unsupported file type for `show`: {}",
+                a.path.display()
+            ));
+        }
+        let mut msg = format!("path not found: {}", a.path.display());
+        if let Some(hint) = crate::path_repair::hints(&[a.path.display().to_string()]) {
+            msg.push('\n');
+            msg.push_str(&hint);
         }
         return CallResult::Error(msg);
     }
