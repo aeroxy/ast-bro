@@ -49,11 +49,17 @@ pub fn hints(args: &[String]) -> Option<String> {
     // Look up each missing argument, capped: three repairs still read as
     // repairs, thirty read as a wall of text hiding the diagnosis. Each costs
     // one bounded walk, which is why the list is capped rather than unbounded.
-    for arg in args.iter().take(MAX_REPAIRED_ARGS) {
+    //
+    // The filter precedes the cap because the cap counts *lookups*. Callers
+    // hand over the whole argument list — `show` passes every positional,
+    // existing files and the symbol included — so capping first lets args
+    // that need no repair spend the budget and starve the one that does.
+    for arg in args
+        .iter()
+        .filter(|a| !Path::new(a.as_str()).exists())
+        .take(MAX_REPAIRED_ARGS)
+    {
         let p = Path::new(arg);
-        if p.exists() {
-            continue;
-        }
         if let Some(found) = elsewhere(p) {
             let prefix = if args.len() > 1 {
                 format!("{}: ", arg)
@@ -261,6 +267,31 @@ mod tests {
         // `map outlien` is a mistyped subcommand, not a misplaced file; a
         // coincidental hit on some extensionless `outlien` would mislead.
         assert!(elsewhere(Path::new("outlien")).is_none());
+    }
+
+    #[test]
+    fn existing_args_do_not_spend_the_repair_budget() {
+        // `show Cargo.toml a.md b.md src/typo.rs Sym` reaches `hints` with the
+        // whole positional list. The three existing files must not consume the
+        // cap and leave the one repairable argument unlooked-up.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("Cargo.toml"), "[package]\n").unwrap();
+        std::fs::write(dir.path().join("a.md"), "# a\n").unwrap();
+        std::fs::write(dir.path().join("b.md"), "# b\n").unwrap();
+        std::fs::create_dir(dir.path().join("lib")).unwrap();
+        std::fs::write(dir.path().join("lib/widget.rs"), "fn a() {}\n").unwrap();
+
+        let present = |n: &str| dir.path().join(n).to_str().unwrap().to_string();
+        let list = vec![
+            present("Cargo.toml"),
+            present("a.md"),
+            present("b.md"),
+            dir.path().join("src/widget.rs").to_str().unwrap().to_string(),
+            "Sym".to_string(),
+        ];
+        let hint = hints(&list).expect("the fourth argument is still repairable");
+        assert!(hint.contains("widget.rs"), "hint was: {}", hint);
+        assert!(hint.contains("lib/"), "hint was: {}", hint);
     }
 
     #[test]

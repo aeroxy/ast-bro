@@ -483,9 +483,12 @@ changes, so downstream tooling can guard on it:
 `show` is the one schema past v1. **v1 → v2:** the top-level `path` /
 `language` / `matches` keys moved into a `files` array (one entry per file,
 same three keys), because a target can now be several files rather than only
-one. Alongside it, v2 adds the coverage counters the text header carries —
-`files_scanned`, `files_matched`, `total`, `shown`, `truncated`, `unmatched`.
-A v1 consumer reading one explicit file migrates by taking `files[0]`.
+one. Alongside it, v2 adds the counters the text coverage header carries —
+`files_scanned`, `files_matched`, `total`, `shown`, `truncated` — plus
+`unmatched`, an array of the requested symbols that matched nothing. That one
+is not a counter and is not in the text header: on the CLI it surfaces as a
+stderr note. A v1 consumer reading one explicit file migrates by taking
+`files[0]`.
 
 ---
 
