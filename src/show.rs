@@ -200,18 +200,23 @@ pub fn collect(targets: &[PathBuf]) -> Vec<ParseResult> {
         }
     }
 
+    // `walk_and_parse` dedups within its own walk; this set is what spans the
+    // two routes, which no single walk can see. Same identity key either way:
+    // a path as spelled is not a path as it exists on disk, so
+    // `show src/a.rs ./src Sym` reaches one file twice and used to answer as
+    // if it were two. See [`crate::file_filter::file_identity`].
     let mut seen: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
     let mut results: Vec<ParseResult> = Vec::new();
     for f in explicit {
         if let Some(r) = crate::parse_file(f) {
-            if seen.insert(identity(&r.path)) {
+            if seen.insert(crate::file_filter::file_identity(&r.path)) {
                 results.push(r);
             }
         }
     }
     if !walked.is_empty() {
         for r in crate::walk_and_parse(&walked, None) {
-            if seen.insert(identity(&r.path)) {
+            if seen.insert(crate::file_filter::file_identity(&r.path)) {
                 results.push(r);
             }
         }
@@ -219,31 +224,6 @@ pub fn collect(targets: &[PathBuf]) -> Vec<ParseResult> {
 
     results.sort_by(|a, b| a.path.cmp(&b.path));
     results
-}
-
-/// A stable on-disk identity for a parsed file, used to dedup [`collect`].
-///
-/// `ParseResult.path` is whatever the caller spelled — adapters record the
-/// path they were handed, and a walk roots its results at the spelling of the
-/// root it was given — so it is a *display* string, not an identity.
-/// `src/a.rs`, `./src/a.rs` and the absolute form name one file in three
-/// ways, and overlapping targets reach it by more than one of them
-/// (`show src/a.rs ./src Sym`). Comparing the spellings therefore let the
-/// same file be rendered twice and counted twice, which inflated
-/// `files_scanned`, `total` and the coverage header — a duplicate answer that
-/// reads as two independent findings.
-///
-/// `canonicalize` is the comparison that actually answers "same file?": it
-/// resolves `.`, `..` and symlinks against the filesystem instead of guessing
-/// lexically, and lexical guessing is the unsafe direction here — collapsing
-/// `link/../a.rs` by string surgery can declare two *different* files equal
-/// and drop one. Its cost, one `realpath` per file, is noise beside the read
-/// and parse that already happened. It fails only when the path went away
-/// between parse and here; falling back to the spelling then keeps a
-/// duplicate rather than losing a file, which is the right way round to be
-/// wrong.
-fn identity(path: &Path) -> PathBuf {
-    path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
 }
 
 /// Match `symbols` against every parsed file and assemble the [`Outcome`].

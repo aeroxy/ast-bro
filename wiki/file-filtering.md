@@ -74,6 +74,46 @@ Before chunking + embedding, search additionally skips files that:
 
 These don't apply to map-family commands.
 
+## Overlapping roots
+
+The layers above decide *whether* a file is walked. A separate question is how
+many times it is reported once it is, because `ignore::WalkBuilder` visits each
+root independently and has no idea the second one is inside — or *is* — the
+first. All three of these name one file by two routes:
+
+```bash
+ast-bro map src ./src           # two spellings of one root
+ast-bro run -p '…' src src/hot  # a root and a directory inside it
+ast-bro show src/a.rs ./src Sym # an explicit file and a directory holding it
+```
+
+Comparing paths as walked doesn't catch any of it: results are rooted at the
+spelling of the root they came from, so one file arrives as both `src/a.rs` and
+`./src/a.rs`. (`PathBuf` equality compares *components*, so it folds an
+interior `.` away by itself but keeps a leading `./`, a `..` traversal, and a
+symlink.) `walk_paths` and `walk_and_parse` therefore post-filter their
+collected results through `file_filter::file_identity` — `canonicalize`, which
+resolves `.`, `..` and symlinks against the filesystem rather than guessing
+lexically. Lexical is the unsafe direction: collapsing `link/../a.rs` by string
+surgery can declare two *different* files equal and drop one. When
+`canonicalize` fails (a path that went away mid-walk) the spelling is used,
+keeping a duplicate rather than losing a file.
+
+It is a post-filter rather than a check inside the walk closure because the
+closure runs on every parallel worker: a shared set would need a lock taken
+once per file in *every* walk, to save duplicate work only in the rare
+overlapping one.
+
+`show` keeps its own identity set on top, because its two routes are different
+*pipelines* — explicitly named files are parsed directly (a file you typed is a
+file you want, ignore rules notwithstanding) while directories and globs go
+through the walker — and no single walk can see across them. Same key, so the
+explicit parse wins and its spelling is the one displayed.
+
+This was a correctness fix, not a cosmetic one: before it, `run --write` read
+back its own output on the second visit and applied a re-matchable rewrite
+twice, turning `log!("a")` into `log!(tag, tag, "a")`.
+
 ## Debugging "why is/isn't this file included?"
 
 Quickest path:
