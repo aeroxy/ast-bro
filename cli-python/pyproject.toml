@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ast-bro"
-version = "4.0.0"
+version = "4.1.0"
 description = "Fast, AST-based code-navigation: shape, public API, deps & call graphs, hybrid semantic search, structural rewrite, and log squeezing. MCP server included."
 readme = "README.md"
 license = "MIT"
