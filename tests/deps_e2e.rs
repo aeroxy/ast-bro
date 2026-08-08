@@ -183,10 +183,13 @@ fn go_nested_module_wins_over_enclosing_one() {
     ]);
     // `example.com/multi/util` belongs to the outer module.
     assert!(s.contains("util/util.go"), "expected util/util.go:\n{s}");
-    // `example.com/multi/tools/helper` matches both module prefixes; the
-    // nested `toolkit/go.mod` declares the longer one and must win, so the
-    // import lands in `toolkit/helper/`, not in a `tools/` directory that
-    // does not exist.
+    // `example.com/multi/tools/helper` matches both module prefixes. The
+    // outer module holds the importer, so it is tried first — and its
+    // `tools/` directory does not exist, which is the case a candidate has
+    // to be *skipped* for rather than treated as the answer. The search
+    // falls through to the nested `toolkit/go.mod`, whose declared path
+    // does not mirror its directory, and the import lands in
+    // `toolkit/helper/`.
     assert!(
         s.contains("toolkit/helper/helper.go"),
         "expected toolkit/helper/helper.go:\n{s}"
@@ -217,6 +220,30 @@ fn go_duplicate_module_resolves_within_the_importers_copy() {
             "import from {own} escaped into {other}:\n{s}"
         );
     }
+}
+
+#[test]
+fn go_importers_own_module_wins_over_a_sibling_declaring_a_longer_path() {
+    // `testdata/broken/go.mod` declares `example.com/sibling/sub`, a longer
+    // path than the module holding the importer — and it holds an `inner/`
+    // package, so both candidates resolve. Ranking on prefix length alone
+    // sends the import into `testdata/`, a separate module that is not part
+    // of the importer's build at all.
+    let s = run_ok(&[
+        "deps",
+        "tests/fixtures/deps/go_sibling_module/main.go",
+        "--depth",
+        "1",
+        "--rebuild",
+    ]);
+    assert!(
+        s.contains("sub/inner/inner.go"),
+        "expected sub/inner/inner.go:\n{s}"
+    );
+    assert!(
+        !s.contains("testdata/broken/inner/inner.go"),
+        "import escaped into the sibling module under testdata/:\n{s}"
+    );
 }
 
 // ---- Graph emission ----
