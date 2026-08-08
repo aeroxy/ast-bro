@@ -144,19 +144,26 @@ pub fn resolve(spec: &str, ctx: &ResolveCtx<'_>, idx: &SuffixIndex) -> Option<Pa
         let trimmed = spec.trim_matches('"');
         let mut candidates: Vec<(Option<usize>, usize, usize, String)> = Vec::new();
         for (prefix, dir) in &idx.go_modules {
-            // `trimmed == prefix` names the module's own root package, which
-            // the directory-as-package lookup below cannot express.
-            let Some(rest) = trimmed
-                .strip_prefix(prefix.as_str())
-                .and_then(|r| r.strip_prefix('/'))
-            else {
+            let Some(rest) = trimmed.strip_prefix(prefix.as_str()) else {
                 continue;
             };
-            // Look for any file in the `<module dir>/<rest>/` directory.
-            let key = if dir.is_empty() {
-                rest.to_string()
+            // The remainder has to begin at a path boundary: empty names the
+            // module's own root package, `/pkg/foo` a subpackage under it.
+            // Anything else is a different module that merely shares a
+            // prefix — `example.com/dup` against `example.com/dupfoo`.
+            let rest = if rest.is_empty() {
+                rest
+            } else if let Some(r) = rest.strip_prefix('/') {
+                r
             } else {
-                format!("{}/{}", dir, rest)
+                continue;
+            };
+            // The root package lives in the module directory itself; a
+            // subpackage lives at `<module dir>/<rest>`.
+            let key = match (dir.as_str(), rest) {
+                ("", r) => r.to_string(),
+                (d, "") => d.to_string(),
+                (d, r) => format!("{}/{}", d, r),
             };
             let mod_dir = idx.root.join(dir);
             // Depth of the module directory when it holds the importer, so

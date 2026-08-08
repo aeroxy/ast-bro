@@ -246,6 +246,26 @@ fn go_importers_own_module_wins_over_a_sibling_declaring_a_longer_path() {
     );
 }
 
+#[test]
+fn go_import_of_the_module_root_package_resolves() {
+    // `import "example.com/rootpkg"` names the package sitting in the module
+    // directory itself — the layout most single-package Go libraries use.
+    // It has no path segment after the module prefix, so a rule that only
+    // understands `<module>/<subpackage>` drops it into the external bucket.
+    let s = run_ok(&[
+        "deps",
+        "tests/fixtures/deps/go_root_package/cmd/main.go",
+        "--depth",
+        "1",
+        "--rebuild",
+    ]);
+    assert!(s.contains("rootpkg.go"), "expected rootpkg.go:\n{s}");
+    assert!(
+        !s.contains("[external] example.com/rootpkg"),
+        "module-root package left in the external bucket:\n{s}"
+    );
+}
+
 // ---- Graph emission ----
 
 #[test]
