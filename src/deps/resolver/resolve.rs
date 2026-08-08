@@ -121,22 +121,28 @@ pub fn resolve(spec: &str, ctx: &ResolveCtx<'_>, idx: &SuffixIndex) -> Option<Pa
 
     // Go `import "mymod/pkg/foo"` — strip the module prefix. The module may
     // live in a subdirectory of the root, and a root may hold several, so
-    // every `go.mod` under it is a candidate. Two orderings decide which one
-    // the import belongs to:
+    // every `go.mod` under it is a candidate. Three orderings decide which
+    // one the import belongs to, and a lexical tie-break keeps the result
+    // independent of walk order:
     //
-    //  - longest module path first, so a nested module beats the one that
-    //    contains it;
-    //  - among equal prefixes, the copy nearest the importer, the way
+    //  - the deepest module directory holding the importer first. That is
+    //    the module the importer is part of, and Go resolves an import
+    //    within it before consulting anything else; a module elsewhere in
+    //    the tree is a separate build even when it declares a longer path
+    //    that also matches (`testdata/`, a nested checkout, a vendored copy);
+    //  - then longest module path, which is what decides among candidates
+    //    that do not hold the importer at all — there a nested module beats
+    //    the one containing it;
+    //  - then, among equal prefixes, the copy nearest the importer, the way
     //    `pick_closest` picks among suffix hits. A root can hold the same
-    //    module twice (a nested checkout, a vendored copy, `testdata`), and
-    //    an import must not jump into the other copy.
+    //    module twice, and an import must not jump into the other copy.
     //
     // A candidate whose directory holds no such package is skipped rather
     // than ending the search: the module path a nested module declares need
     // not mirror its directory.
     if ctx.lang == Lang::Go {
         let trimmed = spec.trim_matches('"');
-        let mut candidates: Vec<(usize, usize, String)> = Vec::new();
+        let mut candidates: Vec<(Option<usize>, usize, usize, String)> = Vec::new();
         for (prefix, dir) in &idx.go_modules {
             // `trimmed == prefix` names the module's own root package, which
             // the directory-as-package lookup below cannot express.
@@ -152,15 +158,24 @@ pub fn resolve(spec: &str, ctx: &ResolveCtx<'_>, idx: &SuffixIndex) -> Option<Pa
             } else {
                 format!("{}/{}", dir, rest)
             };
-            let closeness = shared_leading_segments(ctx.from_file, &idx.root.join(dir));
-            candidates.push((prefix.len(), closeness, key));
+            let mod_dir = idx.root.join(dir);
+            // Depth of the module directory when it holds the importer, so
+            // the innermost enclosing module wins; `None` — which sorts
+            // below every `Some` — when it does not hold the importer.
+            let enclosing = ctx
+                .from_file
+                .starts_with(&mod_dir)
+                .then(|| mod_dir.components().count());
+            let closeness = shared_leading_segments(ctx.from_file, &mod_dir);
+            candidates.push((enclosing, prefix.len(), closeness, key));
         }
         candidates.sort_by(|a, b| {
             b.0.cmp(&a.0)
                 .then_with(|| b.1.cmp(&a.1))
-                .then_with(|| a.2.cmp(&b.2))
+                .then_with(|| b.2.cmp(&a.2))
+                .then_with(|| a.3.cmp(&b.3))
         });
-        for (_, _, key) in candidates {
+        for (_, _, _, key) in candidates {
             if let Some(found) = find_dir_file(idx, &key) {
                 return Some(found);
             }
