@@ -202,6 +202,10 @@ fn hit_to_json(hit: &SearchHit) -> Value {
         "path": hit.chunk.file_path,
         "start_line": hit.chunk.start_line,
         "end_line": hit.chunk.end_line,
+        // Line numbers cannot place an answer that starts or ends mid-line,
+        // which the eval harness needs for a span written as `line:column`.
+        "start_byte": hit.chunk.start_byte,
+        "end_byte": hit.chunk.end_byte,
         "language": hit.chunk.language,
         "score": hit.score,
         "breadcrumb": hit.chunk.breadcrumb,
