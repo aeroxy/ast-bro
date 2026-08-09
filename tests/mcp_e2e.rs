@@ -359,3 +359,116 @@ fn mcp_impact_depth_cutoff_reports_the_frontier() {
     let (_, _, text) = result_of(&resp);
     assert!(text.contains("raise --depth"), "{text}");
 }
+
+/// Fills `dir` with enough declarations that a `map` of it clears the 25 KB
+/// hint threshold several times over.
+fn oversized_fixture(dir: &std::path::Path) {
+    for f in 0..20 {
+        let mut src = String::new();
+        for i in 0..60 {
+            src.push_str(&format!(
+                "pub fn generated_function_{f}_{i}(argument: usize) -> usize {{ argument }}\n"
+            ));
+        }
+        std::fs::write(dir.join(format!("file_{f}.rs")), src).unwrap();
+    }
+}
+
+#[test]
+fn mcp_map_oversized_directory_carries_the_digest_hint() {
+    // #35 on the MCP surface: no stderr to put a note on, so the hint rides
+    // the response, and it names a tool call rather than a shell command.
+    let tmp = tempfile::tempdir().unwrap();
+    oversized_fixture(tmp.path());
+    let resp = call_tool(tmp.path(), "map", serde_json::json!({"paths": ["."]}));
+    let (_, is_error, text) = result_of(&resp);
+    assert!(
+        !is_error,
+        "a hint qualifies an answer, it does not reject it: {resp}"
+    );
+    assert!(
+        text.starts_with("# hint:") && text.contains("`digest` tool"),
+        "expected a leading digest hint: {}",
+        &text[..text.len().min(200)]
+    );
+}
+
+#[test]
+fn mcp_map_json_carries_the_hint_as_a_field() {
+    // A prepended line would break the parser on the other end, so JSON
+    // takes the hint the way it takes missing_paths.
+    let tmp = tempfile::tempdir().unwrap();
+    oversized_fixture(tmp.path());
+    let resp = call_tool(
+        tmp.path(),
+        "map",
+        serde_json::json!({"paths": ["."], "json": true}),
+    );
+    let (_, is_error, text) = result_of(&resp);
+    assert!(!is_error, "{resp}");
+    let doc: serde_json::Value =
+        serde_json::from_str(text).expect("payload must stay parseable JSON");
+    assert_eq!(doc["schema"], "ast-bro.map.v1");
+    assert!(
+        doc["hint"]
+            .as_str()
+            .is_some_and(|h| h.contains("`digest` tool")),
+        "expected a hint field: {}",
+        &text[..text.len().min(200)]
+    );
+}
+
+#[test]
+fn mcp_digest_tool_stays_quiet_but_an_inflated_call_does_not() {
+    // The digest answer is the resolved axes, not the tool that was called.
+    let tmp = tempfile::tempdir().unwrap();
+    oversized_fixture(tmp.path());
+    let quiet = call_tool(tmp.path(), "digest", serde_json::json!({"paths": ["."]}));
+    let (_, _, quiet_text) = result_of(&quiet);
+    assert!(
+        !quiet_text.contains("# hint:"),
+        "the digest answer must not point at itself: {}",
+        &quiet_text[..quiet_text.len().min(200)]
+    );
+    let inflated = call_tool(
+        tmp.path(),
+        "digest",
+        serde_json::json!({"paths": ["."], "include_private": true, "include_fields": true}),
+    );
+    let (_, _, inflated_text) = result_of(&inflated);
+    assert!(
+        inflated_text.starts_with("# hint:"),
+        "an inflated digest call is not the digest answer: {}",
+        &inflated_text[..inflated_text.len().min(200)]
+    );
+}
+
+#[test]
+fn mcp_map_of_a_single_file_stays_quiet_however_large() {
+    // Size alone is not the trigger. This file clears the threshold on its
+    // own, and one file is what `map` is for at any size.
+    let tmp = tempfile::tempdir().unwrap();
+    let mut src = String::new();
+    for i in 0..800 {
+        src.push_str(&format!(
+            "pub fn generated_function_{i}(argument: usize) -> usize {{ argument }}\n"
+        ));
+    }
+    std::fs::write(tmp.path().join("one_big_file.rs"), src).unwrap();
+    let resp = call_tool(
+        tmp.path(),
+        "map",
+        serde_json::json!({"paths": ["one_big_file.rs"]}),
+    );
+    let (_, _, text) = result_of(&resp);
+    assert!(
+        text.len() > 25_000,
+        "fixture must exceed the threshold, got {} bytes",
+        text.len()
+    );
+    assert!(
+        !text.contains("# hint:"),
+        "one file has nothing smaller to point at: {}",
+        &text[..text.len().min(200)]
+    );
+}
