@@ -333,6 +333,8 @@ pub fn cosine_topk(
     top.into_iter()
         .filter_map(|i| {
             let s = scores[i as usize];
+            // A row past the size the model handles is stored non-finite on
+            // purpose, which keeps it reachable lexically and never densely.
             if s.is_finite() { Some((i, s)) } else { None }
         })
         .collect()
@@ -351,7 +353,17 @@ fn score_row(
         }
     }
     let row = &embeddings[i * DIM..(i + 1) * DIM];
-    dot_simd(q_lanes, row)
+    let score = dot_simd(q_lanes, row);
+    // NaN participates in no ordering: `partial_cmp` answers `None` against
+    // every value, and the caller reads that as a tie. A row left comparable
+    // to nothing can be partitioned into the top-k window and then dropped by
+    // the `is_finite` filter, returning a pool shorter than `k`. Demoting the
+    // sentinel here is what makes the comparison total.
+    if score.is_finite() {
+        score
+    } else {
+        f32::NEG_INFINITY
+    }
 }
 
 #[inline]
@@ -521,6 +533,51 @@ mod tests {
             }
         }
         v
+    }
+
+    /// An unembedded row is never a dense candidate, however the pool is sized.
+    #[test]
+    fn a_non_finite_row_never_enters_the_top_k() {
+        // A zero vector cannot serve as the sentinel: its dot product is a
+        // finite 0.0, which outranks every negative similarity and so enters
+        // the pool whenever the corpus is smaller than the pool — the normal
+        // case for a small repository.
+        let mut rows = vec![0.0f32; DIM * 3];
+        rows[..DIM].fill(1.0 / (DIM as f32).sqrt()); // row 0: matches
+        rows[DIM..DIM * 2].fill(-1.0 / (DIM as f32).sqrt()); // row 1: opposes
+        rows[DIM * 2..].fill(f32::NAN); // row 2: never embedded
+        let mut query = [0.0f32; DIM];
+        query.fill(1.0 / (DIM as f32).sqrt());
+
+        let top = cosine_topk(&query, &rows, None, 10);
+        let ids: Vec<u32> = top.iter().map(|(i, _)| *i).collect();
+        assert!(ids.contains(&0), "the matching row should rank");
+        assert!(ids.contains(&1), "even an opposing row is a candidate");
+        assert!(!ids.contains(&2), "the non-embedded row must not be a candidate");
+        assert_eq!(top.len(), 2, "asked for 10 of 3 rows, one is excluded");
+    }
+
+    /// The pool holds `k` embedded rows even when unembedded rows sort first.
+    ///
+    /// Red here means the sentinel stopped being comparable, so unembedded
+    /// rows occupy window slots and the `is_finite` filter returns a short pool.
+    #[test]
+    fn non_finite_rows_do_not_steal_the_top_k_window() {
+        // Unembedded rows come first so a partition that treats them as ties
+        // has every chance to keep them, which is the case that fails when the
+        // sentinel is left incomparable.
+        let unit = 1.0 / (DIM as f32).sqrt();
+        let mut rows = vec![f32::NAN; DIM * 6];
+        for (n, scale) in [(3usize, 1.0f32), (4, 0.9), (5, 0.8)] {
+            rows[n * DIM..(n + 1) * DIM].fill(unit * scale);
+        }
+        let mut query = [0.0f32; DIM];
+        query.fill(unit);
+
+        let top = cosine_topk(&query, &rows, None, 3);
+        let ids: Vec<u32> = top.iter().map(|(i, _)| *i).collect();
+        assert_eq!(ids, vec![3, 4, 5], "the three embedded rows, best first");
+        assert!(top.iter().all(|(_, s)| s.is_finite()), "every score finite");
     }
 
     #[test]
