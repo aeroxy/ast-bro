@@ -31,7 +31,7 @@ use crate::file_filter::{add_filters, should_skip_path};
 use crate::project_root::{relative_posix, resolve_home, Marker};
 use crate::search::bm25::Bm25Index;
 use crate::search::cache::{compute_delta, hash_file, FileRecord, MAX_INDEX_FILE_BYTES};
-use crate::search::chunker::{chunk_file, is_indexable, Chunk};
+use crate::search::chunker::{chunk_file, is_indexable, Chunk, ChunkKind};
 use crate::search::download::{ensure_model, ModelInfo};
 use crate::search::embed::{cosine_topk, Embedder, DIM};
 use crate::search::fusion::{combine, resolve_alpha, rrf_scores};
@@ -42,11 +42,65 @@ use fs2::FileExt;
 use ignore::WalkBuilder;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 use std::time::SystemTime;
+
+/// How many files phase one of two-phase search considers.
+const PHASE1_FILES: usize = 40;
+
+/// Weight of the phase-one file prior.
+///
+/// A chunk in a file phase one liked is multiplied by `1 + FILE_PRIOR_WEIGHT ×
+/// prior`, so the prior only ever promotes — a file phase one missed keeps its
+/// unmodified score. That is deliberate: a hard filter on phase one would zero
+/// out recall for every query whose file the outlines fail to surface, and
+/// phase one finds the right file in only about half of them.
+///
+/// Measured on the pinned eval corpus at `--min-iou 0.3`: MRR@10 0.204 → 0.226
+/// at unchanged recall@5. Anything in 0.5..=2.0 performs about the same, so
+/// this sits on a plateau rather than a spike.
+const FILE_PRIOR_WEIGHT: f32 = 1.0;
+
+/// Promote chunks whose file scored well in phase one.
+fn apply_file_prior(
+    scored: &mut HashMap<u32, f32>,
+    chunks: &[Chunk],
+    prior: &HashMap<&str, f32>,
+    weight: f32,
+) {
+    if prior.is_empty() {
+        return;
+    }
+    for (id, score) in scored.iter_mut() {
+        let chunk = &chunks[*id as usize];
+        if let Some(p) = prior.get(chunk.file_path.as_str()) {
+            *score *= 1.0 + weight * p;
+        }
+    }
+}
+
+/// How many candidates each retriever contributes before fusion.
+///
+/// Fixed rather than derived from `top_k`, so that asking for more results
+/// changes how many come back and not which ones. Deriving the pool feeds the
+/// reranker a different candidate set per `k`, and a different set is a
+/// different answer: at a pool of `max(100, top_k * 5)`, eight of thirty eval
+/// queries had a `k`-dependent top-3 and three a `k`-dependent top-1. Fixed,
+/// it is zero of thirty.
+///
+/// `max(_, top_k)` at the call site keeps the pool at least as large as the
+/// answer, so `k` above 100 couples the two again — by then the pool is the
+/// honest answer to the question anyway.
+///
+/// The size costs one wider `select_nth_unstable_by` over scores both
+/// retrievers already compute for every chunk. It buys no recall@5 and no
+/// MRR@10; it buys the same query answering the same way whatever `-k` it was
+/// asked with.
+const MIN_CANDIDATES: usize = 100;
 
 /// Current schema version written by all new builds.
 // v2 adds `breadcrumb` and `kind` to `Chunk`, which changes the bincode layout
@@ -692,13 +746,59 @@ impl Index {
         !delta.requires_rebuild() && delta.mtime_only.is_empty()
     }
 
+    /// Phase one of two-phase search: rank *files* using only their outline
+    /// chunks, and return a per-file prior in `0..=1`.
+    ///
+    /// An outline chunk is the file's signature list, so it states what the
+    /// file is for in one place. A body chunk can only ever match a fragment of
+    /// that, which is why aggregating body scores per file is a weaker file
+    /// signal than asking the outlines directly.
+    fn file_prior(
+        &self,
+        q_embed: &[f32; DIM],
+        query_tokens: &[String],
+        mask: Option<&[bool]>,
+    ) -> HashMap<&str, f32> {
+        // Restrict both retrievers to outline chunks, intersected with the
+        // caller's mask so language/scope filters still apply.
+        let outline_mask: Vec<bool> = self
+            .chunks
+            .iter()
+            .enumerate()
+            .map(|(i, c)| {
+                c.kind == ChunkKind::Outline && mask.is_none_or(|m| m[i])
+            })
+            .collect();
+        if !outline_mask.iter().any(|b| *b) {
+            return HashMap::new();
+        }
+
+        let sem = cosine_topk(q_embed, &self.embeddings, Some(&outline_mask), PHASE1_FILES);
+        let lex = if query_tokens.is_empty() {
+            Vec::new()
+        } else {
+            let raw = self.bm25.get_scores(query_tokens, Some(&outline_mask));
+            top_k_indices(&raw, PHASE1_FILES)
+        };
+        let fused = combine(&rrf_scores(&sem), &rrf_scores(&lex), 0.5);
+
+        let best = fused.values().copied().fold(0.0f32, f32::max);
+        if best <= 0.0 {
+            return HashMap::new();
+        }
+        fused
+            .into_iter()
+            .map(|(id, s)| (self.chunks[id as usize].file_path.as_str(), s / best))
+            .collect()
+    }
+
     /// Hybrid BM25 + dense search with full ranking pipeline.
     pub fn search(&self, query: &str, opts: &SearchOptions) -> Vec<SearchHit> {
         if self.chunks.is_empty() || opts.top_k == 0 {
             return Vec::new();
         }
         let alpha = resolve_alpha(query, opts.alpha);
-        let candidate_count = opts.top_k * 5;
+        let candidate_count = MIN_CANDIDATES.max(opts.top_k);
 
         // Build combined mask: language ∧ query_scope ∧ live ∧ path: ∧ name:.
         // Any may be inactive.
@@ -753,6 +853,8 @@ impl Index {
         // File coherence + query-aware boosts.
         let mut scored = combined;
         boost_multi_chunk_files(&mut scored, &self.chunks);
+        let prior = self.file_prior(&q_embed, &query_tokens, mask.as_deref());
+        apply_file_prior(&mut scored, &self.chunks, &prior, FILE_PRIOR_WEIGHT);
         let scored = apply_query_boost(scored, query, &self.chunks);
 
         // Final top-k with path penalties + saturation decay.
