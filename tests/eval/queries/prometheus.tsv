@@ -1,0 +1,50 @@
+# Retrieval eval set for prometheus. See tests/eval/README.md for the format.
+#
+# repository: https://github.com/prometheus/prometheus
+# revision: bf5a9810e60d5f4cdbb4035119fd61668790b1b7
+#
+# Targets are callables of 21-150 lines. 77% of Go callables here are 20 lines
+# or shorter and cannot reach IoU 0.3 at any search quality, so a set that does
+# not filter by length scores near zero for reasons unrelated to retrieval.
+#
+# Expect roughly 13% of result slots to go to Markdown, on 1.9% of chunks:
+# docs/ describes these behaviours in the words the queries use. That is real
+# and should not be suppressed, but a change that only shifts the code/docs
+# balance moves the score without improving code retrieval.
+#
+# Rows 1-15 and 16-30 were written separately and score differently (recall@5 13% and 47%).
+# The gap tracks how strictly each author avoided reusing the domain words that
+# appear in the answer, not retrieval quality: the half that leans on them hands
+# the lexical retriever free hits. Judge a ranking change by the per-query diff,
+# never by the summary line, and never by comparing this corpus's summary
+# against another one's.
+drop a sample whose timestamp is older than what the series already holds	tsdb/head_append.go	436-506	Append	e3db722f
+mark the series of a target as gone once it stops being scraped	scrape/scrape.go	1473-1539	endOfRunStaleness	5be77b1c
+work out how many parallel senders are needed to keep up with the incoming rate	storage/remote/queue_manager.go	1156-1229	calculateDesiredShards	736405bc
+retry a rejected batch, waiting longer before each attempt	storage/remote/queue_manager.go	1750-1852	sendSamplesWithBackoff	5a49f7d7
+choose which persisted blocks should be merged together next	tsdb/compact.go	285-344	plan	3bb84505
+delete write-ahead log segments that fall below the retained time range	tsdb/head.go	1521-1592	truncateWAL	7455224c
+snapshot the in-memory state so older log segments can be discarded	tsdb/wlog/checkpoint.go	112-438	Checkpoint	96bd1644
+recover from a torn record by cutting the log back to the last good point	tsdb/wlog/wlog.go	400-505	Repair	02bc8b10
+turn a set of label matchers into the series that satisfy all of them	tsdb/querier.go	269-415	PostingsForMatchers	7c64fe17
+check that a metric rewriting rule carries the fields its action requires	model/relabel/relabel.go	120-192	Validate	b773d45f
+evaluate an alert expression and decide which alerts should fire	rules/alerting.go	387-551	Eval	124ac8dc
+per-second increase of a native histogram over a time range	promql/functions.go	640-757	histogramRate	461b7a00
+stream compressed chunks back to the caller instead of decoded samples	storage/remote/read_handler.go	188-257	remoteReadStreamedXORChunks	6d822aaa
+accept a pushed batch of samples over HTTP and store them	storage/remote/write_handler.go	149-218	write	36054698
+record a request to delete matching samples from a persisted block	tsdb/block.go	607-672	Delete	029a4f2c
+try each domain suffix from resolv.conf until a name resolves	discovery/dns/dns.go	292-323	lookupWithSearchPath	acfffbc1
+build one scrape target per container port on a pod, falling back to the pod IP when no ports are declared	discovery/kubernetes/pod.go	366-440	buildPod	dbf563a7
+read a native histogram out of a protobuf-encoded scrape into the in-memory form	model/textparse/protobufparse.go	188-282	Histogram	aaceaa70
+read a numeric literal while tokenizing, allowing hex, exponents and underscore separators	promql/parser/lex.go	1024-1107	scanNumber	9582922e
+evaluate a nested expression on its own step grid inside an outer range query	promql/engine.go	1932-1989	runSubquery	bfc8eb2f
+interpolate a percentile inside the classic bucket that contains the rank	promql/quantile.go	105-170	BucketQuantile	11676648
+store a trace exemplar for a series in a fixed-size ring, overwriting the oldest entry	tsdb/exemplar.go	384-489	AddExemplar	7bf5a346
+write a float sample into a chunk as a delta-of-delta timestamp and a bit-packed value	tsdb/chunkenc/xor.go	161-218	Append	1fdfe14b
+follow the write-ahead log as it is written, moving on once a newer segment appears	tsdb/wlog/watcher.go	392-478	watch	e364a0fe
+pick the oldest blocks to drop once stored data exceeds the configured disk limit	tsdb/db.go	2273-2313	BeyondSizeRetention	1f0266a0
+turn samples that arrived late into encoded chunks, starting a new one when the sample type changes	tsdb/ooo_head.go	78-162	ToEncodedChunks	060c365f
+bring pending alerts back to their previous age after a restart	rules/group.go	739-867	RestoreForState	23a45c58
+encode a batch of firing alerts as JSON and post them to the alertmanager	notifier/sendloop.go	209-249	sendAll	7c63d9d1
+validate the start, end and step parameters of an HTTP request before evaluating the expression over that interval	web/api/v1/api.go	660-754	queryRange	644f0ec0
+render an annotation template into text without letting a broken template crash the process	template/template.go	326-356	Expand	70f47b50

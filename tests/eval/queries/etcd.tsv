@@ -1,0 +1,49 @@
+# Retrieval eval set for etcd. See tests/eval/README.md for the format.
+#
+# repository: https://github.com/etcd-io/etcd
+# revision: 1b5ba72405d62c16f3011a7bfb56a6a721ee51a3
+#
+# Targets are callables of 21-150 lines, each name-unique within its file.
+# etcd puts an interface beside its implementation often enough that 12% of
+# callable names repeat, and a target with a same-named sibling nearby tends to
+# be unanswerable in practice.
+#
+# No target is generated protobuf, a _test.go file, or the framework code under
+# tests/, which carries the ranker's 0.3x test-path penalty.
+#
+# Rows 1-15 and 16-30 were written separately and score differently (recall@5 20% and 7%).
+# The gap tracks how strictly each author avoided reusing the domain words that
+# appear in the answer, not retrieval quality: the half that leans on them hands
+# the lexical retriever free hits. Judge a ranking change by the per-query diff,
+# never by the summary line, and never by comparing this corpus's summary
+# against another one's.
+delete every key a lease was holding once that lease is given up	server/lease/lessor.go	326-365	Revoke	88926029
+gather the leases whose deadline already passed so they can be dropped	server/lease/lessor.go	728-751	findExpiredLeases	e81025a1
+catch up streams that fell behind by replaying stored events out of the backend	server/storage/mvcc/watchable_store.go	347-416	syncWatchers	f731d38a
+tell a caught-up stream the current revision when nothing has changed for it	server/storage/mvcc/watchable_store.go	517-543	progressIfSync	c16bf798
+drop superseded versions of a key below a revision, a batch at a time	server/storage/mvcc/kvstore_compaction.go	28-100	scheduleCompaction	747fce50
+rewrite the database file into a compacted copy to give free pages back	server/storage/backend/backend.go	476-614	defrag	c806bda9
+check whether the permissions a user was granted cover the whole span being touched	server/auth/range_perm_cache.go	110-129	isRangeOpPermitted	b46c3216
+refuse a membership change that would leave the cluster without a quorum	server/etcdserver/api/membership/cluster.go	306-389	ValidateConfigurationChange	e0a5a0c2
+close the current log segment, preallocate the next file and start writing there	server/storage/wal/wal.go	785-867	cut	b1b72b7c
+ship a database snapshot over http to a follower that lagged past the log	server/etcdserver/api/rafthttp/snapshot_sender.go	67-143	send	76c033fa
+ask every peer for the hash of its key space and alarm when they disagree	server/etcdserver/corrupt.go	179-264	PeriodicCheck	561e9334
+wait for the leader to confirm the index before serving a strongly consistent read	server/etcdserver/read/read.go	96-146	LinearizableReadLoop	805ec72b
+take a place in line for leadership and block until every earlier contender is gone	client/v3/concurrency/election.go	69-107	Campaign	779bb4c1
+return every stored range that overlaps the one being asked about	pkg/adt/interval_tree.go	767-774	Stab	110890ad
+reopen the broken grpc stream and resume from the last revision seen	client/v3/watch.go	1042-1062	openWatchClient	5fb4e7d6
+back up the last log file and cut it back to the last complete record after a crash	server/storage/wal/repair.go	32-106	Repair	3ae4aeee
+walk every key in the database at boot to rebuild the in-memory index and reattach leases	server/storage/mvcc/kvstore.go	317-426	store.restore	996631e5
+record that a key is gone by writing a marker at the next revision and detaching its lease	server/storage/mvcc/kvstore_txn.go	308-346	storeTxnWrite.delete	c119fd73
+serve a read by combining pending in-memory writes with what the on-disk bucket holds	server/storage/backend/read_tx.go	78-122	baseReadTx.UnsafeRange	c6119081
+sign a bearer token carrying the user name and auth revision after a successful login	server/auth/jwt.go	93-125	tokenJWT.assign	7ccffbac
+give a role read or write access over a span of keys and refresh the cached permissions	server/auth/store.go	808-857	authStore.RoleGrantPermission	56d828b7
+decide whether a non-voting replica has caught up enough to become a full member	server/etcdserver/server.go	1549-1594	EtcdServer.isLearnerReady	7d308ae6
+drop outgoing traffic to members that were removed and warn when heartbeats go out late	server/etcdserver/raft.go	357-402	raftNode.processMessages	f54bb926
+set up the pipeline, streams and message pumps for talking to another cluster member	server/etcdserver/api/rafthttp/peer.go	131-234	startPeer	c26c018f
+turn a snapshot file into a fresh data directory a brand new member can boot from	etcdutl/snapshot/v3_snapshot.go	257-348	v3Manager.Restore	7aa12a39
+merge watchers reading from the same point into one shared connection so fewer are opened upstream	server/proxy/grpcproxy/watch_broadcasts.go	53-83	watchBroadcasts.coalesce	58c7ab4b
+refuse a transaction whose puts and deletes touch overlapping key ranges, nested branches included	server/etcdserver/api/v3rpc/key.go	236-315	checkIntervals	d7176758
+try a failed call again and fetch a new auth token when the old one was rejected	client/v3/retry_interceptor.go	41-102	Client.unaryClientInterceptor	f2d78f7e
+periodically tell the server the leases this client holds are still in use	client/v3/lease.go	593-626	lessor.sendKeepAliveLoop	7394272a
+pick the storage size limit, falling back to a default and warning when it is too large	server/storage/quota.go	75-124	NewBackendQuota	142cd4c1
