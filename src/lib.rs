@@ -1143,6 +1143,24 @@ pub(crate) fn resolve_paths_for_mcp(
 /// declarations runs several times larger.
 const MAP_HINT_THRESHOLD_BYTES: usize = 25_000;
 
+/// Whether an answer of `output_len` bytes is worth a pointer at the digest
+/// preset.
+///
+/// A hint is due when `paths` names a directory, the call is not already the
+/// digest answer, and the payload clears [`MAP_HINT_THRESHOLD_BYTES`]. A
+/// single file, a small package, and the digest answer itself therefore stay
+/// quiet.
+///
+/// The CLI and the MCP server share this decision and word it differently:
+/// the CLI has a shell to paste into, and the MCP client has a tool to call.
+/// Suggesting a shell command to a caller that speaks JSON-RPC would name an
+/// action it may have no way to take.
+pub(crate) fn map_hint_is_due(paths: &[PathBuf], already_digest: bool, output_len: usize) -> bool {
+    !already_digest
+        && output_len > MAP_HINT_THRESHOLD_BYTES
+        && paths.iter().any(|p| p.is_dir())
+}
+
 /// Quotes `s` for a POSIX shell, leaving a value that needs no quoting
 /// alone.
 ///
@@ -1157,13 +1175,8 @@ fn shell_quote(s: &str) -> String {
     }
 }
 
-/// Hint pointing an oversized directory-wide `map` at the digest preset, or
-/// `None` when no hint is due.
-///
-/// A hint is due when `paths` names a directory, `already_digest` is false,
-/// and `output_len` clears [`MAP_HINT_THRESHOLD_BYTES`]. A single file and a
-/// small package therefore stay quiet, and so does the digest answer, which
-/// is what the hint would otherwise point at.
+/// Shell command pointing an oversized directory-wide `map` at the digest
+/// preset, or `None` when [`map_hint_is_due`] says no hint is due.
 ///
 /// The caller prints the hint on stderr beside the result. The choice of
 /// command stays with the caller, and `map <dir>` is never redirected to
@@ -1188,10 +1201,9 @@ fn map_directory_hint(
     already_digest: bool,
     output_len: usize,
 ) -> Option<String> {
-    if already_digest || output_len <= MAP_HINT_THRESHOLD_BYTES {
+    if !map_hint_is_due(paths, already_digest, output_len) {
         return None;
     }
-    paths.iter().find(|p| p.is_dir())?;
     let rendered: Vec<String> = paths.iter().map(|p| p.display().to_string()).collect();
     let quoted = rendered
         .iter()
