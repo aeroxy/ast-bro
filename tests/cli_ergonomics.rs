@@ -312,6 +312,403 @@ fn map_on_large_directory_hints_at_digest_preset() {
     );
 }
 
+/// A single file whose `map` output clears the 25 KB hint threshold. The
+/// hint is about directories, so this is the fixture that proves size alone
+/// does not trigger it.
+fn oversized_map_file(dir: &std::path::Path) -> PathBuf {
+    let mut src = String::new();
+    for i in 0..800 {
+        src.push_str(&format!(
+            "pub fn generated_function_{i}(argument: usize) -> usize {{ argument }}\n"
+        ));
+    }
+    let path = dir.join("one_big_file.rs");
+    std::fs::write(&path, src).expect("write fixture");
+    path
+}
+
+#[test]
+fn map_hint_names_map_even_when_entered_through_the_digest_alias() {
+    // #35 + #37: `map` and `digest` are one command, so the suggestion is
+    // always spelled `map` — `digest … --preset digest` would be nonsense.
+    let dir = oversized_map_fixture();
+    let (code, _stdout, stderr) =
+        run(&["digest", dir.path().to_str().unwrap(), "--detail", "full"]);
+    assert_eq!(code, Some(0), "stderr:\n{stderr}");
+    assert!(
+        stderr.contains("`ast-bro map "),
+        "hint must suggest the canonical `map` form:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("digest --preset digest"),
+        "hint must not suggest digest through the digest alias:\n{stderr}"
+    );
+}
+
+#[test]
+fn map_hint_fires_when_a_directory_rides_along_with_a_file() {
+    // The trigger is "a directory was inspected", not "the sole argument was
+    // a directory": mixing a file in still buries a package in the output.
+    let dir = oversized_map_fixture();
+    let file = dir.path().join("file_0.rs");
+    let (code, _stdout, stderr) =
+        run(&["map", file.to_str().unwrap(), dir.path().to_str().unwrap()]);
+    assert_eq!(code, Some(0), "stderr:\n{stderr}");
+    assert!(
+        stderr.contains("# hint:") && stderr.contains(dir.path().to_str().unwrap()),
+        "expected the hint to name the directory argument:\n{stderr}"
+    );
+}
+
+#[test]
+fn map_on_large_single_file_stays_quiet() {
+    // One file is what `map` is for at any size — there is nothing smaller
+    // to point at, and `digest` would answer a different question.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file = oversized_map_file(dir.path());
+    let (code, stdout, stderr) = run(&["map", file.to_str().unwrap()]);
+    assert_eq!(code, Some(0), "stderr:\n{stderr}");
+    assert!(
+        stdout.len() > 25_000,
+        "fixture must exceed the threshold, got {} bytes",
+        stdout.len()
+    );
+    assert!(
+        !stderr.contains("# hint:"),
+        "a single file must not be nagged about its size:\n{stderr}"
+    );
+}
+
+#[test]
+fn map_hint_keeps_the_scope_and_format_flags_of_the_call() {
+    // The hint claims to answer the same question. Dropping `--glob` would
+    // name a broader one, and dropping `--compact` would answer in a
+    // different shape.
+    let dir = oversized_map_fixture();
+    let (code, _stdout, stderr) = run(&[
+        "map",
+        dir.path().to_str().unwrap(),
+        "--glob",
+        "*.rs",
+        "--json",
+        "--compact",
+    ]);
+    assert_eq!(code, Some(0), "stderr:\n{stderr}");
+    assert!(
+        stderr.contains("--glob='*.rs'")
+            && stderr.contains("--json")
+            && stderr.contains("--compact"),
+        "hint must carry the call's own scope and format flags:\n{stderr}"
+    );
+}
+
+#[test]
+fn map_detail_names_json_is_hinted_because_it_is_not_the_digest_answer() {
+    // `--detail names` sheds doc comments and nothing else: the JSON payload
+    // keeps private members, fields, and an uncapped member list, so it is
+    // exactly the oversized answer the hint exists for.
+    let dir = oversized_map_fixture();
+    let (code, stdout, stderr) = run(&[
+        "map",
+        dir.path().to_str().unwrap(),
+        "--detail",
+        "names",
+        "--json",
+    ]);
+    assert_eq!(code, Some(0), "stderr:\n{stderr}");
+    assert!(
+        stdout.len() > 25_000,
+        "fixture must exceed the threshold, got {} bytes",
+        stdout.len()
+    );
+    assert!(
+        stderr.contains("# hint:"),
+        "a names-detail JSON map is not the digest answer and must be hinted:\n{stderr}"
+    );
+}
+
+#[test]
+fn map_detail_names_is_hinted_in_text_too() {
+    // Text and JSON answer the same question about the same call, so the
+    // hint cannot depend on which renderer produced the bytes.
+    let dir = oversized_map_fixture();
+    let (code, stdout, stderr) = run(&["map", dir.path().to_str().unwrap(), "--detail", "names"]);
+    assert_eq!(code, Some(0), "stderr:\n{stderr}");
+    assert!(
+        stdout.len() > 25_000,
+        "fixture must exceed the threshold, got {} bytes",
+        stdout.len()
+    );
+    assert!(
+        stderr.contains("# hint:"),
+        "names detail in text is not the digest answer either:\n{stderr}"
+    );
+}
+
+#[test]
+fn an_inflated_digest_call_is_hinted_like_the_map_call_it_equals() {
+    // `digest <dir> --include-private --include-fields` renders exactly what
+    // `map <dir> --detail names` renders. Exempting one and hinting the
+    // other would make the rule about the spelling rather than the answer.
+    let dir = oversized_map_fixture();
+    let path = dir.path().to_str().unwrap();
+    let (code, inflated, stderr) = run(&[
+        "digest",
+        path,
+        "--include-private",
+        "--include-fields",
+        "--json",
+    ]);
+    assert_eq!(code, Some(0), "stderr:\n{stderr}");
+    let (_, spelled_as_map, _) = run(&["map", path, "--detail", "names", "--json"]);
+    assert_eq!(
+        inflated, spelled_as_map,
+        "the two spellings must render the same payload for this test to mean anything"
+    );
+    assert!(
+        stderr.contains("# hint:"),
+        "an inflated digest call is not the digest answer:\n{stderr}"
+    );
+}
+
+#[test]
+fn map_hint_repeats_every_path_it_was_given() {
+    // The suggestion replaces the call it qualifies, so dropping a root
+    // would answer a narrower question than the one that was asked.
+    let dir = oversized_map_fixture();
+    let second = tempfile::tempdir().expect("tempdir");
+    std::fs::write(second.path().join("extra.rs"), "pub fn extra() {}\n").expect("write fixture");
+    let (code, _stdout, stderr) = run(&[
+        "map",
+        dir.path().to_str().unwrap(),
+        second.path().to_str().unwrap(),
+    ]);
+    assert_eq!(code, Some(0), "stderr:\n{stderr}");
+    assert!(
+        stderr.contains(dir.path().to_str().unwrap())
+            && stderr.contains(second.path().to_str().unwrap()),
+        "hint must name every root it was given:\n{stderr}"
+    );
+}
+
+#[test]
+fn map_hint_keeps_a_tighter_member_cap_the_caller_asked_for() {
+    // --max-members is a scope axis. Suggesting 8 to a caller who asked for
+    // 1 would answer a broader question than the one being qualified.
+    let dir = oversized_map_fixture();
+    let (code, _stdout, stderr) = run(&[
+        "map",
+        dir.path().to_str().unwrap(),
+        "--max-members",
+        "1",
+        "--json",
+    ]);
+    assert_eq!(code, Some(0), "stderr:\n{stderr}");
+    assert!(
+        stderr.contains("--max-members 1"),
+        "a tighter cap must survive into the suggestion:\n{stderr}"
+    );
+}
+
+/// Runs `args` from `cwd`, so a test can pass a relative path.
+///
+/// The dash hazard only exists for a relative path: an absolute one starts
+/// with `/`, and clap never mistakes it for a flag.
+fn run_in(cwd: &std::path::Path, args: &[&str]) -> (Option<i32>, String, String) {
+    let out = Command::new(bin())
+        .args(args)
+        .current_dir(cwd)
+        .env("NO_COLOR", "1")
+        .output()
+        .expect("run ast-bro");
+    (
+        out.status.code(),
+        String::from_utf8(out.stdout).expect("utf8"),
+        String::from_utf8(out.stderr).expect("utf8"),
+    )
+}
+
+/// Runs the command the hint suggests, from `cwd`, and returns its exit code.
+///
+/// The hint is documented as pasteable, so the assertion that matters is
+/// that a shell can run it as printed: quoting alone is not enough when clap
+/// reads a leading dash as a flag.
+fn exit_code_of_suggested_command(cwd: &std::path::Path, stderr: &str) -> Option<i32> {
+    let line = stderr
+        .lines()
+        .find(|l| l.starts_with("# hint:"))
+        .expect("hint on stderr");
+    let command = line
+        .split('`')
+        .nth(1)
+        .expect("suggestion between backticks")
+        .replacen("ast-bro", bin().to_str().expect("utf8 path"), 1);
+    std::process::Command::new("/bin/sh")
+        .arg("-c")
+        .arg(&command)
+        .current_dir(cwd)
+        .env("NO_COLOR", "1")
+        .output()
+        .expect("run the suggested command")
+        .status
+        .code()
+}
+
+/// Fills `dir` with enough declarations to clear the hint threshold.
+fn fill_past_threshold(dir: &std::path::Path) {
+    for f in 0..20 {
+        let mut src = String::new();
+        for i in 0..60 {
+            src.push_str(&format!(
+                "pub fn generated_function_{f}_{i}(argument: usize) -> usize {{ argument }}\n"
+            ));
+        }
+        std::fs::write(dir.join(format!("file_{f}.rs")), src).expect("write fixture");
+    }
+}
+
+#[test]
+fn the_suggested_command_runs_for_a_dash_prefixed_path() {
+    // A relative directory named `-generated` has to reach clap behind a
+    // `--`, or the command the hint says to paste exits 2.
+    let parent = tempfile::tempdir().expect("tempdir");
+    let dir = parent.path().join("-generated");
+    std::fs::create_dir(&dir).expect("mkdir");
+    fill_past_threshold(&dir);
+    let (code, _stdout, stderr) = run_in(parent.path(), &["map", "--", "-generated"]);
+    assert_eq!(code, Some(0), "stderr:\n{stderr}");
+    assert!(
+        stderr.contains(" -- -generated"),
+        "a dash-prefixed path must move behind a separator:\n{stderr}"
+    );
+    assert_eq!(
+        exit_code_of_suggested_command(parent.path(), &stderr),
+        Some(0),
+        "the suggested command must run as printed:\n{stderr}"
+    );
+}
+
+#[test]
+fn the_suggested_command_runs_for_a_dash_prefixed_glob() {
+    // Same hazard on the other axis: `--glob -big*.rs` is read as a flag, so
+    // the suggestion has to use the attached `--glob=` form.
+    let dir = tempfile::tempdir().expect("tempdir");
+    for f in 0..20 {
+        let mut src = String::new();
+        for i in 0..60 {
+            src.push_str(&format!(
+                "pub fn generated_function_{f}_{i}(argument: usize) -> usize {{ argument }}\n"
+            ));
+        }
+        std::fs::write(dir.path().join(format!("-big{f}.rs")), src).expect("write fixture");
+    }
+    let (code, stdout, stderr) = run_in(
+        dir.path(),
+        &["map", ".", "--glob=-big*.rs", "--detail", "signatures"],
+    );
+    assert_eq!(code, Some(0), "stderr:\n{stderr}");
+    assert!(
+        stdout.len() > 25_000,
+        "fixture must exceed the threshold, got {} bytes",
+        stdout.len()
+    );
+    assert!(
+        stderr.contains("--glob='-big*.rs'"),
+        "a dash-prefixed glob needs the attached form:\n{stderr}"
+    );
+    assert_eq!(
+        exit_code_of_suggested_command(dir.path(), &stderr),
+        Some(0),
+        "the suggested command must run as printed:\n{stderr}"
+    );
+}
+
+#[test]
+fn map_hint_quotes_a_path_a_shell_would_split() {
+    // The hint exists to be pasted. A directory named `my code` has to come
+    // back as one argument.
+    let parent = tempfile::tempdir().expect("tempdir");
+    let dir = parent.path().join("my code");
+    std::fs::create_dir(&dir).expect("mkdir");
+    for f in 0..20 {
+        let mut src = String::new();
+        for i in 0..60 {
+            src.push_str(&format!(
+                "pub fn generated_function_{f}_{i}(argument: usize) -> usize {{ argument }}\n"
+            ));
+        }
+        std::fs::write(dir.join(format!("file_{f}.rs")), src).expect("write fixture");
+    }
+    let (code, _stdout, stderr) = run(&["map", dir.to_str().unwrap()]);
+    assert_eq!(code, Some(0), "stderr:\n{stderr}");
+    assert!(
+        stderr.contains(&format!("'{}'", dir.display())),
+        "a path with a space must be quoted in the suggestion:\n{stderr}"
+    );
+}
+
+#[test]
+fn digest_preset_json_stays_quiet() {
+    // The suppression rule has to hold in the renderer where it is the only
+    // thing standing between the digest answer and a hint pointing at it.
+    let dir = oversized_map_fixture();
+    let (code, stdout, stderr) = run(&["digest", dir.path().to_str().unwrap(), "--json"]);
+    assert_eq!(code, Some(0), "stderr:\n{stderr}");
+    assert!(
+        stdout.len() > 25_000,
+        "fixture must exceed the threshold, got {} bytes",
+        stdout.len()
+    );
+    assert!(
+        !stderr.contains("# hint:"),
+        "the digest preset must not point at itself:\n{stderr}"
+    );
+}
+
+#[test]
+fn digest_alias_with_full_detail_is_still_hinted() {
+    // Wearing the alias is not being the digest answer: `--detail full`
+    // brings back signatures and doc comments, and the preset is smaller.
+    let dir = oversized_map_fixture();
+    let (code, _stdout, stderr) =
+        run(&["digest", dir.path().to_str().unwrap(), "--detail", "full"]);
+    assert_eq!(code, Some(0), "stderr:\n{stderr}");
+    assert!(
+        stderr.contains("# hint:"),
+        "a full-detail answer must be hinted whichever alias asked for it:\n{stderr}"
+    );
+}
+
+#[test]
+fn digest_preset_on_large_directory_stays_quiet() {
+    // The digest preset is what the hint points at, so it has nothing left
+    // to suggest however large its own output grows.
+    let dir = oversized_map_fixture();
+    let (code, stdout, stderr) = run(&["digest", dir.path().to_str().unwrap()]);
+    assert_eq!(code, Some(0), "stderr:\n{stderr}");
+    assert!(!stdout.is_empty(), "digest must still answer");
+    assert!(
+        !stderr.contains("# hint:"),
+        "the digest preset must not point at itself:\n{stderr}"
+    );
+}
+
+#[test]
+fn map_json_on_large_directory_hints_without_polluting_stdout() {
+    // A JSON caller pays the same size for the same question, and stdout
+    // stays pure JSON because the hint rides the error channel.
+    let dir = oversized_map_fixture();
+    let (code, stdout, stderr) = run(&["map", dir.path().to_str().unwrap(), "--json"]);
+    assert_eq!(code, Some(0), "stderr:\n{stderr}");
+    let doc: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("stdout must parse as pure JSON");
+    assert_eq!(doc["schema"], "ast-bro.map.v1");
+    assert!(
+        stderr.contains("# hint:") && stderr.contains("--json"),
+        "the JSON hint must keep the caller in JSON:\n{stderr}"
+    );
+}
+
 #[test]
 fn map_on_small_input_stays_quiet() {
     let dir = tempfile::tempdir().expect("tempdir");

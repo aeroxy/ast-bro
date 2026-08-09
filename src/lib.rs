@@ -1136,6 +1136,93 @@ pub(crate) fn resolve_paths_for_mcp(
     Ok((existing, missing))
 }
 
+/// Size past which a directory-wide `map` is worth a pointer at the digest
+/// preset (issue #35). The bar is measured on the payload actually emitted,
+/// which is what the caller has to read: the same directory clears it under
+/// `--json` while staying quiet in text, because the JSON form of the same
+/// declarations runs several times larger.
+const MAP_HINT_THRESHOLD_BYTES: usize = 25_000;
+
+/// Quotes `s` for a POSIX shell, leaving a value that needs no quoting
+/// alone.
+///
+/// The hint below is written to be pasted, so a directory named `my code`
+/// has to come back as one argument rather than two.
+fn shell_quote(s: &str) -> String {
+    let safe = |c: char| c.is_ascii_alphanumeric() || "._/-+=:@,".contains(c);
+    if !s.is_empty() && s.chars().all(safe) {
+        s.to_string()
+    } else {
+        format!("'{}'", s.replace('\'', r"'\''"))
+    }
+}
+
+/// Hint pointing an oversized directory-wide `map` at the digest preset, or
+/// `None` when no hint is due.
+///
+/// A hint is due when `paths` names a directory, `already_digest` is false,
+/// and `output_len` clears [`MAP_HINT_THRESHOLD_BYTES`]. A single file and a
+/// small package therefore stay quiet, and so does the digest answer, which
+/// is what the hint would otherwise point at.
+///
+/// The caller prints the hint on stderr beside the result. The choice of
+/// command stays with the caller, and `map <dir>` is never redirected to
+/// `digest`.
+///
+/// The suggestion names `map` whichever alias the caller entered through,
+/// since the two are one command (issue #37) and `digest … --preset digest`
+/// would read as nonsense. It repeats every path it was given and carries
+/// the scope and format flags of the call it qualifies — `--glob`,
+/// `--json`, `--compact` — so that following it answers the same question
+/// in the same shape rather than a narrower or broader one. A caller's own
+/// `--max-members` survives when it is already tighter than the suggested
+/// cap, for the same reason.
+///
+/// A leading `-` needs more than shell quoting: the shell strips the quotes
+/// and clap then reads the value as a flag. The glob therefore takes the
+/// attached `--glob=…` form, and paths move behind a `--` separator when
+/// any of them starts with a dash.
+fn map_directory_hint(
+    a: &MapArgs,
+    paths: &[PathBuf],
+    already_digest: bool,
+    output_len: usize,
+) -> Option<String> {
+    if already_digest || output_len <= MAP_HINT_THRESHOLD_BYTES {
+        return None;
+    }
+    paths.iter().find(|p| p.is_dir())?;
+    let rendered: Vec<String> = paths.iter().map(|p| p.display().to_string()).collect();
+    let quoted = rendered
+        .iter()
+        .map(|p| shell_quote(p))
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    let cap = a.max_members.map_or(8, |m| m.min(8));
+    let mut flags = format!("--preset digest --max-members {}", cap);
+    if let Some(glob) = a.glob.as_deref() {
+        flags.push_str(&format!(" --glob={}", shell_quote(glob)));
+    }
+    if a.json {
+        flags.push_str(" --json");
+        if a.compact {
+            flags.push_str(" --compact");
+        }
+    }
+
+    let suggestion = if rendered.iter().any(|p| p.starts_with('-')) {
+        format!("ast-bro map {} -- {}", flags, quoted)
+    } else {
+        format!("ast-bro map {} {}", quoted, flags)
+    };
+    Some(format!(
+        "# hint: this was a directory ({} KB); `{}` answers the same question in a fraction of the size",
+        output_len / 1024,
+        suggestion,
+    ))
+}
+
 /// One handler behind both `map` and `digest` (issue #37). Resolves the
 /// preset first, then lets explicitly-passed flags override it, so
 /// `digest --include-private` and `map --preset digest --max-members 8`
@@ -1182,62 +1269,56 @@ fn run_map_digest(a: &MapArgs, digest_alias: bool) {
         max_members,
     };
 
-    if a.json {
-        println!(
-            "{}",
-            crate::core::render_json_map(&results, &map_opts, pretty)
-        );
-        return;
-    }
-    match detail {
-        DetailLevel::Names => {
-            let opts = DigestOptions {
-                include_private,
-                include_fields,
-                include_attributes: !a.no_attrs,
-                include_line_numbers: !a.no_lines,
-                max_members_per_type: max_members.unwrap_or(usize::MAX),
-                max_heading_depth: crate::defaults::MAX_HEADING_DEPTH,
-            };
-            let root = if paths.len() == 1 && paths[0].is_dir() {
-                Some(paths[0].as_path())
-            } else {
-                None
-            };
-            println!("{}", crate::core::render_digest(&results, &opts, root));
-        }
-        DetailLevel::Signatures | DetailLevel::Full => {
-            if results.is_empty() {
-                // The paths exist but contain nothing parseable — that's a
-                // real (empty) answer, and stdout must say so rather than
-                // stay silent (issue #33).
-                println!("# 0 parseable file(s) in the given path(s)");
-                return;
+    // The digest answer is the one call the hint has nothing smaller to
+    // offer. What makes a call one is the resolved axes, not the alias that
+    // was typed: explicit flags override the preset, so `digest <dir>
+    // --include-private --include-fields` renders byte for byte what `map
+    // <dir> --detail names` does, and both deserve the same answer here.
+    let already_digest = matches!(detail, DetailLevel::Names)
+        && !include_private
+        && !include_fields
+        && max_members.is_some_and(|m| m <= 50);
+
+    let rendered = if a.json {
+        crate::core::render_json_map(&results, &map_opts, pretty)
+    } else {
+        match detail {
+            DetailLevel::Names => {
+                let opts = DigestOptions {
+                    include_private,
+                    include_fields,
+                    include_attributes: !a.no_attrs,
+                    include_line_numbers: !a.no_lines,
+                    max_members_per_type: max_members.unwrap_or(usize::MAX),
+                    max_heading_depth: crate::defaults::MAX_HEADING_DEPTH,
+                };
+                let root = if paths.len() == 1 && paths[0].is_dir() {
+                    Some(paths[0].as_path())
+                } else {
+                    None
+                };
+                crate::core::render_digest(&results, &opts, root)
             }
-            let mut out = String::new();
-            for res in &results {
-                out.push_str(&crate::core::render_map(res, &map_opts));
-                out.push_str("\n\n");
-            }
-            println!("{}", out.trim_end());
-            // A directory-wide `map` can balloon past what fits in one
-            // read; point at the digest preset instead of letting the
-            // caller reach for `head` and silently lose the middle
-            // (issue #35). Never redirect — the choice stays with the
-            // caller. Small outputs stay quiet.
-            const HINT_THRESHOLD_BYTES: usize = 25_000;
-            let dir_input = paths.iter().find(|p| p.is_dir());
-            if let Some(dir) = dir_input {
-                if out.len() > HINT_THRESHOLD_BYTES {
-                    eprintln!(
-                        "# hint: this was a directory ({} KB); `{} {} --preset digest --max-members 8` answers the same question in a fraction of the size",
-                        out.len() / 1024,
-                        command,
-                        dir.display(),
-                    );
+            DetailLevel::Signatures | DetailLevel::Full => {
+                if results.is_empty() {
+                    // The paths exist but contain nothing parseable — that's
+                    // a real (empty) answer, and stdout must say so rather
+                    // than stay silent (issue #33).
+                    println!("# 0 parseable file(s) in the given path(s)");
+                    return;
                 }
+                let mut out = String::new();
+                for res in &results {
+                    out.push_str(&crate::core::render_map(res, &map_opts));
+                    out.push_str("\n\n");
+                }
+                out.trim_end().to_string()
             }
         }
+    };
+    println!("{}", rendered);
+    if let Some(hint) = map_directory_hint(a, &paths, already_digest, rendered.len()) {
+        eprintln!("{}", hint);
     }
 }
 
