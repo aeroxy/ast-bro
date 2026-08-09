@@ -158,6 +158,53 @@ const TEST_FILE_SUFFIXES: &[&str] = &[
     "_tests", ".tests", "_specs", ".specs",
 ];
 
+/// Suffixes that end a compound test-directory name, lowercased.
+///
+/// Held apart from [`TEST_DIR_TOKENS`], which matches a whole component:
+/// a suffix counts only where [`names_a_test_dir`] finds a separator or a
+/// case boundary in front of it.
+const TEST_DIR_SUFFIXES: &[&str] = &["tests", "test", "specs", "spec"];
+
+/// Reports whether `component` names a test directory.
+///
+/// A component qualifies two ways: it equals a token in [`TEST_DIR_TOKENS`],
+/// or it ends with one of [`TEST_DIR_SUFFIXES`] introduced by `.`, `-`, `_`,
+/// or a lowercase-to-uppercase boundary. Matching is ASCII case-insensitive.
+///
+/// That introduction rule is doing real work in both directions. Without it
+/// `latest`, `contest` and `protests` become test directories; without the
+/// suffixes, `ICSharpCode.Decompiler.Tests/` and every other suffixed
+/// convention read as production code — on ILSpy, whole-component matching
+/// classified 0 of 1768 files as tests.
+fn names_a_test_dir(component: &str) -> bool {
+    let lower = component.to_ascii_lowercase();
+    if TEST_DIR_TOKENS.contains(&lower.as_str()) {
+        return true;
+    }
+    for suffix in TEST_DIR_SUFFIXES {
+        let Some(head) = lower.strip_suffix(suffix) else {
+            continue;
+        };
+        if head.is_empty() {
+            continue;
+        }
+        if head.ends_with(['.', '-', '_']) {
+            return true;
+        }
+        // `to_ascii_lowercase` preserves length, so `head.len()` indexes the
+        // same byte in the original spelling.
+        let starts_upper = component.as_bytes()[head.len()].is_ascii_uppercase();
+        let ends_lower = head
+            .bytes()
+            .next_back()
+            .is_some_and(|b| b.is_ascii_lowercase() || b.is_ascii_digit());
+        if starts_upper && ends_lower {
+            return true;
+        }
+    }
+    false
+}
+
 /// Return `true` when `path` (relative to `repo_root`) looks like a test
 /// file by path heuristics — covers `tests/`, `__tests__`,
 /// `*.test.ts`, `*_test.go`, `*.spec.js`, `e2e/`, `cypress/`, etc.
@@ -168,8 +215,7 @@ pub fn is_test_file(path: &Path, repo_root: &Path) -> bool {
     let rel = path.strip_prefix(repo_root).unwrap_or(path);
     for component in rel.components() {
         let s = component.as_os_str().to_string_lossy();
-        let lower = s.to_lowercase();
-        if TEST_DIR_TOKENS.iter().any(|t| *t == lower) {
+        if names_a_test_dir(&s) {
             return true;
         }
     }
@@ -275,6 +321,43 @@ pub fn detect_language(path: &Path) -> Option<ast_grep_language::SupportLang> {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    /// A directory whose name ends in a test suffix after a separator or a
+    /// case boundary is a test path, not only one named exactly `test`.
+    #[test]
+    fn suffixed_test_directories_are_test_paths() {
+        let root = PathBuf::from("/repo");
+        for dir in [
+            "ICSharpCode.Decompiler.Tests",
+            "ILSpy.Tests",
+            "Foo.Test",
+            "FooTests",
+            "FooSpec",
+            "foo_test",
+            "foo-tests",
+            "api_specs",
+        ] {
+            assert!(
+                is_test_file(&root.join(dir).join("a.cs"), &root),
+                "{dir} should read as a test directory"
+            );
+        }
+    }
+
+    /// An ordinary word ending in the same letters stays a production path.
+    ///
+    /// Red here means the separator-or-case-boundary requirement was relaxed,
+    /// which demotes a whole directory tree out of every result list.
+    #[test]
+    fn words_that_merely_end_in_test_are_not_test_paths() {
+        let root = PathBuf::from("/repo");
+        for dir in ["latest", "contest", "protests", "greatest", "manifests", "attest"] {
+            assert!(
+                !is_test_file(&root.join(dir).join("a.rs"), &root),
+                "{dir} is not a test directory"
+            );
+        }
+    }
 
     #[test]
     fn skip_node_modules_anywhere() {
