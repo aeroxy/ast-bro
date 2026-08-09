@@ -5,7 +5,7 @@
 //! the dict key (frozen dataclass identity), we use the integer id and pass
 //! the chunks slice to functions that need `file_path` or `content`.
 
-use crate::search::chunker::Chunk;
+use crate::search::chunker::{Chunk, ChunkKind};
 use crate::search::tokens::split_identifier;
 use regex::{Regex, RegexBuilder};
 use std::collections::{HashMap, HashSet};
@@ -512,6 +512,21 @@ fn file_path_penalty(file_path: &str) -> f32 {
     penalty
 }
 
+/// How much a chunk's level costs it against a plain source chunk.
+///
+/// Both coarse levels are useful but rarely the best answer. An `Enclosing`
+/// chunk names a method when a `Part` could have named the statement; an
+/// `Outline` names a file when a body chunk could have named the line. They win
+/// only when nothing finer matched, which is the case they exist for — a query
+/// naming a type or an API that no single body mentions.
+fn chunk_kind_penalty(kind: ChunkKind) -> f32 {
+    match kind {
+        ChunkKind::Source | ChunkKind::Part => 1.0,
+        ChunkKind::Enclosing => 0.7,
+        ChunkKind::Outline => 0.8,
+    }
+}
+
 /// Greedy top-k selection with file-path penalties and file-saturation decay.
 /// Returns `(chunk_id, final_score)` pairs sorted by score descending.
 pub fn rerank_topk(
@@ -524,11 +539,12 @@ pub fn rerank_topk(
         return Vec::new();
     }
 
-    // Apply path penalties (cached per file).
+    // Apply path penalties (cached per file) and the chunk-level penalty.
     let mut penalty_cache: HashMap<&str, f32> = HashMap::new();
     let mut penalised: Vec<(u32, f32)> = Vec::with_capacity(scores.len());
     for (&id, &score) in scores {
-        let path: &str = chunks[id as usize].file_path.as_str();
+        let chunk = &chunks[id as usize];
+        let path: &str = chunk.file_path.as_str();
         let pen = if penalise_paths {
             *penalty_cache
                 .entry(path)
@@ -536,7 +552,26 @@ pub fn rerank_topk(
         } else {
             1.0
         };
-        penalised.push((id, score * pen));
+        penalised.push((id, score * pen * chunk_kind_penalty(chunk.kind)));
+    }
+
+    // An Enclosing chunk covers the same bytes as its Parts, so a body match
+    // scores both. Keep the finer one: the Part points at the statement, the
+    // Enclosing only at the method it sits in.
+    let covered: Vec<(u32, u32, &str)> = penalised
+        .iter()
+        .map(|(id, _)| &chunks[*id as usize])
+        .filter(|c| c.kind == ChunkKind::Part)
+        .map(|c| (c.start_byte, c.end_byte, c.file_path.as_str()))
+        .collect();
+    if !covered.is_empty() {
+        penalised.retain(|(id, _)| {
+            let c = &chunks[*id as usize];
+            c.kind != ChunkKind::Enclosing
+                || !covered.iter().any(|(s, e, p)| {
+                    *p == c.file_path && *s >= c.start_byte && *e <= c.end_byte
+                })
+        });
     }
 
     // Sort by penalised score descending (stable on ties — preserves insertion
@@ -593,6 +628,8 @@ mod tests {
             start_byte: 0,
             end_byte: content.len() as u32,
             language: "rust".to_string(),
+            breadcrumb: String::new(),
+            kind: crate::search::chunker::ChunkKind::Source,
         }
     }
 
