@@ -786,10 +786,20 @@ impl Index {
         if best <= 0.0 {
             return HashMap::new();
         }
-        fused
-            .into_iter()
-            .map(|(id, s)| (self.chunks[id as usize].file_path.as_str(), s / best))
-            .collect()
+        // A file has one outline document per `OUTLINE_MAX_CHARS`, so several
+        // pieces can score. Keep the best — collecting into a map would let
+        // whichever piece came last in the (randomized) iteration order decide
+        // the file's prior, and the ranking downstream would differ run to run.
+        let mut prior: HashMap<&str, f32> = HashMap::new();
+        for (id, s) in fused {
+            let path = self.chunks[id as usize].file_path.as_str();
+            let normalised = s / best;
+            prior
+                .entry(path)
+                .and_modify(|p| *p = p.max(normalised))
+                .or_insert(normalised);
+        }
+        prior
     }
 
     /// Hybrid BM25 + dense search with full ranking pipeline.
@@ -1092,10 +1102,13 @@ fn top_k_indices(scores: &[f32], k: usize) -> Vec<(u32, f32)> {
             .unwrap_or(std::cmp::Ordering::Equal)
     });
     let mut top: Vec<u32> = idx.into_iter().take(take).collect();
+    // Tie-break on id so the candidate list is a total order, not merely a
+    // deterministic one — see the note in `rerank_topk`.
     top.sort_by(|&a, &b| {
         scores[b as usize]
             .partial_cmp(&scores[a as usize])
             .unwrap_or(std::cmp::Ordering::Equal)
+            .then(a.cmp(&b))
     });
     // Drop zero-score entries — BM25 zeros mean "no query token matched".
     top.into_iter()
