@@ -63,8 +63,14 @@ enum Commands {
     /// `show src/*.cs Widget` before we see it, which used to search only the
     /// first file and silently drop the symbol's other definitions.
     Show {
+        /// File, directory, or quoted glob to search.
         path: PathBuf,
+        /// Symbol to extract. Suffix matching: `TakeDamage`, or
+        /// `Player.TakeDamage` when the bare name is ambiguous.
         symbol: String,
+        /// Further targets and symbols. Which is which is decided by asking
+        /// the filesystem, not by position, so an unquoted glob the shell
+        /// already expanded still names targets.
         #[arg(num_args = 0..)]
         others: Vec<String>,
         /// Cap on rendered bodies when more than one file is searched.
@@ -105,6 +111,7 @@ enum Commands {
     Digest(MapArgs),
     /// Find subclasses / implementations
     Implements {
+        /// Base class, trait, or interface whose implementors to find.
         target: String,
         /// Files or directories to search. Required — `implements` walks
         /// only what it is given, and an empty walk would answer "no
@@ -114,6 +121,8 @@ enum Commands {
         #[arg(required = true, num_args = 1..)]
         paths: Vec<PathBuf>,
 
+        /// Direct implementors only. Transitive ones are included by default,
+        /// tagged `[via Parent]`.
         #[arg(short, long)]
         direct: bool,
         /// Emit output as JSON instead of text
@@ -127,20 +136,32 @@ enum Commands {
     Prompt,
     /// Install ast-bro into a coding-agent CLI
     Install {
+        /// Which agent CLI to install into. `status` lists the names.
         #[arg(long, conflicts_with = "all")]
         target: Option<String>,
+        /// Install into every agent CLI detected on this machine.
         #[arg(long, conflicts_with = "target")]
         all: bool,
+        /// Install into the current directory instead of the user profile.
         #[arg(long)]
         local: bool,
+        /// Install into the user profile. The default; pass it to say so.
         #[arg(long, conflicts_with = "local")]
         global: bool,
+        /// Substitute a map for every Read the hook can parse, whatever the
+        /// file's length, instead of only past --min-lines.
         #[arg(long)]
         always: bool,
+        /// Shortest file the installed hook rewrites into a map. Files below
+        /// this are read as-is.
         #[arg(long, default_value_t = crate::defaults::HOOK_MIN_LINES)]
         min_lines: usize,
+        /// Report what would change without writing anything.
         #[arg(long)]
         dry_run: bool,
+        /// Overwrite hand-edited content: either inside the ast-bro block or
+        /// ast-bro content written outside it. Without this the file is left
+        /// alone and the install fails.
         #[arg(long)]
         force: bool,
         /// Install ast-bro as an MCP server entry instead of the agent prompt.
@@ -154,30 +175,42 @@ enum Commands {
     },
     /// Remove ast-bro from a coding-agent CLI
     Uninstall {
+        /// Which agent CLI to remove ast-bro from. `status` lists the names.
         #[arg(long, conflicts_with = "all")]
         target: Option<String>,
+        /// Remove from every agent CLI detected on this machine.
         #[arg(long, conflicts_with = "target")]
         all: bool,
+        /// Act on the current directory instead of the user profile.
         #[arg(long)]
         local: bool,
+        /// Act on the user profile. The default; pass it to say so.
         #[arg(long, conflicts_with = "local")]
         global: bool,
+        /// Report what would change without writing anything.
         #[arg(long)]
         dry_run: bool,
     },
     /// Report what's installed where
     Status {
+        /// Report on the current directory instead of the user profile.
         #[arg(long)]
         local: bool,
+        /// Report on the user profile. The default; pass it to say so.
         #[arg(long, conflicts_with = "local")]
         global: bool,
     },
     /// Internal: read a tool-call event from stdin and respond
     Hook {
+        /// Event dialect on stdin, which decides how the response is framed.
         #[arg(long)]
         protocol: String,
+        /// Shortest file to rewrite into a map. Files below this are read
+        /// as-is.
         #[arg(long, default_value_t = crate::defaults::HOOK_MIN_LINES)]
         min_lines: usize,
+        /// Substitute a map for every Read this can parse, whatever the
+        /// file's length, instead of only past --min-lines.
         #[arg(long)]
         always: bool,
     },
@@ -228,10 +261,13 @@ enum Commands {
         /// 1-indexed line number when using `--file`
         #[arg(long, requires = "file")]
         line: Option<u32>,
+        /// Number of results to return
         #[arg(short = 'k', long = "top-k", default_value_t = crate::defaults::TOP_K)]
         top_k: usize,
+        /// Emit output as JSON instead of text
         #[arg(long)]
         json: bool,
+        /// With --json: emit compact (single-line) JSON
         #[arg(long)]
         compact: bool,
     },
@@ -264,7 +300,9 @@ enum Commands {
     },
     /// Forward import-graph traversal: what does this file import (transitively)?
     Deps {
+        /// File whose imports to walk.
         file: PathBuf,
+        /// How many import hops to follow.
         #[arg(long, default_value_t = crate::defaults::FILE_DEPTH)]
         depth: usize,
         /// Hide unresolved external imports from the footer.
@@ -274,14 +312,18 @@ enum Commands {
         /// Force a fresh dep-graph build.
         #[arg(long)]
         rebuild: bool,
+        /// Emit output as JSON instead of text
         #[arg(long)]
         json: bool,
+        /// With --json: emit compact (single-line) JSON
         #[arg(long)]
         compact: bool,
     },
     /// Reverse import-graph: who imports this file (transitively)?
     ReverseDeps {
+        /// File whose importers to find.
         file: PathBuf,
+        /// How many import hops to follow back.
         #[arg(long, default_value_t = crate::defaults::FILE_DEPTH)]
         depth: usize,
         /// Cap how many importers are *displayed*. The walk is unbounded so
@@ -294,30 +336,41 @@ enum Commands {
         /// Exclude importers from test files (same path heuristic as --tests).
         #[arg(long, conflicts_with = "tests")]
         exclude_tests: bool,
+        /// Force a fresh dep-graph build.
         #[arg(long)]
         rebuild: bool,
+        /// Emit output as JSON instead of text
         #[arg(long)]
         json: bool,
+        /// With --json: emit compact (single-line) JSON
         #[arg(long)]
         compact: bool,
     },
     /// Find import cycles via Tarjan SCC.
     Cycles {
+        /// Repository root to scan (default: ".").
         #[arg(default_value = crate::defaults::ROOT)]
         path: PathBuf,
+        /// Smallest cycle to report, in files. The default skips
+        /// self-imports.
         #[arg(long, default_value_t = crate::defaults::MIN_SIZE)]
         min_size: usize,
+        /// Force a fresh dep-graph build.
         #[arg(long)]
         rebuild: bool,
+        /// Emit output as JSON instead of text
         #[arg(long)]
         json: bool,
+        /// With --json: emit compact (single-line) JSON
         #[arg(long)]
         compact: bool,
     },
     /// Emit the dep graph (text or JSON).
     Graph {
+        /// Repository root to scan (default: ".").
         #[arg(default_value = crate::defaults::ROOT)]
         path: PathBuf,
+        /// Emit output as JSON instead of text
         #[arg(long)]
         json: bool,
         /// Hide unresolved external imports from the graph.
@@ -327,8 +380,10 @@ enum Commands {
         /// (Deprecated — unresolved externals are shown by default now.)
         #[arg(long, hide = true)]
         include_external: bool,
+        /// Force a fresh dep-graph build.
         #[arg(long)]
         rebuild: bool,
+        /// With --json: emit compact (single-line) JSON
         #[arg(long)]
         compact: bool,
     },
@@ -349,10 +404,13 @@ enum Commands {
         /// Token budget. Rough estimate: 1 token ≈ 4 bytes.
         #[arg(long, default_value_t = crate::defaults::BUDGET)]
         budget: usize,
+        /// Force a fresh call-graph build.
         #[arg(long)]
         rebuild: bool,
+        /// Emit output as JSON instead of text
         #[arg(long)]
         json: bool,
+        /// With --json: emit compact (single-line) JSON
         #[arg(long)]
         compact: bool,
     },
@@ -399,8 +457,10 @@ enum Commands {
         /// Force a fresh call-graph build.
         #[arg(long)]
         rebuild: bool,
+        /// Emit output as JSON instead of text
         #[arg(long)]
         json: bool,
+        /// With --json: emit compact (single-line) JSON
         #[arg(long)]
         compact: bool,
     },
@@ -409,14 +469,19 @@ enum Commands {
     /// Same target-spec rules as `callers`: positional `<TARGET>` (with
     /// optional `<FILE>:<NAME>` scoping) or `--file --symbol`.
     Callees {
+        /// Symbol to look up. Optional when `--file` and `--symbol` are passed.
         #[arg(required_unless_present_all = ["file", "symbol"], conflicts_with_all = ["file", "symbol"])]
         target: Option<String>,
+        /// Repository root (default: ".").
         #[arg(default_value = crate::defaults::ROOT)]
         path: PathBuf,
+        /// Alternative to the `<FILE>:<NAME>` positional form.
         #[arg(long, requires = "symbol")]
         file: Option<String>,
+        /// Symbol name when using `--file`.
         #[arg(long, requires = "file")]
         symbol: Option<String>,
+        /// Max BFS depth (1 = direct callees only).
         #[arg(long, default_value_t = crate::defaults::CALL_DEPTH)]
         depth: usize,
         /// Cap how many callees are *displayed* (the header always reports
@@ -430,10 +495,13 @@ enum Commands {
         /// (Deprecated — unresolved/external callees are shown by default now.)
         #[arg(long, hide = true)]
         external: bool,
+        /// Force a fresh call-graph build.
         #[arg(long)]
         rebuild: bool,
+        /// Emit output as JSON instead of text
         #[arg(long)]
         json: bool,
+        /// With --json: emit compact (single-line) JSON
         #[arg(long)]
         compact: bool,
     },
@@ -459,8 +527,10 @@ enum Commands {
         /// Force a fresh call-graph build.
         #[arg(long)]
         rebuild: bool,
+        /// Emit output as JSON instead of text
         #[arg(long)]
         json: bool,
+        /// With --json: emit compact (single-line) JSON
         #[arg(long)]
         compact: bool,
     },
@@ -498,10 +568,13 @@ enum Commands {
         /// Exclude test files from the output (same path heuristic as --tests).
         #[arg(long, conflicts_with = "tests")]
         exclude_tests: bool,
+        /// Force a fresh call-graph build.
         #[arg(long)]
         rebuild: bool,
+        /// Emit output as JSON instead of text
         #[arg(long)]
         json: bool,
+        /// With --json: emit compact (single-line) JSON
         #[arg(long)]
         compact: bool,
     },
