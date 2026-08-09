@@ -163,6 +163,7 @@ fn make_decl(
         attrs: Vec::new(),
         docs: Vec::new(),
         docs_inside: false,
+        group: None,
         visibility: String::new(),
         start_line,
         end_line,

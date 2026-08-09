@@ -1095,6 +1095,42 @@ mod tests {
         );
     }
 
+    /// A declaration group's comment shares a unit with the first member it
+    /// documents, so a trim that drops that member drops the comment with it
+    /// rather than leaving a `[group]` line above whatever comes next. A trim
+    /// that drops the first member and keeps a later one therefore prints the
+    /// kept members without the group's comment, never under a comment that
+    /// documents something else.
+    #[test]
+    fn a_groups_comment_shares_the_unit_of_its_first_member() {
+        let dir = TempDir::new().unwrap();
+        let p = dir.path().join("palette.go");
+        std::fs::write(
+            &p,
+            "package palette\n\
+             \n\
+             // Colors are the palette.\n\
+             const (\n\
+             \tRed  = \"red\"\n\
+             \tBlue = \"blue\"\n\
+             )\n",
+        )
+        .unwrap();
+        let res = crate::main_helpers::parse_file_for_hook(&p).unwrap();
+        let units = crate::core::render_map_units(&res, &crate::core::MapOptions::default());
+        let carrying: Vec<(MapUnitKind, &str)> = units
+            .iter()
+            .filter(|u| u.text.contains("Colors are the palette"))
+            .map(|u| (u.kind, u.text.as_str()))
+            .collect();
+        assert_eq!(carrying.len(), 1, "{carrying:#?}");
+        let (kind, text) = carrying[0];
+        assert!(
+            matches!(kind, MapUnitKind::Declaration { .. }) && text.contains("const Red"),
+            "the group's comment must share the unit of `const Red`, got {kind:?}:\n{text}"
+        );
+    }
+
     /// A payload never omits a declaration a whole candidate would have carried.
     ///
     /// The trim's budget is smaller than the fitting level's by the width of the

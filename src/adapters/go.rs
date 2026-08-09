@@ -1,5 +1,5 @@
 use super::base::{collapse_ws, count_parse_errors, field_text, LanguageAdapter};
-use crate::core::{CallKind, CallSite, Declaration, DeclarationKind, ParseResult};
+use crate::core::{CallKind, CallSite, Declaration, DeclarationGroup, DeclarationKind, ParseResult};
 use ast_grep_core::{Doc, Node};
 use std::path::Path;
 
@@ -150,6 +150,7 @@ fn _package_to_decl<'a, D: Doc>(node: &Node<'a, D>, _src: &[u8]) -> Declaration 
         attrs: Vec::new(),
         docs: Vec::new(),
         docs_inside: false,
+        group: None,
         visibility: String::new(),
         start_line: node.start_pos().line() + 1,
         end_line: node.end_pos().line() + 1,
@@ -166,48 +167,75 @@ fn _package_to_decl<'a, D: Doc>(node: &Node<'a, D>, _src: &[u8]) -> Declaration 
 
 fn _type_declaration_to_decls<'a, D: Doc>(node: &Node<'a, D>, src: &[u8]) -> Vec<Declaration> {
     let mut out = Vec::new();
-    let mut seen_first = false;
+    let (mut anchor, group) = _group_context(node);
 
     for c in node.children() {
         if !c.is_named() {
             continue;
         }
-        if c.kind() == "type_spec" {
-            let anchor = if !seen_first {
-                Some(node.clone())
-            } else {
-                None
-            };
-            if let Some(d) = _type_spec_to_decl(&c, src, anchor) {
-                out.push(d);
-                seen_first = true;
-            }
-        } else if c.kind() == "type_alias" {
-            let anchor = if !seen_first {
-                Some(node.clone())
-            } else {
-                None
-            };
-            if let Some(d) = _type_alias_to_decl(&c, src, anchor) {
-                out.push(d);
-                seen_first = true;
-            }
+        let d = match c.kind().as_ref() {
+            "type_spec" => _type_spec_to_decl(&c, src, anchor.as_ref()),
+            "type_alias" => _type_alias_to_decl(&c, src, anchor.as_ref()),
+            _ => None,
+        };
+        if let Some(mut d) = d {
+            // An ungrouped declaration holds exactly one spec, so the
+            // anchor is spent on it: nothing else may claim the comment.
+            anchor = None;
+            d.group = group.clone();
+            out.push(d);
         }
     }
     out
 }
 
+/// Split a `const` / `var` / `type` declaration's leading comment into the
+/// two things it can be.
+///
+/// Above an ungrouped declaration, as in `// Standalone is not in a group.`
+/// over `const Standalone = 1`, the comment sits on the declaration node
+/// while the name sits on the spec inside it, so the spec has to reach out
+/// to the declaration for its own doc comment. That is the returned anchor.
+///
+/// Above a group, the same comment documents the block rather than any
+/// member of it, which is how `go doc` renders it. There is no anchor then,
+/// and the comment travels as a `group` on every member instead of being
+/// handed to whichever member happens to come first (issue #46).
+///
+/// Two grammar shapes spell a group: `const ( … )` keeps its parens as
+/// direct children of the declaration, while `var ( … )` wraps its specs in
+/// a `var_spec_list` and puts the parens there. A spec list node exists
+/// only for the parenthesised form, so either tell is conclusive.
+fn _group_context<'a, D: Doc>(
+    node: &Node<'a, D>,
+) -> (Option<Node<'a, D>>, Option<DeclarationGroup>) {
+    let grouped = node.children().any(|c| {
+        matches!(
+            c.kind().as_ref(),
+            "(" | "const_spec_list" | "var_spec_list" | "type_spec_list"
+        )
+    });
+    if !grouped {
+        return (Some(node.clone()), None);
+    }
+    let docs = _go_docs(node);
+    let group = (!docs.is_empty()).then(|| DeclarationGroup {
+        docs,
+        start_line: node.start_pos().line() + 1,
+        end_line: node.end_pos().line() + 1,
+    });
+    (None, group)
+}
+
 fn _type_spec_to_decl<'a, D: Doc>(
     node: &Node<'a, D>,
     src: &[u8],
-    attach_outer_doc: Option<Node<'a, D>>,
+    attach_outer_doc: Option<&Node<'a, D>>,
 ) -> Option<Declaration> {
     let name = field_text(node, "name")?;
     let type_node = node.field("type")?;
 
-    let docs_anchor = attach_outer_doc.unwrap_or_else(|| node.clone());
-    let docs = _go_docs(&docs_anchor);
-    let doc_start = _resolved_doc_start(&docs_anchor);
+    let (docs, doc_start) = _spec_docs(node, attach_outer_doc);
     let visibility = _go_visibility(&name);
     let range = node.range();
 
@@ -232,6 +260,7 @@ fn _type_spec_to_decl<'a, D: Doc>(
             attrs: Vec::new(),
             docs,
             docs_inside: false,
+            group: None,
             visibility,
             start_line: node.start_pos().line() + 1,
             end_line: node.end_pos().line() + 1,
@@ -261,6 +290,7 @@ fn _type_spec_to_decl<'a, D: Doc>(
             attrs: Vec::new(),
             docs,
             docs_inside: false,
+            group: None,
             visibility,
             start_line: node.start_pos().line() + 1,
             end_line: node.end_pos().line() + 1,
@@ -294,6 +324,7 @@ fn _type_spec_to_decl<'a, D: Doc>(
         attrs: Vec::new(),
         docs,
         docs_inside: false,
+        group: None,
         visibility,
         start_line: node.start_pos().line() + 1,
         end_line: node.end_pos().line() + 1,
@@ -311,12 +342,10 @@ fn _type_spec_to_decl<'a, D: Doc>(
 fn _type_alias_to_decl<'a, D: Doc>(
     node: &Node<'a, D>,
     _src: &[u8],
-    attach_outer_doc: Option<Node<'a, D>>,
+    attach_outer_doc: Option<&Node<'a, D>>,
 ) -> Option<Declaration> {
     let name = field_text(node, "name")?;
-    let docs_anchor = attach_outer_doc.unwrap_or_else(|| node.clone());
-    let docs = _go_docs(&docs_anchor);
-    let doc_start = _resolved_doc_start(&docs_anchor);
+    let (docs, doc_start) = _spec_docs(node, attach_outer_doc);
 
     let mut sig = collapse_ws(&node.text());
     if !sig.starts_with("type ") {
@@ -332,6 +361,7 @@ fn _type_alias_to_decl<'a, D: Doc>(
         attrs: Vec::new(),
         docs,
         docs_inside: false,
+        group: None,
         visibility: _go_visibility(&name),
         start_line: node.start_pos().line() + 1,
         end_line: node.end_pos().line() + 1,
@@ -376,14 +406,15 @@ fn _struct_members_and_bases<'a, D: Doc>(
                     signature: sig,
                     bases: Vec::new(),
                     attrs: Vec::new(),
-                    docs: Vec::new(),
+                    docs: _go_docs(&fd),
                     docs_inside: false,
+                    group: None,
                     visibility: _go_visibility(&first_name),
                     start_line: fd.start_pos().line() + 1,
                     end_line: fd.end_pos().line() + 1,
                     start_byte: fd.range().start,
                     end_byte: fd.range().end,
-                    doc_start_byte: fd.range().start,
+                    doc_start_byte: _resolved_doc_start(&fd),
                     native_kind: None,
                     modifiers: Vec::new(),
                     deprecated: false,
@@ -415,14 +446,15 @@ fn _interface_members_and_bases<'a, D: Doc>(
                     signature: sig,
                     bases: Vec::new(),
                     attrs: Vec::new(),
-                    docs: Vec::new(),
+                    docs: _go_docs(&c),
                     docs_inside: false,
+                    group: None,
                     visibility: _go_visibility(&name),
                     start_line: c.start_pos().line() + 1,
                     end_line: c.end_pos().line() + 1,
                     start_byte: c.range().start,
                     end_byte: c.range().end,
-                    doc_start_byte: c.range().start,
+                    doc_start_byte: _resolved_doc_start(&c),
                     native_kind: None,
                     modifiers: Vec::new(),
                     deprecated: false,
@@ -477,6 +509,7 @@ fn _function_to_decl<'a, D: Doc>(node: &Node<'a, D>, src: &[u8]) -> Declaration 
         attrs: Vec::new(),
         docs,
         docs_inside: false,
+        group: None,
         visibility: _go_visibility(&name),
         start_line: node.start_pos().line() + 1,
         end_line: node.end_pos().line() + 1,
@@ -511,6 +544,7 @@ fn _method_to_decl<'a, D: Doc>(node: &Node<'a, D>, src: &[u8]) -> Declaration {
         attrs: Vec::new(),
         docs,
         docs_inside: false,
+        group: None,
         visibility: _go_visibility(&name),
         start_line: node.start_pos().line() + 1,
         end_line: node.end_pos().line() + 1,
@@ -587,7 +621,17 @@ fn _const_var_to_decls<'a, D: Doc>(
     kind_name: &str,
 ) -> Vec<Declaration> {
     let mut out = Vec::new();
-    let mut seen_first = false;
+    let (mut anchor, group) = _group_context(node);
+
+    let mut push = |spec: &Node<'a, D>, out: &mut Vec<Declaration>| {
+        if let Some(mut d) = _spec_to_field(spec, src, kind_name, anchor.as_ref()) {
+            // An ungrouped declaration holds exactly one spec, so the
+            // anchor is spent on it: nothing else may claim the comment.
+            anchor = None;
+            d.group = group.clone();
+            out.push(d);
+        }
+    };
 
     for c in node.children() {
         if !c.is_named() {
@@ -595,27 +639,11 @@ fn _const_var_to_decls<'a, D: Doc>(
         }
         let k = c.kind();
         if k == "const_spec" || k == "var_spec" {
-            let anchor = if !seen_first {
-                Some(node.clone())
-            } else {
-                None
-            };
-            if let Some(d) = _spec_to_field(&c, src, kind_name, anchor) {
-                out.push(d);
-                seen_first = true;
-            }
+            push(&c, &mut out);
         } else if k == "var_spec_list" {
             for spec in c.children() {
                 if spec.kind() == "var_spec" {
-                    let anchor = if !seen_first {
-                        Some(node.clone())
-                    } else {
-                        None
-                    };
-                    if let Some(d) = _spec_to_field(&spec, src, kind_name, anchor) {
-                        out.push(d);
-                        seen_first = true;
-                    }
+                    push(&spec, &mut out);
                 }
             }
         }
@@ -627,27 +655,14 @@ fn _spec_to_field<'a, D: Doc>(
     node: &Node<'a, D>,
     _src: &[u8],
     kind_name: &str,
-    outer_doc_anchor: Option<Node<'a, D>>,
+    outer_doc_anchor: Option<&Node<'a, D>>,
 ) -> Option<Declaration> {
     let name_node = node
         .field("name")
         .or_else(|| node.children().find(|c| c.kind() == "identifier"))?;
     let name = name_node.text().into_owned();
 
-    let mut docs = _go_docs(node);
-    if docs.is_empty() {
-        if let Some(ref inner) = outer_doc_anchor {
-            docs = _go_docs(inner);
-        }
-    }
-
-    let mut doc_start = _leading_doc_start_byte(node);
-    if doc_start.is_none() {
-        if let Some(ref inner) = outer_doc_anchor {
-            doc_start = _leading_doc_start_byte(inner);
-        }
-    }
-    let doc_start = doc_start.unwrap_or(node.range().start);
+    let (docs, doc_start) = _spec_docs(node, outer_doc_anchor);
 
     let mut sig_text = collapse_ws(&node.text());
     if !sig_text.starts_with(&format!("{} ", kind_name)) && !sig_text.starts_with(kind_name) {
@@ -663,6 +678,7 @@ fn _spec_to_field<'a, D: Doc>(
         attrs: Vec::new(),
         docs,
         docs_inside: false,
+        group: None,
         visibility: _go_visibility(&name),
         start_line: node.start_pos().line() + 1,
         end_line: node.end_pos().line() + 1,
@@ -689,49 +705,72 @@ fn _go_visibility(name: &str) -> String {
     }
 }
 
-fn _go_docs<'a, D: Doc>(node: &Node<'a, D>) -> Vec<String> {
-    let mut docs = Vec::new();
+/// The comment group Go reads as `node`'s doc comment: the unbroken run of
+/// comments on the lines directly above it, in source order.
+///
+/// A comment that starts on the line its previous sibling ends on is a
+/// trailing comment on *that* sibling, not documentation for this one.
+/// Struct fields are where the distinction earns its keep — `Alpha int //
+/// in bytes` sits on the line directly above `Beta`, and without the check
+/// every field in a densely annotated struct would inherit the comment of
+/// the field before it.
+fn _leading_comments<'a, D: Doc>(node: &Node<'a, D>) -> Vec<Node<'a, D>> {
+    let mut out = Vec::new();
     let mut sib = node.prev();
-    let mut last_start_line = Some(node.start_pos().line());
+    let mut last_start_line = node.start_pos().line();
 
     while let Some(s) = sib {
-        if s.kind() == "comment" {
-            if let Some(lsl) = last_start_line {
-                if s.end_pos().line() + 1 < lsl {
-                    break;
-                }
-            }
-            docs.push(s.text().into_owned());
-            last_start_line = Some(s.start_pos().line());
-            sib = s.prev();
-        } else {
+        if s.kind() != "comment" || s.end_pos().line() + 1 < last_start_line {
             break;
         }
+        if let Some(p) = s.prev() {
+            if p.end_pos().line() == s.start_pos().line() {
+                break;
+            }
+        }
+        last_start_line = s.start_pos().line();
+        sib = s.prev();
+        out.push(s);
     }
-    docs.reverse();
-    docs
+    out.reverse();
+    out
+}
+
+fn _go_docs<'a, D: Doc>(node: &Node<'a, D>) -> Vec<String> {
+    _leading_comments(node)
+        .iter()
+        .map(|c| c.text().into_owned())
+        .collect()
 }
 
 fn _leading_doc_start_byte<'a, D: Doc>(node: &Node<'a, D>) -> Option<usize> {
-    let mut first = None;
-    let mut sib = node.prev();
-    let mut last_start_line = Some(node.start_pos().line());
+    _leading_comments(node).first().map(|c| c.range().start)
+}
 
-    while let Some(s) = sib {
-        if s.kind() == "comment" {
-            if let Some(lsl) = last_start_line {
-                if s.end_pos().line() + 1 < lsl {
-                    break;
-                }
-            }
-            first = Some(s.clone());
-            last_start_line = Some(s.start_pos().line());
-            sib = s.prev();
-        } else {
-            break;
-        }
-    }
-    first.map(|f| f.range().start)
+/// A spec's doc comment, falling back to the enclosing declaration's.
+///
+/// `const Standalone = 1` puts the name on the spec and the comment above
+/// the declaration that wraps it, so a spec with no comment of its own
+/// asks the anchor `_group_context` handed it. A spec inside a group gets
+/// no anchor and therefore keeps whatever comment is its own — including
+/// none.
+fn _spec_docs<'a, D: Doc>(
+    node: &Node<'a, D>,
+    outer_doc_anchor: Option<&Node<'a, D>>,
+) -> (Vec<String>, usize) {
+    let own = _leading_comments(node);
+    let comments = match (own.is_empty(), outer_doc_anchor) {
+        (true, Some(anchor)) => _leading_comments(anchor),
+        _ => own,
+    };
+    let doc_start = comments
+        .first()
+        .map(|c| c.range().start)
+        .unwrap_or(node.range().start);
+    (
+        comments.iter().map(|c| c.text().into_owned()).collect(),
+        doc_start,
+    )
 }
 
 fn _resolved_doc_start<'a, D: Doc>(node: &Node<'a, D>) -> usize {
