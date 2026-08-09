@@ -108,7 +108,25 @@ fn test_file_re() -> &'static Regex {
 
 fn test_dir_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"(?:^|/)(?:tests?|__tests__|spec|testing)(?:/|$)").unwrap())
+    // A suffix counts only after a separator or an uppercase letter following a
+    // lowercase one, which is why the case-boundary arm insists on `Test` and
+    // not `test`: a bare `ends_with` swallows `latest/` and `protests/`.
+    //
+    // Matching whole components only is the opposite failure. It leaves
+    // `ICSharpCode.Decompiler.Tests/` unpenalised along with every suffixed
+    // convention, and on ILSpy that hands a sixth of the top-10 slots to a tree
+    // of decompiler fixtures whose file names match the queries by
+    // construction.
+    RE.get_or_init(|| {
+        Regex::new(concat!(
+            r"(?:^|/)(?:",
+            r"__tests__|testing",
+            "|", r"(?:[^/]*[._-])?(?:[Tt]ests?|[Ss]pecs?)",
+            "|", r"[^/]*[a-z0-9](?:Tests?|Specs?)",
+            r")(?:/|$)",
+        ))
+        .unwrap()
+    })
 }
 
 fn compat_dir_re() -> &'static Regex {
@@ -637,6 +655,39 @@ pub fn rerank_topk(
 
 #[cfg(test)]
 mod tests {
+    /// A test project is recognised by its suffix, not only by an exact name.
+    #[test]
+    fn suffixed_test_directories_are_penalised() {
+        for path in [
+            "ICSharpCode.Decompiler.Tests/TestCases/Pretty/YieldReturn.cs",
+            "ILSpy.Tests/Foo.cs",
+            "src/FooTests/Bar.cs",
+            "src/foo_test/bar.go",
+            "src/api-specs/x.rb",
+            "tests/a.rs",
+            "spec/b.rb",
+        ] {
+            assert!(test_dir_re().is_match(path), "{path} sits under a test directory");
+        }
+    }
+
+    /// A directory whose name merely ends in the same letters keeps full weight.
+    ///
+    /// Red here means the separator-or-case-boundary requirement was relaxed,
+    /// which demotes a production tree out of every result list.
+    #[test]
+    fn directories_that_merely_end_in_test_are_not_penalised() {
+        for path in [
+            "src/latest/a.rs",
+            "src/contest/b.rs",
+            "src/protests/c.rs",
+            "src/greatest/d.rs",
+            "src/manifests/e.rs",
+        ] {
+            assert!(!test_dir_re().is_match(path), "{path} is production code");
+        }
+    }
+
     use super::*;
 
     #[test]
