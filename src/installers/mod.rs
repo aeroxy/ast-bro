@@ -60,6 +60,10 @@ pub struct Status {
     pub prompt_installed: bool,
     pub prompt_version: Option<String>,
     pub hook_installed: bool,
+    /// Something of ours is registered, but not under every event an install
+    /// writes. An upgrade that adds an event leaves every existing install in
+    /// this state, and only re-running `install` moves it.
+    pub hook_partial: bool,
     pub mcp_installed: bool,
     pub skills_installed: bool,
 }

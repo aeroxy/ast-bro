@@ -129,9 +129,13 @@ pub fn install_subagent_in(
     }
 }
 
+/// Writes our hook entry under every path in `hook_paths`.
+///
+/// One command can serve several events, so an adapter registers the same entry
+/// once per event it wants to hear about.
 pub fn install_json_hook_in<F>(
     path: &Path,
-    hook_path: &[&str],
+    hook_paths: &[&[&str]],
     entry: Value,
     matches: F,
     opts: &InstallOpts,
@@ -142,7 +146,12 @@ where
     let existing = read_optional(path)?.unwrap_or_else(|| "{}".into());
     let mut root: Value = serde_json::from_str(&existing)
         .map_err(|e| format!("parse {}: {}", path.display(), e))?;
-    let modified = json_hook::upsert(&mut root, hook_path, entry, matches);
+    let mut modified = false;
+    for hook_path in hook_paths {
+        if json_hook::upsert(&mut root, hook_path, entry.clone(), &matches) {
+            modified = true;
+        }
+    }
     if !modified {
         return Ok(Change::Skipped {
             path: path.to_path_buf(),
@@ -174,9 +183,13 @@ pub fn uninstall_prompt_in(path: &Path, opts: &InstallOpts) -> Result<Option<Cha
     Ok(Some(Change::Removed(path.to_path_buf())))
 }
 
+/// Drops our hook entry from every path in `hook_paths`.
+///
+/// The list spans the events the entry has ever been installed under, so an
+/// uninstall reaches an entry an older release wrote.
 pub fn uninstall_json_hook_in<F>(
     path: &Path,
-    hook_path: &[&str],
+    hook_paths: &[&[&str]],
     matches: F,
     opts: &InstallOpts,
 ) -> Result<Option<Change>, String>
@@ -188,7 +201,13 @@ where
     };
     let mut root: Value = serde_json::from_str(&existing)
         .map_err(|e| format!("parse {}: {}", path.display(), e))?;
-    if !json_hook::remove(&mut root, hook_path, matches) {
+    let mut removed = false;
+    for hook_path in hook_paths {
+        if json_hook::remove(&mut root, hook_path, &matches) {
+            removed = true;
+        }
+    }
+    if !removed {
         return Ok(None);
     }
     let new_contents = serde_json::to_string_pretty(&root).unwrap() + "\n";
@@ -372,10 +391,17 @@ pub fn uninstall_plain_file_in(
     Ok(Some(Change::Removed(path.to_path_buf())))
 }
 
+/// Reports on our hook entry across `hook_paths`, the events an install writes.
+///
+/// Installed means at least one of them holds the entry; partial means not all
+/// of them do. The distinction is what tells an existing install that an
+/// upgrade added an event — folding the paths with `any` alone would report a
+/// half-registered hook as current, and nothing would prompt the reinstall that
+/// completes it.
 pub fn status_for<F>(
     prompt_path: Option<&Path>,
     settings_path: Option<&Path>,
-    hook_path: &[&str],
+    hook_paths: &[&[&str]],
     matches: F,
 ) -> Status
 where
@@ -391,7 +417,12 @@ where
     if let Some(sp) = settings_path {
         if let Ok(Some(contents)) = read_optional(sp) {
             if let Ok(root) = serde_json::from_str::<Value>(&contents) {
-                s.hook_installed = json_hook::is_installed(&root, hook_path, matches);
+                let present = hook_paths
+                    .iter()
+                    .filter(|p| json_hook::is_installed(&root, p, &matches))
+                    .count();
+                s.hook_installed = present > 0;
+                s.hook_partial = present > 0 && present < hook_paths.len();
             }
         }
     }

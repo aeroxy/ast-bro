@@ -2187,7 +2187,9 @@ fn run_status(scope: &installers::Scope) {
         } else {
             "prompt -".to_string()
         };
-        let hook = if s.hook_installed {
+        let hook = if s.hook_partial {
+            "hook partial"
+        } else if s.hook_installed {
             "hook ✓"
         } else {
             "hook -"
@@ -2199,13 +2201,21 @@ fn run_status(scope: &installers::Scope) {
             "skills -"
         };
         println!(
-            "{:<14} {:<14} {:<8} {:<8} {}",
+            "{:<14} {:<14} {:<12} {:<8} {}",
             inst.name(),
             prompt,
             hook,
             mcp,
             skills
         );
+        if s.hook_partial {
+            // A qualification of a delivered answer, so stderr — stdout carries
+            // the table, and a note wedged between two rows reads as a row.
+            eprintln!(
+                "# note: {}: hook registered for only some events — re-run `ast-bro install` to complete it",
+                inst.name()
+            );
+        }
     }
 }
 
