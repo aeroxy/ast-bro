@@ -300,9 +300,45 @@ ast-bro status
 
 Supported targets: `claude-code`, `gemini`, `tabnine`, `cursor`,
 `aider`, `codex`, `copilot`, `opencode`. Claude Code, Gemini, and Tabnine also get
-a tool-call hook that intercepts `Read` on supported source files when
-they exceed `--min-lines` (default 200) and substitutes the map output.
+a tool-call hook that intercepts `Read` on supported source files above
+`--min-lines` (default 200) and substitutes the map output. On Claude
+Code it also covers a read the host refuses outright, at any line count.
 The other targets do not install a read-interceptor hook.
+
+The substitution reaches the agent as a blocked tool call whose first
+line says that nothing failed. For a read that has not run yet, that is
+the only channel available: the map has to arrive instead of the file, so
+the read must be refused, and a refusal is what the host reports.
+
+Claude Code has a second event that would report a success instead,
+`PostToolUse` with `hookSpecificOutput.updatedToolOutput`, and
+`ast-bro install` does not register it. Measured on Claude Code 2.1.223:
+that field replaces the result of an MCP tool and is ignored for the
+built-in `Read`, so registering it would deliver no map and send the
+whole file to the model. Registering a `PostToolUse` entry by hand does
+nothing useful for `Read` on that version, for the same reason. See
+[issue #34](https://github.com/aeroxy/ast-bro/issues/34).
+
+On Claude Code the hook also registers under `PostToolUseFailure`, for
+the read the host refuses outright — measured against its file-size
+limit, 256 KB on Claude Code 2.1.223. That limit counts bytes, not lines,
+so it catches files no `--min-lines` threshold does: a 90-line file of
+355 KB trips it. Without this the agent gets a bare error and nothing
+else. That event cannot replace a result, only
+add context, which is all the map needs when the result carries no file
+contents. Nothing is blocked on that path: the host already failed the
+call, so the map arrives beside the error rather than in place of
+anything.
+
+Whatever the channel, the map is capped at 64 KB. A map that would run
+over sheds detail first, in order of what it costs: doc comments and
+attributes, then fields and private items, then members past 50 per
+type. Only when that still does not fit is the map trimmed line by line
+— a minified bundle, where the size is sheer declaration count, or a
+single generated declaration too wide to fit at all. A trim drops a
+declaration's members along with it rather than filing them under the
+previous one. Either way the payload ends with a note saying what is
+missing and the `ast-bro map` command that returns it.
 
 ### Claude Code subagent shadowing
 
@@ -313,7 +349,7 @@ containing the full ast-bro prompt.
 
 When you run `ast-bro install --target claude-code`, you get:
 - `CLAUDE.md` — main agent prompt (global or local per-repo)
-- `.claude/settings.json` — `Read` tool hook
+- `.claude/settings.json` — `Read` hooks on `PreToolUse` and `PostToolUseFailure`
 - `.claude/agents/Explore.md` — Explore subagent with the prompt injected
 
 This solves the "why doesn't my subagent use ast-bro?" problem — subagents

@@ -9,7 +9,31 @@ use crate::prompt::{agent_prompt, agent_skill_md, EXPLORE_FRONTMATTER};
 
 pub struct ClaudeCode;
 
+/// The read has to be intercepted before it runs. `PreToolUse` is the only
+/// event that can do it, and it can only refuse the call, so the host reports a
+/// failure that did not happen — the complaint in issue #34.
+///
+/// The alternative that would report a success, `PostToolUse` with
+/// `updatedToolOutput`, is deliberately not registered: measured on Claude Code
+/// 2.1.223, that field replaces the result of an MCP tool and is ignored for
+/// the built-in `Read`, so registering it would deliver no map and send the
+/// whole file to the model instead.
 const HOOK_PATH: &[&str] = &["hooks", "PreToolUse"];
+
+/// A read the host refuses outright never reaches `PreToolUse`'s substitution —
+/// it fails on byte size, which no line threshold predicts — and would
+/// otherwise reach the model as a bare error. This event covers it. It cannot
+/// replace the result, only add context, which is all the map needs when the
+/// result carries no file contents.
+const FAILURE_HOOK_PATH: &[&str] = &["hooks", "PostToolUseFailure"];
+
+/// Events an install registers the entry under.
+const INSTALL_HOOK_PATHS: &[&[&str]] = &[HOOK_PATH, FAILURE_HOOK_PATH];
+
+/// Every event our entry has lived under, for uninstall. `status` asks about
+/// [`INSTALL_HOOK_PATHS`] instead, so a release that stops writing an event does
+/// not keep reporting it as required.
+const ALL_HOOK_PATHS: &[&[&str]] = &[HOOK_PATH, FAILURE_HOOK_PATH];
 
 /// Built-in Claude Code subagents that run in their own context and never see
 /// `CLAUDE.md`. Shadowing them with `.claude/agents/<Name>.md` is the official
@@ -110,7 +134,7 @@ impl Installer for ClaudeCode {
     fn install_hook(&self, scope: &Scope, opts: &InstallOpts) -> Result<Change, String> {
         common::install_json_hook_in(
             &self.settings_path(scope)?,
-            HOOK_PATH,
+            INSTALL_HOOK_PATHS,
             self.hook_entry(opts),
             matches_entry,
             opts,
@@ -150,9 +174,12 @@ impl Installer for ClaudeCode {
         if let Some(c) = common::uninstall_prompt_in(&self.prompt_path(scope)?, opts)? {
             changes.push(c);
         }
-        if let Some(c) =
-            common::uninstall_json_hook_in(&self.settings_path(scope)?, HOOK_PATH, matches_entry, opts)?
-        {
+        if let Some(c) = common::uninstall_json_hook_in(
+            &self.settings_path(scope)?,
+            ALL_HOOK_PATHS,
+            matches_entry,
+            opts,
+        )? {
             changes.push(c);
         }
         for name in SHADOWED_SUBAGENTS {
@@ -190,7 +217,7 @@ impl Installer for ClaudeCode {
         let mut s = common::status_for(
             self.prompt_path(scope).ok().as_deref(),
             self.settings_path(scope).ok().as_deref(),
-            HOOK_PATH,
+            INSTALL_HOOK_PATHS,
             matches_entry,
         );
         if let Ok(mcp_p) = self.mcp_path(scope) {
@@ -213,6 +240,7 @@ impl Installer for ClaudeCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::installers::json_hook;
     use tempfile::TempDir;
 
     fn local_scope(dir: &TempDir) -> Scope {
@@ -258,6 +286,76 @@ mod tests {
         let contents = std::fs::read_to_string(dir.path().join(".claude/settings.json")).unwrap();
         assert!(contents.contains("--protocol claude-code"));
         assert!(contents.contains("\"matcher\": \"Read\""));
+        let root: Value = serde_json::from_str(&contents).unwrap();
+        assert!(json_hook::is_installed(&root, HOOK_PATH, matches_entry));
+    }
+
+
+    /// The entry is registered under `PreToolUse`, which is the only event that
+    /// can intercept the read before it happens, and under
+    /// `PostToolUseFailure`, which covers the read the host refuses outright.
+    /// `PostToolUse` is deliberately absent: on Claude Code 2.1.223
+    /// `updatedToolOutput` is ignored for the built-in `Read`, so registering it
+    /// would deliver no map at all.
+    #[test]
+    fn install_hook_registers_pre_tool_use_and_the_failure_event() {
+        let dir = TempDir::new().unwrap();
+        let scope = local_scope(&dir);
+        ClaudeCode
+            .install_hook(&scope, &InstallOpts::default())
+            .unwrap();
+        let contents = std::fs::read_to_string(dir.path().join(".claude/settings.json")).unwrap();
+        let root: Value = serde_json::from_str(&contents).unwrap();
+        for path in INSTALL_HOOK_PATHS {
+            assert!(
+                json_hook::is_installed(&root, path, matches_entry),
+                "missing under {path:?}: {contents}"
+            );
+        }
+        assert!(
+            !contents.contains("\"PostToolUse\""),
+            "PostToolUse must not be registered: {contents}"
+        );
+    }
+
+    /// A settings file carrying only the pre-read entry — what every install
+    /// from before the failure event looks like — reports partial, not current.
+    /// Otherwise the new capability never reaches an existing install and the one
+    /// diagnostic that could say so asserts the opposite.
+    #[test]
+    fn status_reports_partial_for_an_install_missing_the_failure_event() {
+        let dir = TempDir::new().unwrap();
+        std::fs::create_dir_all(dir.path().join(".claude")).unwrap();
+        std::fs::write(
+            dir.path().join(".claude/settings.json"),
+            r#"{"hooks":{"PreToolUse":[{"matcher":"Read","hooks":[{"type":"command","command":"ast-bro hook --protocol claude-code --min-lines 200"}]}]}}"#,
+        )
+        .unwrap();
+        let scope = local_scope(&dir);
+        let s = ClaudeCode.status(&scope);
+        assert!(s.hook_installed, "the entry is there, just not everywhere");
+        assert!(s.hook_partial);
+    }
+
+    /// A complete install is not partial, or the warning means nothing — and a
+    /// reinstall over a partial one clears it.
+    #[test]
+    fn status_is_not_partial_after_install_completes_it() {
+        let dir = TempDir::new().unwrap();
+        std::fs::create_dir_all(dir.path().join(".claude")).unwrap();
+        std::fs::write(
+            dir.path().join(".claude/settings.json"),
+            r#"{"hooks":{"PreToolUse":[{"matcher":"Read","hooks":[{"type":"command","command":"ast-bro hook --protocol claude-code --min-lines 200"}]}]}}"#,
+        )
+        .unwrap();
+        let scope = local_scope(&dir);
+        assert!(ClaudeCode.status(&scope).hook_partial);
+        ClaudeCode
+            .install_hook(&scope, &InstallOpts::default())
+            .unwrap();
+        let s = ClaudeCode.status(&scope);
+        assert!(s.hook_installed);
+        assert!(!s.hook_partial, "install must complete the registration");
     }
 
     #[test]

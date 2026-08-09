@@ -4,14 +4,15 @@
 //!   { "tool_name": "read_file",
 //!     "tool_input": { "absolute_path": "...", "offset": ..., "limit": ... } }
 //!
-//! Response shape is shared with Claude Code — see `super::io`.
+//! `BeforeTool` fires before the read, so a map can only reach the model
+//! through a refusal — see [`Channel::Deny`] and `super::io`.
 
 use std::path::PathBuf;
 
 use serde::Deserialize;
 
 use super::decide::DecideOpts;
-use super::event::ToolCallEvent;
+use super::event::{Channel, ToolCallEvent};
 use super::io::{dispatch, emit_pass_through, read_stdin};
 
 #[derive(Debug, Deserialize)]
@@ -57,6 +58,7 @@ pub fn run(opts: DecideOpts) -> i32 {
                 || event.tool_input.limit.is_some(),
         },
         &opts,
+        Channel::Deny,
     )
 }
 

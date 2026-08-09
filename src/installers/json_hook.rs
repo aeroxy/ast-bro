@@ -44,7 +44,38 @@ where
     };
     let before = arr.len();
     arr.retain(|v| !matches(v));
-    arr.len() != before
+    if arr.len() == before {
+        return false;
+    }
+    if arr.is_empty() {
+        prune_empty(root, path);
+    }
+    true
+}
+
+/// Deletes the key at `path`, and each ancestor the deletion left empty.
+///
+/// An event key we emptied is litter in a file the user owns: it reads as a hook
+/// configured for that event when none is. It disables nothing — Claude Code
+/// merges hook entries across settings levels rather than letting one level
+/// replace another — so what it costs is the next reader's time.
+fn prune_empty(root: &mut Value, path: &[&str]) {
+    for depth in (1..=path.len()).rev() {
+        let (parent_path, tail) = path[..depth].split_at(depth - 1);
+        let key = tail[0];
+        let Some(parent) = navigate_object_mut(root, parent_path) else {
+            return;
+        };
+        let empty = match parent.get(key) {
+            Some(Value::Array(a)) => a.is_empty(),
+            Some(Value::Object(o)) => o.is_empty(),
+            _ => return,
+        };
+        if !empty {
+            return;
+        }
+        parent.remove(key);
+    }
 }
 
 pub fn is_installed<F>(root: &Value, path: &[&str], matches: F) -> bool
@@ -87,6 +118,17 @@ fn navigate_array<'a>(root: &'a Value, path: &[&str]) -> Option<&'a Vec<Value>> 
         current = current.as_object()?.get(*key)?;
     }
     current.as_array()
+}
+
+fn navigate_object_mut<'a>(
+    root: &'a mut Value,
+    path: &[&str],
+) -> Option<&'a mut Map<String, Value>> {
+    let mut current = root;
+    for key in path {
+        current = current.as_object_mut()?.get_mut(*key)?;
+    }
+    current.as_object_mut()
 }
 
 fn navigate_array_mut<'a>(root: &'a mut Value, path: &[&str]) -> Option<&'a mut Vec<Value>> {
@@ -226,8 +268,11 @@ mod tests {
         );
     }
 
+    /// Removing the last entry takes the event key with it, and the `hooks`
+    /// object too when that was the last event. An emptied key is litter in a
+    /// file the user owns: it reads as a hook configured for that event.
     #[test]
-    fn legacy_entry_is_removed() {
+    fn legacy_entry_is_removed_and_leaves_no_empty_key() {
         let mut root = json!({
             "hooks": {
                 "PreToolUse": [
@@ -237,6 +282,25 @@ mod tests {
         });
         let removed = remove(&mut root, &["hooks", "PreToolUse"], predicate);
         assert!(removed);
-        assert!(root["hooks"]["PreToolUse"].as_array().unwrap().is_empty());
+        assert_eq!(root, json!({}), "left something behind: {root}");
+    }
+
+    /// Pruning stops at the first key that still holds something, so an event
+    /// the user configured for their own hooks survives ours being removed.
+    #[test]
+    fn remove_keeps_a_sibling_event_and_its_parent() {
+        let mut root = json!({
+            "hooks": {
+                "PreToolUse": [
+                    { "matcher": "Read", "hooks": [{"type": "command", "command": "ast-bro hook --protocol claude-code"}] }
+                ],
+                "PostToolUse": [
+                    { "matcher": "Bash", "hooks": [{"type": "command", "command": "echo mine"}] }
+                ]
+            }
+        });
+        assert!(remove(&mut root, &["hooks", "PreToolUse"], predicate));
+        assert!(root["hooks"].get("PreToolUse").is_none(), "{root}");
+        assert!(root["hooks"]["PostToolUse"].is_array(), "{root}");
     }
 }
