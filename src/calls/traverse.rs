@@ -127,7 +127,7 @@ pub fn callers_multi<F: Fn(&CallEdge) -> bool>(
     seeds: &[(Qn, usize)],
     max_total_depth: usize,
     predicate: F,
-) -> Vec<CallHit> {
+) -> TraversalInfo {
     // Depth buckets, not one FIFO. A single queue is only depth-monotonic
     // when every entry in it is within one depth of the next, which sorted
     // seeds alone don't give: seeds at depth 2 and depth 5 make the queue
@@ -150,8 +150,19 @@ pub fn callers_multi<F: Fn(&CallEdge) -> bool>(
         reported.insert(qn.clone());
     }
     let mut out = Vec::new();
+    // Nodes the cap stopped us at, checked for leftover edges once `seen` is
+    // final — checking mid-walk would make the answer depend on pop order.
+    // Seeds already at (or past) the cap never entered `pending` above, so
+    // they belong in the same bucket: their own callers are exactly the edges
+    // the cap kept us from walking.
+    let mut at_cutoff: Vec<Qn> = seeds
+        .iter()
+        .filter(|(_, d)| *d >= max_total_depth)
+        .map(|(qn, _)| qn.clone())
+        .collect();
     while let Some((depth, batch)) = pending.pop_first() {
         if depth >= max_total_depth {
+            at_cutoff.extend(batch);
             continue;
         }
         for cur in batch {
@@ -174,7 +185,19 @@ pub fn callers_multi<F: Fn(&CallEdge) -> bool>(
             }
         }
     }
-    out
+    // Same rule as the single-source BFS: only an edge into a node the walk
+    // never visited is "more to see" (#32). Predicate-rejected edges count,
+    // since a filtered node can still lead to a qualifying one deeper.
+    let frontier_truncated = at_cutoff.iter().any(|qn| {
+        graph
+            .reverse
+            .get(qn)
+            .is_some_and(|edges| edges.iter().any(|e| !seen.contains(&e.source)))
+    });
+    TraversalInfo {
+        hits: out,
+        frontier_truncated,
+    }
 }
 
 /// How many project symbols declare the terminal name of `targets` — the

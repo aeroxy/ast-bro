@@ -71,6 +71,29 @@ JSON schema is `ast-bro.impact.v1`. The envelope carries per-section entry array
 with `qn`, `file`, `line`, `kind`, `confidence`, and optional `depth`. The report
 also surfaces `transitive_count` and `test_count` for downstream filters.
 
+Each report carries `frontier_truncated` beside those counts: true when
+`--depth` stopped the transitive-dependents walk while reachable callers
+remained, so `transitive_count` is the blast radius *within* `--depth` rather
+than all of it (issue #32). It sits on the report rather than on a section
+because the four direct sections are pinned to depth 1 whatever `--depth` says
+— only the transitive cone, and the test list derived from it, can be cut short
+by the depth cap. Both walks feed it: the single-source `callers_info` BFS for
+callable targets and the multi-source construction-site walk
+(`callers_multi`) for type targets. Text mode prints the same note `callers`
+does, on stderr and only above depth 1.
+
+The flag is cleared whenever raising `--depth` could not change the answer:
+under `--mode deps` and `--mode dependents`, whose report is built entirely
+from depth-1 sections, and under `--exclude-tests` when the affected-tests
+list was the only consumer (`--mode tests`, or `--tests` on another mode) —
+that list is hard-coded to zero entries at every depth, so the hint would be a
+lie. `--mode all` always keeps the flag, including when `transitive_count` is
+zero: the BFS expands *through* predicate-rejected nodes, so a deeper
+qualifying caller behind an excluded one turns that zero into a positive count
+(`impact_all_mode_keeps_the_flag_on_a_zero_transitive_count` pins the case).
+A zero that a depth cap produced is exactly the confidently-wrong answer issue
+#32 is about, so it is the last count that should go unqualified.
+
 ## Internals (src/impact.rs)
 
 `run_impact` resolves the target to one or more `ResolvedTarget`s (kind-aware —

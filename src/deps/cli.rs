@@ -55,19 +55,35 @@ pub fn run_deps(
             .emit(json);
         }
     };
-    let hits = traverse::forward(&graph, &canonical, depth.max(1));
+    let depth = depth.max(1);
+    let walk = traverse::forward_info(&graph, &canonical, depth);
+    frontier_note("deps", depth, walk.frontier_truncated);
     if json {
         println!(
             "{}",
-            render::render_deps_json(&graph, &canonical, &hits, include_external, pretty)
+            render::render_deps_json(
+                &graph,
+                &canonical,
+                &walk.hits,
+                walk.frontier_truncated,
+                include_external,
+                pretty,
+            )
         );
     } else {
         print!(
             "{}",
-            render::render_deps_text(&graph, &canonical, &hits, include_external)
+            render::render_deps_text(&graph, &canonical, &walk.hits, include_external)
         );
     }
     0
+}
+
+/// Print the shared frontier note on stderr, where the CLI's notes live (#36).
+fn frontier_note(command: &str, depth: usize, frontier_truncated: bool) {
+    if let Some(note) = render::frontier_note(command, depth, frontier_truncated) {
+        eprintln!("{}", note);
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -114,7 +130,8 @@ pub fn run_reverse_deps(
     };
     // Walk unbounded so the output can report the true total; `--limit`
     // trims the display below (issue #32).
-    let mut hits = traverse::reverse(&graph, &canonical, depth.max(1), crate::UNLIMITED, |e| {
+    let depth = depth.max(1);
+    let walk = traverse::reverse_info(&graph, &canonical, depth, |e| {
         if !tests && !exclude_tests {
             return true;
         }
@@ -125,6 +142,7 @@ pub fn run_reverse_deps(
             is_test
         }
     });
+    let mut hits = walk.hits;
     let total = hits.len();
     if hits.len() > limit {
         hits.truncate(limit);
@@ -134,15 +152,29 @@ pub fn run_reverse_deps(
             hits.len()
         );
     }
+    frontier_note("reverse-deps", depth, walk.frontier_truncated);
     if json {
         println!(
             "{}",
-            render::render_reverse_deps_json(&graph, &canonical, &hits, total, pretty)
+            render::render_reverse_deps_json(
+                &graph,
+                &canonical,
+                &hits,
+                total,
+                walk.frontier_truncated,
+                pretty,
+            )
         );
     } else {
         print!(
             "{}",
-            render::render_reverse_deps_text(&graph, &canonical, &hits, total)
+            render::render_reverse_deps_text(
+                &graph,
+                &canonical,
+                &hits,
+                total,
+                render::depth_cutoff(depth, walk.frontier_truncated),
+            )
         );
     }
     0

@@ -19,6 +19,7 @@ build_graph(root):
 
 deps <file>:                        forward BFS over `graph.forward`
 reverse-deps <file>:                graph.reverse_adjacency() (computed on-demand) + BFS
+                                    both report `frontier_truncated` — see below
 cycles:                             iterative Tarjan SCC over the compact node-index graph
 graph:                              render_graph_text / render_graph_json
 
@@ -40,12 +41,39 @@ src/deps/
 │   └── resolve.rs   resolve(spec, ctx, idx) → Option<PathBuf>
 ├── manifest.rs      go.mod / tsconfig.json / Cargo.toml parsing
 ├── scc.rs           iterative Tarjan SCC (~80 lines, no petgraph)
-├── traverse.rs      forward_bfs / reverse_bfs / neighbourhood_depths
+├── traverse.rs      forward / reverse (+ *_info) / neighbourhood_depths
 ├── cache.rs         disk persistence at .ast-bro/deps/graph.bin
 ├── render.rs        text / JSON renderers
 ├── cli.rs           run_deps / run_reverse_deps / run_cycles / run_graph
 └── mcp.rs           MCP wrappers
 ```
+
+## Depth cutoff vs. graph end
+
+`--depth` (default 3) bounds both walks, and a walk that ran out of depth looks
+exactly like one that ran out of graph — which is how `reverse-deps
+--depth 1` came to report `32 total` for a file with 53 importers (issue #32).
+`forward_info` / `reverse_info` return a `DepTraversal { hits,
+frontier_truncated }`; the plain `forward` / `reverse` wrappers stay for the
+callers that only want the hits.
+
+The flag is set when a file popped at the cutoff still has an edge into a file
+the walk never `seen`. Two consequences worth keeping straight:
+
+- **An edge back into visited territory does not count.** Otherwise the
+  raise-`--depth` hint would be a lie on any cyclic import graph.
+- **Predicate-rejected edges do count.** `--exclude-tests` filters what gets
+  *reported*, not what gets *expanded* — a test file at the cutoff can still
+  lead to a non-test importer deeper — so the frontier question is about
+  traversal, not about the display.
+
+`frontier_truncated` is orthogonal to `truncated`, which is what `--limit` sets:
+`truncated: false` with `frontier_truncated: true` says nothing was cut from the
+display and `total` itself counts only part of the cone. Text mode prints
+`render::frontier_note` on stderr; MCP, which has one channel, prepends the same
+string to the response body. Unlike `callers` / `callees`, the note is *not*
+suppressed at low depth: those default to 1, where "the callers have callers" is
+the norm, while an import cone running past three hops is a fact about the file.
 
 ## Suffix-index resolver
 

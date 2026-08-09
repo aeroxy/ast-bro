@@ -531,3 +531,177 @@ fn graph_build_is_idempotent() {
     };
     assert_eq!(extract(&s1), extract(&s2));
 }
+
+// ---- Depth-cap frontier reporting (issue #32) ----
+
+/// A three-file import chain, so `--depth 1` demonstrably stops with a file
+/// left to walk and `--depth 3` demonstrably does not.
+fn frontier_fixture() -> tempfile::TempDir {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    let write = |rel: &str, body: &str| {
+        let p = root.join(rel);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, body).unwrap();
+    };
+    write("Cargo.toml", "[package]\nname=\"x\"\nversion=\"0.0.0\"\nedition=\"2021\"\n");
+    write("src/lib.rs", "pub mod a;\npub mod b;\npub mod c;\n");
+    // a -> b -> c
+    write("src/a.rs", "use crate::b::B;\npub struct A(pub B);\n");
+    write("src/b.rs", "use crate::c::C;\npub struct B(pub C);\n");
+    write("src/c.rs", "pub struct C;\n");
+    tmp
+}
+
+fn run_in(dir: &std::path::Path, args: &[&str]) -> (i32, String, String) {
+    let out = Command::new(bin())
+        .args(args)
+        .current_dir(dir)
+        .env("NO_COLOR", "1")
+        .output()
+        .expect("run ast-bro");
+    (
+        out.status.code().unwrap_or(-1),
+        String::from_utf8(out.stdout).expect("utf8 stdout"),
+        String::from_utf8(out.stderr).expect("utf8 stderr"),
+    )
+}
+
+fn frontier_flag(json: &str) -> bool {
+    let v: serde_json::Value = serde_json::from_str(json.trim()).expect("valid json");
+    v["frontier_truncated"].as_bool().expect("frontier_truncated present")
+}
+
+#[test]
+fn deps_depth_cutoff_reports_frontier() {
+    let tmp = frontier_fixture();
+    let root = tmp.path();
+
+    // Depth 1 reaches b.rs and stops; b.rs still imports c.rs.
+    let (code, out, err) = run_in(
+        root,
+        &["deps", "src/a.rs", "--depth", "1", "--json", "--compact", "--rebuild"],
+    );
+    assert_eq!(code, 0, "{out}{err}");
+    assert!(frontier_flag(&out), "depth 1 left c.rs unwalked: {out}");
+
+    // Depth 3 exhausts the chain — the flag must clear rather than stay on.
+    let (_, out, _) = run_in(root, &["deps", "src/a.rs", "--depth", "3", "--json", "--compact"]);
+    assert!(!frontier_flag(&out), "depth 3 walks the whole chain: {out}");
+}
+
+#[test]
+fn deps_frontier_note_lands_on_stderr() {
+    let tmp = frontier_fixture();
+    let (code, out, err) = run_in(
+        tmp.path(),
+        &["deps", "src/a.rs", "--depth", "1", "--rebuild"],
+    );
+    assert_eq!(code, 0, "a qualified answer is still an answer: {out}{err}");
+    assert!(
+        err.contains("--depth 1") && err.contains("raise --depth"),
+        "the note must name the cap and the flag that lifts it: {err}"
+    );
+    assert!(
+        !out.contains("raise --depth"),
+        "stdout carries results only (#36): {out}"
+    );
+}
+
+#[test]
+fn reverse_deps_depth_cutoff_reports_frontier() {
+    let tmp = frontier_fixture();
+    let root = tmp.path();
+
+    // Importers of c.rs: b.rs and lib.rs (`pub mod c;`) at depth 1, a.rs at
+    // depth 2. `total` counts only what the walk reached, so without the flag
+    // a capped 2 is indistinguishable from a file with exactly two importers
+    // (issue #32).
+    let (code, out, err) = run_in(
+        root,
+        &["reverse-deps", "src/c.rs", "--depth", "1", "--json", "--compact", "--rebuild"],
+    );
+    assert_eq!(code, 0, "{out}{err}");
+    let v: serde_json::Value = serde_json::from_str(out.trim()).unwrap();
+    assert_eq!(v["total"], 2, "{out}");
+    assert_eq!(v["truncated"], false, "--limit did not cut anything: {out}");
+    assert_eq!(v["frontier_truncated"], true, "--depth did: {out}");
+
+    let (_, out, _) = run_in(
+        root,
+        &["reverse-deps", "src/c.rs", "--depth", "3", "--json", "--compact"],
+    );
+    let v: serde_json::Value = serde_json::from_str(out.trim()).unwrap();
+    assert_eq!(v["total"], 3, "{out}");
+    assert_eq!(v["frontier_truncated"], false, "{out}");
+}
+
+#[test]
+fn frontier_flag_is_absent_of_limit_truncation() {
+    // The two caps are orthogonal: `--limit` cuts the display of a complete
+    // walk, and must not set the depth-frontier flag.
+    let tmp = frontier_fixture();
+    let (_, out, _) = run_in(
+        tmp.path(),
+        &["reverse-deps", "src/c.rs", "--depth", "3", "--limit", "1", "--json", "--compact", "--rebuild"],
+    );
+    let v: serde_json::Value = serde_json::from_str(out.trim()).unwrap();
+    assert_eq!(v["total"], 3, "{out}");
+    assert_eq!(v["truncated"], true, "{out}");
+    assert_eq!(v["frontier_truncated"], false, "{out}");
+}
+
+#[test]
+fn reverse_deps_stdout_header_qualifies_a_depth_bounded_total() {
+    // The count in the header is the number a reader quotes, and at `--depth
+    // 1` it counts only part of the cone. The stderr note says so, but stdout
+    // is where the result is (issue #32).
+    let tmp = frontier_fixture();
+    let root = tmp.path();
+
+    let (code, out, err) = run_in(root, &["reverse-deps", "src/c.rs", "--depth", "1", "--rebuild"]);
+    assert_eq!(code, 0, "{out}{err}");
+    // Assert the exact form, not just the substring: the qualifier has to
+    // follow `N total`, so a `(\d+) total` matcher keeps working on the
+    // capped output as well as the complete one.
+    assert!(
+        out.contains("(2 total within --depth 1)"),
+        "a depth-bounded total must say so on stdout, after the count: {out}"
+    );
+
+    // A walk that reached the end of the graph needs no qualification.
+    let (_, out, _) = run_in(root, &["reverse-deps", "src/c.rs", "--depth", "3"]);
+    assert!(out.contains("(3 total)"), "{out}");
+    assert!(
+        !out.contains("within --depth"),
+        "an exhausted walk must not carry the qualifier: {out}"
+    );
+}
+
+#[test]
+fn reverse_deps_header_shapes_are_all_pinned() {
+    // `render_reverse_deps_text` emits four headers, one per (depth cap ×
+    // limit cap) combination, from one template. Pin all four: the template
+    // has been rewritten twice, and the round it broke, the break was in the
+    // shape no test asserted.
+    let tmp = frontier_fixture();
+    let root = tmp.path();
+    let header = |args: &[&str]| {
+        let mut argv = vec!["reverse-deps", "src/c.rs"];
+        argv.extend(args);
+        let (code, out, err) = run_in(root, &argv);
+        assert_eq!(code, 0, "{out}{err}");
+        out.lines().next().unwrap_or_default().to_string()
+    };
+
+    // Neither cap: the plain form the other three vary from.
+    assert!(header(&["--depth", "3", "--rebuild"]).contains("(3 total)"));
+    // `--limit` only — the pre-existing contract this change had to preserve.
+    assert!(header(&["--depth", "3", "--limit", "1"])
+        .contains("(3 total; showing 1 — raise --limit to see the rest)"));
+    // `--depth` only.
+    assert!(header(&["--depth", "1"]).contains("(2 total within --depth 1)"));
+    // Both at once.
+    assert!(header(&["--depth", "1", "--limit", "1"])
+        .contains("(2 total within --depth 1; showing 1 — raise --limit to see the rest)"));
+}

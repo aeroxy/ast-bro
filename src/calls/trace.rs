@@ -49,17 +49,50 @@ struct Found {
     hops: Vec<Hop>,
 }
 
+/// A path search: the shortest path if one was found, plus whether `--depth`
+/// stopped the walk while unvisited callees remained (issue #32). Without the
+/// second field a `None` reads as "these two symbols are not statically
+/// connected" when it may only mean "not within `--depth` hops".
+struct PathSearch {
+    found: Option<Found>,
+    frontier_truncated: bool,
+}
+
+/// Why a search came back empty. Both cases print "no static call path
+/// found", and only one of them is evidence about the code rather than about
+/// the query (issue #32).
+#[derive(Clone, Copy)]
+enum NoPathCause {
+    /// The walk exhausted every reachable callee: the static chain really
+    /// does break, most often at a dynamic-dispatch boundary.
+    GraphExhausted,
+    /// `--depth` stopped the walk with callees still to follow — the search
+    /// was cut short, so the code is not what the empty result is about.
+    DepthCap(usize),
+}
+
+impl NoPathCause {
+    fn frontier_truncated(self) -> bool {
+        matches!(self, Self::DepthCap(_))
+    }
+}
+
 /// Multi-source / multi-target BFS over `forward` (callees) edges. Returns the
 /// shortest path from any `froms` qn to any `tos` qn, or `None` when the
 /// target is unreachable within `max_depth` hops.
-fn find_path(calls: &CallGraph, froms: &[Qn], tos: &[Qn], max_depth: usize) -> Option<Found> {
+fn find_path(calls: &CallGraph, froms: &[Qn], tos: &[Qn], max_depth: usize) -> PathSearch {
     use std::collections::HashSet;
     let to_set: HashSet<&Qn> = tos.iter().collect();
+    let found = |f: Found| PathSearch {
+        found: Some(f),
+        // The search ended by arriving, not by running out of depth.
+        frontier_truncated: false,
+    };
 
     // from == to: a zero-hop "path".
     for f in froms {
         if to_set.contains(f) {
-            return Some(Found { start: f.clone(), hops: Vec::new() });
+            return found(Found { start: f.clone(), hops: Vec::new() });
         }
     }
 
@@ -72,9 +105,14 @@ fn find_path(calls: &CallGraph, froms: &[Qn], tos: &[Qn], max_depth: usize) -> O
             queue.push_back((f.clone(), 0));
         }
     }
+    // Nodes the cap stopped at, checked against the final `visited` set below
+    // — an edge back into a node the walk already covered is not "more to
+    // see", and mid-walk the set is still growing.
+    let mut at_cutoff: Vec<Qn> = Vec::new();
 
     while let Some((cur, depth)) = queue.pop_front() {
         if depth >= max_depth {
+            at_cutoff.push(cur);
             continue;
         }
         let Some(edges) = calls.forward.get(&cur) else { continue };
@@ -85,13 +123,27 @@ fn find_path(calls: &CallGraph, froms: &[Qn], tos: &[Qn], max_depth: usize) -> O
             }
             parent.insert(next.clone(), (cur.clone(), e.clone()));
             if to_set.contains(next) {
-                return Some(reconstruct(next, &parent));
+                return found(reconstruct(next, &parent));
             }
             visited.insert(next.clone());
             queue.push_back((next.clone(), depth + 1));
         }
     }
-    None
+    let frontier_truncated = at_cutoff.iter().any(|qn| {
+        calls.forward.get(qn).is_some_and(|edges| {
+            edges.iter().any(|e| match &e.target {
+                CallTarget::Resolved(next) => !visited.contains(next),
+                // Unresolved and external callees are where the static graph
+                // ends, not where the depth cap bit — raising `--depth` would
+                // not walk through them.
+                _ => false,
+            })
+        })
+    });
+    PathSearch {
+        found: None,
+        frontier_truncated,
+    }
 }
 
 /// Walk the parent chain back from `target` to its source `from` qn.
@@ -205,7 +257,8 @@ pub fn render_trace(
     }
 
     let max_depth = max_depth.max(1);
-    match find_path(calls, &froms, &tos, max_depth) {
+    let search = find_path(calls, &froms, &tos, max_depth);
+    match search.found {
         Some(found) => {
             let mut cache = BodyCache::new(root);
             let out = if json {
@@ -220,10 +273,15 @@ pub fn render_trace(
             // Graceful: show both endpoints + the target file's siblings.
             let from_qn = &froms[0];
             let to_qn = &tos[0];
-            let out = if json {
-                render_nopath_json(calls, from, to, from_qn, to_qn, &mut cache, pretty)
+            let cause = if search.frontier_truncated {
+                NoPathCause::DepthCap(max_depth)
             } else {
-                render_nopath_text(calls, from, to, from_qn, to_qn, &mut cache)
+                NoPathCause::GraphExhausted
+            };
+            let out = if json {
+                render_nopath_json(calls, from, to, from_qn, to_qn, cause, &mut cache, pretty)
+            } else {
+                render_nopath_text(calls, from, to, from_qn, to_qn, cause, &mut cache)
             };
             (out, TraceOutcome::NoPath)
         }
@@ -302,14 +360,28 @@ fn render_nopath_text(
     to: &str,
     from_qn: &Qn,
     to_qn: &Qn,
+    cause: NoPathCause,
     cache: &mut BodyCache,
 ) -> String {
-    let mut out = format!(
-        "# trace: {} → {}   no static call path found\n\
-         # the chain likely breaks at a dynamic-dispatch / framework boundary \
-         (callback, trait object, route handler). Inlining both endpoints below.\n\n",
-        from, to,
-    );
+    // Two different findings wear the same "no path" hat, and only one of
+    // them justifies blaming dynamic dispatch (issue #32). When the walk ran
+    // out of `--depth` with callees left to follow, the honest answer is that
+    // the search was cut short — say so instead, and name the flag that
+    // widens it.
+    let mut out = match cause {
+        NoPathCause::DepthCap(max_depth) => format!(
+            "# trace: {} → {}   no static call path found within --depth {}\n\
+             # the walk stopped at the depth cap with unexplored callees beyond it; \
+             raise --depth before concluding the chain breaks. Inlining both endpoints below.\n\n",
+            from, to, max_depth,
+        ),
+        NoPathCause::GraphExhausted => format!(
+            "# trace: {} → {}   no static call path found\n\
+             # the chain likely breaks at a dynamic-dispatch / framework boundary \
+             (callback, trait object, route handler). Inlining both endpoints below.\n\n",
+            from, to,
+        ),
+    };
     let mut budget = MAX_TOTAL_CHARS;
     out.push_str("## from:\n");
     push_node_text(&mut out, calls, from_qn, 1, None, cache, &mut budget);
@@ -380,18 +452,23 @@ fn render_found_json(
         "from": from,
         "to": to,
         "found": true,
+        // Always present so a consumer reads one field either way; a search
+        // that ended by arriving was never cut short by `--depth`.
+        "frontier_truncated": false,
         "hop_count": found.hops.len(),
         "hops": hops,
     });
     to_json(&v, pretty)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_nopath_json(
     calls: &CallGraph,
     from: &str,
     to: &str,
     from_qn: &Qn,
     to_qn: &Qn,
+    cause: NoPathCause,
     cache: &mut BodyCache,
     pretty: bool,
 ) -> String {
@@ -407,6 +484,9 @@ fn render_nopath_json(
         "from": from,
         "to": to,
         "found": false,
+        // `found: false` alone can't say whether the graph ended or the walk
+        // did; this can (issue #32).
+        "frontier_truncated": cause.frontier_truncated(),
         "endpoints": [
             node_json(calls, from_qn, None, cache),
             node_json(calls, to_qn, None, cache),
@@ -455,32 +535,64 @@ mod tests {
     fn finds_multi_hop_path() {
         // a -> b -> c
         let g = graph_with(vec![edge("f::a", "f::b"), edge("f::b", "f::c")]);
-        let found = find_path(&g, &[Qn::new("f::a")], &[Qn::new("f::c")], 12)
-            .expect("path a->c exists");
+        let search = find_path(&g, &[Qn::new("f::a")], &[Qn::new("f::c")], 12);
+        let found = search.found.expect("path a->c exists");
         assert_eq!(found.start, Qn::new("f::a"));
         let chain: Vec<&str> = found.hops.iter().map(|h| h.qn.as_str()).collect();
         assert_eq!(chain, vec!["f::b", "f::c"]);
+        assert!(!search.frontier_truncated, "arriving is not being cut off");
     }
 
     #[test]
     fn no_path_returns_none() {
         // a -> b ; isolated c
         let g = graph_with(vec![edge("f::a", "f::b")]);
-        assert!(find_path(&g, &[Qn::new("f::a")], &[Qn::new("f::c")], 12).is_none());
+        let search = find_path(&g, &[Qn::new("f::a")], &[Qn::new("f::c")], 12);
+        assert!(search.found.is_none());
+        // The walk exhausted the graph well inside the cap, so "no path" here
+        // really does mean the two are unconnected (issue #32).
+        assert!(!search.frontier_truncated);
     }
 
     #[test]
     fn depth_cap_blocks_far_target() {
         // a -> b -> c, but max_depth 1 only reaches b.
         let g = graph_with(vec![edge("f::a", "f::b"), edge("f::b", "f::c")]);
-        assert!(find_path(&g, &[Qn::new("f::a")], &[Qn::new("f::c")], 1).is_none());
-        assert!(find_path(&g, &[Qn::new("f::a")], &[Qn::new("f::b")], 1).is_some());
+        let capped = find_path(&g, &[Qn::new("f::a")], &[Qn::new("f::c")], 1);
+        assert!(capped.found.is_none());
+        // b's edge to c was never walked — the difference between "no path"
+        // and "no path within --depth 1".
+        assert!(capped.frontier_truncated);
+        assert!(find_path(&g, &[Qn::new("f::a")], &[Qn::new("f::b")], 1)
+            .found
+            .is_some());
+    }
+
+    #[test]
+    fn depth_cap_on_an_exhausted_graph_is_not_a_frontier() {
+        // a -> b, and b calls nothing: the cap coincides with the end of the
+        // graph, so raising --depth would find nothing new.
+        let g = graph_with(vec![edge("f::a", "f::b")]);
+        let search = find_path(&g, &[Qn::new("f::a")], &[Qn::new("f::c")], 1);
+        assert!(search.found.is_none());
+        assert!(!search.frontier_truncated);
+    }
+
+    #[test]
+    fn edges_back_into_visited_nodes_are_not_a_frontier() {
+        // a -> b -> a: at the cap, b's only callee is already visited.
+        let g = graph_with(vec![edge("f::a", "f::b"), edge("f::b", "f::a")]);
+        let search = find_path(&g, &[Qn::new("f::a")], &[Qn::new("f::z")], 1);
+        assert!(search.found.is_none());
+        assert!(!search.frontier_truncated);
     }
 
     #[test]
     fn from_equals_to_is_zero_hops() {
         let g = graph_with(vec![edge("f::a", "f::b")]);
-        let found = find_path(&g, &[Qn::new("f::a")], &[Qn::new("f::a")], 12).unwrap();
+        let found = find_path(&g, &[Qn::new("f::a")], &[Qn::new("f::a")], 12)
+            .found
+            .unwrap();
         assert!(found.hops.is_empty());
         assert_eq!(found.start, Qn::new("f::a"));
     }

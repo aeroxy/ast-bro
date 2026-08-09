@@ -97,9 +97,18 @@ of the agent manually chaining `callees`.
   the agent has somewhere to look. A found path and a resolved-but-no-path are
   both exit 0 (the output is the answer); only an unresolved `<from>` / `<to>`
   is exit 2.
-- **JSON** (`--json`): `ast-bro.trace.v1` — `{from, to, found, hop_count,
-  hops: [{qn, file, line, kind, via, via_line, confidence, body}]}`, or
-  `{found: false, endpoints, siblings}` on the no-path branch.
+- **JSON** (`--json`): `ast-bro.trace.v1` — `{from, to, found, frontier_truncated,
+  hop_count, hops: [{qn, file, line, kind, via, via_line, confidence, body}]}`, or
+  `{found: false, frontier_truncated, endpoints, siblings}` on the no-path branch.
+- **`found: false` is two findings, not one.** The BFS stops either because it
+  exhausted the reachable graph or because it hit `--depth` (default 12) with
+  callees still to follow, and only the first justifies blaming dynamic
+  dispatch. `frontier_truncated` separates them: the text output says "no
+  static call path found within `--depth N`" and names the flag to raise, and
+  the JSON field is present on both branches so a consumer reads one thing
+  either way. Only an edge into a node the search never visited counts —
+  unresolved and external callees are where the static graph ends, so raising
+  `--depth` would not walk through them (issue #32).
 
 Lives in `src/calls/trace.rs` — a thin layer over the same `CallGraph.forward`
 map `callees` walks; it needs no new IR or cache state.

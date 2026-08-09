@@ -32,6 +32,23 @@ impl Truncation {
     }
 }
 
+/// The one wording for "`--depth` cut this walk short" across every
+/// call-graph command — `callers`, `callees`, and `impact`'s transitive
+/// section, on both the CLI (stderr) and MCP (response text).
+///
+/// `None` at depth 1: "the callers have callers" is the norm there rather
+/// than a qualification, and a note that fires on most queries trains the
+/// reader to skip it. JSON carries `frontier_truncated` at every depth, so
+/// nothing is lost — only the line that would have been noise.
+pub fn frontier_note(depth: usize, frontier_truncated: bool) -> Option<String> {
+    (frontier_truncated && depth > 1).then(|| {
+        format!(
+            "# note: --depth {} reached with unexplored edges beyond it; raise --depth to walk further",
+            depth
+        )
+    })
+}
+
 /// Shared "(showing N; …)" suffix for any section whose display count fell
 /// short of its true total.
 fn section_suffix(total: usize, shown: usize) -> String {
