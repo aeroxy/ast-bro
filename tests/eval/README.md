@@ -45,6 +45,32 @@ reason unrelated to quality: a near-miss counts as a miss, and on a small
 codebase the top hit is often the chunk immediately before the answer. Judge a
 change on a pinned set.
 
+Six pinned sets ship, thirty queries each, across five languages:
+
+| Set | Corpus | Language | Clone |
+| --- | --- | --- | --- |
+| `pgjdbc.tsv` | pgjdbc/pgjdbc | Java | `29bbe0268c1e55cc2037fa171d61dcdafca39a7a` |
+| `prometheus.tsv` | prometheus/prometheus | Go | `bf5a9810e60d5f4cdbb4035119fd61668790b1b7` |
+| `etcd.tsv` | etcd-io/etcd | Go | `1b5ba72405d62c16f3011a7bfb56a6a721ee51a3` |
+| `brew.tsv` | Homebrew/brew | Ruby | `2b7c46891f47e60413f6dcc0aa0a46b982f7c9b3` |
+| `ilspy.tsv` | icsharpcode/ILSpy | C# | `d29aeb3eaae54efc841cff307dca01c7218e477c` |
+| `self.tsv` | this repository | Rust | working tree, twenty queries |
+
+Each file's header carries the repository URL, the revision, and the rules its
+targets follow. Read it before quoting a number from that set.
+
+**Do not compare one corpus's summary line against another's.** The absolute
+score depends heavily on how the queries were written: a set whose phrasing
+reuses the domain words that appear in the answer hands the lexical retriever
+free hits, and that alone moves recall@5 by a factor of two or three. Within the
+shipped sets, halves written under different discipline differ by exactly that
+much, in both directions. A summary line is comparable only against itself,
+across two variants of the ranker, and the per-query diff is what carries the
+signal.
+
+Run more than one before adopting a change. Five languages disagree about which
+chunking decisions matter, which is the point of having five.
+
 ## Query sets
 
 One query per line, tab-separated. The answer is a **line span**:

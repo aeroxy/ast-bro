@@ -1,0 +1,50 @@
+# Retrieval eval set for brew. See tests/eval/README.md for the format.
+#
+# repository: https://github.com/Homebrew/brew
+# revision: 2b7c46891f47e60413f6dcc0aa0a46b982f7c9b3
+#
+# Targets are methods of 21-150 lines under Library/Homebrew/, never vendor/
+# (307 files of third-party gems), test/, or sorbet/ stubs. A span runs from the
+# `def` line to its matching `end`; a preceding Sorbet `sig` block is excluded.
+#
+# Six rows target methods declared inside `class << self`. The Ruby adapter has
+# no singleton_class branch, so all 687 such methods are invisible to
+# `ast-bro map` and could not be targets before ground truth moved to spans.
+# They are ordinary, heavily-used Homebrew methods; leave them in.
+#
+# Rows 1-15 and 16-30 were written separately and score differently (recall@5 20% and 40%).
+# The gap tracks how strictly each author avoided reusing the domain words that
+# appear in the answer, not retrieval quality: the half that leans on them hands
+# the lexical retriever free hits. Judge a ranking change by the per-query diff,
+# never by the summary line, and never by comparing this corpus's summary
+# against another one's.
+decide whether a prebuilt binary can be used instead of compiling from source	Library/Homebrew/formula_installer.rb	251-286	pour_bottle?	361aef00
+unpack a prebuilt binary archive into the versioned install directory	Library/Homebrew/formula_installer.rb	1582-1649	pour	70f023bd
+build and install one prerequisite package before the requested one	Library/Homebrew/formula_installer.rb	882-949	install_dependency	cf163584
+refuse to continue when the requested package clashes with something already present	Library/Homebrew/formula_installer.rb	394-506	check_install_sanity	05788629
+create the symlinks that make an installed version the active one	Library/Homebrew/keg.rb	491-579	link	9c75cead
+undo the symlinks that make an installed version active	Library/Homebrew/keg.rb	356-393	unlink	d8cdc769
+rewrite the compile-time path recorded inside an installed binary	Library/Homebrew/keg_relocate.rb	250-287	relocate_build_prefix	d087517a
+substitute placeholder strings inside installed files after they move	Library/Homebrew/keg_relocate.rb	218-247	replace_text_in_files	1bae59b8
+clone a third-party repository of package definitions	Library/Homebrew/tap.rb	639-793	install	ef22b904
+repair the git origin url of an already cloned repository	Library/Homebrew/tap.rb	812-846	fix_remote_configuration	d67a8335
+get rid of broken links and empty folders left behind under the install tree	Library/Homebrew/cleanup.rb	846-906	prune_prefix_symlinks_and_directories	9d760a41
+delete cached archives that no longer belong to anything known	Library/Homebrew/cleanup.rb	607-631	cleanup_unreferenced_downloads	45b32f76
+replace installed packages whose version is behind the latest	Library/Homebrew/cmd/upgrade.rb	616-715	upgrade_outdated_formulae!	fd1f9c6c
+turn a downloadable archive requirement into a build-time dependency	Library/Homebrew/dependency_collector.rb	226-254	resource_dep	de3db2cf
+move an application bundle and its extras into place from the staging directory	Library/Homebrew/cask/installer.rb	301-356	install_artifacts	5aeff5f3
+walk the whole tree of prerequisites for a package, letting the caller drop or keep each one as it goes	Library/Homebrew/dependency.rb	188-234	Dependency.expand	2505dd51
+search a tap's recent history to explain that a package was removed and point at the commit that removed it	Library/Homebrew/missing_formula.rb	155-217	MissingFormula.deleted_reason	f15ad5d2
+work out which installed packages were only ever pulled in for something else and nothing needs them now	Library/Homebrew/utils/autoremove.rb	56-88	Autoremove.bottled_formulae_with_no_formula_dependents	f7d6a5c9
+record that a package should no longer be used, with the date, the reason and a suggested replacement	Library/Homebrew/formula.rb	5032-5061	Formula.deprecate!	2f9ed14b
+translate an Apple silicon processor identifier into the chip generation it belongs to	Library/Homebrew/extend/os/mac/hardware/cpu/hardware.rb	60-97	Hardware::CPU.arm_family	545bddda
+collect the installed software that relies on what is about to be replaced and has itself fallen behind	Library/Homebrew/upgrade.rb	226-273	Upgrade.dependants	8bcf623e
+download a source archive over http, reusing the cached copy while it is still current and trying another host when it fails	Library/Homebrew/download_strategy/curl_download_strategy.rb	37-131	CurlDownloadStrategy#fetch	5e143f37
+decide from a url alone whether the source has to be checked out of version control or simply fetched as an archive	Library/Homebrew/download_strategy/download_strategy_detector.rb	24-61	DownloadStrategyDetector.detect_from_url	eda5581d
+rewrite a project's web page address into the repository address whose tags can be listed remotely	Library/Homebrew/livecheck/strategy/git.rb	66-111	Livecheck::Strategy::Git.preprocess_url	e37d7355
+execute a build command confined by the operating system's restriction profile, attached to a pseudo terminal	Library/Homebrew/sandbox.rb	485-579	Sandbox#run	e8096095
+go over every binary in an installed package and sort the shared libraries it loads into system, sibling package and broken	Library/Homebrew/linkage_checker.rb	147-242	LinkageChecker#check_dylibs	4f936b2b
+resolve a typed package name that may be an alias, an old name, or one that has moved to another third-party repository	Library/Homebrew/formulary.rb	1170-1224	Formulary.tap_formula_name_type	84acba88
+produce the launchd job description saying how a background program starts and when it should be restarted	Library/Homebrew/service.rb	514-574	Service#to_plist	03f623c0
+rebuild a cask definition out of the json the api serves instead of evaluating a ruby file	Library/Homebrew/cask/cask_loader.rb	506-578	Cask::CaskLoader::FromAPILoader#load_from_struct	0de1e984
+notice that installed developer sdk folders are named for a version their contents disagree with	Library/Homebrew/extend/os/mac/diagnostic.rb	551-586	Diagnostic::Checks#check_broken_sdks	3523a10c
