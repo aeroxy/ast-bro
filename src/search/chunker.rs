@@ -1216,6 +1216,9 @@ fn build_outline_chunks(
 }
 
 #[cfg(test)]
+mod langs;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::path::PathBuf;
