@@ -87,6 +87,13 @@ pub struct ImpactReport {
     pub sections: Option<Vec<ImpactSection>>,
     pub transitive_count: usize,
     pub test_count: usize,
+    /// True when `--depth` stopped the transitive-dependents walk while
+    /// reachable callers remained *and* this report carries that walk's
+    /// results (issue #32). Report-level rather than per-section on purpose:
+    /// the direct sections are pinned to depth 1 whatever `--depth` says, so
+    /// only the transitive cone — and the `transitive_count` / `test_count`
+    /// derived from it — can be cut short by the depth cap.
+    pub frontier_truncated: bool,
 }
 
 pub fn run_impact(
@@ -117,6 +124,13 @@ pub fn run_impact(
     let mut reports = Vec::new();
     for c in &candidates {
         reports.push(compute_impact(c, calls, graph.deps(), &root, opts));
+    }
+
+    if let Some(note) = crate::calls::render::frontier_note(
+        opts.depth.max(1),
+        reports.iter().any(|r| r.frontier_truncated),
+    ) {
+        eprintln!("{}", note);
     }
 
     if opts.json {
@@ -163,6 +177,7 @@ fn compute_impact(
         sections: Some(Vec::new()),
         transitive_count: 0,
         test_count: 0,
+        frontier_truncated: false,
     };
 
     let sections = report.sections.as_mut().unwrap();
@@ -185,7 +200,7 @@ fn compute_impact(
     // --hide-ambiguous is set, matching the direct sections' retain.
     // Unbounded: `transitive_count` must be the true total; the transitive
     // section applies --limit at display time (issue #32).
-    let all_callers = traverse::callers(calls, &c.qn, opts.depth.max(1), UNLIMITED, |e| {
+    let walk = traverse::callers_info(calls, &c.qn, opts.depth.max(1), UNLIMITED, |e| {
         if !opts.include_ambiguous && matches!(e.confidence, Confidence::Ambiguous) {
             return false;
         }
@@ -199,6 +214,8 @@ fn compute_impact(
             is_test
         }
     });
+    report.frontier_truncated |= walk.frontier_truncated;
+    let all_callers = walk.hits;
     for h in &all_callers {
         let abs = root.join(&h.edge.file);
         let is_test = is_test_file(&abs, root);
@@ -423,8 +440,10 @@ fn compute_impact(
         // One multi-source walk over the reverse graph replaces a BFS per
         // construction site; hit depths arrive as base + distance, and
         // `consider` still collapses to the per-qn minimum.
-        for h in traverse::callers_multi(calls, &ctor_walk_seeds, opts.depth, keep_by_test_flags)
-        {
+        let ctor_walk =
+            traverse::callers_multi(calls, &ctor_walk_seeds, opts.depth, keep_by_test_flags);
+        report.frontier_truncated |= ctor_walk.frontier_truncated;
+        for h in ctor_walk.hits {
             consider(
                 &mut cand,
                 h.depth,
@@ -540,6 +559,16 @@ fn compute_impact(
             entries,
         });
     }
+
+    // The reverse walk above runs whatever `--mode` says, but the flag is
+    // only honest when the report carries something the walk produced —
+    // otherwise "`--depth` cut something short" points at nothing the reader
+    // can see. `all` always qualifies through the transitive section; `tests`
+    // and `--tests` qualify through the affected-tests list, which
+    // `--exclude-tests` empties by construction. `deps` and `dependents`
+    // build their answer entirely from depth-1 sections.
+    let tests_reported = (opts.tests || matches!(opts.mode, ImpactMode::Tests)) && !opts.exclude_tests;
+    report.frontier_truncated &= matches!(opts.mode, ImpactMode::All) || tests_reported;
 
     report
 }
@@ -789,7 +818,7 @@ fn build_file_reverse_deps_section(
     // Walk unbounded so the section reports the true importer count;
     // `--limit` trims the display (issue #32). Test filtering happens
     // inside the traversal so excluded importers don't distort it.
-    let mut hits = dep_traverse::reverse(deps, &deps_file, 1, UNLIMITED, |e| {
+    let mut hits = dep_traverse::reverse(deps, &deps_file, 1, |e| {
         passes_test_flags(&e.target, root, opts)
     });
     let total = hits.len();
@@ -1027,7 +1056,16 @@ pub mod mcp {
         let body = if a.json {
             render_json(&a.target, &reports, true, candidates.len())
         } else {
-            render_text(&reports, candidates.len())
+            // JSON carries `frontier_truncated` per report; text mode needs
+            // the note spelled out, and MCP's one channel is the response
+            // body rather than the CLI's stderr (issue #32).
+            let note = crate::calls::render::frontier_note(
+                opts.depth.max(1),
+                reports.iter().any(|r| r.frontier_truncated),
+            )
+            .map(|n| format!("{n}\n"))
+            .unwrap_or_default();
+            format!("{}{}", note, render_text(&reports, candidates.len()))
         };
         crate::mcp::tools::CallResult::Text(body)
     }

@@ -130,15 +130,8 @@ pub fn run_callers(
         }
         remaining -= g.constructions.len();
     }
-    // At the default depth 1, "the callers have callers" is expected, not a
-    // qualification — a note that fires on most queries trains the reader
-    // to skip it. The JSON `frontier_truncated` field is always set; the
-    // stderr line only accompanies an explicitly deepened walk.
-    if frontier_truncated && depth > 1 {
-        eprintln!(
-            "# note: --depth {} reached with unexplored edges beyond it; raise --depth to walk further",
-            depth
-        );
+    if let Some(note) = render::frontier_note(depth, frontier_truncated) {
+        eprintln!("{}", note);
     }
 
     // Bare edges naming the target never enter the reverse index, so the
@@ -283,13 +276,8 @@ pub fn run_callees(
         remaining -= g.ancestors.len();
     }
     let shown = all_edges.len() + type_groups.iter().map(|g| g.ancestors.len()).sum::<usize>();
-    // Same rationale as run_callers: the frontier note only accompanies an
-    // explicitly deepened walk; JSON always carries the flag.
-    if frontier_truncated && depth > 1 {
-        eprintln!(
-            "# note: --depth {} reached with unexplored edges beyond it; raise --depth to walk further",
-            depth
-        );
+    if let Some(note) = render::frontier_note(depth, frontier_truncated) {
+        eprintln!("{}", note);
     }
     if total > shown {
         eprintln!(

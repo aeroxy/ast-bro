@@ -2896,3 +2896,50 @@ fn incremental_promotion_matches_cold_build_confidence() {
         "a single global match with no receiver is pass B's `Exact`:\n{incremental}"
     );
 }
+
+#[test]
+fn trace_separates_a_depth_cutoff_from_a_broken_chain() {
+    // Both a capped walk and an exhausted graph produce "no path"; only the
+    // second one justifies blaming dynamic dispatch (issue #32).
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(&root.join("Cargo.toml"), "[package]\nname=\"x\"\nversion=\"0.0.0\"\nedition=\"2021\"\n");
+    write(
+        &root.join("src/lib.rs"),
+        "pub fn deep() {}\npub fn mid() { deep(); }\npub fn top() { mid(); }\npub fn island() {}\n",
+    );
+
+    // top → mid → deep is two hops; --depth 1 stops one short of it.
+    let (out, code) = run_in(
+        root,
+        &["trace", "top", "deep", ".", "--depth", "1", "--json", "--compact", "--rebuild"],
+    );
+    assert_eq!(code, 0, "{out}");
+    let v: serde_json::Value = serde_json::from_str(out.trim()).expect("valid json");
+    assert_eq!(v["found"], false, "{out}");
+    assert_eq!(v["frontier_truncated"], true, "{out}");
+
+    // The text must say the walk stopped rather than assert a dynamic-dispatch
+    // boundary the evidence doesn't support.
+    let (out, _) = run_in(root, &["trace", "top", "deep", ".", "--depth", "1"]);
+    assert!(out.contains("within --depth 1"), "{out}");
+    assert!(out.contains("raise --depth"), "{out}");
+    assert!(
+        !out.contains("dynamic-dispatch"),
+        "a capped walk is not evidence of a dispatch boundary: {out}"
+    );
+
+    // Raising the cap finds the path.
+    let (out, _) = run_in(root, &["trace", "top", "deep", ".", "--depth", "2", "--json", "--compact"]);
+    let v: serde_json::Value = serde_json::from_str(out.trim()).expect("valid json");
+    assert_eq!(v["found"], true, "{out}");
+    assert_eq!(v["frontier_truncated"], false, "a found path was never cut short: {out}");
+
+    // A genuinely unreachable target keeps the original diagnosis.
+    let (out, _) = run_in(root, &["trace", "top", "island", ".", "--json", "--compact"]);
+    let v: serde_json::Value = serde_json::from_str(out.trim()).expect("valid json");
+    assert_eq!(v["found"], false, "{out}");
+    assert_eq!(v["frontier_truncated"], false, "the graph ended, not the walk: {out}");
+    let (out, _) = run_in(root, &["trace", "top", "island", "."]);
+    assert!(out.contains("dynamic-dispatch"), "{out}");
+}

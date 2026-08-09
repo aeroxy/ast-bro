@@ -919,12 +919,34 @@ fn run_deps(mut args: Value) -> CallResult {
         Ok(c) => c,
         Err(e) => return CallResult::Error(format!("cannot resolve {}: {}", a.file.display(), e)),
     };
-    let hits = crate::deps::traverse::forward(&graph, &canon, a.depth.max(1));
+    let depth = a.depth.max(1);
+    let walk = crate::deps::traverse::forward_info(&graph, &canon, depth);
     if a.json {
-        CallResult::Text(crate::deps::render::render_deps_json(&graph, &canon, &hits, !a.hide_external, true))
+        CallResult::Text(crate::deps::render::render_deps_json(
+            &graph,
+            &canon,
+            &walk.hits,
+            walk.frontier_truncated,
+            !a.hide_external,
+            true,
+        ))
     } else {
-        CallResult::Text(crate::deps::render::render_deps_text(&graph, &canon, &hits, !a.hide_external))
+        // MCP has no stderr channel, so the note the CLI prints there is
+        // prepended to the response text instead (issue #32).
+        CallResult::Text(format!(
+            "{}{}",
+            frontier_note_prefix("deps", depth, walk.frontier_truncated),
+            crate::deps::render::render_deps_text(&graph, &canon, &walk.hits, !a.hide_external)
+        ))
     }
+}
+
+/// The shared frontier note as a response-text prefix (empty when the walk
+/// ran to the end of the graph). MCP's single channel is the response body.
+fn frontier_note_prefix(command: &str, depth: usize, frontier_truncated: bool) -> String {
+    crate::deps::render::frontier_note(command, depth, frontier_truncated)
+        .map(|n| format!("{n}\n"))
+        .unwrap_or_default()
 }
 
 fn run_reverse_deps(args: Value) -> CallResult {
@@ -951,19 +973,28 @@ fn run_reverse_deps(args: Value) -> CallResult {
     };
     // Walk unbounded so the output reports the true total; `limit` trims
     // the display (issue #32).
-    let mut hits =
-        crate::deps::traverse::reverse(&graph, &canon, a.depth.max(1), crate::UNLIMITED, |_| true);
+    let depth = a.depth.max(1);
+    let walk =
+        crate::deps::traverse::reverse_info(&graph, &canon, depth, |_| true);
+    let mut hits = walk.hits;
     let total = hits.len();
     if hits.len() > a.limit {
         hits.truncate(a.limit);
     }
     if a.json {
         CallResult::Text(crate::deps::render::render_reverse_deps_json(
-            &graph, &canon, &hits, total, true,
+            &graph,
+            &canon,
+            &hits,
+            total,
+            walk.frontier_truncated,
+            true,
         ))
     } else {
-        CallResult::Text(crate::deps::render::render_reverse_deps_text(
-            &graph, &canon, &hits, total,
+        CallResult::Text(format!(
+            "{}{}",
+            frontier_note_prefix("reverse-deps", depth, walk.frontier_truncated),
+            crate::deps::render::render_reverse_deps_text(&graph, &canon, &hits, total, crate::deps::render::depth_cutoff(depth, walk.frontier_truncated))
         ))
     }
 }

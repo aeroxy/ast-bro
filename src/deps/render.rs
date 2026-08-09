@@ -20,6 +20,31 @@ use crate::deps::traverse::DepHit;
 
 // ---- Text rendering ----
 
+/// The depth to name in a stdout header, or `None` when the walk reached the
+/// end of the graph and the count needs no qualification.
+pub fn depth_cutoff(depth: usize, frontier_truncated: bool) -> Option<usize> {
+    frontier_truncated.then_some(depth)
+}
+
+/// The one wording for "`--depth` cut this walk short" — the difference
+/// between "the import cone ends here" and "the walk stopped here" (issue
+/// #32). Shared so the CLI (which prints it on stderr) and MCP (which has one
+/// channel and prepends it to the response) cannot drift.
+///
+/// Unlike `callers` / `callees`, which suppress their note at the default
+/// depth of 1 because "the callers have callers" is the norm rather than a
+/// qualification, `deps` and `reverse-deps` default to 3: an import cone
+/// running deeper than three hops is a fact about *this* file, so the note
+/// earns its line at every depth. JSON carries `frontier_truncated` either way.
+pub fn frontier_note(command: &str, depth: usize, frontier_truncated: bool) -> Option<String> {
+    frontier_truncated.then(|| {
+        format!(
+            "# note: {} stopped at --depth {} with unvisited files beyond it; raise --depth to walk further",
+            command, depth
+        )
+    })
+}
+
 pub fn render_deps_text(
     graph: &DepGraph,
     start: &Path,
@@ -78,18 +103,26 @@ pub fn render_reverse_deps_text(
     start: &Path,
     hits: &[DepHit],
     total: usize,
+    depth_cutoff: Option<usize>,
 ) -> String {
     let mut out = String::new();
     // Carry the true pre-`--limit` count in the header so a capped list is
-    // never mistaken for a complete one (issue #32).
+    // never mistaken for a complete one (issue #32) — and qualify the count
+    // itself when `--depth` stopped the walk, because that is the number a
+    // reader quotes. The stderr note says the same thing; this one has to be
+    // on stdout, where the result is.
+    let counted = match depth_cutoff {
+        Some(depth) => format!("{} total within --depth {}", total, depth),
+        None => format!("{} total", total),
+    };
     let suffix = if total > hits.len() {
         format!(
-            " ({} total; showing {} — raise --limit to see the rest)",
-            total,
+            " ({}; showing {} — raise --limit to see the rest)",
+            counted,
             hits.len()
         )
     } else {
-        format!(" ({} total)", total)
+        format!(" ({})", counted)
     };
     let _ = writeln!(
         out,
@@ -185,6 +218,10 @@ pub fn render_graph_text(graph: &DepGraph, include_external: bool) -> String {
 struct DepsDoc<'a> {
     schema: &'static str,
     file: String,
+    /// True when `--depth` stopped the walk while unvisited imports remained,
+    /// so `hits` is a prefix of the import cone rather than all of it
+    /// (issue #32).
+    frontier_truncated: bool,
     hits: Vec<JsonHit<'a>>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     external: Vec<String>,
@@ -204,6 +241,7 @@ pub fn render_deps_json(
     graph: &DepGraph,
     start: &Path,
     hits: &[DepHit],
+    frontier_truncated: bool,
     include_external: bool,
     pretty: bool,
 ) -> String {
@@ -215,6 +253,7 @@ pub fn render_deps_json(
     let doc = DepsDoc {
         schema: JSON_SCHEMA_DEPS,
         file: graph.rel(start),
+        frontier_truncated,
         hits: hits
             .iter()
             .map(|h| JsonHit {
@@ -239,6 +278,7 @@ pub fn render_reverse_deps_json(
     start: &Path,
     hits: &[DepHit],
     total: usize,
+    frontier_truncated: bool,
     pretty: bool,
 ) -> String {
     #[derive(Serialize)]
@@ -248,6 +288,11 @@ pub fn render_reverse_deps_json(
         /// True pre-`--limit` importer count (issue #32).
         total: usize,
         truncated: bool,
+        /// True when `--depth` stopped the walk while unvisited importers
+        /// remained. Orthogonal to `truncated`: that one says the *display*
+        /// was cut, this one says `total` itself counts only part of the
+        /// reverse cone (issue #32).
+        frontier_truncated: bool,
         importers: Vec<JsonHit<'a>>,
     }
     let doc = Doc {
@@ -255,6 +300,7 @@ pub fn render_reverse_deps_json(
         file: graph.rel(start),
         total,
         truncated: total > hits.len(),
+        frontier_truncated,
         importers: hits
             .iter()
             .map(|h| JsonHit {

@@ -294,3 +294,68 @@ fn mcp_json_partial_miss_carries_missing_paths() {
         "no phantom field when everything resolved: {text}"
     );
 }
+
+#[test]
+fn mcp_depth_cutoff_reports_the_frontier_on_every_walk() {
+    // MCP has no stderr channel, so the note the CLI prints there rides in
+    // the response text instead — and the JSON form carries the flag (#32).
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    std::fs::write(
+        root.join("Cargo.toml"),
+        "[package]\nname=\"x\"\nversion=\"0.0.0\"\nedition=\"2021\"\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(root.join("src/lib.rs"), "pub mod a;\npub mod b;\npub mod c;\n").unwrap();
+    std::fs::write(root.join("src/a.rs"), "use crate::b::B;\npub struct A(pub B);\n").unwrap();
+    std::fs::write(root.join("src/b.rs"), "use crate::c::C;\npub struct B(pub C);\n").unwrap();
+    std::fs::write(root.join("src/c.rs"), "pub struct C;\n").unwrap();
+
+    for (tool, file) in [("deps", "src/a.rs"), ("reverse_deps", "src/c.rs")] {
+        let resp = call_tool(
+            root,
+            tool,
+            serde_json::json!({"file": file, "depth": 1, "json": true, "rebuild": true}),
+        );
+        let (_, is_error, text) = result_of(&resp);
+        assert!(!is_error, "{resp}");
+        let doc: serde_json::Value = serde_json::from_str(text).expect("payload parses");
+        assert_eq!(doc["frontier_truncated"], true, "{tool}: {text}");
+
+        let resp = call_tool(root, tool, serde_json::json!({"file": file, "depth": 1}));
+        let (_, _, text) = result_of(&resp);
+        assert!(
+            text.contains("raise --depth"),
+            "{tool} text mode must carry the note: {text}"
+        );
+    }
+}
+
+#[test]
+fn mcp_impact_depth_cutoff_reports_the_frontier() {
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        tmp.path().join("lib.rs"),
+        "pub fn target() {}\npub fn c1() { target(); }\npub fn c2() { c1(); }\npub fn c3() { c2(); }\n",
+    )
+    .unwrap();
+
+    let resp = call_tool(
+        tmp.path(),
+        "impact",
+        serde_json::json!({"target": "target", "depth": 2, "json": true}),
+    );
+    let (_, is_error, text) = result_of(&resp);
+    assert!(!is_error, "{resp}");
+    let doc: serde_json::Value = serde_json::from_str(text).expect("payload parses");
+    assert_eq!(doc["impacts"][0]["frontier_truncated"], true, "{text}");
+
+    let resp = call_tool(
+        tmp.path(),
+        "impact",
+        serde_json::json!({"target": "target", "depth": 2}),
+    );
+    let (_, _, text) = result_of(&resp);
+    assert!(text.contains("raise --depth"), "{text}");
+}
