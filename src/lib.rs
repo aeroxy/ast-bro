@@ -583,14 +583,21 @@ struct MapArgs {
     #[arg(long, value_enum)]
     preset: Option<MapPreset>,
 
+    /// Hide private declarations.
     #[arg(long)]
     no_private: bool,
+    /// Hide fields, properties, events, and indexers.
     #[arg(long)]
     no_fields: bool,
+    /// Drop doc comments — in JSON the `docs`, `docs_inside`, and
+    /// `doc_start_byte` keys, together routinely a third of the payload.
     #[arg(long)]
     no_docs: bool,
+    /// Hide attributes / decorators.
     #[arg(long)]
     no_attrs: bool,
+    /// Hide line ranges — in JSON the byte offsets too: `start_line`,
+    /// `end_line`, `start_byte`, `end_byte`, `doc_start_byte`.
     #[arg(long)]
     no_lines: bool,
 
@@ -601,14 +608,16 @@ struct MapArgs {
     #[arg(long, conflicts_with = "no_fields")]
     include_fields: bool,
 
-    /// Cap members shown per type, at any detail level.
+    /// Cap members shown per type, at any detail level. A capped file says so:
+    /// `... +N more` in text, `truncated` and `dropped_members` in JSON.
     #[arg(long)]
     max_members: Option<usize>,
     /// Only walk files matching this glob (e.g. '*.java').
     #[arg(long)]
     glob: Option<String>,
 
-    /// Emit output as JSON instead of text
+    /// Emit output as JSON instead of text. A payload the projection flags
+    /// took keys out of carries a `projected` object naming which ones.
     #[arg(long)]
     json: bool,
     /// With --json: emit compact (single-line) JSON instead of pretty-printed

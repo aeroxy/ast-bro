@@ -27,12 +27,12 @@ pub fn list() -> Value {
                         "detail":     { "type": "string", "enum": ["names", "signatures", "full"], "description": "Detail level: `full` (signatures + docs, default), `signatures` (no docs), `names` (bare member names — the digest renderer)." },
                         "no_private": { "type": "boolean", "description": "Hide private declarations." },
                         "no_fields":  { "type": "boolean", "description": "Hide field declarations." },
-                        "no_docs":    { "type": "boolean", "description": "Hide doc comments." },
+                        "no_docs":    { "type": "boolean", "description": "Drop doc comments — in JSON the `docs`, `docs_inside`, and `doc_start_byte` keys, together routinely a third of the payload." },
                         "no_attrs":   { "type": "boolean", "description": "Hide attributes / decorators." },
-                        "no_lines":   { "type": "boolean", "description": "Hide line-range suffixes." },
-                        "max_members": { "type": "integer", "minimum": 0, "description": "Cap members shown per type; the output reports what was cut." },
+                        "no_lines":   { "type": "boolean", "description": "Hide line ranges — in JSON the byte offsets too: `start_line`, `end_line`, `start_byte`, `end_byte`, `doc_start_byte`." },
+                        "max_members": { "type": "integer", "minimum": 0, "description": "Cap members shown per type; the output reports what was cut (`... +N more` in text, `truncated` and `dropped_members` under `json`)." },
                         "glob":       { "type": "string",  "description": "Glob filter applied during directory walk." },
-                        "json":       { "type": "boolean", "description": "Return JSON (schema `ast-bro.map.v1`) instead of text." }
+                        "json":       { "type": "boolean", "description": "Return JSON (schema `ast-bro.map.v1`) instead of text. A payload the projection flags took keys out of carries a `projected` object naming which ones." }
                     },
                     "required": ["paths"]
                 }
@@ -51,9 +51,9 @@ pub fn list() -> Value {
                         },
                         "include_private": { "type": "boolean" },
                         "include_fields":  { "type": "boolean" },
-                        "max_members":     { "type": "integer", "minimum": 0, "description": format!("Cap members per type (default {}); the output reports what was cut.", crate::defaults::MAX_MEMBERS) },
+                        "max_members":     { "type": "integer", "minimum": 0, "description": format!("Cap members per type (default {}); the output reports what was cut (`... +N more` in text, `truncated` and `dropped_members` under `json`).", crate::defaults::MAX_MEMBERS) },
                         "glob":            { "type": "string", "description": "Glob filter applied during directory walk." },
-                        "json":            { "type": "boolean" }
+                        "json":            { "type": "boolean", "description": "Return JSON (schema `ast-bro.map.v1`) instead of text. The digest preset drops doc comments from the payload on the caller's behalf, so it carries a `projected` object naming what is gone." }
                     },
                     "required": ["paths"]
                 }
