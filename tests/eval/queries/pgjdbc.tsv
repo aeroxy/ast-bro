@@ -1,0 +1,49 @@
+# Retrieval eval set for the pgjdbc JDBC driver.
+#
+# One query per line: <natural-language query> TAB <file> TAB <symbol>
+# [TAB <line>]. The optional line pins which declaration is meant when the name
+# is overloaded — without it the harness takes the first and says so loudly, and
+# a query whose answer is the *second* overload can never be a hit.
+# The symbol is the answer; run_eval.py resolves it to a line range at
+# run time, so renames show up as unresolved rather than as silent misses.
+#
+# repository: https://github.com/pgjdbc/pgjdbc
+# revision: 29bbe0268c1e55cc2037fa171d61dcdafca39a7a
+#
+# The revision is pinned because a score is only comparable against another
+# score from the same corpus. run_eval.py checks it and refuses to run on a
+# different one — measuring a change on today's master against a baseline from
+# last month's compares two things at once.
+#
+#   git clone https://github.com/pgjdbc/pgjdbc && cd pgjdbc
+#   git checkout 29bbe0268c1e55cc2037fa171d61dcdafca39a7a
+where the driver sends the Terminate message before closing the connection	pgjdbc/src/main/java/org/postgresql/core/QueryExecutorCloseAction.java	56-75	close	6718f80d
+release a savepoint on the server	pgjdbc/src/main/java/org/postgresql/core/v3/QueryExecutorImpl.java	549-561	releaseSavePoint	29ac1525
+parse the RowDescription message into field metadata	pgjdbc/src/main/java/org/postgresql/core/v3/QueryExecutorImpl.java	2936-2961	receiveFields	5bb00e7b
+decide whether a query should use a named server-side prepared statement	pgjdbc/src/main/java/org/postgresql/jdbc/PgStatement.java	435-442	isOneShotQuery	12f94e35
+read a COPY data block sent by the server	pgjdbc/src/main/java/org/postgresql/core/v3/CopyOutImpl.java	43-46	handleCopydata	9e59411d
+deliver an asynchronous notification to the client	pgjdbc/src/main/java/org/postgresql/core/QueryExecutorBase.java	248-255	getNotifications	54e8e9e4
+GSS Kerberos authentication handshake	pgjdbc/src/main/java/org/postgresql/gss/MakeGSS.java	121-188	authenticate	2fa85394
+cancel a running query by opening a second connection	pgjdbc/src/main/java/org/postgresql/core/QueryExecutorBase.java	188-230	sendQueryCancel	253cc06f
+apply the socket read timeout while waiting for a backend response	pgjdbc/src/main/java/org/postgresql/core/v3/QueryExecutorImpl.java	992-1002	setSocketTimeout	31ef5833
+build the SCRAM client first message during SASL authentication	pgjdbc/src/main/java/org/postgresql/core/v3/ScramAuthenticator.java	158-173	handleAuthenticationSASL	651259dc
+turn a server error response into a SQLException	pgjdbc/src/main/java/org/postgresql/core/v3/QueryExecutorImpl.java	2977-3000	receiveErrorResponse	7459dca1
+rewrite JDBC escape syntax into native SQL	pgjdbc/src/main/java/org/postgresql/core/Parser.java	47-331	parseJdbcSql	975d78d1
+convert a numeric value from its binary wire representation	pgjdbc/src/main/java/org/postgresql/util/ByteConverter.java	112-114	numeric	0e2a5981
+list the columns of a table for database metadata	pgjdbc/src/main/java/org/postgresql/jdbc/PgDatabaseMetaData.java	1709-1963	getColumns	84c82680
+negotiate an SSL connection with the server	pgjdbc/src/main/java/org/postgresql/ssl/MakeSSL.java	33-68	convert	ab6a2c98
+encode a password for SCRAM-SHA-256 verification	pgjdbc/src/main/java/org/postgresql/util/PasswordUtil.java	51-76	encodeScramSha256	596dd9df
+send a bind and execute message for one query	pgjdbc/src/main/java/org/postgresql/core/v3/QueryExecutorImpl.java	1836-1972	sendBind	ed7c409e
+refresh the cached transaction isolation level	pgjdbc/src/main/java/org/postgresql/jdbc/PgConnection.java	1077-1108	getTransactionIsolation	a67813da
+close a portal or statement on the backend	pgjdbc/src/main/java/org/postgresql/core/v3/QueryExecutorImpl.java	3070-3074	sendCloseMessage	a34aed7a
+grow the read buffer when more bytes are needed	pgjdbc/src/main/java/org/postgresql/core/VisibleBufferedInputStream.java	143-145	ensureBytes	8a633160
+set the value of a prepared statement parameter to null	pgjdbc/src/main/java/org/postgresql/jdbc/PgPreparedStatement.java	222-303	setNull	b3b26f87
+add the current parameter set to the batch	pgjdbc/src/main/java/org/postgresql/jdbc/PgPreparedStatement.java	1175-1192	addBatch	75f4ba04
+escape a string literal so it is safe to embed in SQL	pgjdbc/src/main/java/org/postgresql/core/Utils.java	47-54	escapeLiteral	c55a27a0
+compute the MD5 hash used for password authentication	pgjdbc/src/main/java/org/postgresql/util/MD5Digest.java	31-55	encode	2db0da38
+look up the primary keys of a table	pgjdbc/src/main/java/org/postgresql/jdbc/PgDatabaseMetaData.java	2427-2490	getPrimaryKeys	1ff9bbfa
+move the result set cursor to an absolute row number	pgjdbc/src/main/java/org/postgresql/jdbc/PgResultSet.java	332-372	absolute	487af8a8
+write a large object in chunks to the server	pgjdbc/src/main/java/org/postgresql/largeobject/LargeObject.java	273-279	write	6f83ce53
+decide which client encoding to request at startup	pgjdbc/src/main/java/org/postgresql/core/v3/ConnectionFactoryImpl.java	517-537	createPostgresTimeZone	7bd71b56
+roll back the transaction to a named savepoint	pgjdbc/src/main/java/org/postgresql/jdbc/PgConnection.java	1897-1903	rollback	995f7a0a
+report whether the connection is still usable	pgjdbc/src/main/java/org/postgresql/jdbc/PgConnection.java	1578-1621	isValid	db99fc02

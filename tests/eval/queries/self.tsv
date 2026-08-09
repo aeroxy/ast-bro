@@ -1,0 +1,29 @@
+# Retrieval eval set for ast-bro itself, so the harness runs against a checkout
+# that is always present. Smaller and Rust-only, so treat it as a smoke test
+# rather than as evidence — pgjdbc.tsv is the set to judge a change on.
+#
+# No pinned revision: this set runs against the working tree on purpose, since
+# the corpus is the code you are changing. That also means its scores are not
+# comparable across commits — use pgjdbc.tsv for that.
+#
+# One query per line: <natural-language query> TAB <file> TAB <symbol>.
+widen a buffer of half precision values into single precision	src/search/embed.rs	decode_f16_le
+turn a string into a normalized embedding vector	src/search/embed.rs	encode_one
+find the nearest embedding rows by cosine similarity	src/search/embed.rs	cosine_topk
+decide where to cut a source file into indexable pieces	src/search/chunker.rs	collect_split_points
+build the signature-only documents for a file	src/search/chunker.rs	build_outline_chunks
+group split regions into chunks under the size target	src/search/chunker.rs	pack
+label a chunk with the declaration that encloses it	src/search/chunker.rs	assign_breadcrumbs
+rank files by how well their outline matches the query	src/search/index.rs	file_prior
+promote chunks whose file scored well earlier	src/search/index.rs	apply_file_prior
+which text is handed to the embedding model	src/search/index.rs	embed_text
+add the file name and breadcrumb to the lexical document	src/search/index.rs	enrich_for_bm25
+apply path penalties and pick the final results	src/search/ranking.rs	rerank_topk
+lift a file whose chunks all score well	src/search/ranking.rs	boost_multi_chunk_files
+penalise test files and generated code by path	src/search/ranking.rs	file_path_penalty
+blend two ranked lists using reciprocal rank fusion	src/search/fusion.rs	rrf_scores
+choose how much weight the dense retriever gets	src/search/fusion.rs	resolve_alpha
+break a camelCase identifier into separate words	src/search/tokens.rs	split_identifier
+peel language and path filters out of a raw query	src/search/query.rs	parse_query
+detect which files changed since the index was built	src/search/cache.rs	compute_delta
+score documents with the BM25 ranking formula	src/search/bm25.rs	get_scores
