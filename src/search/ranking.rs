@@ -246,17 +246,26 @@ pub fn boost_multi_chunk_files(scores: &mut HashMap<u32, f32>, chunks: &[Chunk])
         return;
     }
 
+    // Walk in id order, not `HashMap` order, so the same query over the same
+    // index answers the same way twice. Two results here read the traversal
+    // order: a per-file sum, because float addition is not associative, and
+    // `best_chunk`, because an exact score tie keeps whichever chunk came
+    // first.
+    let mut ids: Vec<u32> = scores.keys().copied().collect();
+    ids.sort_unstable();
+
     let mut file_sum: HashMap<&str, f32> = HashMap::new();
     let mut best_chunk: HashMap<&str, u32> = HashMap::new();
-    for (&id, &score) in scores.iter() {
-        let path: &str = chunks[id as usize].file_path.as_str();
+    for id in &ids {
+        let score = scores[id];
+        let path: &str = chunks[*id as usize].file_path.as_str();
         *file_sum.entry(path).or_insert(0.0) += score;
         match best_chunk.get(path) {
             Some(&prev) if score > scores[&prev] => {
-                best_chunk.insert(path, id);
+                best_chunk.insert(path, *id);
             }
             None => {
-                best_chunk.insert(path, id);
+                best_chunk.insert(path, *id);
             }
             _ => {}
         }
@@ -267,7 +276,9 @@ pub fn boost_multi_chunk_files(scores: &mut HashMap<u32, f32>, chunks: &[Chunk])
         return;
     }
     let boost_unit = max_score * FILE_COHERENCE_BOOST_FRAC;
-    for (path, &id) in best_chunk.iter() {
+    let mut boosted: Vec<(&str, u32)> = best_chunk.into_iter().collect();
+    boosted.sort_unstable_by_key(|(_, id)| *id);
+    for (path, id) in boosted {
         let extra = boost_unit * file_sum[path] / max_file_sum;
         if let Some(s) = scores.get_mut(&id) {
             *s += extra;
@@ -574,10 +585,17 @@ pub fn rerank_topk(
         });
     }
 
-    // Sort by penalised score descending (stable on ties — preserves insertion
-    // order, matching Python's stable `sorted`).
+    // Sort by penalised score descending, breaking ties on chunk id.
+    //
+    // The tiebreak is what makes the order total rather than merely stable:
+    // `scores` is a `HashMap` whose iteration order is randomized per process,
+    // so a stable sort alone would carry that randomness into the result. Ties
+    // are common, since RRF maps every score onto `1 / (k + rank)` — a small
+    // set of discrete values.
     penalised.sort_by(|a, b| {
-        b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal)
+        b.1.partial_cmp(&a.1)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(a.0.cmp(&b.0))
     });
 
     // Greedy selection with file-saturation decay. We only need to walk far
@@ -606,7 +624,9 @@ pub fn rerank_topk(
     }
 
     selected.sort_by(|a, b| {
-        b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal)
+        b.0.partial_cmp(&a.0)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(a.1.cmp(&b.1))
     });
     selected.into_iter().take(top_k).map(|(s, id)| (id, s)).collect()
 }
@@ -618,6 +638,38 @@ pub fn rerank_topk(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn file_coherence_boost_is_independent_of_map_order() {
+        // `scores` is a HashMap, whose iteration order is randomized per
+        // process. Summing per-file scores in that order gave a different
+        // result each run, because float addition is not associative — the
+        // same query over the same index returned different rankings.
+        let chunks: Vec<Chunk> = (0..12)
+            .map(|i| ck(i, if i % 2 == 0 { "a.rs" } else { "b.rs" }, "body"))
+            .collect();
+        let reference = {
+            let mut m: HashMap<u32, f32> = (0..12).map(|i| (i, 0.1 + i as f32 * 0.0037)).collect();
+            boost_multi_chunk_files(&mut m, &chunks);
+            m
+        };
+        // Rebuilding the map inserts in a different order every run; the
+        // outcome must not move.
+        for _ in 0..8 {
+            let mut m: HashMap<u32, f32> = HashMap::new();
+            for i in (0..12).rev() {
+                m.insert(i, 0.1 + i as f32 * 0.0037);
+            }
+            boost_multi_chunk_files(&mut m, &chunks);
+            for (id, score) in &reference {
+                assert_eq!(
+                    m[id].to_bits(),
+                    score.to_bits(),
+                    "chunk {id} scored differently depending on map order"
+                );
+            }
+        }
+    }
 
     fn ck(_id: u32, file_path: &str, content: &str) -> Chunk {
         Chunk {
