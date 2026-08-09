@@ -49,11 +49,10 @@ use std::sync::{Arc, OnceLock};
 use std::time::SystemTime;
 
 /// Current schema version written by all new builds.
-const SCHEMA: &str = "ast-bro.search-index.v1";
-/// Legacy v1 schema from pre-rename installs — still readable.
-const SCHEMA_V1_LEGACY: &str = "ast-outline.search-index.v1";
-/// Legacy v2 schema from pre-rename installs — still readable.
-const SCHEMA_V2_LEGACY: &str = "ast-outline.search-index.v2";
+// v2 adds `breadcrumb` and `kind` to `Chunk`, which changes the bincode layout
+// of chunks.bin. A v1 index cannot be decoded, so the loader rejects it and the
+// caller rebuilds.
+const SCHEMA: &str = "ast-bro.search-index.v2";
 
 /// On-disk paths under a repo's `.ast-bro/index/` directory.
 #[derive(Debug, Clone)]
@@ -359,10 +358,7 @@ impl Index {
         let started_embed = std::time::Instant::now();
         let embeddings: Vec<f32> = chunks
             .par_iter()
-            .flat_map(|c| {
-                let v = embedder.encode_one(&c.content);
-                v.to_vec()
-            })
+            .flat_map(|c| embed_chunk(&embedder, c))
             .collect();
         eprintln!(
             "ast-bro: embedded in {:.1}s",
@@ -515,7 +511,7 @@ impl Index {
         for (path, file_chunks) in chunked {
             let chunk_start = self.chunks.len() as u32;
             for c in file_chunks {
-                let v = self.embedder.encode_one(&c.content);
+                let v = embed_chunk(&self.embedder, &c);
                 self.embeddings.extend_from_slice(&v);
                 self.chunks.push(c);
             }
@@ -595,11 +591,13 @@ impl Index {
     /// Load from disk without delta-checking. Used by `open` and tests.
     fn load_unlocked(paths: &IndexPaths) -> io::Result<Self> {
         let meta: Meta = read_meta(&paths.meta_json)?;
-        // Accept current schema and the older legacy schemas.
-        if meta.schema != SCHEMA && meta.schema != SCHEMA_V1_LEGACY && meta.schema != SCHEMA_V2_LEGACY {
+        // Only the current schema decodes. Earlier ones — including the
+        // pre-rename `ast-outline.*` names — predate the `Chunk` layout change
+        // in v2, so the caller has to rebuild rather than read them.
+        if meta.schema != SCHEMA {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("schema {} not in [{SCHEMA}, {SCHEMA_V1_LEGACY}, {SCHEMA_V2_LEGACY}]", meta.schema),
+                format!("schema {} is not {SCHEMA}; rebuild the index", meta.schema),
             ));
         }
         if meta.model.dim as usize != DIM {
@@ -1022,8 +1020,68 @@ fn resolve_chunk(chunks: &[Chunk], file_path: &str, line: u32) -> Option<u32> {
     fallback
 }
 
-/// Append file path components to chunk content to boost path-based queries.
+/// Above this, a chunk is indexed lexically but not embedded.
+///
+/// `potion-code-16M` encodes a chunk as the mean of its token vectors, so the
+/// result drifts toward the centroid of the language as the chunk grows — a
+/// 40 KB class embeds as "generic Java" and matches everything weakly. Past
+/// this size the vector carries less signal than the noise it adds, so the
+/// chunk gets a non-finite vector, which `cosine_topk` drops, so only BM25 can
+/// retrieve it. Its `Part` chunks stay embedded, so the content is still
+/// reachable densely.
+///
+/// A zero vector would not do: its dot product is a finite `0.0`, which ranks
+/// above every negative similarity and enters the pool whenever the corpus has
+/// fewer positively-scoring chunks than the pool holds — the normal case for a
+/// small repository.
+const MAX_EMBED_CHARS: usize = 6000;
+
+/// The text a chunk is embedded from: its breadcrumb, then its content.
+///
+/// Prefixing the breadcrumb is worth more than it looks. `potion-code-16M` is
+/// static — it averages token vectors and never saw `Type > method` headers in
+/// training — so the prefix arguably just shifts every vector alike. Measured
+/// on the pinned 30-query pgjdbc set at `--min-iou 0.3` it does not:
+///
+/// ```text
+/// breadcrumb in embed + BM25   recall@5 23%   MRR@10 0.226
+/// no breadcrumb                recall@5 17%   MRR@10 0.148
+/// ```
+///
+/// Averaging is likely why it works: a body-level chunk that never names its
+/// own method gets those tokens pulled into its mean, and queries name methods.
+/// BM25 keeps the breadcrumb too (see `enrich_for_bm25`), where it measured as
+/// no change on top of this but carries the effect on its own.
+fn embed_text(chunk: &Chunk) -> String {
+    if chunk.breadcrumb.is_empty() {
+        return chunk.content.clone();
+    }
+    format!("{}\n{}", chunk.breadcrumb, chunk.content)
+}
+
+/// Embeds one chunk, or returns a non-finite vector when it is too big to
+/// embed well — see [`MAX_EMBED_CHARS`] for what `cosine_topk` then does with it.
+///
+/// The cap applies to what the embedder actually sees, breadcrumb included —
+/// measuring `content` alone let a chunk just under the limit cross it once the
+/// prefix was added. The length is computed before building the string so the
+/// oversized case allocates nothing.
+fn embed_chunk(embedder: &Embedder, chunk: &Chunk) -> Vec<f32> {
+    let crumb_len = if chunk.breadcrumb.is_empty() {
+        0
+    } else {
+        chunk.breadcrumb.len() + 1
+    };
+    if chunk.content.len() + crumb_len > MAX_EMBED_CHARS {
+        return vec![f32::NAN; DIM];
+    }
+    embedder.encode_one(&embed_text(chunk)).to_vec()
+}
+
+/// Append file path components and the breadcrumb to chunk content, so
+/// path-shaped and symbol-shaped queries reach the lexical retriever.
 fn enrich_for_bm25(chunk: &Chunk) -> String {
+    let crumb = chunk.breadcrumb.as_str();
     let path = Path::new(&chunk.file_path);
     let stem = path
         .file_stem()
@@ -1048,7 +1106,7 @@ fn enrich_for_bm25(chunk: &Chunk) -> String {
         .rev()
         .collect::<Vec<_>>()
         .join(" ");
-    format!("{} {} {} {}", chunk.content, stem, stem, dir_text)
+    format!("{} {} {} {} {}", chunk.content, stem, stem, dir_text, crumb)
 }
 
 /// Walk `walk_root` and return absolute file paths + their chunks.
@@ -1210,6 +1268,7 @@ fn normalise_path(p: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::search::chunker::ChunkKind;
     use std::fs::File;
     use std::io::Write;
 
@@ -1245,6 +1304,8 @@ mod tests {
             start_byte: 0,
             end_byte: 9,
             language: "rust".to_string(),
+            breadcrumb: String::new(),
+            kind: ChunkKind::Source,
         };
         let enriched = enrich_for_bm25(&chunk);
         // Stem appears twice; "src" and "auth" appear once each in dir text.
@@ -1264,6 +1325,8 @@ mod tests {
             start_byte: 0,
             end_byte: 0,
             language: "rust".to_string(),
+            breadcrumb: String::new(),
+            kind: ChunkKind::Source,
         };
         let chunks = vec![mk(1, 10), mk(20, 30), mk(40, 50)];
         assert_eq!(resolve_chunk(&chunks, "f.rs", 5), Some(0));
@@ -1303,6 +1366,8 @@ mod tests {
             start_byte: 0,
             end_byte: 5,
             language: "rust".to_string(),
+            breadcrumb: String::new(),
+            kind: ChunkKind::Source,
         }];
         let files = vec![FileRecord {
             path: "a.rs".to_string(),
@@ -1451,6 +1516,8 @@ mod tests {
             start_byte: 0,
             end_byte: 0,
             language: "rust".to_string(),
+            breadcrumb: String::new(),
+            kind: ChunkKind::Source,
         };
         let chunks = vec![mk()];
         assert!(build_combined_mask(&chunks, None, None, None, &[], &[]).is_none());
@@ -1467,6 +1534,8 @@ mod tests {
             start_byte: 0,
             end_byte: 0,
             language: lang.to_string(),
+            breadcrumb: String::new(),
+            kind: ChunkKind::Source,
         };
         let chunks = vec![
             mk("rust", "src/a.rs"),
@@ -1509,6 +1578,8 @@ mod tests {
             start_byte: 0,
             end_byte: 0,
             language: "rust".to_string(),
+            breadcrumb: String::new(),
+            kind: ChunkKind::Source,
         };
         let chunks = vec![
             mk("src/auth/login.rs"),

@@ -5,6 +5,7 @@
 //! The CLI and MCP tool handlers both call into here so output is consistent
 //! between the two surfaces.
 
+use crate::search::chunker::ChunkKind;
 use crate::search::index::{Meta, SearchHit};
 use colored::Colorize;
 use serde_json::{json, Value};
@@ -61,14 +62,40 @@ pub fn render_related_text(file_path: &str, line: u32, hits: &[SearchHit]) -> St
     out
 }
 
-/// Shared header for one hit: `<cyan-bold path>:<lines>  [score X.XXX]` (score dimmed).
+/// Shared header for one hit: `<cyan-bold path>:<lines>  [score X.XXX]` (score
+/// dimmed), followed by the breadcrumb and chunk level when they add anything.
 fn render_hit_header(hit: &SearchHit) -> String {
     let location = format!(
         "{}:{}-{}",
         hit.chunk.file_path, hit.chunk.start_line, hit.chunk.end_line
     );
     let score = format!("[score {:.3}]", hit.score);
-    format!("{}  {}\n", location.cyan().bold(), score.dimmed())
+    let mut out = format!("{}  {}\n", location.cyan().bold(), score.dimmed());
+
+    let mut note = String::new();
+    if !hit.chunk.breadcrumb.is_empty() {
+        note.push_str(&hit.chunk.breadcrumb);
+    }
+    // `Source` is the ordinary case and says nothing worth a line; the other
+    // levels change how the result should be read.
+    let level = match hit.chunk.kind {
+        ChunkKind::Source => "",
+        ChunkKind::Enclosing => "whole member",
+        ChunkKind::Part => "part of member",
+        ChunkKind::Outline => "file outline",
+    };
+    if !level.is_empty() {
+        if !note.is_empty() {
+            note.push_str("  ");
+        }
+        note.push('(');
+        note.push_str(level);
+        note.push(')');
+    }
+    if !note.is_empty() {
+        out.push_str(&format!("  {}\n", note.dimmed()));
+    }
+    out
 }
 
 /// Shared body: chunk content indented by 4 spaces. No syntax colouring —
@@ -177,6 +204,13 @@ fn hit_to_json(hit: &SearchHit) -> Value {
         "end_line": hit.chunk.end_line,
         "language": hit.chunk.language,
         "score": hit.score,
+        "breadcrumb": hit.chunk.breadcrumb,
+        "kind": match hit.chunk.kind {
+            ChunkKind::Source => "source",
+            ChunkKind::Enclosing => "enclosing",
+            ChunkKind::Part => "part",
+            ChunkKind::Outline => "outline",
+        },
         "content": hit.chunk.content,
     })
 }
@@ -192,7 +226,7 @@ fn to_json(v: &Value, pretty: bool) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::search::chunker::Chunk;
+    use crate::search::chunker::{Chunk, ChunkKind};
     use crate::search::index::ModelMeta;
 
     fn hit(path: &str, score: f32, content: &str) -> SearchHit {
@@ -205,6 +239,8 @@ mod tests {
                 start_byte: 0,
                 end_byte: content.len() as u32,
                 language: "rust".to_string(),
+                breadcrumb: String::new(),
+                kind: ChunkKind::Source,
             },
             score,
         }
