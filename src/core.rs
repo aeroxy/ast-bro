@@ -109,6 +109,10 @@ pub struct Declaration {
     pub attrs: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub docs: Vec<String>,
+    /// The documented declaration group this declaration is a member of,
+    /// when it is a member of one. See [`DeclarationGroup`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<DeclarationGroup>,
     pub docs_inside: bool,
     pub visibility: String,
     pub start_line: usize,
@@ -147,6 +151,29 @@ pub struct Declaration {
 
 fn _is_false(b: &bool) -> bool {
     !*b
+}
+
+/// A documented declaration group, as seen from one of its members.
+///
+/// Go's `const ( … )`, `var ( … )` and `type ( … )` blocks take a comment
+/// of their own, which `go doc` renders as the documentation of the whole
+/// block — for a block of one name as much as for a block of six. It is
+/// reported here rather than in any member's `docs`: a sentence written
+/// about six constants is not the doc comment of the first one, and a
+/// consumer that cannot tell the two apart reviews, rewrites, or diffs the
+/// wrong symbol (issue #46). Every member of the block carries the same
+/// group; a block with no comment of its own reports none.
+///
+/// The line range is the block's own, `const (` through `)`, and the
+/// comment ends on the line above `start_line`. A block has no name, so
+/// the range is also its identity: it is what tells two adjacent blocks
+/// apart when their comments happen to read the same, which is why the
+/// `--no-lines` projection leaves it in place.
+#[derive(Debug, Clone, Serialize, Default, PartialEq)]
+pub struct DeclarationGroup {
+    pub docs: Vec<String>,
+    pub start_line: usize,
+    pub end_line: usize,
 }
 
 /// The declaration kinds whose children `--max-members` caps — the one
@@ -500,7 +527,13 @@ fn _modifiers(d: &Declaration, lang: &str) -> Vec<String> {
 
 fn _deprecated(d: &Declaration, lang: &str) -> bool {
     let attr_has = |needle: &str| d.attrs.iter().any(|a| a.contains(needle));
-    let doc_has = |needle: &str| d.docs.iter().any(|x| x.contains(needle));
+    let group_docs = d.group.iter().flat_map(|g| &g.docs);
+    let doc_has = |needle: &str| {
+        d.docs
+            .iter()
+            .chain(group_docs.clone())
+            .any(|x| x.contains(needle))
+    };
     match lang {
         "rust" => attr_has("#[deprecated") || attr_has("#[ deprecated"),
         "python" => {
@@ -513,6 +546,8 @@ fn _deprecated(d: &Declaration, lang: &str) -> bool {
         "scala" => attr_has("@deprecated"),
         "csharp" => attr_has("[Obsolete") || attr_has("[ Obsolete"),
         // Go convention: a `Deprecated:` paragraph in the doc comment.
+        // A group's comment deprecates every member of the group, so
+        // `doc_has` reads `group_docs` as well.
         "go" => doc_has("Deprecated:"),
         _ => false,
     }
@@ -627,10 +662,62 @@ pub fn render_map(result: &ParseResult, opts: &MapOptions) -> String {
     if let Some(warn) = _format_error_warning(result) {
         lines.push(warn);
     }
+    let mut prev_group = None;
     for decl in &result.declarations {
+        if _map_eligible(decl, opts) {
+            _push_group_docs(decl, prev_group, opts, "", &mut lines);
+            prev_group = _group_id(decl);
+        }
         _render_decl(decl, opts, 0, &mut lines);
     }
     lines.join("\n")
+}
+
+/// Which group a declaration belongs to, for the renderer's "same group as
+/// the one above?" question. The block's start line, not its prose: two
+/// adjacent blocks can carry the same comment verbatim, and a boilerplate
+/// banner or a `// Deprecated: …` line above each of them is the case where
+/// they do.
+fn _group_id(decl: &Declaration) -> Option<usize> {
+    decl.group.as_ref().map(|g| g.start_line)
+}
+
+/// Print a declaration group's shared documentation above the first member
+/// of the group that actually renders, once per group.
+///
+/// The lines carry a `[group]` marker because printing them bare is the bug
+/// they exist to fix: a comment written about a whole `const ( … )` block,
+/// set directly above the block's first member, reads exactly like that
+/// member's own doc comment (issue #46). `prev` identifies the previous
+/// rendered sibling's group, which is how a group prints once rather than
+/// once per member — and how the run ends when a declaration outside the
+/// group follows.
+///
+/// Every physical line gets the marker, because the reader is told to
+/// classify lines by it: one `/* … */` comment is a single `docs` entry
+/// spanning several lines, and an unmarked continuation of it reads as the
+/// following symbol's own documentation.
+fn _push_group_docs(
+    decl: &Declaration,
+    prev: Option<usize>,
+    opts: &MapOptions,
+    prefix: &str,
+    out: &mut Vec<String>,
+) {
+    let Some(group) = &decl.group else { return };
+    if !opts.include_docs || _group_id(decl) == prev {
+        return;
+    }
+    for d in _clip_docs(&group.docs, opts.max_doc_lines) {
+        for line in d.trim_end_matches(&['\r', '\n'][..]).split('\n') {
+            out.push(format!(
+                "{}{} {}",
+                prefix,
+                "[group]".dimmed(),
+                line.trim_end_matches('\r')
+            ));
+        }
+    }
 }
 fn _format_file_header(prefix: &str, result: &ParseResult) -> String {
     let counts = _collect_counts(&result.declarations);
@@ -783,6 +870,8 @@ fn _render_decl(decl: &Declaration, opts: &MapOptions, indent: usize, out: &mut 
     let visible = |d: &Declaration| _map_eligible(d, opts);
     let mut shown = 0usize;
     let mut hidden = 0usize;
+    let child_prefix = "    ".repeat(indent + 1);
+    let mut prev_group = None;
     for child in &decl.children {
         if visible(child) && _counts_toward_member_cap(&child.kind) {
             if shown >= cap {
@@ -790,6 +879,10 @@ fn _render_decl(decl: &Declaration, opts: &MapOptions, indent: usize, out: &mut 
                 continue;
             }
             shown += 1;
+        }
+        if visible(child) {
+            _push_group_docs(child, prev_group, opts, &child_prefix, out);
+            prev_group = _group_id(child);
         }
         _render_decl(child, opts, indent + 1, out);
     }
@@ -1505,6 +1598,7 @@ fn _filter_one(d: &Declaration, opts: &MapOptions, dropped: &mut usize) -> Decla
     let mut clone = d.clone();
     if !opts.include_docs {
         clone.docs = Vec::new();
+        clone.group = None;
     }
     clone.children = children;
     clone
@@ -1659,6 +1753,9 @@ fn _strip_projected_keys(decls: &mut serde_json::Value, docs: bool, lines: bool,
             map.remove("docs");
             map.remove("docs_inside");
             map.remove("doc_start_byte");
+            // A group is reported only when it carries documentation, so
+            // under `--no-docs` there is nothing left in it to report.
+            map.remove("group");
         }
         if lines {
             map.remove("start_line");
@@ -1666,6 +1763,8 @@ fn _strip_projected_keys(decls: &mut serde_json::Value, docs: bool, lines: bool,
             map.remove("start_byte");
             map.remove("end_byte");
             map.remove("doc_start_byte");
+            // A group's range stays: it is that block's identity, not a
+            // line number the caller opted out of reading.
         }
         if attrs {
             map.remove("attrs");
