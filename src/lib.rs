@@ -2374,4 +2374,77 @@ mod tests {
         assert_eq!(preset_max_members(Some(8), false), Some(8));
         assert_eq!(preset_max_members(None, false), None);
     }
+
+    use clap::CommandFactory;
+
+    /// Every argument of every subcommand carries help text.
+    ///
+    /// A clap argument derives its description from the doc comment above the
+    /// field, and a field without one is not a compile error: it renders in
+    /// `--help` as a flag name followed by an empty line. That is invisible in
+    /// review and reads to a user as an option with nothing to say, which is
+    /// how all five `--no-*` projection flags shipped until #39.
+    ///
+    /// A failure names the subcommand path and the argument. Fix it by writing
+    /// a doc comment above the field, not by listing the argument here.
+    #[test]
+    fn every_argument_documents_itself() {
+        let mut undocumented = Vec::new();
+        collect_undocumented(&Cli::command(), &mut Vec::new(), &mut undocumented);
+        assert!(
+            undocumented.is_empty(),
+            "arguments with no help text (add a doc comment above the field): {undocumented:#?}"
+        );
+    }
+
+    /// Every subcommand carries an `about` line, for the same reason.
+    ///
+    /// Recurses, so a nested subcommand is held to the rule its parent is.
+    /// The tree is flat today, which is exactly when a check like this stops
+    /// being enforced and starts being assumed.
+    #[test]
+    fn every_subcommand_documents_itself() {
+        let mut bare = Vec::new();
+        collect_bare_subcommands(&Cli::command(), &mut Vec::new(), &mut bare);
+        assert!(
+            bare.is_empty(),
+            "subcommands with no about line (add a doc comment above the variant): {bare:#?}"
+        );
+    }
+
+    /// Depth-first over the subcommand tree, recording `<path> <arg>` for each
+    /// argument whose help is missing or blank. `path` is the ancestor chain,
+    /// so a nested subcommand's failure says where to look.
+    fn collect_undocumented(cmd: &clap::Command, path: &mut Vec<String>, out: &mut Vec<String>) {
+        path.push(cmd.get_name().to_string());
+        for arg in cmd.get_arguments() {
+            if !has_text(arg.get_help()) && !has_text(arg.get_long_help()) {
+                out.push(format!("{} {}", path.join(" "), arg.get_id()));
+            }
+        }
+        for sub in cmd.get_subcommands() {
+            collect_undocumented(sub, path, out);
+        }
+        path.pop();
+    }
+
+    /// Depth-first over the subcommand tree, recording `<path>` for each
+    /// subcommand with no about line. The root is skipped: its description
+    /// comes from `#[command(about = ...)]`, not from a variant.
+    fn collect_bare_subcommands(cmd: &clap::Command, path: &mut Vec<String>, out: &mut Vec<String>) {
+        path.push(cmd.get_name().to_string());
+        for sub in cmd.get_subcommands() {
+            if !has_text(sub.get_about()) && !has_text(sub.get_long_about()) {
+                out.push(format!("{} {}", path.join(" "), sub.get_name()));
+            }
+            collect_bare_subcommands(sub, path, out);
+        }
+        path.pop();
+    }
+
+    /// Whitespace-only help is the same defect as none: clap prints the line
+    /// and the reader learns nothing.
+    fn has_text(help: Option<&clap::builder::StyledStr>) -> bool {
+        help.is_some_and(|h| !h.to_string().trim().is_empty())
+    }
 }
