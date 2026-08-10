@@ -22,3 +22,13 @@ The architecture page links to eight deeper wiki files — read them on-demand w
 - [wiki/squeeze.md](wiki/squeeze.md) — log/text token compression (squeeze): multi-stage pipeline, reversible legend, degenerate fallback
 - [wiki/network-security.md](wiki/network-security.md) — model download, TLS policy, mirror fallback
 - [wiki/file-filtering.md](wiki/file-filtering.md) — what gets walked, ignore layers, escape hatches, shebang detection, test-file heuristics
+
+## CLI and MCP are one feature set
+
+Each MCP tool in `src/mcp/tools.rs` mirrors a CLI subcommand, with underscores where the CLI uses hyphens (`reverse_deps` for `reverse-deps`, `find_related` for `find-related`). Only the maintenance commands (`install`, `uninstall`, `status`, `hook`, `prompt`, `mcp`) are CLI-only.
+
+A flag added or renamed on one surface is unfinished until the other carries it. The CLI declares it once, as a clap derive in `src/lib.rs`. An MCP tool declares it twice: as a property in the JSON schema in `src/mcp/tools.rs`, and as a field of the tool's serde `Args` struct, which for `impact`, `context`, and the search tools sits beside the implementation (`src/impact.rs`, `src/context.rs`, `src/search/mcp.rs`). The structs accept unknown fields, so a property added only to the schema is advertised and ignored. No test compares the argument sets, so change all three in the same commit. State any intended difference in the tool description.
+
+A default lives in `src/defaults.rs`, which both surfaces read. The tests in that module fail when a clap default, a serde default, or a schema description states a literal instead of naming the constant.
+
+The surfaces do not match yet: `--compact` has no MCP property, `show` takes several targets on the CLI and a single `path` on MCP, and several other CLI flags have no property on their tool.
