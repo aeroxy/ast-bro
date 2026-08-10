@@ -325,7 +325,7 @@ impl Default for DigestOptions {
             include_fields: false,
             include_attributes: true,
             include_line_numbers: true,
-            max_members_per_type: 50,
+            max_members_per_type: crate::defaults::MAX_MEMBERS,
             max_heading_depth: 3,
         }
     }

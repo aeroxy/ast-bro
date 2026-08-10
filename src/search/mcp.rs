@@ -35,9 +35,9 @@ use std::path::{Path, PathBuf};
 #[derive(Deserialize, Default)]
 struct SearchArgs {
     query: String,
-    #[serde(default = "default_path")]
+    #[serde(default = "crate::defaults::root")]
     path: PathBuf,
-    #[serde(default = "default_top_k")]
+    #[serde(default = "crate::defaults::top_k")]
     top_k: usize,
     #[serde(default)]
     alpha: Option<f32>,
@@ -51,9 +51,9 @@ struct SearchArgs {
 struct FindRelatedArgs {
     path: String,
     line: u32,
-    #[serde(default = "default_path")]
+    #[serde(default = "crate::defaults::root")]
     root: PathBuf,
-    #[serde(default = "default_top_k")]
+    #[serde(default = "crate::defaults::top_k")]
     top_k: usize,
     #[serde(default)]
     json: bool,
@@ -61,7 +61,7 @@ struct FindRelatedArgs {
 
 #[derive(Deserialize, Default)]
 struct IndexArgs {
-    #[serde(default = "default_path")]
+    #[serde(default = "crate::defaults::root")]
     path: PathBuf,
     #[serde(default)]
     rebuild: bool,
@@ -71,13 +71,7 @@ struct IndexArgs {
     json: bool,
 }
 
-fn default_path() -> PathBuf {
-    PathBuf::from(".")
-}
 
-fn default_top_k() -> usize {
-    10
-}
 
 pub fn run_search(args: Value) -> CallResult {
     let args: SearchArgs = match serde_json::from_value(args) {

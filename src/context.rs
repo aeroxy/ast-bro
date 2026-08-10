@@ -757,17 +757,15 @@ pub mod mcp {
         #[derive(serde::Deserialize)]
         struct Args {
             target: String,
-            #[serde(default = "default_dot")]
+            #[serde(default = "crate::defaults::root")]
             path: PathBuf,
-            #[serde(default = "default_budget")]
+            #[serde(default = "crate::defaults::budget")]
             budget: usize,
             /// Text by default (MCP convention); `true` returns
             /// `ast-bro.context.v1` JSON.
             #[serde(default)]
             json: bool,
         }
-        fn default_dot() -> PathBuf { PathBuf::from(".") }
-        fn default_budget() -> usize { 8000 }
 
         let a: Args = match serde_json::from_value(args) {
             Ok(v) => v,

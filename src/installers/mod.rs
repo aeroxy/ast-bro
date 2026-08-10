@@ -33,7 +33,7 @@ pub struct InstallOpts {
 impl Default for InstallOpts {
     fn default() -> Self {
         Self {
-            min_lines: 200,
+            min_lines: crate::defaults::HOOK_MIN_LINES,
             always: false,
             dry_run: false,
             force: false,

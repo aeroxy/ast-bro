@@ -22,12 +22,6 @@ use std::path::{Path, PathBuf};
 
 use crate::core::{ParseResult, SymbolMatch};
 
-/// Default cap on rendered bodies in multi-target mode. A bare common name
-/// (`new`, `build`) can match a hundred declarations across a repository,
-/// each with a full body; the cap keeps that from becoming the whole
-/// answer, and the header always reports the true total (issue #32).
-pub const DEFAULT_LIMIT: usize = 20;
-
 /// One searched file and the matches found in it.
 pub struct FileMatches {
     pub result: ParseResult,
@@ -483,7 +477,7 @@ mod tests {
         std::fs::write(&a, "fn greet() { }\n").unwrap();
         std::fs::write(&b, "fn greet() { }\n").unwrap();
         let results = collect(&[a, b]);
-        let o = resolve(results, &["greet".to_string()], DEFAULT_LIMIT, true);
+        let o = resolve(results, &["greet".to_string()], crate::defaults::SHOW_LIMIT, true);
         assert_eq!(o.files_scanned, 2);
         assert_eq!(o.total, 2, "the second definition must not be dropped");
         assert_eq!(o.files_matched(), 2);
@@ -535,7 +529,7 @@ mod tests {
         let o = resolve(
             results,
             &["greet".to_string(), "absent".to_string()],
-            DEFAULT_LIMIT,
+            crate::defaults::SHOW_LIMIT,
             false,
         );
         assert_eq!(o.unmatched, vec!["absent".to_string()]);
@@ -569,7 +563,7 @@ mod tests {
 
         let results = collect(&[bare, traversed]);
         assert_eq!(results.len(), 1, "one file, one parse");
-        let o = resolve(results, &["greet".to_string()], DEFAULT_LIMIT, true);
+        let o = resolve(results, &["greet".to_string()], crate::defaults::SHOW_LIMIT, true);
         assert_eq!(o.files_scanned, 1);
         assert_eq!(o.total, 1);
         assert_eq!(o.files_matched(), 1);
@@ -596,7 +590,7 @@ mod tests {
             1,
             "the explicit spelling is the one kept"
         );
-        let o = resolve(results, &["greet".to_string()], DEFAULT_LIMIT, true);
+        let o = resolve(results, &["greet".to_string()], crate::defaults::SHOW_LIMIT, true);
         assert_eq!(o.files_scanned, 2, "coverage must not count a.rs twice");
         assert_eq!(o.total, 1);
         assert!(!o.truncated);
@@ -650,7 +644,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let a = dir.path().join("a.rs");
         std::fs::write(&a, "fn greet() {}\n").unwrap();
-        let o = resolve(collect(&[a]), &["greet".to_string()], DEFAULT_LIMIT, true);
+        let o = resolve(collect(&[a]), &["greet".to_string()], crate::defaults::SHOW_LIMIT, true);
         let v: serde_json::Value = serde_json::from_str(&render_json(&o, false)).unwrap();
         assert_eq!(v["schema"], "ast-bro.show.v2");
         assert_eq!(v["files_scanned"], 1);
