@@ -71,8 +71,6 @@ struct IndexArgs {
     json: bool,
 }
 
-
-
 pub fn run_search(args: Value) -> CallResult {
     let args: SearchArgs = match serde_json::from_value(args) {
         Ok(a) => a,

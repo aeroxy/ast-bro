@@ -142,20 +142,26 @@ mod tests {
     /// `context`, and `search` declare theirs beside their implementation —
     /// so a list of files to check would go stale the next time one moves.
     fn sources() -> Vec<PathBuf> {
-        fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
+        // This module holds the guards' own patterns as string literals, so it
+        // is the one exemption. Matching the full path rather than the
+        // basename keeps a future `src/search/defaults.rs` under the guards.
+        let this = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/defaults.rs");
+        fn walk(dir: &Path, this: &Path, out: &mut Vec<PathBuf>) {
             for entry in fs::read_dir(dir).expect("src/ is readable").flatten() {
                 let path = entry.path();
                 if path.is_dir() {
-                    walk(&path, out);
-                } else if path.extension().is_some_and(|e| e == "rs")
-                    && path.file_name().is_some_and(|f| f != "defaults.rs")
-                {
+                    walk(&path, this, out);
+                } else if path.extension().is_some_and(|e| e == "rs") && path != this {
                     out.push(path);
                 }
             }
         }
         let mut out = Vec::new();
-        walk(Path::new(env!("CARGO_MANIFEST_DIR")).join("src").as_path(), &mut out);
+        walk(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("src").as_path(),
+            &this,
+            &mut out,
+        );
         assert!(out.len() > 20, "walk found only {} files", out.len());
         out
     }
@@ -227,6 +233,53 @@ mod tests {
         );
     }
 
+    /// A struct literal sets a known default field from this module, not from
+    /// a number typed in place.
+    ///
+    /// This is the class `default_value` and `#[serde(default)]` cannot see: a
+    /// value assembled in an `impl Default` body or a builder reaches the same
+    /// surfaces without passing through either attribute. `DepOptions`,
+    /// `SurfaceOptions`, and the `--preset digest` member cap all drifted that
+    /// way. Lines after a `#[cfg(test)]` are exempt — a fixture that read the
+    /// constant would stop noticing it change.
+    #[test]
+    fn struct_defaults_come_from_this_module() {
+        const FIELDS: [&str; 8] = [
+            "max_members", "max_depth", "min_lines", "min_size",
+            "min_cycle_size", "top_k", "budget", "limit",
+        ];
+        let mut hits = Vec::new();
+        for path in sources() {
+            let src = fs::read_to_string(&path).expect("source is readable");
+            let production = src
+                .lines()
+                .position(|l| l.contains("#[cfg(test)]"))
+                .unwrap_or(usize::MAX);
+            for (i, line) in src.lines().enumerate().take(production) {
+                let trimmed = line.trim_start();
+                let Some((field, value)) = trimmed.split_once(": ") else {
+                    continue;
+                };
+                if !FIELDS.contains(&field) {
+                    continue;
+                }
+                let value = value.trim_end_matches(',');
+                let literal = value.parse::<usize>().is_ok()
+                    || value.starts_with("PathBuf::from(\"");
+                if literal {
+                    hits.push((path.clone(), i, line.to_string()));
+                }
+            }
+        }
+        assert!(
+            hits.is_empty(),
+            "struct fields set from a literal instead of `crate::defaults`; \
+             an `impl Default` reaches the CLI and MCP as surely as an \
+             attribute does:\n{:#?}",
+            offenders(hits)
+        );
+    }
+
     /// An MCP description states its default by interpolating the constant.
     ///
     /// A hard-coded `(default 200)` in the schema is the copy an agent cannot
@@ -243,9 +296,17 @@ mod tests {
                 }
                 // `(default 200)` and `(default \".\")` state a value;
                 // `(default: false)` and a bare `(default)` state neither.
-                let states_a_value = line.split("(default ").skip(1).any(|rest| {
+                let parenthesized = line.split("(default ").skip(1).any(|rest| {
                     rest.starts_with(|c: char| c.is_ascii_digit()) || rest.starts_with('\\')
                 });
+                // `max_members=50`, the phrasing the `digest` tool used to
+                // describe itself with, which the shape above walks past.
+                let assigned = line.as_bytes().windows(3).any(|w| {
+                    (w[0].is_ascii_alphabetic() || w[0] == b'_')
+                        && w[1] == b'='
+                        && w[2].is_ascii_digit()
+                });
+                let states_a_value = parenthesized || assigned;
                 if states_a_value {
                     hits.push((path.clone(), i, line.to_string()));
                 }

@@ -39,7 +39,7 @@ pub fn list() -> Value {
             },
             {
                 "name": "digest",
-                "description": "One-page module map for an unfamiliar directory: every file's types and public methods. Alias for `map` with detail=names, public-only, max_members=50. Returns text by default; set `json: true` for `ast-bro.map.v1`.",
+                "description": format!("One-page module map for an unfamiliar directory: every file's types and public methods. Alias for `map` with detail=names, public-only, max_members={}. Returns text by default; set `json: true` for `ast-bro.map.v1`.", crate::defaults::MAX_MEMBERS),
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -397,7 +397,6 @@ struct CalleesArgs {
     json: bool,
 }
 
-
 /// Back-compat shim for renamed boolean args. Pre-rename clients sent
 /// `include_ambiguous` / `external` / `include_external` (true = show);
 /// the new `hide_*` args invert the polarity (true = drop). When only the
@@ -469,7 +468,6 @@ struct TraceArgs {
     #[serde(default)]
     json: bool,
 }
-
 
 fn run_trace(args: Value) -> CallResult {
     let a: TraceArgs = match serde_json::from_value(args) {
@@ -614,7 +612,6 @@ struct DigestArgs {
     #[serde(default)] json: bool,
 }
 
-
 fn run_digest(args: Value) -> CallResult {
     let a: DigestArgs = match serde_json::from_value(args) {
         Ok(v) => v,
@@ -669,7 +666,6 @@ struct ShowArgs {
     limit: usize,
     #[serde(default)] json: bool,
 }
-
 
 fn run_show(args: Value) -> CallResult {
     let a: ShowArgs = match serde_json::from_value(args) {
@@ -756,7 +752,6 @@ struct SurfaceArgs {
     #[serde(default)] lang: Option<String>,
     #[serde(default)] json: bool,
 }
-
 
 fn run_surface(args: Value) -> CallResult {
     let a: SurfaceArgs = match serde_json::from_value(args) {
@@ -876,7 +871,6 @@ struct GraphArgs {
     #[serde(default)] hide_external: bool,
     #[serde(default)] rebuild: bool,
 }
-
 
 fn run_deps(mut args: Value) -> CallResult {
     translate_renamed_bool(&mut args, "external", "hide_external");

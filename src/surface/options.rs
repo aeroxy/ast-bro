@@ -50,7 +50,7 @@ impl Default for SurfaceOptions {
         Self {
             output: OutputMode::Flat,
             include_private: false,
-            max_depth: 16,
+            max_depth: crate::defaults::SURFACE_MAX_DEPTH,
             include_chain: false,
             lang_override: None,
         }
