@@ -129,3 +129,133 @@ pub fn surface_max_depth() -> usize {
 pub fn impact_mode() -> String {
     IMPACT_MODE.to_string()
 }
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+    use std::path::{Path, PathBuf};
+
+    /// Every `.rs` file under `src/`, except this one.
+    ///
+    /// The walk is what makes the guards below survive a new file: an MCP
+    /// tool's arguments do not all live in `mcp/tools.rs` — `impact`,
+    /// `context`, and `search` declare theirs beside their implementation —
+    /// so a list of files to check would go stale the next time one moves.
+    fn sources() -> Vec<PathBuf> {
+        fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
+            for entry in fs::read_dir(dir).expect("src/ is readable").flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    walk(&path, out);
+                } else if path.extension().is_some_and(|e| e == "rs")
+                    && path.file_name().is_some_and(|f| f != "defaults.rs")
+                {
+                    out.push(path);
+                }
+            }
+        }
+        let mut out = Vec::new();
+        walk(Path::new(env!("CARGO_MANIFEST_DIR")).join("src").as_path(), &mut out);
+        assert!(out.len() > 20, "walk found only {} files", out.len());
+        out
+    }
+
+    /// Reports each offending line as `path:line: text`, relative to `src/`.
+    fn offenders(hits: Vec<(PathBuf, usize, String)>) -> Vec<String> {
+        hits.into_iter()
+            .map(|(path, line, text)| {
+                let short = path
+                    .strip_prefix(env!("CARGO_MANIFEST_DIR"))
+                    .unwrap_or(&path)
+                    .display()
+                    .to_string();
+                format!("{short}:{}: {}", line + 1, text.trim())
+            })
+            .collect()
+    }
+
+    /// A clap default names a constant from this module, never a literal.
+    #[test]
+    fn clap_defaults_come_from_this_module() {
+        let mut hits = Vec::new();
+        for path in sources() {
+            let src = fs::read_to_string(&path).expect("source is readable");
+            for (i, line) in src.lines().enumerate() {
+                let Some(rest) = line
+                    .split_once("default_value_t = ")
+                    .or_else(|| line.split_once("default_value = "))
+                    .map(|(_, rest)| rest)
+                else {
+                    continue;
+                };
+                if !rest.starts_with("crate::defaults::") {
+                    hits.push((path.clone(), i, line.to_string()));
+                }
+            }
+        }
+        assert!(
+            hits.is_empty(),
+            "clap defaults that do not read `crate::defaults`; add the value \
+             there and name it for what it bounds:\n{:#?}",
+            offenders(hits)
+        );
+    }
+
+    /// A serde default names a helper from this module, never a local one.
+    ///
+    /// `#[serde(default)]` with no path is untouched — that is the type's own
+    /// `Default`, not a value the CLI also declares.
+    #[test]
+    fn serde_defaults_come_from_this_module() {
+        let mut hits = Vec::new();
+        for path in sources() {
+            let src = fs::read_to_string(&path).expect("source is readable");
+            for (i, line) in src.lines().enumerate() {
+                let Some((_, rest)) = line.split_once("serde(default = \"") else {
+                    continue;
+                };
+                if !rest.starts_with("crate::defaults::") {
+                    hits.push((path.clone(), i, line.to_string()));
+                }
+            }
+        }
+        assert!(
+            hits.is_empty(),
+            "serde defaults that do not read `crate::defaults`; a value the CLI \
+             also declares belongs there, so the two cannot drift:\n{:#?}",
+            offenders(hits)
+        );
+    }
+
+    /// An MCP description states its default by interpolating the constant.
+    ///
+    /// A hard-coded `(default 200)` in the schema is the copy an agent cannot
+    /// check: it reads the number, applies it, and has no way to notice the
+    /// tool now uses another one.
+    #[test]
+    fn schema_descriptions_interpolate_their_default() {
+        let mut hits = Vec::new();
+        for path in sources() {
+            let src = fs::read_to_string(&path).expect("source is readable");
+            for (i, line) in src.lines().enumerate() {
+                if !line.contains("\"description\"") || line.contains("format!") {
+                    continue;
+                }
+                // `(default 200)` and `(default \".\")` state a value;
+                // `(default: false)` and a bare `(default)` state neither.
+                let states_a_value = line.split("(default ").skip(1).any(|rest| {
+                    rest.starts_with(|c: char| c.is_ascii_digit()) || rest.starts_with('\\')
+                });
+                if states_a_value {
+                    hits.push((path.clone(), i, line.to_string()));
+                }
+            }
+        }
+        assert!(
+            hits.is_empty(),
+            "tool descriptions stating a default as literal text; use \
+             `format!(\"… (default {{}}).\", crate::defaults::CONST)`:\n{:#?}",
+            offenders(hits)
+        );
+    }
+}
