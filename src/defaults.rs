@@ -9,6 +9,12 @@
 //! Each constant is named for what it bounds rather than for its value. The
 //! serde helpers below exist only because `#[serde(default = "…")]` takes a
 //! function path where clap takes an expression.
+//!
+//! The guards hold a value to this module as soon as it appears in an
+//! `impl Default`, whether or not a second site reads it yet. Asking how many
+//! sites a value has is what the guards cannot do reliably — every constant
+//! here has at least two today, and `--preset digest` had exactly one when it
+//! drifted.
 
 use std::path::PathBuf;
 
@@ -192,6 +198,25 @@ mod tests {
         lines.into_iter().take(end).collect()
     }
 
+    /// The `field: value` pair a line assigns, if it assigns one.
+    ///
+    /// A one-line `Self { max_depth: 16 }` is split the same way a multi-line
+    /// body is: the field is the last segment before the colon, so the brace
+    /// and the type name in front of it do not become part of the name, and
+    /// the trailing brace does not become part of the value.
+    fn field_and_value(line: &str) -> Option<(&str, &str)> {
+        let (field, value) = line.split_once(": ")?;
+        let field = field.rsplit(['{', '(']).next()?.trim();
+        let value = value.trim().trim_end_matches([',', ' ', '}']).trim();
+        (!field.is_empty() && !value.is_empty()).then_some((field, value))
+    }
+
+    /// Whether a value is a number or a path typed in place.
+    fn is_literal_field(line: &str) -> bool {
+        field_and_value(line)
+            .is_some_and(|(_, v)| v.parse::<usize>().is_ok() || v.starts_with("PathBuf::from(\""))
+    }
+
     /// Reports each offending line as `path:line: text`, relative to `src/`.
     fn offenders(hits: Vec<(PathBuf, usize, String)>) -> Vec<String> {
         hits.into_iter()
@@ -204,6 +229,32 @@ mod tests {
                 format!("{short}:{}: {}", line + 1, text.trim())
             })
             .collect()
+    }
+
+    /// The line splitter reads a one-line body the same as a multi-line one.
+    ///
+    /// The guards are textual, so this is where their parser is checked
+    /// rather than through a mutation the compiler would reject: a
+    /// single-field `Self { .. }` literal has to yield the bare field name
+    /// and a value with no trailing brace, or a literal hides in plain sight.
+    #[test]
+    fn field_splitter_reads_one_line_bodies() {
+        assert_eq!(field_and_value("            max_depth: 16,"), Some(("max_depth", "16")));
+        assert_eq!(field_and_value("        Self { max_depth: 16 }"), Some(("max_depth", "16")));
+        assert_eq!(
+            field_and_value("    root: PathBuf::from(\".\"),"),
+            Some(("root", "PathBuf::from(\".\")"))
+        );
+        assert_eq!(
+            field_and_value("    limit: crate::defaults::LIMIT,"),
+            Some(("limit", "crate::defaults::LIMIT"))
+        );
+        assert_eq!(field_and_value("    let x = 3;"), None);
+
+        assert!(is_literal_field("        Self { max_depth: 16 }"));
+        assert!(is_literal_field("    root: PathBuf::from(\".\"),"));
+        assert!(!is_literal_field("    limit: crate::defaults::LIMIT,"));
+        assert!(!is_literal_field("    output: OutputMode::Text,"));
     }
 
     /// A clap default names a constant from this module, never a literal.
@@ -278,7 +329,7 @@ mod tests {
         for path in sources() {
             let src = fs::read_to_string(&path).expect("source is readable");
             for line in production_lines(&src) {
-                if let Some((field, value)) = line.trim_start().split_once(": ") {
+                if let Some((field, value)) = field_and_value(line) {
                     if value.starts_with("crate::defaults::")
                         || value.starts_with("PathBuf::from(crate::defaults::")
                     {
@@ -299,14 +350,10 @@ mod tests {
         for path in sources() {
             let src = fs::read_to_string(&path).expect("source is readable");
             for (i, line) in production_lines(&src).into_iter().enumerate() {
-                let Some((field, value)) = line.trim_start().split_once(": ") else {
+                let Some((field, _)) = field_and_value(line) else {
                     continue;
                 };
-                if !shared.iter().any(|f| f == field) {
-                    continue;
-                }
-                let value = value.trim_end_matches(',');
-                if value.parse::<usize>().is_ok() || value.starts_with("PathBuf::from(\"") {
+                if shared.iter().any(|f| f == field) && is_literal_field(line) {
                     hits.push((path.clone(), i, line.to_string()));
                 }
             }
@@ -335,23 +382,29 @@ mod tests {
             let src = fs::read_to_string(&path).expect("source is readable");
             let mut depth = 0usize;
             let mut inside = false;
+            let mut opened = false;
             for (i, line) in production_lines(&src).into_iter().enumerate() {
-                if !inside && line.trim_start().starts_with("impl Default for ") {
+                let trimmed = line.trim_start();
+                // `impl<T> Default for …` and `impl Default for …` alike; the
+                // body may open on this line or the next, so the block ends
+                // only once a brace has actually been seen and closed.
+                if !inside && trimmed.starts_with("impl") && trimmed.contains(" Default for ") {
                     inside = true;
                     depth = 0;
+                    opened = false;
                 }
                 if !inside {
                     continue;
                 }
                 depth += line.matches('{').count();
-                depth = depth.saturating_sub(line.matches('}').count());
-                if let Some((_, value)) = line.trim_start().split_once(": ") {
-                    let value = value.trim_end_matches(',');
-                    if value.parse::<usize>().is_ok() || value.starts_with("PathBuf::from(\"") {
-                        hits.push((path.clone(), i, line.to_string()));
-                    }
+                if depth > 0 {
+                    opened = true;
                 }
-                if depth == 0 {
+                depth = depth.saturating_sub(line.matches('}').count());
+                if is_literal_field(trimmed) {
+                    hits.push((path.clone(), i, line.to_string()));
+                }
+                if opened && depth == 0 {
                     inside = false;
                 }
             }
@@ -385,7 +438,8 @@ mod tests {
                 // `defaults to 200` all state a number; `(default: false)` and
                 // a bare `(default)` state none, and `crate::defaults::LIMIT`
                 // is the interpolation itself.
-                for rest in line.split("default").skip(1) {
+                let lowered = line.to_ascii_lowercase();
+                for rest in lowered.split("default").skip(1) {
                     let value = rest
                         .trim_start_matches([':', '=', ' '])
                         .trim_start_matches("s to ")
