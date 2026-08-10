@@ -624,6 +624,111 @@ fn the_suggested_command_runs_for_a_dash_prefixed_glob() {
 }
 
 #[test]
+fn map_hint_repeats_a_path_that_did_not_resolve() {
+    // The suggestion stands in for the whole call. Dropping the missing path
+    // would return a clean answer and lose the note saying it was missing.
+    let dir = oversized_map_fixture();
+    let (code, _stdout, stderr) = run(&["map", dir.path().to_str().unwrap(), "/nope/gone-xyz.rs"]);
+    assert_eq!(code, Some(0), "stderr:\n{stderr}");
+    let hint = stderr
+        .lines()
+        .find(|l| l.starts_with("# hint:"))
+        .unwrap_or("");
+    assert!(
+        hint.contains("/nope/gone-xyz.rs"),
+        "the unresolved path must survive into the suggestion:\n{stderr}"
+    );
+}
+
+#[test]
+fn map_hint_keeps_display_filters_the_caller_turned_off() {
+    // Re-enabling attributes and line ranges would render something other
+    // than what was asked for, and usually more of it.
+    let dir = oversized_map_fixture();
+    let (code, _stdout, stderr) = run(&[
+        "map",
+        dir.path().to_str().unwrap(),
+        "--no-attrs",
+        "--no-lines",
+    ]);
+    assert_eq!(code, Some(0), "stderr:\n{stderr}");
+    assert!(
+        stderr.contains("--no-attrs") && stderr.contains("--no-lines"),
+        "display filters must survive into the suggestion:\n{stderr}"
+    );
+}
+
+#[test]
+fn a_glob_that_expands_to_directories_is_hinted() {
+    // `map 'src/*'` is the largest directory answer there is, and testing
+    // the argument as typed left exactly that call silent.
+    let parent = tempfile::tempdir().expect("tempdir");
+    for pkg in ["alpha", "beta"] {
+        let dir = parent.path().join(pkg);
+        std::fs::create_dir(&dir).expect("mkdir");
+        fill_past_threshold(&dir);
+    }
+    let (code, stdout, stderr) = run_in(parent.path(), &["map", "*"]);
+    assert_eq!(code, Some(0), "stderr:\n{stderr}");
+    assert!(
+        stdout.len() > 25_000,
+        "fixture must exceed the threshold, got {} bytes",
+        stdout.len()
+    );
+    assert!(
+        stderr.contains("# hint:"),
+        "a glob over directories is a directory input:\n{stderr}"
+    );
+}
+
+#[test]
+fn a_glob_over_files_is_hinted_like_the_directory_it_equals() {
+    // `map alpha` and `map 'alpha/*.rs'` render the same bytes. Hinting one
+    // and not the other would make the rule about the spelling.
+    let parent = tempfile::tempdir().expect("tempdir");
+    let dir = parent.path().join("alpha");
+    std::fs::create_dir(&dir).expect("mkdir");
+    fill_past_threshold(&dir);
+    let (_, as_dir, dir_stderr) = run_in(parent.path(), &["map", "alpha"]);
+    let (code, as_glob, glob_stderr) = run_in(parent.path(), &["map", "alpha/*.rs"]);
+    assert_eq!(code, Some(0), "stderr:\n{glob_stderr}");
+    assert_eq!(
+        as_dir, as_glob,
+        "the two spellings must render the same answer for this test to mean anything"
+    );
+    assert!(dir_stderr.contains("# hint:"), "{dir_stderr}");
+    assert!(
+        glob_stderr.contains("# hint:"),
+        "a glob that inspects the same files is the same question:\n{glob_stderr}"
+    );
+}
+
+#[test]
+fn explicitly_named_files_stay_quiet() {
+    // The line the rule draws: naming files is enumerating exactly what you
+    // want, where a directory or a glob asks for whatever is in there.
+    let dir = oversized_map_fixture();
+    let files: Vec<String> = (0..20)
+        .map(|f| {
+            dir.path()
+                .join(format!("file_{f}.rs"))
+                .to_str()
+                .expect("utf8")
+                .to_string()
+        })
+        .collect();
+    let mut args = vec!["map"];
+    args.extend(files.iter().map(String::as_str));
+    let (code, stdout, stderr) = run(&args);
+    assert_eq!(code, Some(0), "stderr:\n{stderr}");
+    assert!(stdout.len() > 25_000, "fixture must exceed the threshold");
+    assert!(
+        !stderr.contains("# hint:"),
+        "an enumerated file list is not a directory question:\n{stderr}"
+    );
+}
+
+#[test]
 fn map_hint_quotes_a_path_a_shell_would_split() {
     // The hint exists to be pasted. A directory named `my code` has to come
     // back as one argument.
