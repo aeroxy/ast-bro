@@ -387,7 +387,7 @@ fn mcp_map_oversized_directory_carries_the_digest_hint() {
         "a hint qualifies an answer, it does not reject it: {resp}"
     );
     assert!(
-        text.starts_with("# hint:") && text.contains("`digest` tool"),
+        text.starts_with("# hint:") && text.contains("`map` tool"),
         "expected a leading digest hint: {}",
         &text[..text.len().min(200)]
     );
@@ -412,7 +412,7 @@ fn mcp_map_json_carries_the_hint_as_a_field() {
     assert!(
         doc["hint"]
             .as_str()
-            .is_some_and(|h| h.contains("`digest` tool")),
+            .is_some_and(|h| h.contains("`map` tool")),
         "expected a hint field: {}",
         &text[..text.len().min(200)]
     );
@@ -470,5 +470,30 @@ fn mcp_map_of_a_single_file_stays_quiet_however_large() {
         !text.contains("# hint:"),
         "one file has nothing smaller to point at: {}",
         &text[..text.len().min(200)]
+    );
+}
+
+#[test]
+fn mcp_hint_carries_the_call_s_own_arguments() {
+    // The suggestion replaces the call it qualifies, so naming only the tool
+    // would answer a different question — the same defect the CLI hint had
+    // when it dropped --glob.
+    let tmp = tempfile::tempdir().unwrap();
+    oversized_fixture(tmp.path());
+    let resp = call_tool(
+        tmp.path(),
+        "map",
+        serde_json::json!({"paths": ["."], "glob": "*.rs", "max_members": 3}),
+    );
+    let (_, _, text) = result_of(&resp);
+    let hint = text.lines().next().unwrap_or("");
+    assert!(hint.starts_with("# hint:"), "{text}");
+    assert!(
+        hint.contains("\"glob\":\"*.rs\""),
+        "the caller's glob must survive into the suggestion: {hint}"
+    );
+    assert!(
+        hint.contains("\"max_members\":3"),
+        "a tighter cap must not be loosened to 8: {hint}"
     );
 }

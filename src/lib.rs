@@ -1146,19 +1146,31 @@ const MAP_HINT_THRESHOLD_BYTES: usize = 25_000;
 /// Whether an answer of `output_len` bytes is worth a pointer at the digest
 /// preset.
 ///
-/// A hint is due when `paths` names a directory, the call is not already the
-/// digest answer, and the payload clears [`MAP_HINT_THRESHOLD_BYTES`]. A
-/// single file, a small package, and the digest answer itself therefore stay
-/// quiet.
+/// A hint is due when the call inspected more than one file, it is not
+/// already the digest answer, and the payload clears
+/// [`MAP_HINT_THRESHOLD_BYTES`]. A single file, a small package, and the
+/// digest answer itself therefore stay quiet.
+///
+/// "More than one file" is a property of the answer, not of the spelling: a
+/// directory, and a glob that expands to several entries, are the same
+/// question and get the same treatment. `map alpha` and `map 'alpha/*.rs'`
+/// render byte for byte the same thing, so hinting one and not the other
+/// would be arbitrary. Naming several files explicitly is the one spelling
+/// that stays quiet, because there the caller enumerated exactly what they
+/// wanted rather than asking for whatever a directory holds.
 ///
 /// The CLI and the MCP server share this decision and word it differently:
 /// the CLI has a shell to paste into, and the MCP client has a tool to call.
 /// Suggesting a shell command to a caller that speaks JSON-RPC would name an
 /// action it may have no way to take.
 pub(crate) fn map_hint_is_due(paths: &[PathBuf], already_digest: bool, output_len: usize) -> bool {
+    // `expand_existing` returns the path itself when it exists, so a single
+    // named file yields one entry and a pattern yields what it matched.
+    let inspects_several_files =
+        |p: &PathBuf| p.is_dir() || path_glob::expand_existing(p).len() > 1;
     !already_digest
         && output_len > MAP_HINT_THRESHOLD_BYTES
-        && paths.iter().any(|p| p.is_dir())
+        && paths.iter().any(inspects_several_files)
 }
 
 /// Quotes `s` for a POSIX shell, leaving a value that needs no quoting
@@ -1166,13 +1178,50 @@ pub(crate) fn map_hint_is_due(paths: &[PathBuf], already_digest: bool, output_le
 ///
 /// The hint below is written to be pasted, so a directory named `my code`
 /// has to come back as one argument rather than two.
+///
+/// `~` is deliberately not in the safe set, unlike the other punctuation
+/// here. A path that reaches this function still spelled `~/project` is a
+/// literal directory named `~`, because the shell expands a real tilde
+/// before the process starts; emitting it bare would hand the next shell a
+/// home directory instead.
 fn shell_quote(s: &str) -> String {
-    let safe = |c: char| c.is_ascii_alphanumeric() || "._/-+=:@,".contains(c);
+    let safe = |c: char| c.is_ascii_alphanumeric() || "._/-+=:@,%".contains(c);
     if !s.is_empty() && s.chars().all(safe) {
         s.to_string()
     } else {
         format!("'{}'", s.replace('\'', r"'\''"))
     }
+}
+
+/// Payload size in KB, rounded up.
+///
+/// The hint quotes this number next to a threshold expressed in KB, so
+/// rounding down would announce `24 KB` for the 25 001 bytes that just
+/// crossed a 25 KB bar.
+pub(crate) fn kb_ceil(bytes: usize) -> usize {
+    bytes.div_ceil(1024)
+}
+
+/// A resolved `map` call, reduced to what the suggestion has to reproduce.
+///
+/// Every field is a value the preset has already been applied to, which is
+/// what keeps the suggestion and the [`MapHintCall::already_digest`] test it
+/// travels with from being computed off two different sources.
+struct MapHintCall<'a> {
+    /// The paths as the caller wrote them, including any that did not
+    /// resolve. The suggestion stands in for the whole call, and one that
+    /// quietly dropped a missing path would come back without the note
+    /// saying it was missing.
+    requested_paths: &'a [PathBuf],
+    glob: Option<&'a str>,
+    /// The cap in force, not the one the caller typed: `None` means no cap.
+    max_members: Option<usize>,
+    json: bool,
+    compact: bool,
+    no_attrs: bool,
+    no_lines: bool,
+    /// Whether the call already renders the digest answer.
+    already_digest: bool,
 }
 
 /// Shell command pointing an oversized directory-wide `map` at the digest
@@ -1184,41 +1233,56 @@ fn shell_quote(s: &str) -> String {
 ///
 /// The suggestion names `map` whichever alias the caller entered through,
 /// since the two are one command (issue #37) and `digest … --preset digest`
-/// would read as nonsense. It repeats every path it was given and carries
-/// the scope and format flags of the call it qualifies — `--glob`,
-/// `--json`, `--compact` — so that following it answers the same question
-/// in the same shape rather than a narrower or broader one. A caller's own
-/// `--max-members` survives when it is already tighter than the suggested
-/// cap, for the same reason.
+/// would read as nonsense. It repeats every path it was given, including
+/// one that did not resolve, so the pasted command keeps the missing-path
+/// note the original answer carried. It carries the scope, display, and
+/// format flags of the call it qualifies — `--glob`, `--no-attrs`,
+/// `--no-lines`, `--json`, `--compact` — and a `--max-members` tighter than
+/// the suggested cap, so that following it answers the same question in the
+/// same shape rather than a narrower or broader one.
 ///
 /// A leading `-` needs more than shell quoting: the shell strips the quotes
 /// and clap then reads the value as a flag. The glob therefore takes the
 /// attached `--glob=…` form, and paths move behind a `--` separator when
 /// any of them starts with a dash.
 fn map_directory_hint(
-    a: &MapArgs,
-    paths: &[PathBuf],
-    already_digest: bool,
+    call: &MapHintCall<'_>,
+    inspected: &[PathBuf],
     output_len: usize,
 ) -> Option<String> {
-    if !map_hint_is_due(paths, already_digest, output_len) {
+    if !map_hint_is_due(inspected, call.already_digest, output_len) {
         return None;
     }
-    let rendered: Vec<String> = paths.iter().map(|p| p.display().to_string()).collect();
+    // `display()` is lossy, so a path that is not UTF-8 would come back as a
+    // well-formed command naming something that does not exist. There is no
+    // spelling of it to suggest; saying nothing beats saying that.
+    let rendered: Vec<&str> = call
+        .requested_paths
+        .iter()
+        .map(|p| p.to_str())
+        .collect::<Option<_>>()?;
     let quoted = rendered
         .iter()
         .map(|p| shell_quote(p))
         .collect::<Vec<_>>()
         .join(" ");
 
-    let cap = a.max_members.map_or(8, |m| m.min(8));
+    let cap = call.max_members.map_or(8, |m| m.min(8));
     let mut flags = format!("--preset digest --max-members {}", cap);
-    if let Some(glob) = a.glob.as_deref() {
+    if let Some(glob) = call.glob {
         flags.push_str(&format!(" --glob={}", shell_quote(glob)));
     }
-    if a.json {
+    // Display filters the caller turned off stay off: re-enabling them would
+    // render something other than what was asked for, and usually more of it.
+    if call.no_attrs {
+        flags.push_str(" --no-attrs");
+    }
+    if call.no_lines {
+        flags.push_str(" --no-lines");
+    }
+    if call.json {
         flags.push_str(" --json");
-        if a.compact {
+        if call.compact {
             flags.push_str(" --compact");
         }
     }
@@ -1229,8 +1293,8 @@ fn map_directory_hint(
         format!("ast-bro map {} {}", quoted, flags)
     };
     Some(format!(
-        "# hint: this was a directory ({} KB); `{}` answers the same question in a fraction of the size",
-        output_len / 1024,
+        "# hint: this was a multi-file answer ({} KB); `{}` answers the same question in a fraction of the size",
+        kb_ceil(output_len),
         suggestion,
     ))
 }
@@ -1289,7 +1353,20 @@ fn run_map_digest(a: &MapArgs, digest_alias: bool) {
     let already_digest = matches!(detail, DetailLevel::Names)
         && !include_private
         && !include_fields
-        && max_members.is_some_and(|m| m <= 50);
+        && max_members.is_some_and(|m| m <= crate::defaults::MAX_MEMBERS);
+    // Every axis the suggestion reproduces is read from the same resolved
+    // value the test above used, so the two cannot answer for different
+    // calls if preset resolution is ever moved.
+    let hint_call = MapHintCall {
+        requested_paths: &a.paths,
+        glob: a.glob.as_deref(),
+        max_members,
+        json: a.json,
+        compact: a.compact,
+        no_attrs: a.no_attrs,
+        no_lines: a.no_lines,
+        already_digest,
+    };
 
     let rendered = if a.json {
         crate::core::render_json_map(&results, &map_opts, pretty)
@@ -1329,7 +1406,7 @@ fn run_map_digest(a: &MapArgs, digest_alias: bool) {
         }
     };
     println!("{}", rendered);
-    if let Some(hint) = map_directory_hint(a, &paths, already_digest, rendered.len()) {
+    if let Some(hint) = map_directory_hint(&hint_call, &paths, rendered.len()) {
         eprintln!("{}", hint);
     }
 }
@@ -2384,5 +2461,63 @@ mod tests {
         assert_eq!(preset_max_members(Some(8), true), Some(8));
         assert_eq!(preset_max_members(Some(8), false), Some(8));
         assert_eq!(preset_max_members(None, false), None);
+    }
+}
+
+#[cfg(test)]
+mod hint_tests {
+    use super::{kb_ceil, shell_quote};
+
+    #[test]
+    fn kb_never_reads_below_the_threshold_it_just_crossed() {
+        // The message quotes this next to a 25 KB bar, so 25_001 bytes must
+        // not announce themselves as 24 KB.
+        assert_eq!(kb_ceil(25_001), 25);
+        assert_eq!(kb_ceil(1), 1);
+        assert_eq!(kb_ceil(1024), 1);
+        assert_eq!(kb_ceil(1025), 2);
+        assert_eq!(kb_ceil(0), 0);
+    }
+
+    #[test]
+    fn shell_quote_leaves_a_plain_path_alone() {
+        assert_eq!(shell_quote("src/adapters"), "src/adapters");
+        // `%` has no meaning in a POSIX shell word, so quoting it is noise.
+        assert_eq!(shell_quote("build%20out"), "build%20out");
+    }
+
+    #[test]
+    fn shell_quote_keeps_a_tilde_quoted() {
+        // A path still spelled `~/project` here is a directory named `~`:
+        // a real tilde was expanded before this process started. Emitting it
+        // bare would send the next shell to the home directory instead.
+        assert_eq!(shell_quote("~/project"), "'~/project'");
+        assert_eq!(shell_quote("~"), "'~'");
+    }
+
+    #[test]
+    fn a_quoted_value_round_trips_through_a_real_shell() {
+        // Asserting the escaped spelling by hand tests the author's model of
+        // quoting rather than the quoting, so ask a shell instead: what it
+        // echoes back has to be the value that went in.
+        for value in [
+            "it's here",
+            "my code",
+            "",
+            "~/project",
+            "-leading",
+            "a$b`c\"d",
+        ] {
+            let out = std::process::Command::new("/bin/sh")
+                .arg("-c")
+                .arg(format!("printf %s {}", shell_quote(value)))
+                .output()
+                .expect("run sh");
+            assert_eq!(
+                String::from_utf8_lossy(&out.stdout),
+                value,
+                "shell_quote({value:?}) did not survive the round trip"
+            );
+        }
     }
 }
