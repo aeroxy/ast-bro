@@ -187,7 +187,7 @@ enum Commands {
     Search {
         /// Search query (free-form text or symbol name)
         query: String,
-        /// Repository root to search in (default: ".")
+        /// Repository root to search in
         #[arg(default_value = crate::defaults::ROOT)]
         path: PathBuf,
         /// Number of results to return
@@ -219,7 +219,7 @@ enum Commands {
         /// `--line` are passed together.
         #[arg(required_unless_present_all = ["file", "line"], conflicts_with_all = ["file", "line"])]
         target: Option<String>,
-        /// Repository root containing the index (default: ".")
+        /// Repository root containing the index
         #[arg(default_value = crate::defaults::ROOT)]
         path: PathBuf,
         /// Alternative to the positional `<FILE>:<LINE>` form
@@ -337,7 +337,7 @@ enum Commands {
         /// Symbol to build context for (same form as callers/callees).
         #[arg(required_unless_present_all = ["file", "symbol"], conflicts_with_all = ["file", "symbol"])]
         target: Option<String>,
-        /// Repository root (default: ".").
+        /// Repository root.
         #[arg(default_value = crate::defaults::ROOT)]
         path: PathBuf,
         /// Alternative to the positional target.
@@ -346,7 +346,7 @@ enum Commands {
         /// Symbol name when using `--file`.
         #[arg(long, requires = "file")]
         symbol: Option<String>,
-        /// Token budget (default 8000). Rough estimate: 1 token ≈ 4 bytes.
+        /// Token budget. Rough estimate: 1 token ≈ 4 bytes.
         #[arg(long, default_value_t = crate::defaults::BUDGET)]
         budget: usize,
         #[arg(long)]
@@ -366,7 +366,7 @@ enum Commands {
         /// Symbol to look up. Optional when `--file` and `--symbol` are passed.
         #[arg(required_unless_present_all = ["file", "symbol"], conflicts_with_all = ["file", "symbol"])]
         target: Option<String>,
-        /// Repository root (default: ".").
+        /// Repository root.
         #[arg(default_value = crate::defaults::ROOT)]
         path: PathBuf,
         /// Alternative to the `<FILE>:<NAME>` positional form.
@@ -450,7 +450,7 @@ enum Commands {
         from: String,
         /// Destination symbol — where the call path should reach.
         to: String,
-        /// Repository root (default: ".").
+        /// Repository root.
         #[arg(default_value = crate::defaults::ROOT)]
         path: PathBuf,
         /// Max path length in hops.
@@ -469,7 +469,7 @@ enum Commands {
         /// Symbol to analyse (same form as callers/callees: `TakeDamage`, `Player.TakeDamage`, `src/Player.cs:TakeDamage`).
         #[arg(required_unless_present_all = ["file", "symbol"], conflicts_with_all = ["file", "symbol"])]
         target: Option<String>,
-        /// Repository root (default: ".").
+        /// Repository root.
         #[arg(default_value = crate::defaults::ROOT)]
         path: PathBuf,
         /// Alternative to the positional target.
@@ -478,7 +478,7 @@ enum Commands {
         /// Symbol name when using `--file`.
         #[arg(long, requires = "file")]
         symbol: Option<String>,
-        /// Transitive depth (default 2).
+        /// Transitive depth.
         #[arg(long, default_value_t = crate::defaults::IMPACT_DEPTH)]
         depth: usize,
         /// Cap how many results are *displayed* per section. Sections are
@@ -507,7 +507,7 @@ enum Commands {
     },
     /// Build, refresh, or inspect the per-repo search index
     Index {
-        /// Repository root (default: ".")
+        /// Repository root
         #[arg(default_value = crate::defaults::ROOT)]
         path: PathBuf,
         /// Drop any existing cache and rebuild from scratch
@@ -1140,6 +1140,21 @@ pub(crate) fn resolve_paths_for_mcp(
 /// preset first, then lets explicitly-passed flags override it, so
 /// `digest --include-private` and `map --preset digest --max-members 8`
 /// both mean what they say.
+/// Member cap for a `map` run: an explicit `--max-members`, else the digest
+/// preset's cap, else uncapped.
+///
+/// Extracted from [`run_map_digest`] so a test can assert the preset applies
+/// [`crate::defaults::MAX_MEMBERS`]. This site is invisible to the guards in
+/// `defaults`, which see attributes and struct fields — it once held its own
+/// literal 50, and the MCP `digest` tool moved without it.
+fn preset_max_members(explicit: Option<usize>, preset_digest: bool) -> Option<usize> {
+    explicit.or(if preset_digest {
+        Some(crate::defaults::MAX_MEMBERS)
+    } else {
+        None
+    })
+}
+
 fn run_map_digest(a: &MapArgs, digest_alias: bool) {
     let command = if digest_alias { "digest" } else { "map" };
     let paths = require_paths(command, &a.paths, a.json);
@@ -1164,7 +1179,7 @@ fn run_map_digest(a: &MapArgs, digest_alias: bool) {
     } else {
         !preset_digest
     };
-    let max_members = a.max_members.or(if preset_digest { Some(50) } else { None });
+    let max_members = preset_max_members(a.max_members, preset_digest);
     // Docs ride only on the `full` detail level (and can still be dropped
     // there with --no-docs). This also governs the JSON payload, which is
     // what makes `digest --json` shed its doc-comment weight.
@@ -2246,5 +2261,34 @@ fn print_change(target: &str, phase: &str, change: &installers::Change) {
             )
         }
         NotApplicable => println!("{:<14} {:<10} n/a", target, phase),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `--preset digest` caps members at the constant the MCP `digest` tool
+    /// also reads, so the two describe one behavior.
+    ///
+    /// The literal that used to live here was invisible to every guard in
+    /// `defaults`: it was neither a clap default, a serde default, nor a
+    /// struct field, so changing `MAX_MEMBERS` moved the MCP tool and left
+    /// the CLI capping at 50.
+    #[test]
+    fn preset_digest_caps_members_at_the_shared_constant() {
+        assert_eq!(
+            preset_max_members(None, true),
+            Some(crate::defaults::MAX_MEMBERS)
+        );
+    }
+
+    /// An explicit `--max-members` wins over the preset, and a plain `map`
+    /// stays uncapped.
+    #[test]
+    fn explicit_max_members_overrides_the_preset() {
+        assert_eq!(preset_max_members(Some(8), true), Some(8));
+        assert_eq!(preset_max_members(Some(8), false), Some(8));
+        assert_eq!(preset_max_members(None, false), None);
     }
 }

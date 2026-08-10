@@ -38,12 +38,12 @@ pub struct DepOptions {
 impl Default for DepOptions {
     fn default() -> Self {
         Self {
-            root: PathBuf::from("."),
+            root: PathBuf::from(crate::defaults::ROOT),
             rebuild: false,
             include_external: false,
-            max_depth: 3,
-            limit: 200,
-            min_cycle_size: 2,
+            max_depth: crate::defaults::FILE_DEPTH,
+            limit: crate::defaults::LIMIT,
+            min_cycle_size: crate::defaults::MIN_SIZE,
             output: OutputMode::Text,
         }
     }
