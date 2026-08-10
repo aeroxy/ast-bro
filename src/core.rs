@@ -527,11 +527,10 @@ fn _modifiers(d: &Declaration, lang: &str) -> Vec<String> {
 
 fn _deprecated(d: &Declaration, lang: &str) -> bool {
     let attr_has = |needle: &str| d.attrs.iter().any(|a| a.contains(needle));
-    let group_docs = d.group.iter().flat_map(|g| &g.docs);
     let doc_has = |needle: &str| {
         d.docs
             .iter()
-            .chain(group_docs.clone())
+            .chain(d.group.iter().flat_map(|g| &g.docs))
             .any(|x| x.contains(needle))
     };
     match lang {
@@ -547,7 +546,7 @@ fn _deprecated(d: &Declaration, lang: &str) -> bool {
         "csharp" => attr_has("[Obsolete") || attr_has("[ Obsolete"),
         // Go convention: a `Deprecated:` paragraph in the doc comment.
         // A group's comment deprecates every member of the group, so
-        // `doc_has` reads `group_docs` as well.
+        // `doc_has` reads the group's docs alongside the declaration's.
         "go" => doc_has("Deprecated:"),
         _ => false,
     }

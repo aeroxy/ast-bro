@@ -1,9 +1,28 @@
 use super::base::{collapse_ws, count_parse_errors, field_text, LanguageAdapter};
-use crate::core::{CallKind, CallSite, Declaration, DeclarationGroup, DeclarationKind, ParseResult};
+use crate::core::{
+    CallKind, CallSite, Declaration, DeclarationGroup, DeclarationKind, ParseResult,
+};
 use ast_grep_core::{Doc, Node};
 use std::path::Path;
 
 pub struct GoAdapter;
+
+/// The node `tree-sitter-go` wraps a `var ( … )` block's specs in. The
+/// parens live inside it rather than on the declaration, which is why it
+/// is a group tell of its own — and why reaching a var block's members
+/// means descending through it. Both sites read this constant: spelling
+/// it twice is how a grammar rename silently empties every parenthesised
+/// `var` block instead of failing.
+const VAR_SPEC_LIST: &str = "var_spec_list";
+
+/// The `tree-sitter-go` node kinds that mark a `const` / `var` / `type`
+/// declaration as a parenthesised group. `const ( … )` and `type ( … )`
+/// keep their parens as direct children of the declaration, so `"("` is
+/// the tell for both; only `var` interposes a spec list. The spec-list
+/// names for the other two are a hedge against a grammar that starts
+/// interposing one for them as well, which would move the parens out of
+/// reach the same way.
+const GROUP_KINDS: &[&str] = &["(", VAR_SPEC_LIST, "const_spec_list", "type_spec_list"];
 
 impl LanguageAdapter for GoAdapter {
     fn language_name(&self) -> &'static str {
@@ -202,19 +221,13 @@ fn _type_declaration_to_decls<'a, D: Doc>(node: &Node<'a, D>, src: &[u8]) -> Vec
 /// and the comment travels as a `group` on every member instead of being
 /// handed to whichever member happens to come first (issue #46).
 ///
-/// Two grammar shapes spell a group: `const ( … )` keeps its parens as
-/// direct children of the declaration, while `var ( … )` wraps its specs in
-/// a `var_spec_list` and puts the parens there. A spec list node exists
-/// only for the parenthesised form, so either tell is conclusive.
+/// Two grammar shapes spell a group, both listed in [`GROUP_KINDS`].
 fn _group_context<'a, D: Doc>(
     node: &Node<'a, D>,
 ) -> (Option<Node<'a, D>>, Option<DeclarationGroup>) {
-    let grouped = node.children().any(|c| {
-        matches!(
-            c.kind().as_ref(),
-            "(" | "const_spec_list" | "var_spec_list" | "type_spec_list"
-        )
-    });
+    let grouped = node
+        .children()
+        .any(|c| GROUP_KINDS.contains(&c.kind().as_ref()));
     if !grouped {
         return (Some(node.clone()), None);
     }
@@ -640,7 +653,7 @@ fn _const_var_to_decls<'a, D: Doc>(
         let k = c.kind();
         if k == "const_spec" || k == "var_spec" {
             push(&c, &mut out);
-        } else if k == "var_spec_list" {
+        } else if k == VAR_SPEC_LIST {
             for spec in c.children() {
                 if spec.kind() == "var_spec" {
                     push(&spec, &mut out);
@@ -765,8 +778,7 @@ fn _spec_docs<'a, D: Doc>(
     };
     let doc_start = comments
         .first()
-        .map(|c| c.range().start)
-        .unwrap_or(node.range().start);
+        .map_or(node.range().start, |c| c.range().start);
     (
         comments.iter().map(|c| c.text().into_owned()).collect(),
         doc_start,
@@ -880,14 +892,13 @@ fn _split_callee_go<'a, D: Doc>(
             let field = node.field("field")?;
             let operand = node.field("operand");
             let name = String::from_utf8_lossy(&src[field.range()]).to_string();
-            let receiver = operand
-                .map(|o| collapse_ws(&String::from_utf8_lossy(&src[o.range()])));
+            let receiver = operand.map(|o| collapse_ws(&String::from_utf8_lossy(&src[o.range()])));
             Some((name, receiver, CallKind::Call))
         }
         "index_expression" | "parenthesized_expression" => {
-            let inner = node.field("operand").or_else(|| {
-                node.children().find(|c| c.is_named())
-            })?;
+            let inner = node
+                .field("operand")
+                .or_else(|| node.children().find(|c| c.is_named()))?;
             _split_callee_go(&inner, src)
         }
         _ => {
