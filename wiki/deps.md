@@ -51,8 +51,8 @@ src/deps/
 ## Depth cutoff vs. graph end
 
 `--depth` (default 3) bounds both walks, and a walk that ran out of depth looks
-exactly like one that ran out of graph — which is how `reverse-deps
---depth 1` came to report `32 total` for a file with 53 importers (issue #32).
+exactly like one that ran out of graph — which is how `reverse-deps src/core.rs
+--depth 1` came to report `33 total` for a file with 54 importers (issue #32).
 `forward_info` / `reverse_info` return a `DepTraversal { hits,
 frontier_truncated }`; the plain `forward` / `reverse` wrappers stay for the
 callers that only want the hits.
