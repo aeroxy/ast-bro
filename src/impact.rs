@@ -971,13 +971,13 @@ pub mod mcp {
         #[derive(serde::Deserialize)]
         struct Args {
             target: String,
-            #[serde(default = "default_dot")]
+            #[serde(default = "crate::defaults::root")]
             path: PathBuf,
-            #[serde(default = "default_two")]
+            #[serde(default = "crate::defaults::impact_depth")]
             depth: usize,
-            #[serde(default = "default_limit")]
+            #[serde(default = "crate::defaults::limit")]
             limit: usize,
-            #[serde(default = "default_mode")]
+            #[serde(default = "crate::defaults::impact_mode")]
             mode: String,
             /// Ambiguous edges are shown by default (CLI parity) — set this to
             /// drop them. They carry the construction sites of struct-literal usage.
@@ -992,10 +992,6 @@ pub mod mcp {
             #[serde(default)]
             json: bool,
         }
-        fn default_dot() -> PathBuf { PathBuf::from(".") }
-        fn default_two() -> usize { 2 }
-        fn default_limit() -> usize { 200 }
-        fn default_mode() -> String { "all".into() }
 
         let a: Args = match serde_json::from_value(args) {
             Ok(v) => v,

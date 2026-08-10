@@ -51,7 +51,7 @@ pub fn list() -> Value {
                         },
                         "include_private": { "type": "boolean" },
                         "include_fields":  { "type": "boolean" },
-                        "max_members":     { "type": "integer", "minimum": 0, "description": "Cap members per type (default 50); the output reports what was cut." },
+                        "max_members":     { "type": "integer", "minimum": 0, "description": format!("Cap members per type (default {}); the output reports what was cut.", crate::defaults::MAX_MEMBERS) },
                         "glob":            { "type": "string", "description": "Glob filter applied during directory walk." },
                         "json":            { "type": "boolean" }
                     },
@@ -71,7 +71,7 @@ pub fn list() -> Value {
                             "description": "One or more symbol names to extract.",
                             "minItems": 1
                         },
-                        "limit":   { "type": "integer", "minimum": 0, "description": "Cap on rendered bodies when the target is a directory or glob (default 20). The reported total is always exact." },
+                        "limit":   { "type": "integer", "minimum": 0, "description": format!("Cap on rendered bodies when the target is a directory or glob (default {}). The reported total is always exact.", crate::defaults::SHOW_LIMIT) },
                         "json":    { "type": "boolean" }
                     },
                     "required": ["path", "symbols"]
@@ -102,10 +102,10 @@ pub fn list() -> Value {
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "path":            { "type": "string",  "description": "Crate root file, package init, or directory to auto-detect (default \".\")." },
+                        "path":            { "type": "string",  "description": format!("Crate root file, package init, or directory to auto-detect (default \"{}\").", crate::defaults::ROOT) },
                         "tree":            { "type": "boolean", "description": "Render as a hierarchical tree grouped by module." },
                         "include_chain":   { "type": "boolean", "description": "Append the via-chain on each entry (text mode only)." },
-                        "max_depth":       { "type": "integer", "description": "Recursion guard for re-export chains (default 16)." },
+                        "max_depth":       { "type": "integer", "description": format!("Recursion guard for re-export chains (default {}).", crate::defaults::SURFACE_MAX_DEPTH) },
                         "include_private": { "type": "boolean", "description": "Include private items — only meaningful for the fallback resolver." },
                         "lang":            { "type": "string",  "description": "Force a resolver: `rust`, `python`, or `fallback`." },
                         "json":            { "type": "boolean" }
@@ -119,7 +119,7 @@ pub fn list() -> Value {
                     "type": "object",
                     "properties": {
                         "file":    { "type": "string",  "description": "Path to the file whose imports to follow." },
-                        "depth":   { "type": "integer", "description": "Max BFS depth (default 3).", "minimum": 1 },
+                        "depth":   { "type": "integer", "description": format!("Max BFS depth (default {}).", crate::defaults::FILE_DEPTH), "minimum": 1 },
                         "hide_external": { "type": "boolean", "description": "Drop unresolved imports. Default: false (shown with [external] tag)." },
                         "rebuild": { "type": "boolean", "description": "Drop the cached graph and rebuild." },
                         "json":    { "type": "boolean" }
@@ -134,8 +134,8 @@ pub fn list() -> Value {
                     "type": "object",
                     "properties": {
                         "file":    { "type": "string",  "description": "Path to the file whose importers to find." },
-                        "depth":   { "type": "integer", "description": "Max BFS depth (default 3).", "minimum": 1 },
-                        "limit":   { "type": "integer", "description": "Cap result count (default 200).", "minimum": 1 },
+                        "depth":   { "type": "integer", "description": format!("Max BFS depth (default {}).", crate::defaults::FILE_DEPTH), "minimum": 1 },
+                        "limit":   { "type": "integer", "description": format!("Cap result count (default {}).", crate::defaults::LIMIT), "minimum": 1 },
                         "rebuild": { "type": "boolean" },
                         "json":    { "type": "boolean" }
                     },
@@ -148,8 +148,8 @@ pub fn list() -> Value {
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "path":     { "type": "string",  "description": "Repo root (default \".\")." },
-                        "min_size": { "type": "integer", "description": "Drop SCCs smaller than this (default 2).", "minimum": 1 },
+                        "path":     { "type": "string",  "description": format!("Repo root (default \"{}\").", crate::defaults::ROOT) },
+                        "min_size": { "type": "integer", "description": format!("Drop SCCs smaller than this (default {}).", crate::defaults::MIN_SIZE), "minimum": 1 },
                         "rebuild":  { "type": "boolean" },
                         "json":     { "type": "boolean" }
                     }
@@ -161,7 +161,7 @@ pub fn list() -> Value {
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "path":             { "type": "string",  "description": "Repo root (default \".\")." },
+                        "path":             { "type": "string",  "description": format!("Repo root (default \"{}\").", crate::defaults::ROOT) },
                         "json":             { "type": "boolean", "description": "Return JSON (schema `ast-bro.graph.v1`) instead of text." },
                         "hide_external":    { "type": "boolean", "description": "Drop unresolved imports. Default: false (shown with [external] tag)." },
                         "rebuild":          { "type": "boolean" }
@@ -175,8 +175,8 @@ pub fn list() -> Value {
                     "type": "object",
                     "properties": {
                         "query":     { "type": "string",  "description": "Search query (free-form text or symbol name)." },
-                        "path":      { "type": "string",  "description": "Repo root to search in (default \".\")." },
-                        "top_k":     { "type": "integer", "description": "Max results to return (default 10).", "minimum": 1 },
+                        "path":      { "type": "string",  "description": format!("Repo root to search in (default \"{}\").", crate::defaults::ROOT) },
+                        "top_k":     { "type": "integer", "description": format!("Max results to return (default {}).", crate::defaults::TOP_K), "minimum": 1 },
                         "alpha":     { "type": "number",  "description": "Override semantic-vs-BM25 weight (0.0=pure BM25, 1.0=pure semantic). Default auto-detects from query type." },
                         "languages": { "type": "array", "items": { "type": "string" }, "description": "Restrict to chunks of these languages (e.g. [\"rust\", \"python\"])." },
                         "json":      { "type": "boolean", "description": "Return JSON (schema `ast-bro.search.v1`) instead of text." }
@@ -192,8 +192,8 @@ pub fn list() -> Value {
                     "properties": {
                         "path":  { "type": "string",  "description": "Repo-relative path of the source chunk." },
                         "line":  { "type": "integer", "description": "1-indexed line within `path`.", "minimum": 1 },
-                        "root":  { "type": "string",  "description": "Repo root containing the index (default \".\")." },
-                        "top_k": { "type": "integer", "description": "Max results (default 10).", "minimum": 1 },
+                        "root":  { "type": "string",  "description": format!("Repo root containing the index (default \"{}\").", crate::defaults::ROOT) },
+                        "top_k": { "type": "integer", "description": format!("Max results (default {}).", crate::defaults::TOP_K), "minimum": 1 },
                         "json":  { "type": "boolean" }
                     },
                     "required": ["path", "line"]
@@ -205,7 +205,7 @@ pub fn list() -> Value {
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "path":    { "type": "string",  "description": "Repo root (default \".\")." },
+                        "path":    { "type": "string",  "description": format!("Repo root (default \"{}\").", crate::defaults::ROOT) },
                         "rebuild": { "type": "boolean", "description": "Drop existing cache and rebuild." },
                         "stats":   { "type": "boolean", "description": "Print index stats and return." },
                         "json":    { "type": "boolean" }
@@ -219,9 +219,9 @@ pub fn list() -> Value {
                     "type": "object",
                     "properties": {
                         "target":            { "type": "string",  "description": "Symbol name to look up." },
-                        "path":              { "type": "string",  "description": "Repo root (default \".\")." },
-                        "depth":             { "type": "integer", "description": "Max BFS depth (default 1).", "minimum": 1 },
-                        "limit":             { "type": "integer", "description": "Cap result count (default 200).", "minimum": 1 },
+                        "path":              { "type": "string",  "description": format!("Repo root (default \"{}\").", crate::defaults::ROOT) },
+                        "depth":             { "type": "integer", "description": format!("Max BFS depth (default {}).", crate::defaults::CALL_DEPTH), "minimum": 1 },
+                        "limit":             { "type": "integer", "description": format!("Cap result count (default {}).", crate::defaults::LIMIT), "minimum": 1 },
                         "hide_ambiguous":    { "type": "boolean", "description": "Drop callers with multiple candidates. Default: false (shown with Ambiguous tag)." },
                         "rebuild":           { "type": "boolean" },
                         "json":              { "type": "boolean" }
@@ -236,9 +236,9 @@ pub fn list() -> Value {
                     "type": "object",
                     "properties": {
                         "target":         { "type": "string",  "description": "Symbol name to look up." },
-                        "path":           { "type": "string",  "description": "Repo root (default \".\")." },
-                        "depth":          { "type": "integer", "description": "Max BFS depth (default 1).", "minimum": 1 },
-                        "limit":          { "type": "integer", "description": "Cap result count (default 200). The reported total stays exact.", "minimum": 1 },
+                        "path":           { "type": "string",  "description": format!("Repo root (default \"{}\").", crate::defaults::ROOT) },
+                        "depth":          { "type": "integer", "description": format!("Max BFS depth (default {}).", crate::defaults::CALL_DEPTH), "minimum": 1 },
+                        "limit":          { "type": "integer", "description": format!("Cap result count (default {}). The reported total stays exact.", crate::defaults::LIMIT), "minimum": 1 },
                         "hide_external":  { "type": "boolean", "description": "Drop unresolved/external callees. Default: false (shown with [unresolved]/[external] tags)." },
                         "rebuild":        { "type": "boolean" },
                         "json":           { "type": "boolean" }
@@ -254,8 +254,8 @@ pub fn list() -> Value {
                     "properties": {
                         "from":    { "type": "string",  "description": "Source symbol — where the path starts." },
                         "to":      { "type": "string",  "description": "Destination symbol — where the path should reach." },
-                        "path":    { "type": "string",  "description": "Repo root (default \".\")." },
-                        "depth":   { "type": "integer", "description": "Max path length in hops (default 12).", "minimum": 1 },
+                        "path":    { "type": "string",  "description": format!("Repo root (default \"{}\").", crate::defaults::ROOT) },
+                        "depth":   { "type": "integer", "description": format!("Max path length in hops (default {}).", crate::defaults::TRACE_DEPTH), "minimum": 1 },
                         "rebuild": { "type": "boolean" },
                         "json":    { "type": "boolean" }
                     },
@@ -269,10 +269,10 @@ pub fn list() -> Value {
                     "type": "object",
                     "properties": {
                         "target":            { "type": "string",  "description": "Symbol to analyse (e.g. 'handleRequest', 'Player.TakeDamage', 'src/Player.cs:TakeDamage')." },
-                        "path":              { "type": "string",  "description": "Repo root (default \".\")." },
-                        "depth":             { "type": "integer", "description": "Transitive depth (default 2).", "minimum": 1 },
-                        "limit":             { "type": "integer", "description": "Result cap per section (default 200).", "minimum": 1 },
-                        "mode":              { "type": "string",  "description": "Section: 'deps', 'dependents', 'tests', or 'all' (default).", "enum": ["deps", "dependents", "tests", "all"] },
+                        "path":              { "type": "string",  "description": format!("Repo root (default \"{}\").", crate::defaults::ROOT) },
+                        "depth":             { "type": "integer", "description": format!("Transitive depth (default {}).", crate::defaults::IMPACT_DEPTH), "minimum": 1 },
+                        "limit":             { "type": "integer", "description": format!("Result cap per section (default {}).", crate::defaults::LIMIT), "minimum": 1 },
+                        "mode":              { "type": "string",  "description": format!("Section: 'deps', 'dependents', 'tests', or '{}' (default).", crate::defaults::IMPACT_MODE), "enum": ["deps", "dependents", "tests", "all"] },
                         "hide_ambiguous":    { "type": "boolean", "description": "Drop ambiguous call-edge matches. Default: false (shown with Ambiguous tag)." },
                         "tests":             { "type": "boolean", "description": "Show only test files." },
                         "exclude_tests":     { "type": "boolean", "description": "Exclude test files from output." },
@@ -288,8 +288,8 @@ pub fn list() -> Value {
                     "type": "object",
                     "properties": {
                         "target": { "type": "string",  "description": "Symbol to build context for (same form as callers)." },
-                        "path":   { "type": "string",  "description": "Repo root (default \".\")." },
-                        "budget": { "type": "integer", "description": "Token budget (default 8000). ~4 bytes per token rough.", "minimum": 100 },
+                        "path":   { "type": "string",  "description": format!("Repo root (default \"{}\").", crate::defaults::ROOT) },
+                        "budget": { "type": "integer", "description": format!("Token budget (default {}). ~4 bytes per token rough.", crate::defaults::BUDGET), "minimum": 100 },
                         "json":   { "type": "boolean" }
                     },
                     "required": ["target"]
@@ -368,11 +368,11 @@ pub fn call(name: &str, args: Value) -> CallResult {
 #[derive(serde::Deserialize)]
 struct CallersArgs {
     target: String,
-    #[serde(default = "default_dot")]
+    #[serde(default = "crate::defaults::root")]
     path: PathBuf,
-    #[serde(default = "default_one")]
+    #[serde(default = "crate::defaults::call_depth")]
     depth: usize,
-    #[serde(default = "default_two_hundred")]
+    #[serde(default = "crate::defaults::limit")]
     limit: usize,
     /// Hide ambiguous callers (default: false — show them tagged red).
     #[serde(default)]
@@ -384,11 +384,11 @@ struct CallersArgs {
 #[derive(serde::Deserialize)]
 struct CalleesArgs {
     target: String,
-    #[serde(default = "default_dot")]
+    #[serde(default = "crate::defaults::root")]
     path: PathBuf,
-    #[serde(default = "default_one")]
+    #[serde(default = "crate::defaults::call_depth")]
     depth: usize,
-    #[serde(default = "default_two_hundred")]
+    #[serde(default = "crate::defaults::limit")]
     limit: usize,
     /// Hide unresolved/external callees (default: false — show them tagged).
     #[serde(default)]
@@ -397,9 +397,6 @@ struct CalleesArgs {
     json: bool,
 }
 
-fn default_one() -> usize { 1 }
-fn default_two_hundred() -> usize { 200 }
-fn default_dot() -> PathBuf { PathBuf::from(".") }
 
 /// Back-compat shim for renamed boolean args. Pre-rename clients sent
 /// `include_ambiguous` / `external` / `include_external` (true = show);
@@ -465,15 +462,14 @@ fn run_callees(mut args: Value) -> CallResult {
 struct TraceArgs {
     from: String,
     to: String,
-    #[serde(default = "default_dot")]
+    #[serde(default = "crate::defaults::root")]
     path: PathBuf,
-    #[serde(default = "default_trace_depth")]
+    #[serde(default = "crate::defaults::trace_depth")]
     depth: usize,
     #[serde(default)]
     json: bool,
 }
 
-fn default_trace_depth() -> usize { 12 }
 
 fn run_trace(args: Value) -> CallResult {
     let a: TraceArgs = match serde_json::from_value(args) {
@@ -613,12 +609,11 @@ struct DigestArgs {
     paths: Vec<PathBuf>,
     #[serde(default)] include_private: bool,
     #[serde(default)] include_fields: bool,
-    #[serde(default = "default_max_members")] max_members: usize,
+    #[serde(default = "crate::defaults::max_members")] max_members: usize,
     #[serde(default)] glob: Option<String>,
     #[serde(default)] json: bool,
 }
 
-fn default_max_members() -> usize { 50 }
 
 fn run_digest(args: Value) -> CallResult {
     let a: DigestArgs = match serde_json::from_value(args) {
@@ -670,14 +665,11 @@ struct ShowArgs {
     /// accepts. Kept as one field so the tool schema is unchanged.
     path: PathBuf,
     symbols: Vec<String>,
-    #[serde(default = "default_show_limit")]
+    #[serde(default = "crate::defaults::show_limit")]
     limit: usize,
     #[serde(default)] json: bool,
 }
 
-fn default_show_limit() -> usize {
-    crate::show::DEFAULT_LIMIT
-}
 
 fn run_show(args: Value) -> CallResult {
     let a: ShowArgs = match serde_json::from_value(args) {
@@ -755,22 +747,16 @@ struct ImplementsArgs {
 
 #[derive(Deserialize, Default)]
 struct SurfaceArgs {
-    #[serde(default = "default_surface_path")]
+    #[serde(default = "crate::defaults::root")]
     path: PathBuf,
     #[serde(default)] tree: bool,
     #[serde(default)] include_chain: bool,
-    #[serde(default = "default_surface_max_depth")] max_depth: usize,
+    #[serde(default = "crate::defaults::surface_max_depth")] max_depth: usize,
     #[serde(default)] include_private: bool,
     #[serde(default)] lang: Option<String>,
     #[serde(default)] json: bool,
 }
 
-fn default_surface_path() -> PathBuf {
-    PathBuf::from(".")
-}
-fn default_surface_max_depth() -> usize {
-    16
-}
 
 fn run_surface(args: Value) -> CallResult {
     let a: SurfaceArgs = match serde_json::from_value(args) {
@@ -860,7 +846,7 @@ fn run_implements(args: Value) -> CallResult {
 #[derive(Deserialize, Default)]
 struct DepsArgs {
     file: PathBuf,
-    #[serde(default = "default_depth")] depth: usize,
+    #[serde(default = "crate::defaults::file_depth")] depth: usize,
     #[serde(default)] hide_external: bool,
     #[serde(default)] rebuild: bool,
     #[serde(default)] json: bool,
@@ -869,32 +855,28 @@ struct DepsArgs {
 #[derive(Deserialize, Default)]
 struct ReverseDepsArgs {
     file: PathBuf,
-    #[serde(default = "default_depth")] depth: usize,
-    #[serde(default = "default_limit")] limit: usize,
+    #[serde(default = "crate::defaults::file_depth")] depth: usize,
+    #[serde(default = "crate::defaults::limit")] limit: usize,
     #[serde(default)] rebuild: bool,
     #[serde(default)] json: bool,
 }
 
 #[derive(Deserialize, Default)]
 struct CyclesArgs {
-    #[serde(default = "default_path")] path: PathBuf,
-    #[serde(default = "default_min_size")] min_size: usize,
+    #[serde(default = "crate::defaults::root")] path: PathBuf,
+    #[serde(default = "crate::defaults::min_size")] min_size: usize,
     #[serde(default)] rebuild: bool,
     #[serde(default)] json: bool,
 }
 
 #[derive(Deserialize, Default)]
 struct GraphArgs {
-    #[serde(default = "default_path")] path: PathBuf,
+    #[serde(default = "crate::defaults::root")] path: PathBuf,
     #[serde(default)] json: bool,
     #[serde(default)] hide_external: bool,
     #[serde(default)] rebuild: bool,
 }
 
-fn default_depth() -> usize { 3 }
-fn default_limit() -> usize { 200 }
-fn default_min_size() -> usize { 2 }
-fn default_path() -> PathBuf { PathBuf::from(".") }
 
 fn run_deps(mut args: Value) -> CallResult {
     translate_renamed_bool(&mut args, "external", "hide_external");

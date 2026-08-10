@@ -7,6 +7,7 @@ mod calls;
 mod cli_error;
 mod context;
 mod core;
+mod defaults;
 mod deps;
 mod file_filter;
 mod graph_cache;
@@ -69,7 +70,7 @@ enum Commands {
         /// Cap on rendered bodies when more than one file is searched.
         /// Single-file `show` is never capped; the header always reports
         /// the true total.
-        #[arg(long, default_value_t = crate::show::DEFAULT_LIMIT)]
+        #[arg(long, default_value_t = crate::defaults::SHOW_LIMIT)]
         limit: usize,
         /// Emit output as JSON instead of text
         #[arg(long)]
@@ -136,7 +137,7 @@ enum Commands {
         global: bool,
         #[arg(long)]
         always: bool,
-        #[arg(long, default_value_t = 200)]
+        #[arg(long, default_value_t = crate::defaults::HOOK_MIN_LINES)]
         min_lines: usize,
         #[arg(long)]
         dry_run: bool,
@@ -175,7 +176,7 @@ enum Commands {
     Hook {
         #[arg(long)]
         protocol: String,
-        #[arg(long, default_value_t = 200)]
+        #[arg(long, default_value_t = crate::defaults::HOOK_MIN_LINES)]
         min_lines: usize,
         #[arg(long)]
         always: bool,
@@ -187,10 +188,10 @@ enum Commands {
         /// Search query (free-form text or symbol name)
         query: String,
         /// Repository root to search in (default: ".")
-        #[arg(default_value = ".")]
+        #[arg(default_value = crate::defaults::ROOT)]
         path: PathBuf,
         /// Number of results to return
-        #[arg(short = 'k', long = "top-k", default_value_t = 10)]
+        #[arg(short = 'k', long = "top-k", default_value_t = crate::defaults::TOP_K)]
         top_k: usize,
         /// Override auto alpha (semantic vs. BM25 weight, 0.0–1.0)
         #[arg(long)]
@@ -219,7 +220,7 @@ enum Commands {
         #[arg(required_unless_present_all = ["file", "line"], conflicts_with_all = ["file", "line"])]
         target: Option<String>,
         /// Repository root containing the index (default: ".")
-        #[arg(default_value = ".")]
+        #[arg(default_value = crate::defaults::ROOT)]
         path: PathBuf,
         /// Alternative to the positional `<FILE>:<LINE>` form
         #[arg(long, requires = "line")]
@@ -227,7 +228,7 @@ enum Commands {
         /// 1-indexed line number when using `--file`
         #[arg(long, requires = "file")]
         line: Option<u32>,
-        #[arg(short = 'k', long = "top-k", default_value_t = 10)]
+        #[arg(short = 'k', long = "top-k", default_value_t = crate::defaults::TOP_K)]
         top_k: usize,
         #[arg(long)]
         json: bool,
@@ -237,7 +238,7 @@ enum Commands {
     /// True public API surface — resolves `pub use` / `__all__` re-exports.
     Surface {
         /// Crate root file, package init, or directory to auto-detect.
-        #[arg(default_value = ".")]
+        #[arg(default_value = crate::defaults::ROOT)]
         path: PathBuf,
         /// Render as a hierarchical tree grouped by module.
         #[arg(long)]
@@ -246,7 +247,7 @@ enum Commands {
         #[arg(long)]
         include_chain: bool,
         /// Recursion guard for re-export chains.
-        #[arg(long, default_value_t = 16)]
+        #[arg(long, default_value_t = crate::defaults::SURFACE_MAX_DEPTH)]
         max_depth: usize,
         /// Include private items (only meaningful for fallback languages).
         #[arg(long)]
@@ -264,7 +265,7 @@ enum Commands {
     /// Forward import-graph traversal: what does this file import (transitively)?
     Deps {
         file: PathBuf,
-        #[arg(long, default_value_t = 3)]
+        #[arg(long, default_value_t = crate::defaults::FILE_DEPTH)]
         depth: usize,
         /// Hide unresolved external imports from the footer.
         /// Shown by default (tagged `[external]`); set this flag to drop them.
@@ -281,11 +282,11 @@ enum Commands {
     /// Reverse import-graph: who imports this file (transitively)?
     ReverseDeps {
         file: PathBuf,
-        #[arg(long, default_value_t = 3)]
+        #[arg(long, default_value_t = crate::defaults::FILE_DEPTH)]
         depth: usize,
         /// Cap how many importers are *displayed*. The walk is unbounded so
         /// the reported total is exact.
-        #[arg(long, default_value_t = 200)]
+        #[arg(long, default_value_t = crate::defaults::LIMIT)]
         limit: usize,
         /// Show only importers from test files (path heuristic: tests/, __tests__/, *_test.*, *.spec.*, …).
         #[arg(long)]
@@ -302,9 +303,9 @@ enum Commands {
     },
     /// Find import cycles via Tarjan SCC.
     Cycles {
-        #[arg(default_value = ".")]
+        #[arg(default_value = crate::defaults::ROOT)]
         path: PathBuf,
-        #[arg(long, default_value_t = 2)]
+        #[arg(long, default_value_t = crate::defaults::MIN_SIZE)]
         min_size: usize,
         #[arg(long)]
         rebuild: bool,
@@ -315,7 +316,7 @@ enum Commands {
     },
     /// Emit the dep graph (text or JSON).
     Graph {
-        #[arg(default_value = ".")]
+        #[arg(default_value = crate::defaults::ROOT)]
         path: PathBuf,
         #[arg(long)]
         json: bool,
@@ -337,7 +338,7 @@ enum Commands {
         #[arg(required_unless_present_all = ["file", "symbol"], conflicts_with_all = ["file", "symbol"])]
         target: Option<String>,
         /// Repository root (default: ".").
-        #[arg(default_value = ".")]
+        #[arg(default_value = crate::defaults::ROOT)]
         path: PathBuf,
         /// Alternative to the positional target.
         #[arg(long, requires = "symbol")]
@@ -346,7 +347,7 @@ enum Commands {
         #[arg(long, requires = "file")]
         symbol: Option<String>,
         /// Token budget (default 8000). Rough estimate: 1 token ≈ 4 bytes.
-        #[arg(long, default_value_t = 8000)]
+        #[arg(long, default_value_t = crate::defaults::BUDGET)]
         budget: usize,
         #[arg(long)]
         rebuild: bool,
@@ -366,7 +367,7 @@ enum Commands {
         #[arg(required_unless_present_all = ["file", "symbol"], conflicts_with_all = ["file", "symbol"])]
         target: Option<String>,
         /// Repository root (default: ".").
-        #[arg(default_value = ".")]
+        #[arg(default_value = crate::defaults::ROOT)]
         path: PathBuf,
         /// Alternative to the `<FILE>:<NAME>` positional form.
         #[arg(long, requires = "symbol")]
@@ -375,12 +376,12 @@ enum Commands {
         #[arg(long, requires = "file")]
         symbol: Option<String>,
         /// Max BFS depth (1 = direct callers only).
-        #[arg(long, default_value_t = 1)]
+        #[arg(long, default_value_t = crate::defaults::CALL_DEPTH)]
         depth: usize,
         /// Cap how many callers are *displayed* (mirrors reverse-deps).
         /// The walk itself is unbounded so the reported total is exact —
         /// raising `--depth` costs work regardless of this cap.
-        #[arg(long, default_value_t = 200)]
+        #[arg(long, default_value_t = crate::defaults::LIMIT)]
         limit: usize,
         /// Hide callers whose target is `Ambiguous` (multiple candidates).
         /// Shown by default (tagged red); set this flag to drop them.
@@ -410,17 +411,17 @@ enum Commands {
     Callees {
         #[arg(required_unless_present_all = ["file", "symbol"], conflicts_with_all = ["file", "symbol"])]
         target: Option<String>,
-        #[arg(default_value = ".")]
+        #[arg(default_value = crate::defaults::ROOT)]
         path: PathBuf,
         #[arg(long, requires = "symbol")]
         file: Option<String>,
         #[arg(long, requires = "file")]
         symbol: Option<String>,
-        #[arg(long, default_value_t = 1)]
+        #[arg(long, default_value_t = crate::defaults::CALL_DEPTH)]
         depth: usize,
         /// Cap how many callees are *displayed* (the header always reports
         /// the true total).
-        #[arg(long, default_value_t = 200)]
+        #[arg(long, default_value_t = crate::defaults::LIMIT)]
         limit: usize,
         /// Hide unresolved callees (the `Bare`/`External` bucket).
         /// Shown by default (tagged cyan/red); set this flag to drop them.
@@ -450,10 +451,10 @@ enum Commands {
         /// Destination symbol — where the call path should reach.
         to: String,
         /// Repository root (default: ".").
-        #[arg(default_value = ".")]
+        #[arg(default_value = crate::defaults::ROOT)]
         path: PathBuf,
         /// Max path length in hops.
-        #[arg(long, default_value_t = 12)]
+        #[arg(long, default_value_t = crate::defaults::TRACE_DEPTH)]
         depth: usize,
         /// Force a fresh call-graph build.
         #[arg(long)]
@@ -469,7 +470,7 @@ enum Commands {
         #[arg(required_unless_present_all = ["file", "symbol"], conflicts_with_all = ["file", "symbol"])]
         target: Option<String>,
         /// Repository root (default: ".").
-        #[arg(default_value = ".")]
+        #[arg(default_value = crate::defaults::ROOT)]
         path: PathBuf,
         /// Alternative to the positional target.
         #[arg(long, requires = "symbol")]
@@ -478,14 +479,14 @@ enum Commands {
         #[arg(long, requires = "file")]
         symbol: Option<String>,
         /// Transitive depth (default 2).
-        #[arg(long, default_value_t = 2)]
+        #[arg(long, default_value_t = crate::defaults::IMPACT_DEPTH)]
         depth: usize,
         /// Cap how many results are *displayed* per section. Sections are
         /// walked in full so their totals are exact.
-        #[arg(long, default_value_t = 200)]
+        #[arg(long, default_value_t = crate::defaults::LIMIT)]
         limit: usize,
         /// Section to show: `deps`, `dependents`, `tests`, or `all` (default).
-        #[arg(long, default_value = "all")]
+        #[arg(long, default_value = crate::defaults::IMPACT_MODE)]
         mode: String,
         /// Hide ambiguous call-edge matches from impact output.
         /// Shown by default (tagged red); set this flag to drop them.
@@ -507,7 +508,7 @@ enum Commands {
     /// Build, refresh, or inspect the per-repo search index
     Index {
         /// Repository root (default: ".")
-        #[arg(default_value = ".")]
+        #[arg(default_value = crate::defaults::ROOT)]
         path: PathBuf,
         /// Drop any existing cache and rebuild from scratch
         #[arg(long)]
