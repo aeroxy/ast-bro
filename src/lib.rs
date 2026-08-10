@@ -1140,21 +1140,6 @@ pub(crate) fn resolve_paths_for_mcp(
 /// preset first, then lets explicitly-passed flags override it, so
 /// `digest --include-private` and `map --preset digest --max-members 8`
 /// both mean what they say.
-/// Member cap for a `map` run: an explicit `--max-members`, else the digest
-/// preset's cap, else uncapped.
-///
-/// Extracted from [`run_map_digest`] so a test can assert the preset applies
-/// [`crate::defaults::MAX_MEMBERS`]. This site is invisible to the guards in
-/// `defaults`, which see attributes and struct fields — it once held its own
-/// literal 50, and the MCP `digest` tool moved without it.
-fn preset_max_members(explicit: Option<usize>, preset_digest: bool) -> Option<usize> {
-    explicit.or(if preset_digest {
-        Some(crate::defaults::MAX_MEMBERS)
-    } else {
-        None
-    })
-}
-
 fn run_map_digest(a: &MapArgs, digest_alias: bool) {
     let command = if digest_alias { "digest" } else { "map" };
     let paths = require_paths(command, &a.paths, a.json);
@@ -1193,7 +1178,7 @@ fn run_map_digest(a: &MapArgs, digest_alias: bool) {
         include_docs,
         include_attributes: !a.no_attrs,
         include_line_numbers: !a.no_lines,
-        max_doc_lines: 6,
+        max_doc_lines: crate::defaults::MAX_DOC_LINES,
         max_members,
     };
 
@@ -1212,7 +1197,7 @@ fn run_map_digest(a: &MapArgs, digest_alias: bool) {
                 include_attributes: !a.no_attrs,
                 include_line_numbers: !a.no_lines,
                 max_members_per_type: max_members.unwrap_or(usize::MAX),
-                max_heading_depth: 3,
+                max_heading_depth: crate::defaults::MAX_HEADING_DEPTH,
             };
             let root = if paths.len() == 1 && paths[0].is_dir() {
                 Some(paths[0].as_path())
@@ -1254,6 +1239,22 @@ fn run_map_digest(a: &MapArgs, digest_alias: bool) {
             }
         }
     }
+}
+
+/// Member cap for a `map` run: an explicit `--max-members`, else the digest
+/// preset's cap, else uncapped.
+///
+/// Extracted from [`run_map_digest`] so a test can assert the preset applies
+/// [`crate::defaults::MAX_MEMBERS`]. The guards in `defaults` see attributes
+/// and struct fields, never an expression, so a literal here would pass every
+/// one of them — as it did, leaving the CLI capped at 50 while the MCP
+/// `digest` tool followed the constant.
+fn preset_max_members(explicit: Option<usize>, preset_digest: bool) -> Option<usize> {
+    explicit.or(if preset_digest {
+        Some(crate::defaults::MAX_MEMBERS)
+    } else {
+        None
+    })
 }
 
 pub fn run() {

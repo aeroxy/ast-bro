@@ -564,7 +564,7 @@ fn run_map(args: Value) -> CallResult {
         include_docs,
         include_attributes: !a.no_attrs,
         include_line_numbers: !a.no_lines,
-        max_doc_lines: 6,
+        max_doc_lines: crate::defaults::MAX_DOC_LINES,
         max_members: a.max_members,
     };
     if a.json {
@@ -579,7 +579,7 @@ fn run_map(args: Value) -> CallResult {
             include_attributes: !a.no_attrs,
             include_line_numbers: !a.no_lines,
             max_members_per_type: a.max_members.unwrap_or(usize::MAX),
-            max_heading_depth: 3,
+            max_heading_depth: crate::defaults::MAX_HEADING_DEPTH,
         };
         let root = if paths.len() == 1 && paths[0].is_dir() {
             Some(paths[0].as_path())
@@ -632,7 +632,7 @@ fn run_digest(args: Value) -> CallResult {
             include_docs: false,
             include_attributes: true,
             include_line_numbers: true,
-            max_doc_lines: 6,
+            max_doc_lines: crate::defaults::MAX_DOC_LINES,
             max_members: Some(a.max_members),
         };
         CallResult::Text(with_missing_paths(
@@ -644,7 +644,7 @@ fn run_digest(args: Value) -> CallResult {
             include_private: a.include_private,
             include_fields: a.include_fields,
             max_members_per_type: a.max_members,
-            max_heading_depth: 3,
+            max_heading_depth: crate::defaults::MAX_HEADING_DEPTH,
             ..DigestOptions::default()
         };
         let root = if paths.len() == 1 && paths[0].is_dir() {

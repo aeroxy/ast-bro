@@ -302,7 +302,7 @@ impl Default for MapOptions {
             include_docs: true,
             include_attributes: true,
             include_line_numbers: true,
-            max_doc_lines: 6,
+            max_doc_lines: crate::defaults::MAX_DOC_LINES,
             max_members: None,
         }
     }
@@ -326,7 +326,7 @@ impl Default for DigestOptions {
             include_attributes: true,
             include_line_numbers: true,
             max_members_per_type: crate::defaults::MAX_MEMBERS,
-            max_heading_depth: 3,
+            max_heading_depth: crate::defaults::MAX_HEADING_DEPTH,
         }
     }
 }

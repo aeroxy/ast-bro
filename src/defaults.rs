@@ -47,6 +47,12 @@ pub const TOP_K: usize = 10;
 /// Members per type under `map --preset digest`.
 pub const MAX_MEMBERS: usize = 50;
 
+/// Doc-comment lines `map` prints per declaration before clipping.
+pub const MAX_DOC_LINES: usize = 6;
+
+/// Nesting levels of type headings `digest` renders before flattening.
+pub const MAX_HEADING_DEPTH: usize = 3;
+
 /// Token budget `context` fills, counted at roughly four bytes per token.
 pub const BUDGET: usize = 8000;
 
@@ -166,6 +172,26 @@ mod tests {
         out
     }
 
+    /// The file's lines up to its trailing `#[cfg(test)] mod …`.
+    ///
+    /// Fixtures below that line are exempt: one that read a constant would
+    /// stop noticing it change. The cut is the gated *module*, never a gated
+    /// item — `src/search/shared.rs` gates a single `pub fn` among production
+    /// code, and cutting there would blind the guards to the rest of the file.
+    fn production_lines(src: &str) -> Vec<&str> {
+        let lines: Vec<&str> = src.lines().collect();
+        let end = (0..lines.len())
+            .find(|&i| {
+                lines[i].contains("#[cfg(test)]")
+                    && lines[i + 1..]
+                        .iter()
+                        .find(|n| !n.trim().is_empty())
+                        .is_some_and(|n| n.trim_start().starts_with("mod "))
+            })
+            .unwrap_or(lines.len());
+        lines.into_iter().take(end).collect()
+    }
+
     /// Reports each offending line as `path:line: text`, relative to `src/`.
     fn offenders(hits: Vec<(PathBuf, usize, String)>) -> Vec<String> {
         hits.into_iter()
@@ -233,49 +259,108 @@ mod tests {
         );
     }
 
-    /// A struct literal sets a known default field from this module, not from
-    /// a number typed in place.
+    /// A field that reads a constant anywhere reads it everywhere.
     ///
     /// This is the class `default_value` and `#[serde(default)]` cannot see: a
-    /// value assembled in an `impl Default` body or a builder reaches the same
-    /// surfaces without passing through either attribute. `DepOptions`,
-    /// `SurfaceOptions`, and the `--preset digest` member cap all drifted that
-    /// way. Lines after a `#[cfg(test)]` are exempt — a fixture that read the
-    /// constant would stop noticing it change.
+    /// value assembled in an `impl Default` body or a struct literal reaches
+    /// the same surfaces without passing through either attribute. `DepOptions`,
+    /// `SurfaceOptions`, the `--preset digest` member cap, and both of
+    /// `MapOptions`' render caps drifted that way.
+    ///
+    /// The set of guarded field names is derived, not listed: a name earns its
+    /// place by being set from `crate::defaults` somewhere in the tree. That is
+    /// what a hand-written allowlist got wrong — it omitted
+    /// `max_members_per_type`, the very field the class was found through.
     #[test]
     fn struct_defaults_come_from_this_module() {
-        const FIELDS: [&str; 8] = [
-            "max_members", "max_depth", "min_lines", "min_size",
-            "min_cycle_size", "top_k", "budget", "limit",
-        ];
+        // Pass one: every field name that already reads a constant.
+        let mut shared: Vec<String> = Vec::new();
+        for path in sources() {
+            let src = fs::read_to_string(&path).expect("source is readable");
+            for line in production_lines(&src) {
+                if let Some((field, value)) = line.trim_start().split_once(": ") {
+                    if value.starts_with("crate::defaults::")
+                        || value.starts_with("PathBuf::from(crate::defaults::")
+                    {
+                        shared.push(field.to_string());
+                    }
+                }
+            }
+        }
+        shared.sort();
+        shared.dedup();
+        assert!(
+            shared.len() > 5,
+            "expected several shared fields, found {shared:?}"
+        );
+
+        // Pass two: the same names, set from a literal instead.
         let mut hits = Vec::new();
         for path in sources() {
             let src = fs::read_to_string(&path).expect("source is readable");
-            let production = src
-                .lines()
-                .position(|l| l.contains("#[cfg(test)]"))
-                .unwrap_or(usize::MAX);
-            for (i, line) in src.lines().enumerate().take(production) {
-                let trimmed = line.trim_start();
-                let Some((field, value)) = trimmed.split_once(": ") else {
+            for (i, line) in production_lines(&src).into_iter().enumerate() {
+                let Some((field, value)) = line.trim_start().split_once(": ") else {
                     continue;
                 };
-                if !FIELDS.contains(&field) {
+                if !shared.iter().any(|f| f == field) {
                     continue;
                 }
                 let value = value.trim_end_matches(',');
-                let literal = value.parse::<usize>().is_ok()
-                    || value.starts_with("PathBuf::from(\"");
-                if literal {
+                if value.parse::<usize>().is_ok() || value.starts_with("PathBuf::from(\"") {
                     hits.push((path.clone(), i, line.to_string()));
                 }
             }
         }
         assert!(
             hits.is_empty(),
-            "struct fields set from a literal instead of `crate::defaults`; \
-             an `impl Default` reaches the CLI and MCP as surely as an \
-             attribute does:\n{:#?}",
+            "fields set from a literal whose name reads `crate::defaults` \
+             elsewhere; an `impl Default` or a struct literal reaches the CLI \
+             and MCP as surely as an attribute does:\n{:#?}",
+            offenders(hits)
+        );
+    }
+
+    /// An `impl Default` body holds no bare values.
+    ///
+    /// The derived rule above cannot see the *first* site of a name: revert
+    /// `max_members_per_type` in `core.rs` and the name stops reading a
+    /// constant anywhere, so it drops out of the set that would have caught
+    /// it. This pass does not ask what a field is called — inside an
+    /// `impl Default`, every value is by definition a default, and its place
+    /// is this module.
+    #[test]
+    fn impl_default_bodies_hold_no_literals() {
+        let mut hits = Vec::new();
+        for path in sources() {
+            let src = fs::read_to_string(&path).expect("source is readable");
+            let mut depth = 0usize;
+            let mut inside = false;
+            for (i, line) in production_lines(&src).into_iter().enumerate() {
+                if !inside && line.trim_start().starts_with("impl Default for ") {
+                    inside = true;
+                    depth = 0;
+                }
+                if !inside {
+                    continue;
+                }
+                depth += line.matches('{').count();
+                depth = depth.saturating_sub(line.matches('}').count());
+                if let Some((_, value)) = line.trim_start().split_once(": ") {
+                    let value = value.trim_end_matches(',');
+                    if value.parse::<usize>().is_ok() || value.starts_with("PathBuf::from(\"") {
+                        hits.push((path.clone(), i, line.to_string()));
+                    }
+                }
+                if depth == 0 {
+                    inside = false;
+                }
+            }
+        }
+        assert!(
+            hits.is_empty(),
+            "literal values inside an `impl Default`; a default belongs in \
+             `crate::defaults`, where the CLI, the serde args, and the MCP \
+             schema all reach it:\n{:#?}",
             offenders(hits)
         );
     }
@@ -291,24 +376,31 @@ mod tests {
         for path in sources() {
             let src = fs::read_to_string(&path).expect("source is readable");
             for (i, line) in src.lines().enumerate() {
-                if !line.contains("\"description\"") || line.contains("format!") {
+                if !line.contains("\"description\"") {
                     continue;
                 }
-                // `(default 200)` and `(default \".\")` state a value;
-                // `(default: false)` and a bare `(default)` state neither.
-                let parenthesized = line.split("(default ").skip(1).any(|rest| {
-                    rest.starts_with(|c: char| c.is_ascii_digit()) || rest.starts_with('\\')
-                });
-                // `max_members=50`, the phrasing the `digest` tool used to
-                // describe itself with, which the shape above walks past.
-                let assigned = line.as_bytes().windows(3).any(|w| {
-                    (w[0].is_ascii_alphabetic() || w[0] == b'_')
-                        && w[1] == b'='
-                        && w[2].is_ascii_digit()
-                });
-                let states_a_value = parenthesized || assigned;
-                if states_a_value {
-                    hits.push((path.clone(), i, line.to_string()));
+                // One rule over every phrasing: wherever the word `default`
+                // introduces a value, that value must be the `{}` a `format!`
+                // fills. `(default 200)`, `(default: 200)`, `default=200` and
+                // `defaults to 200` all state a number; `(default: false)` and
+                // a bare `(default)` state none, and `crate::defaults::LIMIT`
+                // is the interpolation itself.
+                for rest in line.split("default").skip(1) {
+                    let value = rest
+                        .trim_start_matches([':', '=', ' '])
+                        .trim_start_matches("s to ")
+                        .trim_start_matches([':', '=', ' ']);
+                    // A quoted value must be the placeholder itself: `\"{}\"`
+                    // passes, `\".\"` does not. An unquoted one fails on a
+                    // digit, which lets `(default: false)` through.
+                    let states_a_value = match value.strip_prefix("\\\"") {
+                        Some(quoted) => !quoted.starts_with("{}"),
+                        None => value.starts_with(|c: char| c.is_ascii_digit()),
+                    };
+                    if states_a_value {
+                        hits.push((path.clone(), i, line.to_string()));
+                        break;
+                    }
                 }
             }
         }
