@@ -214,6 +214,94 @@ fn group_docs_render_once_and_marked() {
     );
 }
 
+/// Every member of a documented block stays visually attached to the
+/// `[group]` line documenting it. The three block kinds are the axis: a
+/// `const` / `var` group renders its members as consecutive one-liners,
+/// while a `type` group's members each push a trailing blank line, which
+/// is the case that separated a later member from its marker.
+#[test]
+fn a_groups_members_are_not_split_from_its_marker() {
+    let s = run(&["map", FIXTURE]);
+    let mut checked = 0;
+    for (marker, last_member) in [
+        ("[group] // Colors are the palette", "const Blue"),
+        ("[group] // Limits bound every request", "var MaxHops"),
+        ("[group] // Shapes are the shapes", "type Square"),
+    ] {
+        let from = s
+            .find(marker)
+            .unwrap_or_else(|| panic!("no {marker:?}:\n{s}"));
+        let to = s[from..]
+            .find(last_member)
+            .unwrap_or_else(|| panic!("no {last_member:?} after {marker:?}:\n{s}"));
+        // The renderer pushes `String::new()` for a separator, so a blank
+        // line inside the region is exactly "\n\n". Scanning `lines()`
+        // instead would count the indent before `last_member` as blank.
+        assert!(
+            !s[from..from + to].contains("\n\n"),
+            "a blank line splits {last_member:?} from {marker:?}:\n{s}"
+        );
+        checked += 1;
+    }
+    assert_eq!(checked, 3, "all three block kinds must be exercised");
+    // The blank line still separates the block from what follows it.
+    assert!(
+        s.contains("type Square struct  L46\n\n"),
+        "the group's own trailing blank line was swallowed:\n{s}"
+    );
+
+    // With the markers hidden there is nothing for a closed gap to attach
+    // a member to, so a documented block has to render exactly like an
+    // undocumented one. Otherwise the spacing alone tells the reader which
+    // block carries the comment they asked to hide.
+    let hidden = run(&["map", FIXTURE, "--no-docs"]);
+    for (first, second) in [
+        ("type Circle struct", "type Square"),
+        ("type Undocumented struct", "type AlsoNone"),
+    ] {
+        let from = hidden
+            .find(first)
+            .unwrap_or_else(|| panic!("no {first:?}:\n{hidden}"));
+        let to = hidden[from..]
+            .find(second)
+            .unwrap_or_else(|| panic!("no {second:?} after {first:?}:\n{hidden}"));
+        assert!(
+            hidden[from..from + to].contains("\n\n"),
+            "--no-docs must separate {second:?} from {first:?} the way an \
+             undocumented block is separated:\n{hidden}"
+        );
+    }
+}
+
+/// `surface` resolves a package's public API from its own `SurfaceEntry`,
+/// so a resolver that copies `docs` without `group` reports every member
+/// of a documented block as undocumented — the misreading this change
+/// exists to prevent, one surface over.
+#[test]
+fn surface_carries_a_blocks_documentation() {
+    let dir = std::path::Path::new(FIXTURE).parent().unwrap();
+    let out = run(&["surface", dir.to_str().unwrap(), "--json"]);
+    let v: serde_json::Value = serde_json::from_str(&out).expect("json");
+    let mut members = 0;
+    for e in v["entries"].as_array().expect("entries") {
+        let name = e["source_name"].as_str().unwrap_or_default();
+        // Every block member in the fixture, across all three block kinds.
+        if ![
+            "Red", "Blue", "MaxBytes", "MaxHops", "Ancient", "Obsolete", "CodeOK", "Square",
+        ]
+        .contains(&name)
+        {
+            continue;
+        }
+        members += 1;
+        assert!(
+            !docs(e, "group").is_empty(),
+            "{name} is a member of a documented block but surface reports no group:\n{e:#?}"
+        );
+    }
+    assert_eq!(members, 8, "every block member must be exercised");
+}
+
 #[test]
 fn two_blocks_whose_comments_read_the_same_stay_two_blocks() {
     // `// Deprecated: …` and generator banners repeat verbatim above

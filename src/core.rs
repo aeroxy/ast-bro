@@ -169,7 +169,7 @@ fn _is_false(b: &bool) -> bool {
 /// the range is also its identity: it is what tells two adjacent blocks
 /// apart when their comments happen to read the same, which is why the
 /// `--no-lines` projection leaves it in place.
-#[derive(Debug, Clone, Serialize, Default, PartialEq)]
+#[derive(Debug, Clone, Serialize, Default)]
 pub struct DeclarationGroup {
     pub docs: Vec<String>,
     pub start_line: usize,
@@ -664,6 +664,7 @@ pub fn render_map(result: &ParseResult, opts: &MapOptions) -> String {
     let mut prev_group = None;
     for decl in &result.declarations {
         if _map_eligible(decl, opts) {
+            _close_group_gap(decl, prev_group, opts, &mut lines);
             _push_group_docs(decl, prev_group, opts, "", &mut lines);
             prev_group = _group_id(decl);
         }
@@ -679,6 +680,31 @@ pub fn render_map(result: &ParseResult, opts: &MapOptions) -> String {
 /// they do.
 fn _group_id(decl: &Declaration) -> Option<usize> {
     decl.group.as_ref().map(|g| g.start_line)
+}
+
+/// Members of one block render as one block. A type pushes a blank line
+/// after itself, which for a `type ( … )` group would separate every
+/// member after the first from the `[group]` line documenting it — and a
+/// member set off by a blank line reads as an undocumented declaration of
+/// its own, which is the misreading the marker exists to prevent.
+///
+/// Gated on the same option as [`_push_group_docs`], since the two are one
+/// feature: with no `[group]` line on screen there is nothing for the
+/// closed gap to attach a member to, and closing it anyway would tell the
+/// reader by spacing alone which block carries the comment they asked to
+/// hide.
+fn _close_group_gap(
+    decl: &Declaration,
+    prev: Option<usize>,
+    opts: &MapOptions,
+    out: &mut Vec<String>,
+) {
+    if !opts.include_docs || prev.is_none() || _group_id(decl) != prev {
+        return;
+    }
+    if out.last().is_some_and(|line| line.is_empty()) {
+        out.pop();
+    }
 }
 
 /// Print a declaration group's shared documentation above the first member
@@ -880,6 +906,7 @@ fn _render_decl(decl: &Declaration, opts: &MapOptions, indent: usize, out: &mut 
             shown += 1;
         }
         if visible(child) {
+            _close_group_gap(child, prev_group, opts, out);
             _push_group_docs(child, prev_group, opts, &child_prefix, out);
             prev_group = _group_id(child);
         }

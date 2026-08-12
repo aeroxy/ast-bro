@@ -18,11 +18,16 @@ const VAR_SPEC_LIST: &str = "var_spec_list";
 /// The `tree-sitter-go` node kinds that mark a `const` / `var` / `type`
 /// declaration as a parenthesised group. `const ( … )` and `type ( … )`
 /// keep their parens as direct children of the declaration, so `"("` is
-/// the tell for both; only `var` interposes a spec list. The spec-list
-/// names for the other two are a hedge against a grammar that starts
-/// interposing one for them as well, which would move the parens out of
-/// reach the same way.
-const GROUP_KINDS: &[&str] = &["(", VAR_SPEC_LIST, "const_spec_list", "type_spec_list"];
+/// the tell for both; only `var` interposes a spec list.
+///
+/// Listing `const_spec_list` and `type_spec_list` here as well would read
+/// as insurance against a grammar that starts interposing one for them,
+/// and would not be: the traversal below reaches a block's members
+/// through `VAR_SPEC_LIST` alone, so such a block would be classified as
+/// a group and then yield nothing. What actually covers that upgrade is
+/// the fixture, whose `const ( … )` and `type ( … )` blocks fail the
+/// suite the moment their members stop being found.
+const GROUP_KINDS: &[&str] = &["(", VAR_SPEC_LIST];
 
 impl LanguageAdapter for GoAdapter {
     fn language_name(&self) -> &'static str {

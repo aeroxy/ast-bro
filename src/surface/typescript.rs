@@ -457,6 +457,7 @@ impl Walker {
             re_export_chain: chain.clone(),
             via_glob,
             docs: decl.docs.clone(),
+            group: decl.group.clone(),
         });
         if kind_lifts {
             for child in &decl.children {
@@ -480,6 +481,7 @@ impl Walker {
                     re_export_chain: chain.clone(),
                     via_glob,
                     docs: child.docs.clone(),
+                    group: child.group.clone(),
                 });
             }
         }

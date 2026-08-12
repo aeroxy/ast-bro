@@ -67,6 +67,7 @@ fn _walk(
             re_export_chain: Vec::new(),
             via_glob: false,
             docs: decl.docs.clone(),
+            group: decl.group.clone(),
         });
     }
 
