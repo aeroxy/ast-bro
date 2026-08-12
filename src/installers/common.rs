@@ -133,6 +133,10 @@ pub fn install_subagent_in(
 ///
 /// One command can serve several events, so an adapter registers the same entry
 /// once per event it wants to hear about.
+///
+/// A release that *moves* an event has to split this list from the one
+/// [`uninstall_json_hook_in`] and [`status_for`] are given: those two must still
+/// reach the abandoned event, and this one must not write it back.
 pub fn install_json_hook_in<F>(
     path: &Path,
     hook_paths: &[&[&str]],

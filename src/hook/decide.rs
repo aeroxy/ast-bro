@@ -120,13 +120,15 @@ fn map_levels() -> [(&'static str, crate::core::MapOptions); 4] {
 fn render_map_for(path: &Path) -> Option<String> {
     let res = crate::main_helpers::parse_file_for_hook(path)?;
     let mut full_bytes = 0usize;
-    // The smallest map any level produced, for the case where none of them fit
-    // and the marker has to say both what was shed and what was cut. Smallest
-    // rather than last: the `max_members` level trades members for `+N more`
-    // markers, which can leave it larger than the level before it.
-    let mut smallest: Option<(&'static str, String)> = None;
+    // The candidate that delivers the most entries, not the first that fits.
+    // Shedding is lossy in a different currency from trimming: a file of 2900
+    // private and 100 public functions fits once private items go, and that
+    // "success" hands over 100 declarations while leaving 93% of the budget
+    // unused, where trimming the level before it carries about 1350.
+    let mut best: Option<(usize, String)> = None;
     for (shed, opts) in map_levels() {
-        let map = crate::core::render_map(&res, &opts);
+        let units = crate::core::render_map_units(&res, &opts);
+        let map = units.join("\n");
         if shed.is_empty() {
             full_bytes = map.len();
         }
@@ -138,15 +140,59 @@ fn render_map_for(path: &Path) -> Option<String> {
         } else {
             shed_note(shed, path)
         };
-        if map.len() + note.len() <= MAP_BUDGET {
-            return Some(map + &note);
+        let fits = map.len() + note.len() <= MAP_BUDGET;
+        let (payload, delivered) = if fits {
+            (with_note(map, &note), entry_count(&units))
+        } else {
+            cap_map(units, shed, full_bytes, path)
+        };
+        // Strictly greater, so the richest level wins a tie.
+        if best.as_ref().is_none_or(|(most, _)| delivered > *most) {
+            best = Some((delivered, payload));
         }
-        if smallest.as_ref().is_none_or(|(_, best)| map.len() < best.len()) {
-            smallest = Some((shed, map));
+        if fits {
+            // No later level can deliver more: every level after this one only
+            // removes declarations. (Shedding docs and attributes removes none —
+            // they live inside a declaration's unit rather than beside it — but
+            // that level comes earlier, so it is already considered.) Stopping
+            // here leaves the common case, a small file whose full map fits, at a
+            // single render.
+            break;
         }
     }
-    let (shed, map) = smallest.expect("map_levels is never empty");
-    Some(cap_map(map, shed, full_bytes, path))
+    best.map(|(_, payload)| payload)
+}
+
+/// Entries a map carries: everything but its separators.
+///
+/// Used only to compare one candidate against another, and it does not count
+/// quite the same things at every level — `... +N more member(s)` markers exist
+/// only where `max_members` is set, which is the last level alone, and they are
+/// counted there. That cannot change a choice. Against the level before it, a
+/// capped type contributes `1 + min(50, N) + 1` where that one contributes
+/// `1 + N` with `N >= 51`, so the capped count is never higher, and the one tie a
+/// marker can manufacture, at `N == 51`, goes to the earlier level on the strict
+/// comparison. To beat a *trimmed* earlier level it would have to fit whole while
+/// that one overflowed, which bounds it by the same budget the trim saturates.
+fn entry_count(units: &[String]) -> usize {
+    units.iter().filter(|u| unit_indent(u).is_some()).count()
+}
+
+/// Appends `note` to `map`, on its own line.
+///
+/// A map whose last unit is a declaration does not end in a newline — a file with
+/// no declarations at all ends at its header — so the note has to be given one or
+/// it reads as part of that line.
+fn with_note(map: String, note: &str) -> String {
+    if note.is_empty() {
+        return map;
+    }
+    let mut out = map;
+    if !out.is_empty() && !out.ends_with('\n') {
+        out.push('\n');
+    }
+    out.push_str(note);
+    out
 }
 
 /// The line a shed map ends with, naming what is gone and how to get it.
@@ -157,55 +203,76 @@ fn shed_note(shed: &str, path: &Path) -> String {
     )
 }
 
-/// Drops whole lines from `map` until it fits [`MAP_BUDGET`], saying what went.
+/// The column a unit sits at, or `None` for a separator.
+///
+/// A unit's own indentation is the render prefix, so it is a reliable depth
+/// signal where a physical line is not: a doc comment keeps the indentation it
+/// had in the source, so its continuation lines land at arbitrary columns. A
+/// separator carries no indentation and therefore no structure — treating its
+/// column as zero is what let members outlive the header they belong to.
+fn unit_indent(unit: &str) -> Option<usize> {
+    let first = unit.lines().next().unwrap_or("");
+    if first.trim().is_empty() {
+        return None;
+    }
+    Some(first.len() - first.trim_start_matches(' ').len())
+}
+
+/// Drops whole units from a map until it fits [`MAP_BUDGET`], saying what went.
 ///
 /// The last resort, reached only when shedding every level of detail still left
 /// the map too big — a minified bundle, where the size is thousands of
 /// declarations rather than detail about a few. A silently short map is worse
 /// than a trimmed one: the reader treats a map as the file's whole shape and
 /// concludes a symbol does not exist, so the marker names what was shed on the
-/// way here, how many lines went, and the file's real size.
+/// way here, how many entries went, and the file's real size.
 ///
-/// Over-long lines are skipped rather than ending the scan. One declaration can
-/// be arbitrarily wide — a generated signature with thousands of parameters — and
-/// stopping at it would drop every declaration after it, which is the failure
-/// this function exists to prevent.
-fn cap_map(map: String, shed: &str, full_bytes: usize, path: &Path) -> String {
-    let total_lines = map.split_inclusive('\n').count();
+/// Two rules keep the result truthful. An over-wide unit is skipped rather than
+/// ending the scan, because one generated signature with thousands of parameters
+/// would otherwise drop every declaration after it. And a dropped unit takes
+/// every following unit indented deeper than it, because indentation is the only
+/// parent-child signal a map carries and a member kept without its type header
+/// reads as a member of the previous type.
+fn cap_map(units: Vec<String>, shed: &str, full_bytes: usize, path: &Path) -> (String, usize) {
+    let total = units.iter().map(String::len).sum::<usize>() + units.len();
     // Size the marker against the widest numbers it can carry, so the budget it
-    // comes out of is never too small; the real numbers are no wider, since
-    // `kept` never exceeds `map.len()` and `dropped` never exceeds `total_lines`.
+    // comes out of is never too small; the real numbers are no wider, since what
+    // is kept never exceeds the whole map and what is dropped never exceeds the
+    // unit count. One byte is held back for the newline before the marker.
     let budget = MAP_BUDGET
-        .saturating_sub(trim_note(map.len(), full_bytes, total_lines, shed, path).len());
-    let mut kept = String::with_capacity(budget.min(map.len()));
+        .saturating_sub(trim_note(total, full_bytes, units.len(), shed, path).len())
+        .saturating_sub(1);
+    let mut kept: Vec<String> = Vec::new();
+    let mut len = 0usize;
     let mut dropped = 0usize;
-    // Indentation is the only parent-child signal a map carries, so a skipped
-    // line takes its children with it. Keeping a member whose type header did
-    // not fit would file it under the previous type — a map that asserts a
-    // structure the file does not have, which is worse than a shorter one.
     let mut skipped_parent: Option<usize> = None;
-    for line in map.split_inclusive('\n') {
-        let indent = line.len() - line.trim_start_matches(' ').len();
-        if let Some(level) = skipped_parent {
-            if indent > level {
+    for unit in units {
+        let indent = unit_indent(&unit);
+        if let (Some(level), Some(column)) = (skipped_parent, indent) {
+            if column > level {
                 dropped += 1;
                 continue;
             }
             skipped_parent = None;
         }
-        if kept.len() + line.len() <= budget {
-            kept.push_str(line);
+        let cost = unit.len() + usize::from(!kept.is_empty());
+        if len + cost <= budget {
+            len += cost;
+            kept.push(unit);
         } else {
-            dropped += 1;
-            skipped_parent = Some(indent);
+            // A separator carries no structure, so dropping one starts no
+            // subtree; leaving the state alone keeps the enclosing one in force.
+            if let Some(column) = indent {
+                dropped += 1;
+                skipped_parent = Some(column);
+            }
         }
     }
-    let note = trim_note(kept.len(), full_bytes, dropped, shed, path);
-    debug_assert!(
-        kept.len() + note.len() <= MAP_BUDGET,
-        "trim overshot the budget"
-    );
-    kept + &note
+    let note = trim_note(len, full_bytes, dropped, shed, path);
+    let delivered = kept.iter().filter(|u| unit_indent(u).is_some()).count();
+    let out = with_note(kept.join("\n"), &note);
+    debug_assert!(out.len() <= MAP_BUDGET, "trim overshot the budget");
+    (out, delivered)
 }
 
 /// The line a trimmed map ends with. Separate from the cut so its width can be
@@ -220,7 +287,7 @@ fn trim_note(kept: usize, full_bytes: usize, dropped: usize, shed: &str, path: &
         "# note: {shed_clause}map trimmed to {kept} bytes from a {full_bytes} byte full map{}; \
 `ast-bro map {}` for the whole map, `ast-bro show {} <symbol>` for one body\n",
         if dropped > 0 {
-            format!(", {dropped} line(s) dropped")
+            format!(", {dropped} entr{} dropped", if dropped == 1 { "y" } else { "ies" })
         } else {
             String::new()
         },
@@ -469,9 +536,10 @@ mod tests {
         while map.len() <= MAX_MAP_BYTES * 2 {
             map.push_str(line);
         }
-        map.pop(); // last line now ends the string with no newline
+        map.pop(); // the last unit now ends without a newline
         let len = map.len();
-        let out = cap_map(map, "", len, Path::new("/tmp/x.rs"));
+        let units: Vec<String> = map.split('\n').map(str::to_string).collect();
+        let (out, _) = cap_map(units, "", len, Path::new("/tmp/x.rs"));
         assert!(out.len() <= MAP_BUDGET, "{} bytes", out.len());
         assert!(out.starts_with("# header\n"));
         assert!(out.contains("map trimmed to"));
@@ -499,7 +567,7 @@ mod tests {
                 for name in ["pub fn api_0", "pub fn api_399"] {
                     assert!(map.contains(name), "lost {name}:\n{}", &map[..300]);
                 }
-                assert!(map.contains("line(s) dropped"), "must say what it dropped");
+                assert!(map.contains("dropped"), "must say what it dropped");
             }
             other => panic!("expected a trimmed map: {other:?}"),
         }
@@ -538,66 +606,142 @@ mod tests {
         }
     }
 
-    /// A skipped line takes its children with it.
+    /// A dropped unit takes its children with it, whatever the text looks like.
     ///
     /// Indentation is the only parent-child signal a map has, so a member kept
-    /// without its type header would be filed under the previous type — a map
+    /// without its type header reads as a member of the previous type — a map
     /// asserting a structure the file does not have, which is worse than a
-    /// shorter one. The invariant checked is exactly that: every line the trim
-    /// kept still has each of its ancestors.
+    /// shorter one. Two shapes in the fixture are the ones that broke it before:
+    /// a nested type emits a separator *inside* its parent's member list, and a
+    /// doc comment keeps its source indentation, so its continuation lines land
+    /// at columns like 3 that say nothing about depth. The invariant checked is
+    /// exactly the claim: every unit the trim kept still has all of its
+    /// ancestors.
     #[test]
-    fn a_trim_never_keeps_a_line_whose_parent_it_dropped() {
+    fn a_trim_never_keeps_a_unit_whose_parent_it_dropped() {
+        let joined_len = |u: &[String]| u.iter().map(String::len).sum::<usize>() + u.len();
         // Headers far wider than their members, so the budget runs out in the
         // window where a header cannot fit but its members still can.
-        let mut map = String::from("# header\n");
+        let mut units: Vec<String> = vec!["# header".into()];
         let mut n = 2;
-        while map.len() <= MAP_BUDGET + 40_000 {
-            map.push_str(&format!("pub struct Wide{n}{}  L{n}\n", "X".repeat(2000)));
-            map.push_str(&format!("    pub fn m(&self)  L{}\n", n + 1));
-            map.push_str(&format!("    pub fn n(&self)  L{}\n", n + 2));
-            map.push('\n');
-            n += 4;
+        while joined_len(&units) <= MAP_BUDGET + 40_000 {
+            units.push(format!("public class Outer{n}{}  L{n}", "X".repeat(3000)));
+            units.push(format!("    public static class Inner{n}  L{}", n + 1));
+            units.push(format!("        void inner{n}()  L{}", n + 2));
+            // The separator a nested type emits, sitting between its parent's
+            // members rather than after the last one.
+            units.push(String::new());
+            units.push(format!("    void survivor{n}()  L{}", n + 3));
+            // A Javadoc unit: prefixed first line, continuation lines carrying
+            // the indentation they had in the source.
+            units.push(format!(
+                "    /**\n   * Doc for docd{n}.\n   */\n    void docd{n}()  L{}",
+                n + 4
+            ));
+            units.push(String::new());
+            n += 8;
         }
 
-        let indent_of = |l: &str| l.len() - l.trim_start_matches(' ').len();
-        // Each non-blank line's ancestors, by the nearest preceding line of
-        // smaller indent. Every line in the fixture is unique, so membership in
-        // the output is enough to tell kept from dropped.
+        // Each unit's ancestors, by the nearest preceding unit of smaller
+        // indent. Computed here rather than through `unit_indent`, so the
+        // expectation does not depend on the function under test: a blank unit
+        // is not a node, and reading its column as zero is the very mistake
+        // being guarded against.
         let mut ancestors: Vec<(String, Vec<String>)> = Vec::new();
         let mut stack: Vec<(usize, String)> = Vec::new();
-        for line in map.lines().filter(|l| !l.trim().is_empty()) {
-            let ind = indent_of(line);
-            while stack.last().is_some_and(|(i, _)| *i >= ind) {
+        for unit in &units {
+            if unit.trim().is_empty() {
+                continue;
+            }
+            let first = unit.lines().next().unwrap_or("");
+            let column = first.len() - first.trim_start_matches(' ').len();
+            while stack.last().is_some_and(|(c, _)| *c >= column) {
                 stack.pop();
             }
             ancestors.push((
-                line.to_string(),
-                stack.iter().map(|(_, l)| l.clone()).collect(),
+                unit.clone(),
+                stack.iter().map(|(_, u)| u.clone()).collect(),
             ));
-            stack.push((ind, line.to_string()));
+            stack.push((column, unit.clone()));
         }
 
-        let full = map.len();
-        let out = cap_map(map, "", full, Path::new("/tmp/wide.rs"));
+        let full = joined_len(&units);
+        let (out, delivered) = cap_map(units, "", full, Path::new("/tmp/wide.java"));
+        assert!(delivered > 0, "the trim must deliver something to check");
         assert!(out.len() <= MAP_BUDGET, "{} bytes", out.len());
-        assert!(out.contains("line(s) dropped"), "the fixture must trigger a trim");
+        assert!(out.contains("dropped"), "the fixture must trigger a trim");
 
-        let kept: std::collections::HashSet<&str> =
-            out.lines().map(|l| l.trim_end()).collect();
         let mut checked = 0usize;
-        for (line, parents) in &ancestors {
-            if !kept.contains(line.trim_end()) {
+        let mut orphans: Vec<String> = Vec::new();
+        for (unit, parents) in &ancestors {
+            if !out.contains(unit.as_str()) {
                 continue;
             }
-            for parent in parents {
-                assert!(
-                    kept.contains(parent.trim_end()),
-                    "kept {line:?} but dropped its parent {parent:?}"
-                );
-            }
             checked += 1;
+            for parent in parents {
+                if !out.contains(parent.as_str()) {
+                    orphans.push(format!(
+                        "{:?} kept without {:?}",
+                        unit.lines().last().unwrap_or(unit),
+                        parent.chars().take(40).collect::<String>()
+                    ));
+                }
+            }
         }
         assert!(checked > 0, "the fixture kept nothing to check");
+        assert!(orphans.is_empty(), "orphaned units: {:#?}", &orphans[..orphans.len().min(3)]);
+    }
+
+    /// Shedding is chosen for what it delivers, not for fitting.
+    ///
+    /// A file that is mostly private fits the moment private items go, and that
+    /// "success" hands over only the public few while most of the budget goes
+    /// unspent — where trimming the level before it carries an order of
+    /// magnitude more. Regression guard: this file used to deliver 50
+    /// declarations, and an all-private one delivered none at all.
+    #[test]
+    fn a_mostly_private_file_keeps_private_declarations_by_trimming() {
+        let dir = TempDir::new().unwrap();
+        let p = dir.path().join("mostly_private.rs");
+        let mut src = String::new();
+        for i in 0..2000 {
+            src.push_str(&format!("fn priv_{i:04}(a: u32) -> u32 {{ a }}\n"));
+        }
+        for i in 0..50 {
+            src.push_str(&format!("pub fn api_{i:03}(a: u32) -> u32 {{ a }}\n"));
+        }
+        std::fs::write(&p, &src).unwrap();
+
+        match decide(&ev("Read", Some(p), false), &opts(), replacing()) {
+            Decision::Substitute { map } => {
+                assert!(map.len() <= MAP_BUDGET, "{} bytes", map.len());
+                let private_kept = map.matches("fn priv_").count();
+                assert!(
+                    private_kept > 500,
+                    "only {private_kept} private declarations survived; the shed level \
+                     would have delivered none of them"
+                );
+                // The budget is there to be spent: a payload that fits with room
+                // to spare has thrown away declarations it could have carried.
+                assert!(
+                    map.len() > MAP_BUDGET / 2,
+                    "payload is {} bytes of a {MAP_BUDGET} budget",
+                    map.len()
+                );
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    /// A file with no declarations at all still gets a readable payload: the note
+    /// goes on its own line rather than gluing itself to the header.
+    #[test]
+    fn a_note_never_glues_itself_to_the_header_line() {
+        let header = "# /tmp/x.rs ([medium], 3000 lines, 1 chars, 3000 methods)".to_string();
+        let note = shed_note("doc comments", Path::new("/tmp/x.rs"));
+        let out = with_note(header.clone(), &note);
+        assert!(out.starts_with(&format!("{header}\n")), "{out}");
+        assert!(out.ends_with(&note), "{out}");
     }
 
     #[test]

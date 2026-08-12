@@ -15,9 +15,10 @@ pub struct ClaudeCode;
 ///
 /// The alternative that would report a success, `PostToolUse` with
 /// `updatedToolOutput`, is deliberately not registered: measured on Claude Code
-/// 2.1.223, that field replaces the result of an MCP tool and is ignored for
+/// 2.1.223, that field replaced the result of an MCP tool and was ignored for
 /// the built-in `Read`, so registering it would deliver no map and send the
-/// whole file to the model instead.
+/// whole file to the model instead. See [`Channel::Replace`] for what the
+/// measurement does and does not settle.
 const HOOK_PATH: &[&str] = &["hooks", "PreToolUse"];
 
 /// A read the host refuses outright never reaches `PreToolUse`'s substitution —
@@ -27,13 +28,8 @@ const HOOK_PATH: &[&str] = &["hooks", "PreToolUse"];
 /// result carries no file contents.
 const FAILURE_HOOK_PATH: &[&str] = &["hooks", "PostToolUseFailure"];
 
-/// Events an install registers the entry under.
-const INSTALL_HOOK_PATHS: &[&[&str]] = &[HOOK_PATH, FAILURE_HOOK_PATH];
-
-/// Every event our entry has lived under, for uninstall. `status` asks about
-/// [`INSTALL_HOOK_PATHS`] instead, so a release that stops writing an event does
-/// not keep reporting it as required.
-const ALL_HOOK_PATHS: &[&[&str]] = &[HOOK_PATH, FAILURE_HOOK_PATH];
+/// The events our entry is registered under.
+const HOOK_PATHS: &[&[&str]] = &[HOOK_PATH, FAILURE_HOOK_PATH];
 
 /// Built-in Claude Code subagents that run in their own context and never see
 /// `CLAUDE.md`. Shadowing them with `.claude/agents/<Name>.md` is the official
@@ -134,7 +130,7 @@ impl Installer for ClaudeCode {
     fn install_hook(&self, scope: &Scope, opts: &InstallOpts) -> Result<Change, String> {
         common::install_json_hook_in(
             &self.settings_path(scope)?,
-            INSTALL_HOOK_PATHS,
+            HOOK_PATHS,
             self.hook_entry(opts),
             matches_entry,
             opts,
@@ -176,7 +172,7 @@ impl Installer for ClaudeCode {
         }
         if let Some(c) = common::uninstall_json_hook_in(
             &self.settings_path(scope)?,
-            ALL_HOOK_PATHS,
+            HOOK_PATHS,
             matches_entry,
             opts,
         )? {
@@ -217,7 +213,7 @@ impl Installer for ClaudeCode {
         let mut s = common::status_for(
             self.prompt_path(scope).ok().as_deref(),
             self.settings_path(scope).ok().as_deref(),
-            INSTALL_HOOK_PATHS,
+            HOOK_PATHS,
             matches_entry,
         );
         if let Ok(mcp_p) = self.mcp_path(scope) {
@@ -306,7 +302,7 @@ mod tests {
             .unwrap();
         let contents = std::fs::read_to_string(dir.path().join(".claude/settings.json")).unwrap();
         let root: Value = serde_json::from_str(&contents).unwrap();
-        for path in INSTALL_HOOK_PATHS {
+        for path in HOOK_PATHS {
             assert!(
                 json_hook::is_installed(&root, path, matches_entry),
                 "missing under {path:?}: {contents}"

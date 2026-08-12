@@ -620,17 +620,31 @@ fn _size_label(line_count: usize) -> &'static str {
 
 
 pub fn render_map(result: &ParseResult, opts: &MapOptions) -> String {
-    let mut lines = vec![_format_file_header(
+    render_map_units(result, opts).join("\n")
+}
+
+/// The map as the units it is assembled from, rather than as one string.
+///
+/// A unit is the file header, a warning, one declaration together with its doc
+/// comment, a `... +N more member(s)` marker, or a blank separator. Text is what
+/// [`render_map`] joins these into; a caller that has to *shorten* a map needs
+/// the units, because a physical line does not tell you what nests under what:
+/// a doc comment keeps the indentation it had in the source, so its continuation
+/// lines land at arbitrary columns, and a separator has no indentation at all.
+/// The unit's own indentation is the render prefix, and children are separate
+/// units indented one level deeper.
+pub fn render_map_units(result: &ParseResult, opts: &MapOptions) -> Vec<String> {
+    let mut units = vec![_format_file_header(
         &format!("# {}", result.path.display()),
         result,
     )];
     if let Some(warn) = _format_error_warning(result) {
-        lines.push(warn);
+        units.push(warn);
     }
     for decl in &result.declarations {
-        _render_decl(decl, opts, 0, &mut lines);
+        _render_decl(decl, opts, 0, &mut units);
     }
-    lines.join("\n")
+    units
 }
 fn _format_file_header(prefix: &str, result: &ParseResult) -> String {
     let counts = _collect_counts(&result.declarations);
@@ -739,8 +753,12 @@ fn _render_decl(decl: &Declaration, opts: &MapOptions, indent: usize, out: &mut 
 
     let prefix = "    ".repeat(indent);
 
+    // The declaration and its doc comment go out as one unit, so a consumer that
+    // drops the declaration cannot leave the comment behind to read as
+    // documentation of whatever follows it.
+    let mut unit: Vec<String> = Vec::new();
     if opts.include_docs && !decl.docs.is_empty() && !decl.docs_inside {
-        push_docs(&prefix, out);
+        push_docs(&prefix, &mut unit);
     }
 
     let attrs_prefix = if opts.include_attributes && !decl.attrs.is_empty() {
@@ -756,13 +774,13 @@ fn _render_decl(decl: &Declaration, opts: &MapOptions, indent: usize, out: &mut 
     };
 
     if decl.kind == Namespace {
-        out.push(format!(
+        unit.push(format!(
             "{}namespace {}",
             prefix,
             decl.name.magenta().bold()
         ));
     } else {
-        out.push(format!(
+        unit.push(format!(
             "{}{}{}{}",
             prefix, attrs_prefix, decl.signature, suffix
         ));
@@ -770,8 +788,9 @@ fn _render_decl(decl: &Declaration, opts: &MapOptions, indent: usize, out: &mut 
 
     if opts.include_docs && !decl.docs.is_empty() && decl.docs_inside {
         let inner_prefix = "    ".repeat(indent + 1);
-        push_docs(&inner_prefix, out);
+        push_docs(&inner_prefix, &mut unit);
     }
+    out.push(unit.join("\n"));
 
     // `--max-members` caps how many members a type renders; the remainder
     // is reported, never silently dropped (issues #37 / #32).

@@ -28,12 +28,15 @@ pub enum Channel {
     /// successful tool call rather than a failure that did not happen.
     ///
     /// Claude Code exposes this as `PostToolUse` `updatedToolOutput`, and
-    /// `ast-bro install` does **not** register it. Measured on 2.1.223: the
-    /// field replaces the result of an MCP tool and is ignored for the built-in
-    /// `Read` and `Bash`, so registering it would drop the substitution and
-    /// send the whole file to the model. Kept because the shim reaches it from
-    /// any hand-written `PostToolUse` entry, and because deleting it would
-    /// throw away the measurement. See issue #34.
+    /// `ast-bro install` does **not** register it. Measured on 2.1.223 through
+    /// this hook: the field replaced the result of an MCP tool and was ignored
+    /// for the built-in `Read` and `Bash`, so registering it would drop the
+    /// substitution and send the whole file to the model. Whether the host
+    /// declines it for every built-in tool or only for one lacking an output
+    /// schema is not settled — the two are indistinguishable from here, and
+    /// either way `Read` is on the wrong side of it. Kept because the shim
+    /// reaches it from any hand-written `PostToolUse` entry, and because
+    /// deleting it would throw away the measurement. See issue #34.
     Replace,
     /// Deliver the map beside a result the hook cannot replace. Claude Code's
     /// `PostToolUseFailure` offers only `additionalContext`, which is enough
