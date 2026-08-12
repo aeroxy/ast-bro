@@ -533,7 +533,7 @@ fn run_in(cwd: &std::path::Path, args: &[&str]) -> (Option<i32>, String, String)
 /// The hint is documented as pasteable, so the assertion that matters is
 /// that a shell can run it as printed: quoting alone is not enough when clap
 /// reads a leading dash as a flag.
-fn exit_code_of_suggested_command(cwd: &std::path::Path, stderr: &str) -> Option<i32> {
+fn run_suggested_command(cwd: &std::path::Path, stderr: &str) -> (Option<i32>, String) {
     let line = stderr
         .lines()
         .find(|l| l.starts_with("# hint:"))
@@ -543,15 +543,43 @@ fn exit_code_of_suggested_command(cwd: &std::path::Path, stderr: &str) -> Option
         .nth(1)
         .expect("suggestion between backticks")
         .replacen("ast-bro", bin().to_str().expect("utf8 path"), 1);
-    std::process::Command::new("/bin/sh")
+    let out = std::process::Command::new("/bin/sh")
         .arg("-c")
         .arg(&command)
         .current_dir(cwd)
         .env("NO_COLOR", "1")
         .output()
-        .expect("run the suggested command")
-        .status
-        .code()
+        .expect("run the suggested command");
+    (
+        out.status.code(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    )
+}
+
+/// Runs the suggestion and asserts it both works and terminates.
+///
+/// A suggestion that hints again is a loop: the builder and the
+/// `already_digest` test are computed in separate places, and nothing but
+/// this assertion forces them to agree.
+fn assert_suggestion_runs_and_settles(cwd: &std::path::Path, stderr: &str) {
+    let hint = stderr
+        .lines()
+        .find(|l| l.starts_with("# hint:"))
+        .expect("hint on stderr");
+    assert!(
+        hint.contains("`ast-bro map "),
+        "this helper runs the whole command form; the counted form has none:\n{hint}"
+    );
+    let (code, suggested_stderr) = run_suggested_command(cwd, stderr);
+    assert_eq!(
+        code,
+        Some(0),
+        "the suggested command must run as printed:\n{stderr}"
+    );
+    assert!(
+        !suggested_stderr.contains("# hint:"),
+        "following the suggestion must land on a quiet call, got:\n{suggested_stderr}"
+    );
 }
 
 /// Fills `dir` with enough declarations to clear the hint threshold.
@@ -581,11 +609,7 @@ fn the_suggested_command_runs_for_a_dash_prefixed_path() {
         stderr.contains(" -- -generated"),
         "a dash-prefixed path must move behind a separator:\n{stderr}"
     );
-    assert_eq!(
-        exit_code_of_suggested_command(parent.path(), &stderr),
-        Some(0),
-        "the suggested command must run as printed:\n{stderr}"
-    );
+    assert_suggestion_runs_and_settles(parent.path(), &stderr);
 }
 
 #[test]
@@ -616,11 +640,7 @@ fn the_suggested_command_runs_for_a_dash_prefixed_glob() {
         stderr.contains("--glob='-big*.rs'"),
         "a dash-prefixed glob needs the attached form:\n{stderr}"
     );
-    assert_eq!(
-        exit_code_of_suggested_command(dir.path(), &stderr),
-        Some(0),
-        "the suggested command must run as printed:\n{stderr}"
-    );
+    assert_suggestion_runs_and_settles(dir.path(), &stderr);
 }
 
 #[test]
@@ -704,9 +724,10 @@ fn a_glob_over_files_is_hinted_like_the_directory_it_equals() {
 }
 
 #[test]
-fn explicitly_named_files_stay_quiet() {
-    // The line the rule draws: naming files is enumerating exactly what you
-    // want, where a directory or a glob asks for whatever is in there.
+fn explicitly_named_files_are_hinted_like_the_glob_they_equal() {
+    // The trigger is what was inspected, so every spelling of the same file
+    // set gets the same answer. Exempting an enumerated list would put the
+    // decision back on the spelling.
     let dir = oversized_map_fixture();
     let files: Vec<String> = (0..20)
         .map(|f| {
@@ -719,12 +740,165 @@ fn explicitly_named_files_stay_quiet() {
         .collect();
     let mut args = vec!["map"];
     args.extend(files.iter().map(String::as_str));
-    let (code, stdout, stderr) = run(&args);
+    let (code, listed, stderr) = run(&args);
     assert_eq!(code, Some(0), "stderr:\n{stderr}");
-    assert!(stdout.len() > 25_000, "fixture must exceed the threshold");
+    let (_, as_dir, dir_stderr) = run(&["map", dir.path().to_str().unwrap()]);
+    assert_eq!(
+        listed, as_dir,
+        "the two spellings must render the same answer for this test to mean anything"
+    );
+    assert!(dir_stderr.contains("# hint:"), "{dir_stderr}");
+    assert!(
+        stderr.contains("# hint:"),
+        "an enumerated list of the same files is the same question:\n{stderr}"
+    );
+}
+
+#[test]
+fn a_glob_matching_one_directory_is_hinted() {
+    // `map 'sr*'` and `map src` inspect the same files. Asking the argument
+    // how many entries it expanded to answered one and not the other.
+    let parent = tempfile::tempdir().expect("tempdir");
+    let dir = parent.path().join("alpha");
+    std::fs::create_dir(&dir).expect("mkdir");
+    fill_past_threshold(&dir);
+    let (_, as_dir, dir_stderr) = run_in(parent.path(), &["map", "alpha"]);
+    let (code, as_glob, glob_stderr) = run_in(parent.path(), &["map", "alph*"]);
+    assert_eq!(code, Some(0), "stderr:\n{glob_stderr}");
+    assert_eq!(
+        as_dir, as_glob,
+        "the two spellings must render the same answer"
+    );
+    assert!(dir_stderr.contains("# hint:"), "{dir_stderr}");
+    assert!(
+        glob_stderr.contains("# hint:"),
+        "a glob matching one directory inspects the same files:\n{glob_stderr}"
+    );
+}
+
+#[test]
+fn a_directory_holding_one_file_stays_quiet() {
+    // "multi-file answer" has to be true when it is printed: one file is one
+    // file however it was reached, and there is nothing smaller to suggest.
+    let dir = tempfile::tempdir().expect("tempdir");
+    oversized_map_file(dir.path());
+    let (code, stdout, stderr) = run(&["map", dir.path().to_str().unwrap()]);
+    assert_eq!(code, Some(0), "stderr:\n{stderr}");
+    assert!(
+        stdout.len() > 25_000,
+        "fixture must exceed the threshold, got {} bytes",
+        stdout.len()
+    );
     assert!(
         !stderr.contains("# hint:"),
-        "an enumerated file list is not a directory question:\n{stderr}"
+        "one file in a directory is still one file:\n{stderr}"
+    );
+}
+
+#[test]
+fn a_long_path_list_is_counted_rather_than_echoed() {
+    // A shell expands `map src/**/*.rs` into a hundred arguments. Repeating
+    // them would make the hint rival the answer it is warning about.
+    let dir = oversized_map_fixture();
+    let files: Vec<String> = (0..20)
+        .map(|f| {
+            dir.path()
+                .join(format!("file_{f}.rs"))
+                .to_str()
+                .expect("utf8")
+                .to_string()
+        })
+        .collect();
+    let mut args = vec!["map"];
+    args.extend(files.iter().map(String::as_str));
+    let (code, _stdout, stderr) = run(&args);
+    assert_eq!(code, Some(0), "stderr:\n{stderr}");
+    let hint = stderr
+        .lines()
+        .find(|l| l.starts_with("# hint:"))
+        .expect("hint on stderr");
+    assert!(
+        hint.contains("the same 20 paths"),
+        "a long list must be counted, not echoed:\n{hint}"
+    );
+    assert!(
+        hint.len() < 200,
+        "the hint must stay cheaper to read than the answer, got {} bytes:\n{hint}",
+        hint.len()
+    );
+}
+
+/// Writes `count` oversized files into a fresh directory and maps them by
+/// name, returning the hint line.
+fn hint_for_named_files(count: usize) -> String {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut src = String::new();
+    for i in 0..300 {
+        src.push_str(&format!(
+            "pub fn generated_function_{i}(argument: usize) -> usize {{ argument }}\n"
+        ));
+    }
+    let files: Vec<String> = (0..count)
+        .map(|f| {
+            let path = dir.path().join(format!("file_{f}.rs"));
+            std::fs::write(&path, &src).expect("write fixture");
+            path.to_str().expect("utf8").to_string()
+        })
+        .collect();
+    let mut args = vec!["map"];
+    args.extend(files.iter().map(String::as_str));
+    let (code, _stdout, stderr) = run(&args);
+    assert_eq!(code, Some(0), "stderr:\n{stderr}");
+    stderr
+        .lines()
+        .find(|l| l.starts_with("# hint:"))
+        .unwrap_or("")
+        .to_string()
+}
+
+#[test]
+fn the_echo_cap_switches_forms_where_it_says_it_does() {
+    // The boundary itself, so the comparison operator is observed rather
+    // than assumed: four paths are spelled out, five are counted.
+    let at_cap = hint_for_named_files(4);
+    assert!(
+        at_cap.contains("`ast-bro map "),
+        "four paths must still be a pasteable command:\n{at_cap}"
+    );
+    let past_cap = hint_for_named_files(5);
+    assert!(
+        past_cap.contains("the same 5 paths"),
+        "five paths must be counted:\n{past_cap}"
+    );
+    assert!(
+        !past_cap.contains("`ast-bro map "),
+        "the counted form must not look like a whole command:\n{past_cap}"
+    );
+}
+
+#[test]
+fn a_backtick_in_a_path_falls_back_to_the_counted_form() {
+    // The command is delimited by backticks, so a path holding one would
+    // close the span early. Quoting cannot help — the byte is inside the
+    // quotes and the delimiter is outside them.
+    let parent = tempfile::tempdir().expect("tempdir");
+    let dir = parent.path().join("we`ird");
+    std::fs::create_dir(&dir).expect("mkdir");
+    fill_past_threshold(&dir);
+    let (code, _stdout, stderr) = run(&["map", dir.to_str().expect("utf8")]);
+    assert_eq!(code, Some(0), "stderr:\n{stderr}");
+    let hint = stderr
+        .lines()
+        .find(|l| l.starts_with("# hint:"))
+        .expect("hint on stderr");
+    assert!(
+        hint.contains("to the same path"),
+        "a backtick path must fall back to the counted form:\n{hint}"
+    );
+    assert_eq!(
+        hint.matches('`').count(),
+        2,
+        "exactly one delimited span, and nothing inside it that closes early:\n{hint}"
     );
 }
 
@@ -824,7 +998,10 @@ fn map_on_small_input_stays_quiet() {
     .expect("write fixture");
     let (code, stdout, stderr) = run(&["map", dir.path().to_str().unwrap()]);
     assert_eq!(code, Some(0));
-    assert!(stdout.len() < 25_000, "fixture must stay under the threshold");
+    assert!(
+        stdout.len() < 25_000,
+        "fixture must stay under the threshold"
+    );
     assert!(
         !stderr.contains("# hint:"),
         "small directories must not nag:\n{stderr}"
