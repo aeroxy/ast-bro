@@ -1143,34 +1143,41 @@ pub(crate) fn resolve_paths_for_mcp(
 /// declarations runs several times larger.
 const MAP_HINT_THRESHOLD_BYTES: usize = 25_000;
 
+/// How many paths the suggestion spells out before naming their count
+/// instead.
+///
+/// The suggestion is written to be pasted, which stops being the affordance
+/// once a shell expanded a glob into a hundred arguments: the caller cannot
+/// retype what they never typed, and the line would rival the answer it
+/// qualifies.
+pub(crate) const MAX_ECHOED_PATHS: usize = 4;
+
 /// Whether an answer of `output_len` bytes is worth a pointer at the digest
 /// preset.
 ///
-/// A hint is due when the call inspected more than one file, it is not
+/// A hint is due when `files_inspected` is more than one, the call is not
 /// already the digest answer, and the payload clears
-/// [`MAP_HINT_THRESHOLD_BYTES`]. A single file, a small package, and the
-/// digest answer itself therefore stay quiet.
+/// [`MAP_HINT_THRESHOLD_BYTES`]. One file, a small package, and the digest
+/// answer itself therefore stay quiet.
 ///
-/// "More than one file" is a property of the answer, not of the spelling: a
-/// directory, and a glob that expands to several entries, are the same
-/// question and get the same treatment. `map alpha` and `map 'alpha/*.rs'`
-/// render byte for byte the same thing, so hinting one and not the other
-/// would be arbitrary. Naming several files explicitly is the one spelling
-/// that stays quiet, because there the caller enumerated exactly what they
-/// wanted rather than asking for whatever a directory holds.
+/// `files_inspected` is what the walk actually parsed, which is the only
+/// form of the question that cannot be answered by the spelling. Every way
+/// of naming the same files — a directory, a glob over packages, a glob over
+/// files, the files listed one by one — renders the same bytes, so they all
+/// get the same answer. Deciding from the arguments instead left `map 'sr*'`
+/// silent beside an identical `map src`, and announced a directory holding
+/// one file as a multi-file answer.
 ///
 /// The CLI and the MCP server share this decision and word it differently:
 /// the CLI has a shell to paste into, and the MCP client has a tool to call.
 /// Suggesting a shell command to a caller that speaks JSON-RPC would name an
 /// action it may have no way to take.
-pub(crate) fn map_hint_is_due(paths: &[PathBuf], already_digest: bool, output_len: usize) -> bool {
-    // `expand_existing` returns the path itself when it exists, so a single
-    // named file yields one entry and a pattern yields what it matched.
-    let inspects_several_files =
-        |p: &PathBuf| p.is_dir() || path_glob::expand_existing(p).len() > 1;
-    !already_digest
-        && output_len > MAP_HINT_THRESHOLD_BYTES
-        && paths.iter().any(inspects_several_files)
+pub(crate) fn map_hint_is_due(
+    files_inspected: usize,
+    already_digest: bool,
+    output_len: usize,
+) -> bool {
+    !already_digest && output_len > MAP_HINT_THRESHOLD_BYTES && files_inspected > 1
 }
 
 /// Quotes `s` for a POSIX shell, leaving a value that needs no quoting
@@ -1190,6 +1197,15 @@ fn shell_quote(s: &str) -> String {
         s.to_string()
     } else {
         format!("'{}'", s.replace('\'', r"'\''"))
+    }
+}
+
+/// `the same N paths`, or `the same path` when there is only one.
+fn same_paths_phrase(count: usize) -> String {
+    if count == 1 {
+        "the same path".to_string()
+    } else {
+        format!("the same {} paths", count)
     }
 }
 
@@ -1224,22 +1240,29 @@ struct MapHintCall<'a> {
     already_digest: bool,
 }
 
-/// Shell command pointing an oversized directory-wide `map` at the digest
-/// preset, or `None` when [`map_hint_is_due`] says no hint is due.
+/// Hint pointing an oversized multi-file `map` at the digest preset, or
+/// `None` when [`map_hint_is_due`] says no hint is due.
 ///
 /// The caller prints the hint on stderr beside the result. The choice of
 /// command stays with the caller, and `map <dir>` is never redirected to
 /// `digest`.
 ///
-/// The suggestion names `map` whichever alias the caller entered through,
-/// since the two are one command (issue #37) and `digest … --preset digest`
-/// would read as nonsense. It repeats every path it was given, including
-/// one that did not resolve, so the pasted command keeps the missing-path
-/// note the original answer carried. It carries the scope, display, and
-/// format flags of the call it qualifies — `--glob`, `--no-attrs`,
-/// `--no-lines`, `--json`, `--compact` — and a `--max-members` tighter than
-/// the suggested cap, so that following it answers the same question in the
-/// same shape rather than a narrower or broader one.
+/// It takes one of two forms. Up to [`MAX_ECHOED_PATHS`] paths it is a whole
+/// command, ready to paste: it names `map` whichever alias the caller
+/// entered through, since the two are one command (issue #37) and
+/// `digest … --preset digest` would read as nonsense, and it repeats every
+/// path including one that did not resolve, so the pasted command keeps the
+/// missing-path note the original answer carried. Past that it names the
+/// count instead and asks the reader to add the flags to the argument list
+/// they still have on their command line — a hundred shell-expanded paths
+/// were never retyped, and echoing them costs the one property the hint
+/// exists for.
+///
+/// Either form carries the scope, display, and format flags of the call it
+/// qualifies — `--glob`, `--no-attrs`, `--no-lines`, `--json`, `--compact` —
+/// and a `--max-members` tighter than the suggested cap, so that following
+/// it answers the same question in the same shape rather than a narrower or
+/// broader one.
 ///
 /// A leading `-` needs more than shell quoting: the shell strips the quotes
 /// and clap then reads the value as a flag. The glob therefore takes the
@@ -1247,25 +1270,13 @@ struct MapHintCall<'a> {
 /// any of them starts with a dash.
 fn map_directory_hint(
     call: &MapHintCall<'_>,
-    inspected: &[PathBuf],
+    files_inspected: usize,
     output_len: usize,
 ) -> Option<String> {
-    if !map_hint_is_due(inspected, call.already_digest, output_len) {
+    if !map_hint_is_due(files_inspected, call.already_digest, output_len) {
         return None;
     }
-    // `display()` is lossy, so a path that is not UTF-8 would come back as a
-    // well-formed command naming something that does not exist. There is no
-    // spelling of it to suggest; saying nothing beats saying that.
-    let rendered: Vec<&str> = call
-        .requested_paths
-        .iter()
-        .map(|p| p.to_str())
-        .collect::<Option<_>>()?;
-    let quoted = rendered
-        .iter()
-        .map(|p| shell_quote(p))
-        .collect::<Vec<_>>()
-        .join(" ");
+    let path_count = call.requested_paths.len();
 
     let cap = call.max_members.map_or(8, |m| m.min(8));
     let mut flags = format!("--preset digest --max-members {}", cap);
@@ -1287,15 +1298,52 @@ fn map_directory_hint(
         }
     }
 
-    let suggestion = if rendered.iter().any(|p| p.starts_with('-')) {
-        format!("ast-bro map {} -- {}", flags, quoted)
+    // Past a handful of paths the caller did not type them — a shell expanded
+    // a glob — so repeating all of them buys nothing and costs the one thing
+    // the hint exists to protect: a line cheaper to read than the answer it
+    // qualifies. 117 paths render a 2.5 KB hint.
+    let body = if path_count > MAX_ECHOED_PATHS {
+        format!("adding `{}` to {}", flags, same_paths_phrase(path_count))
     } else {
-        format!("ast-bro map {} {}", quoted, flags)
+        // Only the spelled-out form needs the paths to be spellable:
+        // `display()` is lossy, so a path that is not UTF-8 would come back
+        // as a well-formed command naming something that does not exist.
+        // There is no spelling of it to suggest, and saying nothing beats
+        // saying that — but the counted form names no paths at all, so it
+        // survives one.
+        let rendered: Vec<&str> = call
+            .requested_paths
+            .iter()
+            .map(|p| p.to_str())
+            .collect::<Option<_>>()?;
+        // The command is delimited by backticks, so a path holding one would
+        // close the span early and leave a reader selecting half a command.
+        // Shell quoting cannot help: the byte is inside the quotes and the
+        // delimiter is outside them. Fall back to the counted form, which
+        // names no paths and therefore has nothing to delimit.
+        if rendered.iter().any(|p| p.contains('`')) {
+            return Some(format!(
+                "# hint: this was a multi-file answer ({} KB); adding `{}` to {} answers the same question in a fraction of the size",
+                kb_ceil(output_len),
+                flags,
+                same_paths_phrase(path_count),
+            ));
+        }
+        let quoted = rendered
+            .iter()
+            .map(|p| shell_quote(p))
+            .collect::<Vec<_>>()
+            .join(" ");
+        if rendered.iter().any(|p| p.starts_with('-')) {
+            format!("`ast-bro map {} -- {}`", flags, quoted)
+        } else {
+            format!("`ast-bro map {} {}`", quoted, flags)
+        }
     };
     Some(format!(
-        "# hint: this was a multi-file answer ({} KB); `{}` answers the same question in a fraction of the size",
+        "# hint: this was a multi-file answer ({} KB); {} answers the same question in a fraction of the size",
         kb_ceil(output_len),
-        suggestion,
+        body,
     ))
 }
 
@@ -1406,7 +1454,7 @@ fn run_map_digest(a: &MapArgs, digest_alias: bool) {
         }
     };
     println!("{}", rendered);
-    if let Some(hint) = map_directory_hint(&hint_call, &paths, rendered.len()) {
+    if let Some(hint) = map_directory_hint(&hint_call, results.len(), rendered.len()) {
         eprintln!("{}", hint);
     }
 }

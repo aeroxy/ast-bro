@@ -541,9 +541,9 @@ struct DigestHintCall<'a> {
     /// resolve — dropping one would return an answer without the
     /// `missing_paths` qualification the original carried.
     requested_paths: &'a [PathBuf],
-    /// The paths that resolved, which is what decides whether a directory
-    /// was inspected at all.
-    inspected_paths: &'a [PathBuf],
+    /// How many files the walk actually parsed, which is what decides
+    /// whether this was a multi-file answer at all.
+    files_inspected: usize,
     glob: Option<&'a str>,
     /// The cap in force, not the tool's default.
     max_members: Option<usize>,
@@ -572,7 +572,7 @@ struct DigestHintCall<'a> {
 /// that named only a tool would answer a different question than the call
 /// it qualifies, exactly as the CLI's would if it dropped `--glob`.
 fn digest_hint(call: &DigestHintCall<'_>, payload: &str) -> Option<String> {
-    if !crate::map_hint_is_due(call.inspected_paths, call.already_digest, payload.len()) {
+    if !crate::map_hint_is_due(call.files_inspected, call.already_digest, payload.len()) {
         return None;
     }
     // A path that is not UTF-8 cannot be spelled into JSON at all, and a
@@ -584,6 +584,12 @@ fn digest_hint(call: &DigestHintCall<'_>, payload: &str) -> Option<String> {
         .collect::<Option<_>>()?;
     let cap = call.max_members.map_or(8, |m| m.min(8));
     let mut args = serde_json::Map::new();
+    // `paths` stays in whatever the list costs. It is the one field of the
+    // tool's arguments with no default, so an object without it is not a
+    // call an agent can send — and an object is exactly what an agent
+    // copies whole. The CLI can shorten its own hint because there the
+    // suggestion is prose the reader completes from a command line they
+    // still have in front of them.
     args.insert("paths".into(), serde_json::json!(paths));
     args.insert("detail".into(), serde_json::json!("names"));
     args.insert("no_private".into(), serde_json::json!(true));
@@ -682,12 +688,18 @@ fn run_map(args: Value) -> CallResult {
     };
     // The digest answer is the resolved axes, not the tool that was called:
     // `map` asked for bare names with nothing private, no fields and a cap
-    // of 50 or tighter is the answer the hint would otherwise point at.
-    let already_digest =
-        detail == "names" && a.no_private && a.no_fields && a.max_members.is_some_and(|m| m <= 50);
+    // no looser than the preset's is the answer the hint would otherwise
+    // point at. The bound is the shared constant, not a literal: the CLI and
+    // this server are documented to share one decision, and a literal here
+    // is exactly what no `defaults` guard can see.
+    let already_digest = detail == "names"
+        && a.no_private
+        && a.no_fields
+        && a.max_members
+            .is_some_and(|m| m <= crate::defaults::MAX_MEMBERS);
     let hint_call = DigestHintCall {
         requested_paths: &a.paths,
-        inspected_paths: &paths,
+        files_inspected: results.len(),
         glob: a.glob.as_deref(),
         max_members: a.max_members,
         json: a.json,
@@ -763,7 +775,7 @@ fn run_digest(args: Value) -> CallResult {
         !a.include_private && !a.include_fields && a.max_members <= crate::defaults::MAX_MEMBERS;
     let hint_call = DigestHintCall {
         requested_paths: &a.paths,
-        inspected_paths: &paths,
+        files_inspected: results.len(),
         glob: a.glob.as_deref(),
         max_members: Some(a.max_members),
         json: a.json,
