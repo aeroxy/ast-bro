@@ -199,6 +199,57 @@ fn mcp_implements_unknown_type_is_an_error() {
 }
 
 #[test]
+fn mcp_implements_prepends_the_hierarchy_note() {
+    // A link declared outside the walked path(s) ends the chain and hides
+    // every subtype below it. MCP has one channel, so the
+    // qualification rides in front of the response body — the CLI's stderr
+    // note is not reachable from here.
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::create_dir(tmp.path().join(".git")).unwrap();
+    std::fs::create_dir(tmp.path().join("api")).unwrap();
+    std::fs::create_dir(tmp.path().join("codec")).unwrap();
+    std::fs::write(
+        tmp.path().join("codec/Base.java"),
+        "public interface Base {}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        tmp.path().join("api/Middle.java"),
+        "public interface Middle extends Base {}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        tmp.path().join("codec/Leaf.java"),
+        "public class Leaf implements Middle {}\n",
+    )
+    .unwrap();
+
+    let resp = call_tool(
+        tmp.path(),
+        "implements",
+        serde_json::json!({"target": "Base", "paths": ["codec"]}),
+    );
+    let (_, is_error, text) = result_of(&resp);
+    assert!(!is_error, "a qualified answer is still an answer: {resp}");
+    assert!(
+        text.starts_with("# note:") && text.contains("Middle"),
+        "note must lead the response body:\n{text}"
+    );
+
+    // The whole project resolves the chain, so nothing is qualified.
+    let resp = call_tool(
+        tmp.path(),
+        "implements",
+        serde_json::json!({"target": "Base", "paths": ["."]}),
+    );
+    let (_, _, text) = result_of(&resp);
+    assert!(
+        text.starts_with("# 2 match(es)"),
+        "a complete walk answers without a note:\n{text}"
+    );
+}
+
+#[test]
 fn mcp_find_related_unknown_location_is_an_error_in_json_mode_too() {
     // The JSON empty-envelope special case said "nothing is similar to this
     // chunk" for a location that was never indexed — a different and wrong

@@ -79,7 +79,7 @@ pub fn list() -> Value {
             },
             {
                 "name": "implements",
-                "description": "Find subclasses / implementations of a type using AST matching. Transitive by default — set `direct: true` for level-1 only. Returns text by default; set `json: true` for `ast-bro.implements.v1`.",
+                "description": "Find subclasses / implementations of a type using AST matching. Transitive by default — set `direct: true` for level-1 only. A hierarchy whose links are not all inside `paths` stops at the first one the walk cannot read: the response then opens with a `# note:` naming those bases and the files that declare them, and `json: true` carries the same as `hierarchy_truncated` / `unseen_bases`. Returns text by default; set `json: true` for `ast-bro.implements.v1`.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -830,9 +830,25 @@ fn run_implements(args: Value) -> CallResult {
         ));
     }
 
+    // A chain that leaves the walked path(s) stops there and takes its
+    // subtypes with it. Same probe as the CLI, so the two
+    // surfaces qualify an answer on the same evidence.
+    let gap = if transitive {
+        crate::hierarchy::unseen_bases(&results, &a.target)
+    } else {
+        crate::hierarchy::HierarchyGap::none()
+    };
+
     if a.json {
         CallResult::Text(with_missing_paths(
-            core::render_json_implements(&a.target, &matches, transitive, true),
+            core::render_json_implements(
+                &a.target,
+                &matches,
+                transitive,
+                &gap.unseen,
+                &gap.unlocated,
+                true,
+            ),
             &missing,
         ))
     } else {
@@ -851,7 +867,18 @@ fn run_implements(args: Value) -> CallResult {
             };
             out.push_str(&format!("{}:{}  {} {}{}\n", m.path, m.start_line, m.kind, m.name, via));
         }
-        with_note(&path_note, out)
+        // Same note as the CLI's stderr line, through the same helper so the
+        // two can't drift. MCP's one channel is the response text.
+        // Same rule as the CLI, through the same helpers: a proved gap at any
+        // size of answer, an unplaced name only beside a zero.
+        let gap_note = core::hierarchy_note(&a.target, &gap.unseen).or_else(|| {
+            matches
+                .is_empty()
+                .then(|| core::empty_answer_note(&a.target, &gap.unlocated))
+                .flatten()
+        });
+        let notes: Vec<String> = path_note.into_iter().chain(gap_note).collect();
+        with_note(&(!notes.is_empty()).then(|| notes.join("\n")), out)
     }
 }
 
