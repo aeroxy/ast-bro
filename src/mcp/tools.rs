@@ -1492,3 +1492,60 @@ fn run_squeeze(args: Value) -> CallResult {
         CallResult::Text(crate::squeeze::render::render_text(&report))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    /// Every tool and every input property in `tools/list` carries a
+    /// description.
+    ///
+    /// `tools.rs` is a hand-written JSON literal, so nothing forces a
+    /// property to say what it does; 21 of them shipped blank until an agent
+    /// would have been the one to find out. The CLI has the same rule and its
+    /// own test, but that one walks `Cli::command()` and can never reach this
+    /// file — the two surfaces are documented separately and so are guarded
+    /// separately.
+    ///
+    /// A failure names `<tool>.<property>`. Fix it by describing the property
+    /// in the schema, not by listing it here.
+    #[test]
+    fn every_tool_and_property_documents_itself() {
+        let catalogue = super::list();
+        let tools = catalogue["tools"]
+            .as_array()
+            .expect("tools/list returns a tools array");
+        assert!(!tools.is_empty(), "the catalogue must not be empty");
+
+        let mut bare = Vec::new();
+        for tool in tools {
+            let name = tool["name"].as_str().expect("every tool has a name");
+            if !has_text(&tool["description"]) {
+                bare.push(name.to_string());
+            }
+            // Demanded rather than probed: `as_object()` answers `None` for a
+            // key that is absent *and* for one that is misspelled, so treating
+            // `None` as "this tool takes no arguments" would let a typo in
+            // `inputSchema` drop a whole tool's properties past the check that
+            // exists to police them. Every tool here takes arguments; one that
+            // genuinely takes none says so with an empty object.
+            let props = tool["inputSchema"]["properties"]
+                .as_object()
+                .unwrap_or_else(|| panic!("tool `{name}` has no inputSchema.properties object"));
+            for (prop, spec) in props {
+                if !has_text(&spec["description"]) {
+                    bare.push(format!("{name}.{prop}"));
+                }
+            }
+        }
+        assert!(
+            bare.is_empty(),
+            "tools/list entries with no description (describe them in the schema): {bare:#?}"
+        );
+    }
+
+    /// Whitespace-only is the same defect as absent: the client renders the
+    /// key and the reader learns nothing. A non-string is also not a
+    /// description, so it fails here rather than passing as "present".
+    fn has_text(v: &serde_json::Value) -> bool {
+        v.as_str().is_some_and(|s| !s.trim().is_empty())
+    }
+}
