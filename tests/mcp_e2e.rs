@@ -497,3 +497,55 @@ fn mcp_hint_carries_the_call_s_own_arguments() {
         "a tighter cap must not be loosened to 8: {hint}"
     );
 }
+
+#[test]
+fn mcp_directory_holding_one_file_stays_quiet() {
+    // The case maintainer fix #2 changed: one file is one file however it
+    // was reached, so "multi-file answer" must not be printed.
+    let tmp = tempfile::tempdir().unwrap();
+    let mut src = String::new();
+    for i in 0..800 {
+        src.push_str(&format!(
+            "pub fn generated_function_{i}(argument: usize) -> usize {{ argument }}\n"
+        ));
+    }
+    std::fs::write(tmp.path().join("only.rs"), src).unwrap();
+    let resp = call_tool(tmp.path(), "map", serde_json::json!({"paths": ["."]}));
+    let (_, _, text) = result_of(&resp);
+    assert!(
+        text.len() > 25_000,
+        "fixture must exceed the threshold, got {} bytes",
+        text.len()
+    );
+    assert!(
+        !text.contains("# hint:"),
+        "one file in a directory is still one file: {}",
+        &text[..text.len().min(200)]
+    );
+}
+
+#[test]
+fn mcp_following_the_suggestion_lands_on_a_quiet_call() {
+    // The suggestion's contract is that it is the digest answer, so sending
+    // it back must not produce a second hint. The call names many paths on
+    // purpose: an argument object that omits any of them is not a call the
+    // tool accepts, and an object is what an agent copies whole.
+    let tmp = tempfile::tempdir().unwrap();
+    oversized_fixture(tmp.path());
+    let named: Vec<String> = (0..20).map(|f| format!("file_{f}.rs")).collect();
+    let resp = call_tool(tmp.path(), "map", serde_json::json!({"paths": named}));
+    let (_, _, text) = result_of(&resp);
+    let hint = text.lines().next().expect("hint line");
+    let args: serde_json::Value = serde_json::from_str(
+        &hint[hint.find('{').expect("argument object")..=hint.rfind('}').expect("argument object")],
+    )
+    .expect("the suggested arguments must parse");
+    let again = call_tool(tmp.path(), "map", args);
+    let (_, is_error, followed) = result_of(&again);
+    assert!(!is_error, "the suggested call must be accepted: {again}");
+    assert!(
+        !followed.contains("# hint:"),
+        "following the suggestion must settle: {}",
+        &followed[..followed.len().min(200)]
+    );
+}
