@@ -10,14 +10,8 @@ use crate::prompt::agent_prompt;
 pub struct Gemini;
 
 const HOOK_PATH: &[&str] = &["hooks", "BeforeTool"];
-/// Events an install registers the entry under.
-const INSTALL_HOOK_PATHS: &[&[&str]] = &[HOOK_PATH];
-
-/// Every event our entry has ever lived under, for uninstall and status. Kept
-/// separate from [`INSTALL_HOOK_PATHS`] even though the two agree today: a
-/// release that moves the event adds the old one here and must *not* add it
-/// there, or install would recreate the entry it just cleared.
-const ALL_HOOK_PATHS: &[&[&str]] = &[HOOK_PATH];
+/// The events our entry is registered under.
+const HOOK_PATHS: &[&[&str]] = &[HOOK_PATH];
 const HOOK_NAME: &str = "ast-bro-read-interceptor";
 const MCP_KEY_PATH: &[&str] = &["mcpServers"];
 const MCP_SERVER_NAME: &str = "ast-bro";
@@ -93,7 +87,7 @@ impl Installer for Gemini {
     fn install_hook(&self, scope: &Scope, opts: &InstallOpts) -> Result<Change, String> {
         common::install_json_hook_in(
             &self.settings_path(scope)?,
-            INSTALL_HOOK_PATHS,
+            HOOK_PATHS,
             self.hook_entry(opts),
             matches_entry,
             opts,
@@ -117,7 +111,7 @@ impl Installer for Gemini {
             changes.push(c);
         }
         if let Some(c) =
-            common::uninstall_json_hook_in(&self.settings_path(scope)?, ALL_HOOK_PATHS, matches_entry, opts)?
+            common::uninstall_json_hook_in(&self.settings_path(scope)?, HOOK_PATHS, matches_entry, opts)?
         {
             changes.push(c);
         }
@@ -146,7 +140,7 @@ impl Installer for Gemini {
         let mut s = common::status_for(
             self.prompt_path(scope).ok().as_deref(),
             self.settings_path(scope).ok().as_deref(),
-            INSTALL_HOOK_PATHS,
+            HOOK_PATHS,
             matches_entry,
         );
         if let Ok(sp) = self.settings_path(scope) {

@@ -2211,8 +2211,13 @@ fn run_status(scope: &installers::Scope) {
         if s.hook_partial {
             // A qualification of a delivered answer, so stderr — stdout carries
             // the table, and a note wedged between two rows reads as a row.
+            //
+            // Worded as an observation rather than an instruction: a settings
+            // file can be short an event because the user removed it on purpose,
+            // and there is no way to tell that from an install that predates it.
             eprintln!(
-                "# note: {}: hook registered for only some events — re-run `ast-bro install` to complete it",
+                "# note: {}: our hook is registered for some of the events `install` writes, not all. \
+`ast-bro install` adds the rest; nothing else is needed if the missing one was removed deliberately.",
                 inst.name()
             );
         }

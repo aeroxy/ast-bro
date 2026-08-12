@@ -331,14 +331,16 @@ call, so the map arrives beside the error rather than in place of
 anything.
 
 Whatever the channel, the map is capped at 64 KB. A map that would run
-over sheds detail first, in order of what it costs: doc comments and
-attributes, then fields and private items, then members past 50 per
-type. Only when that still does not fit is the map trimmed line by line
-— a minified bundle, where the size is sheer declaration count, or a
-single generated declaration too wide to fit at all. A trim drops a
-declaration's members along with it rather than filing them under the
-previous one. Either way the payload ends with a note saying what is
-missing and the `ast-bro map` command that returns it.
+over can shed detail — doc comments and attributes first, then fields and
+private items, with a per-type member cap as a last backstop that rarely
+comes up — or keep the detail and drop whole entries instead. Which one you get is decided by how many
+declarations each delivers, not by which fits first: a mostly-private
+file would fit the moment private items went, and hand you the public
+few, so it is trimmed at a richer level instead. A trim drops a
+declaration together with its doc comment and its members, rather than
+leaving them to read as someone else's. Either way the payload ends with
+a note saying what is missing and the `ast-bro map` command that returns
+it.
 
 ### Claude Code subagent shadowing
 
