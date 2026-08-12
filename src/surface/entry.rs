@@ -1,4 +1,4 @@
-use crate::core::DeclarationKind;
+use crate::core::{DeclarationGroup, DeclarationKind};
 use serde::{Serialize, Serializer};
 use std::path::{Path, PathBuf};
 
@@ -31,6 +31,13 @@ pub struct SurfaceEntry {
     pub via_glob: bool,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub docs: Vec<String>,
+    /// The declaration group documenting this symbol, when its own `docs`
+    /// are empty because the documentation belongs to the block it lives
+    /// in. Kept beside `docs` so a resolver copying one sees the other:
+    /// a surface that carries only `docs` reports every member of a
+    /// documented Go `const ( … )` block as undocumented.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub group: Option<DeclarationGroup>,
 }
 
 fn _is_false(b: &bool) -> bool {

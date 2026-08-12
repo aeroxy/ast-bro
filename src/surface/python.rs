@@ -280,6 +280,7 @@ impl Walker {
             re_export_chain: chain,
             via_glob: false,
             docs: decl.docs.clone(),
+            group: decl.group.clone(),
         });
     }
 
@@ -304,6 +305,7 @@ impl Walker {
             re_export_chain: chain,
             via_glob: true,
             docs: existing.docs.clone(),
+            group: existing.group.clone(),
         });
     }
 }
