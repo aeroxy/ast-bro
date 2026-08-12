@@ -83,6 +83,7 @@ pub fn resolve(
             re_export_chain: Vec::new(),
             via_glob: false,
             docs: d.docs.clone(),
+            group: d.group.clone(),
         });
     }
 
@@ -141,6 +142,7 @@ pub fn resolve(
                                     re_export_chain: vec![hop.clone()],
                                     via_glob: false,
                                     docs: d.docs.clone(),
+                                    group: d.group.clone(),
                                 });
                                 break;
                             }
@@ -177,6 +179,7 @@ pub fn resolve(
                                     re_export_chain: vec![hop.clone()],
                                     via_glob: true,
                                     docs: d.docs.clone(),
+                                    group: d.group.clone(),
                                 });
                             }
                         }

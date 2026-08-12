@@ -65,3 +65,8 @@ type Client interface {
 func Send(r Request) error { return nil } // trailing comment on Send
 
 func Receive() error { return nil }
+
+type (
+	Undocumented struct{}
+	AlsoNone     struct{}
+)
