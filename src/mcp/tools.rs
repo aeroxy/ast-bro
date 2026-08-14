@@ -799,12 +799,13 @@ fn run_implements(args: Value) -> CallResult {
     let path_note = partial_note(&missing);
     let results = crate::walk_and_parse(&paths, None);
     let transitive = !a.direct;
-    let matches = core::find_implementations(&results, &a.target, transitive);
+    let report = crate::implements::find_implementations(&results, &a.target, transitive);
+    let matches = &report.matches;
 
     // Same gate as the CLI (#36): a 0-match answer is only reported for
     // types that exist — "no such type anywhere" is a rejected call, and
     // MCP's one error channel is `isError`.
-    if matches.is_empty() && !core::implements_target_exists(&results, &a.target) {
+    if matches.is_empty() && !crate::implements::target_exists(&results, &report, &a.target) {
         return CallResult::Error(format!(
             "no type named '{}' in the given path(s); check the spelling or widen the search path",
             a.target
@@ -813,18 +814,23 @@ fn run_implements(args: Value) -> CallResult {
 
     if a.json {
         CallResult::Text(with_missing_paths(
-            core::render_json_implements(&a.target, &matches, transitive, true),
+            crate::implements::render_json_implements(&a.target, &report, transitive, true),
             &missing,
         ))
     } else {
         let mut out = String::new();
+        // One channel here, so the caveats ride on the body (see `callers`).
+        for note in crate::implements::implements_notes(&report, &a.target) {
+            out.push_str(&note);
+            out.push('\n');
+        }
         out.push_str(&format!(
             "# {} match(es) for '{}'{}:\n",
             matches.len(),
             a.target,
             if transitive { " (incl. transitive)" } else { "" }
         ));
-        for m in &matches {
+        for m in matches {
             let via = if m.via.is_empty() {
                 String::new()
             } else {

@@ -47,7 +47,7 @@ fn code_symbol_match_stays_exact() {
     // symbols we want exact-suffix equality. Under the error contract
     // (#36) a non-matching symbol is a rejected call: exit 2, stderr.
     let out = Command::new(bin())
-        .args(["show", "src/core.rs", "find_imp"])
+        .args(["show", "src/implements.rs", "find_imp"])
         .env("NO_COLOR", "1")
         .output()
         .expect("run");
@@ -62,7 +62,7 @@ fn code_symbol_match_stays_exact() {
         stderr.contains("no symbol matching"),
         "code symbol substring match leaked:\n{stderr}"
     );
-    let s2 = run(&["show", "src/core.rs", "find_implementations"]);
+    let s2 = run(&["show", "src/implements.rs", "find_implementations"]);
     assert!(
         s2.contains("find_implementations") && s2.contains("function"),
         "exact code symbol match broken:\n{s2}"
