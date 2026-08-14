@@ -603,13 +603,21 @@ fn _property_signature<'a, D: Doc>(node: &Node<'a, D>, src: &[u8]) -> String {
         .to_string()
 }
 
+/// Supertypes of a class, interface, or object.
+///
+/// The grammar hangs each `delegation_specifier` straight off the
+/// declaration, with no `delegation_specifiers` container in between —
+/// looking only for the container is why Kotlin used to report no
+/// supertypes at all, which left `implements` with no Kotlin edges to walk.
+/// Both shapes are read, since the container is what the grammar's own
+/// reference names and a future version may reinstate it.
 fn _delegation_bases<'a, D: Doc>(node: &Node<'a, D>, _src: &[u8]) -> Vec<String> {
     for c in node.children() {
         if c.kind() == "delegation_specifiers" {
             return _collect_delegation_types(&c);
         }
     }
-    Vec::new()
+    _collect_delegation_types(node)
 }
 
 fn _collect_delegation_types<'a, D: Doc>(container: &Node<'a, D>) -> Vec<String> {
