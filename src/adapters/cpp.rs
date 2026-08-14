@@ -450,16 +450,26 @@ fn _field_to_decl<'a, D: Doc>(node: &Node<'a, D>, _src: &[u8]) -> Option<Declara
     })
 }
 
+/// Base classes of a `class` or `struct`.
+///
+/// The base clause is an ordinary child of the specifier, not a field on
+/// it — asking for `node.field("base_class_clause")` returned nothing, so
+/// C++ recorded no supertypes at all and `implements` had no C++ edges to
+/// walk. Inside the clause only the type names count: `public`, `private`
+/// and `protected` are `access_specifier` nodes and `virtual` is anonymous.
 fn _class_bases<'a, D: Doc>(node: &Node<'a, D>) -> Vec<String> {
     let mut bases = Vec::new();
-    let base_clause = node.field("base_class_clause");
-    if let Some(bc) = base_clause {
+    for bc in node.children().filter(|c| c.kind() == "base_class_clause") {
         for child in bc.children() {
-            if child.is_named() && child.kind() != "::" {
-                let text = collapse_ws(&child.text());
-                if !text.is_empty() {
-                    bases.push(text);
-                }
+            if !matches!(
+                child.kind().as_ref(),
+                "type_identifier" | "qualified_identifier" | "template_type" | "dependent_type"
+            ) {
+                continue;
+            }
+            let text = collapse_ws(&child.text());
+            if !text.is_empty() {
+                bases.push(text);
             }
         }
     }

@@ -1412,7 +1412,10 @@ fn _normalize_type_name(name: &str) -> String {
     if let Some(i) = name.find('[') {
         name = &name[..i];
     }
-    if let Some(i) = name.rfind('.') {
+    // Every separator the supported languages use has to be cut, including
+    // PHP's backslash: leaving it in makes `\Ns\Root` a name no declaration
+    // index can carry, which is most PHP inheritance.
+    if let Some(i) = name.rfind(['.', '\\']) {
         name = &name[i + 1..];
     }
     if let Some(i) = name.rfind("::") {
