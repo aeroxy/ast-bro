@@ -71,13 +71,13 @@ fn line_count_at_least(path: &Path, threshold: usize) -> std::io::Result<bool> {
 ///
 /// The ceiling is hard: [`MAP_BUDGET`] holds back room for the channel notice and
 /// the marker, both of which are built before anything is cut.
-const MAX_MAP_BYTES: usize = 64 * 1024;
+pub(super) const MAX_MAP_BYTES: usize = 64 * 1024;
 
 /// What a map may occupy once the channel notice is accounted for.
 ///
 /// `io::payload` prepends a notice to every map, so a map sized against
 /// [`MAX_MAP_BYTES`] alone would be delivered above it.
-const MAP_BUDGET: usize = MAX_MAP_BYTES - super::io::MAX_NOTICE_BYTES;
+pub(super) const MAP_BUDGET: usize = MAX_MAP_BYTES - super::io::MAX_NOTICE_BYTES;
 
 /// Detail the hook sheds, in order, to bring a map under [`MAP_BUDGET`].
 ///
@@ -135,7 +135,7 @@ fn render_map_for(path: &Path) -> Option<String> {
     // and a different one: it funds by rank, which on a file of wide type headers
     // and cheap members buys fewer declarations than file order would, and buys
     // the right ones.
-    let mut best: Option<(usize, String)> = None;
+    let mut best: Option<Candidate> = None;
     for (i, (shed, opts)) in levels.iter().enumerate() {
         if rendered.len() == i {
             rendered.push(crate::core::render_map_units(&res, opts));
@@ -151,21 +151,36 @@ fn render_map_for(path: &Path) -> Option<String> {
         } else {
             shed_note(shed, path)
         };
-        let fits = map_bytes(&rendered[i]) + note.len() <= MAP_BUDGET;
-        let (payload, delivered) = if fits {
-            (
-                with_note(join_units(&rendered[i]), &note),
-                entry_count(&rendered[i]),
-            )
+        // Measured on the assembled payload rather than on its parts: `with_note`
+        // puts the note on a line of its own, and a fit decision that leaves that
+        // byte out is a ceiling resting on how the renderer happened to end the
+        // last unit.
+        let whole = with_note(join_units(&rendered[i]), &note);
+        let fits = whole.len() <= MAP_BUDGET;
+        let candidate = if fits {
+            let delivered = entry_count(&rendered[i]);
+            Candidate {
+                payload: whole,
+                required: delivered,
+                delivered,
+            }
         } else {
             for (_, leaner) in levels.iter().skip(rendered.len()) {
                 rendered.push(crate::core::render_map_units(&res, leaner));
             }
-            cap_map(&rendered[i], &rendered[i + 1..], shed, full_bytes, path)
+            let required = required_ids(&rendered[i + 1..], &levels[i + 1..], path);
+            cap_map(
+                &rendered[i],
+                &rendered[i + 1..],
+                &required,
+                shed,
+                full_bytes,
+                path,
+            )
         };
         // Strictly greater, so the richest level wins a tie.
-        if best.as_ref().is_none_or(|(most, _)| delivered > *most) {
-            best = Some((delivered, payload));
+        if best.as_ref().is_none_or(|b| candidate.score() > b.score()) {
+            best = Some(candidate);
         }
         if fits {
             // No later level can deliver more: every level after this one only
@@ -177,7 +192,65 @@ fn render_map_for(path: &Path) -> Option<String> {
             break;
         }
     }
-    best.map(|(_, payload)| payload)
+    let payload = best.map(|b| b.payload);
+    debug_assert!(
+        payload.as_ref().is_none_or(|p| p.len() <= MAP_BUDGET),
+        "a payload left the hook over the budget"
+    );
+    payload
+}
+
+/// One level's answer, and what it costs to prefer another level's.
+struct Candidate {
+    payload: String,
+    /// Declarations it carries that a whole leaner candidate would carry too.
+    required: usize,
+    /// Declarations it carries at all.
+    delivered: usize,
+}
+
+impl Candidate {
+    /// What a candidate is chosen by, richest first.
+    ///
+    /// Declarations decide it, but not before the public surface does. A trim
+    /// that runs out of budget inside the top rank can still out-count the leaner
+    /// candidate that fits whole — it skips the one unit too wide to fit and
+    /// spends the remainder on cheaper ones a rank below — and that payload is
+    /// missing declarations a cheaper answer would have delivered. Counting the
+    /// required set first makes that trade impossible to win.
+    fn score(&self) -> (usize, usize) {
+        (self.required, self.delivered)
+    }
+}
+
+/// The declarations a trimmed candidate must carry to be worth preferring.
+///
+/// They are the leanest whole answer available: the richest of the leaner levels
+/// whose map fits, which is the level the loop in [`render_map_for`] would stop
+/// at. Empty when no leaner level fits, where nothing is owed and the count
+/// decides alone.
+fn required_ids(
+    leaner: &[Vec<MapUnit>],
+    levels: &[(&'static str, crate::core::MapOptions)],
+    path: &Path,
+) -> HashSet<usize> {
+    for (units, (shed, _)) in leaner.iter().zip(levels) {
+        let note = shed_note(shed, path);
+        if with_note(join_units(units), &note).len() <= MAP_BUDGET {
+            return declaration_ids(units);
+        }
+    }
+    HashSet::new()
+}
+
+fn declaration_ids(units: &[MapUnit]) -> HashSet<usize> {
+    units
+        .iter()
+        .filter_map(|u| match u.kind {
+            MapUnitKind::Declaration { id } => Some(id),
+            _ => None,
+        })
+        .collect()
 }
 
 /// The declarations a map carries, which is what one candidate is compared to
@@ -241,15 +314,7 @@ fn shed_note(shed: &str, path: &Path) -> String {
 fn survival_ranks(units: &[MapUnit], leaner: &[Vec<MapUnit>]) -> Vec<usize> {
     let sets: Vec<HashSet<usize>> = leaner
         .iter()
-        .map(|render| {
-            render
-                .iter()
-                .filter_map(|u| match u.kind {
-                    MapUnitKind::Declaration { id } => Some(id),
-                    _ => None,
-                })
-                .collect()
-        })
+        .map(|render| declaration_ids(render))
         .collect();
     let mut by_decl: HashMap<usize, usize> = HashMap::new();
     let mut ranks = Vec::with_capacity(units.len());
@@ -296,14 +361,21 @@ fn survival_ranks(units: &[MapUnit], leaner: &[Vec<MapUnit>]) -> Vec<usize> {
 ///
 /// And a dropped declaration takes everything nested under it, because a member
 /// kept without its type header reads as a member of the previous type — a map
-/// asserting a structure the file does not have.
+/// asserting a structure the file does not have. That rule needs its parent
+/// decided first, and the funding order gives it that: `_render_decl` returns
+/// before rendering anything for a declaration the options exclude, so a child
+/// reaches a render only where every one of its ancestors did. A parent
+/// therefore survives at least as far down the ladder as its members, its rank
+/// is never lower, and a stable sort leaves the two in file order when the ranks
+/// are equal.
 fn cap_map(
     units: &[MapUnit],
     leaner: &[Vec<MapUnit>],
+    required: &HashSet<usize>,
     shed: &str,
     full_bytes: usize,
     path: &Path,
-) -> (String, usize) {
+) -> Candidate {
     // Size the marker against the widest numbers it can carry, so the budget it
     // comes out of is never too small; the real numbers are no wider, since what
     // is kept never exceeds the whole map and what is dropped never exceeds the
@@ -316,9 +388,7 @@ fn cap_map(
         .saturating_sub(1);
     let ranks = survival_ranks(units, leaner);
     let mut order: Vec<usize> = (0..units.len()).collect();
-    // A stable sort, so units of one rank keep the file's order — and with it the
-    // guarantee that a parent is decided before what nests under it, since a
-    // parent survives at least as far down the ladder as its members do.
+    // Stable, which is what decides a parent before its members.
     order.sort_by_key(|&i| std::cmp::Reverse(ranks[i]));
 
     let mut keep = vec![false; units.len()];
@@ -350,15 +420,21 @@ fn cap_map(
         .filter(|(_, k)| **k)
         .map(|(u, _)| u.text.as_str())
         .collect();
-    let delivered = units
-        .iter()
-        .zip(&keep)
-        .filter(|(u, k)| **k && matches!(u.kind, MapUnitKind::Declaration { .. }))
-        .count();
+    let (mut delivered, mut kept_required) = (0usize, 0usize);
+    for (unit, keep) in units.iter().zip(&keep) {
+        if let (true, MapUnitKind::Declaration { id }) = (*keep, unit.kind) {
+            delivered += 1;
+            kept_required += usize::from(required.contains(&id));
+        }
+    }
     let note = trim_note(len, full_bytes, dropped, shed, path);
     let out = with_note(kept.join("\n"), &note);
     debug_assert!(out.len() <= MAP_BUDGET, "trim overshot the budget");
-    (out, delivered)
+    Candidate {
+        payload: out,
+        required: kept_required,
+        delivered,
+    }
 }
 
 /// The line a trimmed map ends with. Separate from the cut so its width can be
@@ -647,7 +723,7 @@ mod tests {
             units.push(decl_unit("pub fn f() {}", id, None));
         }
         let full = map_bytes(&units);
-        let (out, _) = cap_map(&units, &[], "", full, Path::new("/tmp/x.rs"));
+        let out = cap_map(&units, &[], &HashSet::new(), "", full, Path::new("/tmp/x.rs")).payload;
         assert!(out.len() <= MAP_BUDGET, "{} bytes", out.len());
         assert!(out.starts_with("# header\n"));
         assert!(out.contains("map trimmed to"));
@@ -695,7 +771,7 @@ mod tests {
 
         for (label, units) in [("most of a map", many), ("header only", header_only)] {
             let full = map_bytes(&units);
-            let (out, _) = cap_map(&units, &[], "", full, Path::new("/tmp/x.rs"));
+            let out = cap_map(&units, &[], &HashSet::new(), "", full, Path::new("/tmp/x.rs")).payload;
             let (delivered, claimed) = delivered_and_claimed(&out);
             assert_eq!(delivered, claimed, "{label}: marker in {out:.0}");
             assert!(out.len() <= MAP_BUDGET, "{label}: {} bytes", out.len());
@@ -850,8 +926,22 @@ mod tests {
             ("no leaner render", Vec::new()),
             ("types outrank members", vec![types_only.clone()]),
         ] {
-            let (out, delivered) = cap_map(&units, &leaner, "", full, Path::new("/tmp/wide.java"));
-            assert!(delivered > 0, "{label}: the trim delivered nothing to check");
+            let Candidate {
+                payload: out,
+                delivered,
+                ..
+            } = cap_map(
+                &units,
+                &leaner,
+                &HashSet::new(),
+                "",
+                full,
+                Path::new("/tmp/wide.java"),
+            );
+            assert!(
+                delivered > 0,
+                "{label}: the trim delivered nothing to check"
+            );
             assert!(out.len() <= MAP_BUDGET, "{label}: {} bytes", out.len());
             assert!(out.contains("dropped"), "{label}: no trim was triggered");
 
@@ -962,6 +1052,122 @@ mod tests {
         );
     }
 
+    /// A payload never omits a declaration a whole candidate would have carried.
+    ///
+    /// The trim's budget is smaller than the fitting level's by the width of the
+    /// marker it has to carry, so a trim of a richer level can run out inside the
+    /// top rank. It then skips the one unit too wide for what is left and spends
+    /// the remainder on cheaper declarations a rank below, which out-counts the
+    /// whole candidate while missing part of the public surface that one carried.
+    /// The fixture is built for that: the public surface is grown to the largest
+    /// that still fits whole, its last member is wide enough to be the one
+    /// skipped, and the private methods behind it are cheap enough to more than
+    /// replace it by count.
+    #[test]
+    fn a_trimmed_candidate_never_omits_what_a_whole_one_carries() {
+        let dir = TempDir::new().unwrap();
+        let p = dir.path().join("api.rs");
+        let surface = widest_public_surface_that_fits(&p);
+
+        write_public_surface(&p, surface);
+        match decide(&ev("Read", Some(p.clone()), false), &opts(), replacing()) {
+            Decision::Substitute { map } => {
+                assert!(map.len() <= MAP_BUDGET, "{} bytes", map.len());
+                assert_eq!(
+                    map.matches("pub fn api_").count(),
+                    surface,
+                    "the payload dropped part of a public surface that fits whole"
+                );
+                assert!(
+                    map.contains("pub fn wide"),
+                    "the wide public declaration is exactly the one a trim skips"
+                );
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    /// No payload crosses the ceiling, on either side of the fit boundary.
+    ///
+    /// The two paths size themselves differently — the trim reserves the byte its
+    /// marker sits on, a whole map is measured against the ceiling directly — so
+    /// the boundary between them is where a byte goes missing. Sampled below it,
+    /// on it, and above it, since a map measured *at* the ceiling is the one that
+    /// gets delivered over it when the marker's own line is not counted.
+    #[test]
+    fn no_payload_crosses_the_ceiling_around_the_fit_boundary() {
+        let dir = TempDir::new().unwrap();
+        let p = dir.path().join("api.rs");
+        let surface = widest_public_surface_that_fits(&p);
+
+        let (mut whole, mut trimmed) = (0usize, 0usize);
+        for n in surface - 2..=surface + 2 {
+            write_public_surface(&p, n);
+            match decide(&ev("Read", Some(p.clone()), false), &opts(), replacing()) {
+                Decision::Substitute { map } => {
+                    assert!(
+                        map.len() <= MAP_BUDGET,
+                        "{n} public declarations delivered {} bytes",
+                        map.len()
+                    );
+                    if map.contains("map trimmed to") {
+                        trimmed += 1;
+                    } else {
+                        whole += 1;
+                    }
+                }
+                other => panic!("{n}: unexpected: {other:?}"),
+            }
+        }
+        assert!(
+            whole > 0 && trimmed > 0,
+            "the sweep stayed on one side of the boundary: {whole} whole, {trimmed} trimmed"
+        );
+    }
+
+    /// A type of `n` cheap public methods, one wide public method, and private
+    /// methods cheap enough that a trim can more than replace the wide one.
+    fn write_public_surface(path: &std::path::Path, n: usize) {
+        let params = (0..40)
+            .map(|k| format!("a{k}: u32"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let mut body = String::new();
+        for i in 0..n {
+            body.push_str(&format!(
+                "    pub fn api_{i:04}(&self, a: u32) -> u32 {{ a }}\n"
+            ));
+        }
+        body.push_str(&format!("    pub fn wide(&self, {params}) {{}}\n"));
+        for i in 0..2000 {
+            body.push_str(&format!("    fn h_{i:04}(&self) {{}}\n"));
+        }
+        std::fs::write(path, format!("pub struct S;\n\nimpl S {{\n{body}}}\n")).unwrap();
+    }
+
+    /// The largest public surface [`write_public_surface`] can give the file with
+    /// the shed level still fitting whole, which is the boundary both tests need.
+    fn widest_public_surface_that_fits(path: &std::path::Path) -> usize {
+        let fits = |n: usize| {
+            write_public_surface(path, n);
+            let res = crate::main_helpers::parse_file_for_hook(path).unwrap();
+            let units = crate::core::render_map_units(&res, &map_levels()[2].1);
+            with_note(join_units(&units), &shed_note(map_levels()[2].0, path)).len() <= MAP_BUDGET
+        };
+        let (mut small, mut large) = (1usize, 4000usize);
+        while small + 1 < large {
+            let mid = (small + large) / 2;
+            if fits(mid) {
+                small = mid;
+            } else {
+                large = mid;
+            }
+        }
+        assert!(fits(small), "no public surface fits whole");
+        assert!(!fits(small + 1), "{small} is not the boundary");
+        small
+    }
+
     /// A declaration keeps its number when the options drop its neighbours.
     ///
     /// [`survival_ranks`] matches two renders of one file by that number, so a
@@ -987,16 +1193,17 @@ mod tests {
                 })
                 .collect()
         };
-        let same_names = |part: &HashMap<usize, String>, whole: &HashMap<usize, String>, what: &str| {
-            for (id, text) in part {
-                assert_eq!(
-                    whole.get(id),
-                    Some(text),
-                    "{what}: declaration {id} is {text:?} in one render and {:?} in the other",
-                    whole.get(id)
-                );
-            }
-        };
+        let same_names =
+            |part: &HashMap<usize, String>, whole: &HashMap<usize, String>, what: &str| {
+                for (id, text) in part {
+                    assert_eq!(
+                        whole.get(id),
+                        Some(text),
+                        "{what}: declaration {id} is {text:?} in one render and {:?} in the other",
+                        whole.get(id)
+                    );
+                }
+            };
 
         let hidden = dir.path().join("hidden.rs");
         std::fs::write(
