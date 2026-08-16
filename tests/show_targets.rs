@@ -453,3 +453,38 @@ fn unparseable_single_target_still_says_unsupported() {
         "stderr:\n{stderr}"
     );
 }
+
+/// A qualified name another command prints is a name `show` takes back.
+///
+/// The trail `show` matches against held each declaration's name whole, while
+/// the target it compares against is split on the dot — so a name that is
+/// itself qualified, which is every C# `namespace Foo.Bar` and both of PHP's
+/// and C++'s multi-segment forms, could never match the segments the caller
+/// typed. `surface` printed `Example.Api.Codec` and `show` rejected it.
+#[test]
+fn a_qualified_name_surface_prints_resolves_in_show() {
+    let file = "tests/fixtures/implements_collision/csharp/Api.cs";
+    let (code, listed, stderr) = run(&["surface", file]);
+    assert_eq!(code, Some(0), "{stderr}");
+    let qualified = listed
+        .lines()
+        .next()
+        .and_then(|l| l.split_whitespace().next())
+        .expect("surface listed nothing")
+        .to_string();
+    assert_eq!(qualified, "Example.Api.Codec", "fixture changed shape");
+
+    let (code, stdout, stderr) = run(&["show", file, &qualified]);
+    assert_eq!(code, Some(0), "{qualified}: {stderr}");
+    assert!(
+        stdout.contains("interface Codec"),
+        "the qualified name did not resolve back:\n{stdout}"
+    );
+
+    // The segments still match on a suffix, so the short forms keep working.
+    for target in ["Codec", "Api.Codec"] {
+        let (code, stdout, _) = run(&["show", file, target]);
+        assert_eq!(code, Some(0), "{target}");
+        assert!(stdout.contains("interface Codec"), "{target}:\n{stdout}");
+    }
+}

@@ -84,6 +84,11 @@ fn _namespace_to_decl<'a, D: Doc>(node: &Node<'a, D>, src: &[u8]) -> Option<Decl
     }
 
     let sig = format!("namespace {}", name);
+    // The signature keeps C++'s spelling; the name carries the dots every
+    // renderer joins a qualified path with, so a C++17 `namespace A::B` reads
+    // as `A.B.Root` in `surface` rather than the mixed `A::B.Root`. The
+    // resolver splits both separators either way (`implements::_join_dot`).
+    let name = name.replace("::", ".");
     let range = node.range();
     Some(Declaration {
         kind: DeclarationKind::Namespace,

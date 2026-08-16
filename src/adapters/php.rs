@@ -281,6 +281,13 @@ fn _namespace_to_decl<'a, D: Doc>(node: &Node<'a, D>, src: &[u8]) -> Option<Decl
     }
 
     let sig = format!("namespace {}", name);
+    // The signature keeps PHP's spelling; the name carries the dots every
+    // renderer joins a qualified path with. `surface` and `digest` print the
+    // enclosing namespace in front of each symbol, so a name that kept `\`
+    // came out as `App\Lib.Service` — a spelling that is neither PHP nor a
+    // target this tool accepts back. The resolver is unaffected either way:
+    // it splits both separators (see `implements::_join_dot`).
+    let name = name.replace('\\', ".");
     let range = node.range();
     Some(Declaration {
         kind: DeclarationKind::Namespace,
