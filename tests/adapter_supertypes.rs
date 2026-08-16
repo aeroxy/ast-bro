@@ -165,3 +165,31 @@ fn a_recorded_base_reaches_the_signature() {
     }
     assert!(seen >= 3, "the fixture recorded no bases to check ({seen})");
 }
+
+/// A clause the adapter does not recognise is named, not deleted.
+///
+/// Three adapters read their supertype clause through a list of the node
+/// kinds they expected a type to be, which makes every other kind vanish in
+/// silence — and a missing base does not read as "unparsed", it reads as
+/// "this class has no parent", which is a positive claim the source never
+/// made. Ruby is where that shows: `< Struct.new(:a, :b)` and `<
+/// Data.define(:x)` are ordinary, and both came out as a bare `class`.
+///
+/// Naming the expression is the honest answer. `implements` normalises it
+/// to a simple name that matches no declaration, so it resolves to nothing
+/// — the same as an out-of-walk supertype, which is what a computed one is.
+#[test]
+fn a_computed_superclass_is_named_rather_than_dropped() {
+    let file = format!("{}/ruby/computed.rb", fixture("languages"));
+    let (code, stdout, stderr) = run(&["map", &file]);
+    assert_eq!(code, Some(0), "{stderr}");
+    for want in [
+        "class Computed < Struct.new(:a, :b)",
+        "class Shaped < Data.define(:x)",
+    ] {
+        assert!(
+            stdout.contains(want),
+            "a computed superclass was dropped, expected {want:?}:\n{stdout}"
+        );
+    }
+}

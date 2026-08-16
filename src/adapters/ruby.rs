@@ -111,16 +111,17 @@ fn _module_to_decl<'a, D: Doc>(node: &Node<'a, D>, src: &[u8]) -> Option<Declara
 fn _class_to_decl<'a, D: Doc>(node: &Node<'a, D>, src: &[u8]) -> Option<Declaration> {
     let name = field_text(node, "name").unwrap_or_else(|| "?".to_string());
     // The `superclass` node spans the `<` operator as well as the name, so
-    // its text is `< Root`. Only the name node is the supertype: taking the
-    // whole node put an operator in `bases` and nothing ever matched it,
-    // and taking the first named child put a comment there instead when one
-    // sat between the operator and the name.
+    // its text is `< Root`. The operator is anonymous and a comment may sit
+    // between it and the name, so the supertype is the first named child
+    // that is not one — an expression as much as a constant. Ruby computes
+    // a superclass often enough for that to matter: `< Struct.new(:a, :b)`
+    // and `< Data.define(:x)` are ordinary, and naming a *superclass* that
+    // this parser cannot resolve is a truer answer than the bare `class
+    // Config` a list of the two constant kinds rendered, which asserts no
+    // parent at all.
     let superclass = node
         .field("superclass")
-        .and_then(|s| {
-            s.children()
-                .find(|c| matches!(c.kind().as_ref(), "constant" | "scope_resolution"))
-        })
+        .and_then(|s| s.children().find(|c| c.is_named() && c.kind() != "comment"))
         .map(|c| collapse_ws(&c.text()).trim().to_string())
         .unwrap_or_default();
 
