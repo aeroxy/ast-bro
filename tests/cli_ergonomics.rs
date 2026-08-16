@@ -877,28 +877,112 @@ fn the_echo_cap_switches_forms_where_it_says_it_does() {
 }
 
 #[test]
-fn a_backtick_in_a_path_falls_back_to_the_counted_form() {
-    // The command is delimited by backticks, so a path holding one would
-    // close the span early. Quoting cannot help — the byte is inside the
-    // quotes and the delimiter is outside them.
-    let parent = tempfile::tempdir().expect("tempdir");
-    let dir = parent.path().join("we`ird");
-    std::fs::create_dir(&dir).expect("mkdir");
-    fill_past_threshold(&dir);
-    let (code, _stdout, stderr) = run(&["map", dir.to_str().expect("utf8")]);
+fn a_path_that_cannot_be_written_on_one_line_falls_back_to_the_counted_form() {
+    // The spelled-out form is one backtick-delimited line. A backtick closes
+    // that delimiter from inside the shell quotes that correctly protect it,
+    // and a control character splits the line — and every reader of a hint
+    // is line-oriented, this file included. Neither reaches the counted
+    // form, which names no paths.
+    for name in ["we`ird", "we\nird", "we\tird"] {
+        let parent = tempfile::tempdir().expect("tempdir");
+        let dir = parent.path().join(name);
+        std::fs::create_dir(&dir).expect("mkdir");
+        fill_past_threshold(&dir);
+        let (code, _stdout, stderr) = run(&["map", dir.to_str().expect("utf8")]);
+        assert_eq!(code, Some(0), "stderr:\n{stderr}");
+        let hint = stderr
+            .lines()
+            .find(|l| l.starts_with("# hint:"))
+            .unwrap_or_else(|| panic!("hint on stderr for {name:?}:\n{stderr}"));
+        assert!(
+            hint.contains("running `") && hint.contains("on the same path"),
+            "{name:?} must fall back to the counted form:\n{hint}"
+        );
+        assert_eq!(
+            hint.matches('`').count(),
+            2,
+            "{name:?}: exactly one delimited span, closed where it opened:\n{hint}"
+        );
+        assert!(
+            stderr.lines().filter(|l| l.starts_with("# hint:")).count() == 1
+                && !hint.contains('\n'),
+            "{name:?}: the hint must occupy one line:\n{stderr}"
+        );
+    }
+}
+
+#[test]
+fn the_counted_form_settles_like_the_spelled_out_one() {
+    // The spelled-out form is a fresh command and cannot loop. The counted
+    // form describes one too — phrased as an addition to the command already
+    // typed it would loop forever here, where the caller has set every axis
+    // the preset would change and adding it alters nothing.
+    let dir = oversized_map_fixture();
+    let files: Vec<String> = (0..20)
+        .map(|f| {
+            dir.path()
+                .join(format!("file_{f}.rs"))
+                .to_str()
+                .expect("utf8")
+                .to_string()
+        })
+        .collect();
+    let pinned = [
+        "--detail",
+        "names",
+        "--include-private",
+        "--include-fields",
+        "--max-members",
+        "8",
+    ];
+    let mut args = vec!["map"];
+    args.extend(files.iter().map(String::as_str));
+    args.extend(pinned);
+    let (code, stdout, stderr) = run(&args);
     assert_eq!(code, Some(0), "stderr:\n{stderr}");
+    assert!(stdout.len() > 25_000, "fixture must exceed the threshold");
     let hint = stderr
         .lines()
         .find(|l| l.starts_with("# hint:"))
         .expect("hint on stderr");
     assert!(
-        hint.contains("to the same path"),
-        "a backtick path must fall back to the counted form:\n{hint}"
+        hint.contains("running `"),
+        "the counted form must prescribe a call, not an addition:\n{hint}"
     );
+
+    // Follow it: the same paths under the prescribed flags, and nothing else.
+    let flags = hint.split('`').nth(1).expect("flag fragment");
+    let mut followed = vec!["map"];
+    followed.extend(files.iter().map(String::as_str));
+    followed.extend(flags.split_whitespace());
+    let (code, _stdout, stderr) = run(&followed);
+    assert_eq!(code, Some(0), "stderr:\n{stderr}");
+    assert!(
+        !stderr.contains("# hint:"),
+        "following the counted form must settle, got:\n{stderr}"
+    );
+
+    // And the reading the wording rules out. Appending the preset to what
+    // was typed changes nothing, because explicit flags beat it on every
+    // axis, so the same hint prints again — and appending the fragment
+    // verbatim is worse still, since the repeated `--max-members` is a
+    // clap rejection. Neither is a call worth prescribing.
+    let mut appended = args.clone();
+    appended.push("--preset");
+    appended.push("digest");
+    let (code, _stdout, stderr) = run(&appended);
+    assert_eq!(code, Some(0), "stderr:\n{stderr}");
+    assert!(
+        stderr.contains("# hint:"),
+        "the additive reading is the one that loops; if it settles, this test has stopped explaining the wording:\n{stderr}"
+    );
+    let mut verbatim = args.clone();
+    verbatim.extend(flags.split_whitespace());
+    let (code, _stdout, _stderr) = run(&verbatim);
     assert_eq!(
-        hint.matches('`').count(),
-        2,
-        "exactly one delimited span, and nothing inside it that closes early:\n{hint}"
+        code,
+        Some(2),
+        "appending the fragment verbatim repeats --max-members, which clap rejects"
     );
 }
 

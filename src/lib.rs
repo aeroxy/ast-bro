@@ -1247,16 +1247,21 @@ struct MapHintCall<'a> {
 /// command stays with the caller, and `map <dir>` is never redirected to
 /// `digest`.
 ///
-/// It takes one of two forms. Up to [`MAX_ECHOED_PATHS`] paths it is a whole
-/// command, ready to paste: it names `map` whichever alias the caller
-/// entered through, since the two are one command (issue #37) and
+/// It takes one of two forms. Up to [`MAX_ECHOED_PATHS`] spellable paths it
+/// is a whole command, ready to paste: it names `map` whichever alias the
+/// caller entered through, since the two are one command (issue #37) and
 /// `digest … --preset digest` would read as nonsense, and it repeats every
 /// path including one that did not resolve, so the pasted command keeps the
-/// missing-path note the original answer carried. Past that it names the
-/// count instead and asks the reader to add the flags to the argument list
-/// they still have on their command line — a hundred shell-expanded paths
-/// were never retyped, and echoing them costs the one property the hint
-/// exists for.
+/// missing-path note the original answer carried. Otherwise it names the
+/// count and prescribes the flags to run on those paths — a hundred
+/// shell-expanded paths were never retyped, and echoing them costs the one
+/// property the hint exists for.
+///
+/// Both forms describe a whole call, which is what makes following either
+/// one settle. Phrasing the second as an addition to the command already
+/// typed would loop against a caller who set every axis the preset changes:
+/// explicit flags win over the preset, so adding it would alter nothing and
+/// the same hint would print again.
 ///
 /// Either form carries the scope, display, and format flags of the call it
 /// qualifies — `--glob`, `--no-attrs`, `--no-lines`, `--json`, `--compact` —
@@ -1298,47 +1303,48 @@ fn map_directory_hint(
         }
     }
 
+    // The spelled-out form is a whole command: following it replaces the
+    // caller's flags, so it always lands on the digest answer. The counted
+    // form has to describe the same call rather than an addition to the one
+    // that was typed — `adding` loops forever against a caller who already
+    // set every axis the preset would change, since explicit flags beat the
+    // preset and there is nothing left for it to change.
+    let counted = || format!("running `{}` on {}", flags, same_paths_phrase(path_count));
+
+    // The spelled-out form needs paths that survive being written into one
+    // backtick-delimited line. Three ways they do not, and all three end the
+    // same way: `display()` is lossy for a path that is not UTF-8; a
+    // backtick closes the delimiter from inside the shell quotes that
+    // correctly protect it; and a control character — a newline above all —
+    // splits the hint across lines, where every reader of it is
+    // line-oriented, this repository's own tests included. None of that
+    // reaches the counted form, which names no paths, so each case falls
+    // back to it rather than losing the hint.
+    let spellable: Option<Vec<&str>> = call.requested_paths.iter().map(|p| p.to_str()).collect();
+    let one_line = |rendered: &[&str]| {
+        !rendered
+            .iter()
+            .any(|p| p.contains('`') || p.chars().any(char::is_control))
+    };
+
     // Past a handful of paths the caller did not type them — a shell expanded
     // a glob — so repeating all of them buys nothing and costs the one thing
     // the hint exists to protect: a line cheaper to read than the answer it
     // qualifies. 117 paths render a 2.5 KB hint.
-    let body = if path_count > MAX_ECHOED_PATHS {
-        format!("adding `{}` to {}", flags, same_paths_phrase(path_count))
-    } else {
-        // Only the spelled-out form needs the paths to be spellable:
-        // `display()` is lossy, so a path that is not UTF-8 would come back
-        // as a well-formed command naming something that does not exist.
-        // There is no spelling of it to suggest, and saying nothing beats
-        // saying that — but the counted form names no paths at all, so it
-        // survives one.
-        let rendered: Vec<&str> = call
-            .requested_paths
-            .iter()
-            .map(|p| p.to_str())
-            .collect::<Option<_>>()?;
-        // The command is delimited by backticks, so a path holding one would
-        // close the span early and leave a reader selecting half a command.
-        // Shell quoting cannot help: the byte is inside the quotes and the
-        // delimiter is outside them. Fall back to the counted form, which
-        // names no paths and therefore has nothing to delimit.
-        if rendered.iter().any(|p| p.contains('`')) {
-            return Some(format!(
-                "# hint: this was a multi-file answer ({} KB); adding `{}` to {} answers the same question in a fraction of the size",
-                kb_ceil(output_len),
-                flags,
-                same_paths_phrase(path_count),
-            ));
+    let body = match spellable {
+        Some(rendered) if path_count <= MAX_ECHOED_PATHS && one_line(&rendered) => {
+            let quoted = rendered
+                .iter()
+                .map(|p| shell_quote(p))
+                .collect::<Vec<_>>()
+                .join(" ");
+            if rendered.iter().any(|p| p.starts_with('-')) {
+                format!("`ast-bro map {} -- {}`", flags, quoted)
+            } else {
+                format!("`ast-bro map {} {}`", quoted, flags)
+            }
         }
-        let quoted = rendered
-            .iter()
-            .map(|p| shell_quote(p))
-            .collect::<Vec<_>>()
-            .join(" ");
-        if rendered.iter().any(|p| p.starts_with('-')) {
-            format!("`ast-bro map {} -- {}`", flags, quoted)
-        } else {
-            format!("`ast-bro map {} {}`", quoted, flags)
-        }
+        _ => counted(),
     };
     Some(format!(
         "# hint: this was a multi-file answer ({} KB); {} answers the same question in a fraction of the size",
@@ -1454,7 +1460,13 @@ fn run_map_digest(a: &MapArgs, digest_alias: bool) {
         }
     };
     println!("{}", rendered);
-    if let Some(hint) = map_directory_hint(&hint_call, results.len(), rendered.len()) {
+    // What the caller reads is what `println!` wrote, newline included. The
+    // bar is documented as the emitted payload, so measuring the string
+    // alone would miss by a byte at the boundary — and it is the boundary
+    // the negative tests sit on, asserting stdout against a number the
+    // predicate never saw.
+    let emitted_len = rendered.len() + 1;
+    if let Some(hint) = map_directory_hint(&hint_call, results.len(), emitted_len) {
         eprintln!("{}", hint);
     }
 }
