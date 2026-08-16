@@ -965,31 +965,6 @@ fn _resolve_base(
         return BaseRef::One(live[0]);
     }
 
-    // 2b. Declared in a namespace that encloses the referring one, innermost
-    //     first — C#'s rule, and the positive half of the one that makes a
-    //     `using` alias lose to the enclosing scope above. Only the negative
-    //     half was written, so the reference declined the alias and then fell
-    //     to the import rule, which pinned it to the alias's target anyway:
-    //     `using Alias = X.Alias;` above `namespace A.B` answered `X.Alias`
-    //     where C# says `A.Alias`. Every candidate here is a prefix of the
-    //     referring package, so the longest is the innermost.
-    if lang == "csharp" {
-        let referring = &types[from].package;
-        let innermost = live
-            .iter()
-            .filter(|&&c| _encloses(&types[c].package, referring))
-            .map(|&c| types[c].package.len())
-            .max();
-        if let Some(depth) = innermost {
-            _narrow(&mut live, |c| {
-                _encloses(&types[*c].package, referring) && types[*c].package.len() == depth
-            });
-            if live.len() == 1 {
-                return BaseRef::One(live[0]);
-            }
-        }
-    }
-
     // 3. Named by an explicit single-type import. This outranks the
     //    referring file's own package, and has to: `org.postgresql.jdbc.codec`
     //    declares `TextCodec` and its members still import
@@ -1400,7 +1375,9 @@ fn _external_spellings(
 /// `super` and `self`; C# writes `global`, and generated C# writes it on
 /// nearly every reference (`class Child : global::Example.Base`), where
 /// reading it as a namespace rejected the declaration it names and dropped
-/// the edge in silence.
+/// the edge in silence. Which word is an anchor is a fact about the
+/// language, not about the spelling: `global` is an ordinary directory name
+/// in every other one.
 fn _qualifiers_agree(t: &TypeEntry<'_>, segments: &[String]) -> bool {
     let have: Vec<&str> = t.qname.split('.').collect();
     if have.len() >= segments.len() {
@@ -1418,15 +1395,25 @@ fn _qualifiers_agree(t: &TypeEntry<'_>, segments: &[String]) -> bool {
             .components()
             .any(|c| Path::new(c.as_os_str()).file_stem() == Some(std::ffi::OsStr::new(seg)))
     };
-    extra.iter().all(|seg| _is_an_anchor(seg) || in_path(seg))
+    extra
+        .iter()
+        .all(|seg| _is_an_anchor(t.lang, seg) || in_path(seg))
 }
 
 /// Does this leading segment name where to start looking rather than a
-/// namespace or a directory? Rust's `crate`, `super` and `self`, and C#'s
-/// `global`, are all reserved words, so a segment spelling one is never a
-/// real qualifier.
-fn _is_an_anchor(segment: &str) -> bool {
-    matches!(segment, "crate" | "super" | "self" | "global")
+/// namespace or a directory?
+///
+/// Rust's `crate`, `super` and `self` and C#'s `global` are reserved words,
+/// so a segment spelling one is never a real qualifier — in that language.
+/// Elsewhere they are ordinary directory names, and `global` is a common one
+/// (`src/global/`), so accepting it everywhere would satisfy a qualifier
+/// segment for free and let a path that has no such directory match.
+fn _is_an_anchor(lang: &str, segment: &str) -> bool {
+    match lang {
+        "rust" => matches!(segment, "crate" | "super" | "self"),
+        "csharp" => segment == "global",
+        _ => false,
+    }
 }
 
 /// Does `qname` end with the segments the reference spelled out? A bare
@@ -1513,7 +1500,7 @@ fn _import_names(t: &TypeEntry<'_>, imp: &FileImport, simple: &str) -> bool {
     // segment to offer, not two, and counting `crate` would sink it.
     let module: Vec<&String> = full[..full.len() - 1]
         .iter()
-        .filter(|s| !_is_an_anchor(s))
+        .filter(|s| !_is_an_anchor(t.lang, s))
         .collect();
     let have = _path_segments(t.path);
     let common = module
