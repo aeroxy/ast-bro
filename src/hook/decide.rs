@@ -136,6 +136,7 @@ fn render_map_for(path: &Path) -> Option<String> {
     // and cheap members buys fewer declarations than file order would, and buys
     // the right ones.
     let mut best: Option<Candidate> = None;
+    let mut required: Option<HashSet<usize>> = None;
     for (i, (shed, opts)) in levels.iter().enumerate() {
         if rendered.len() == i {
             rendered.push(crate::core::render_map_units(&res, opts));
@@ -151,16 +152,12 @@ fn render_map_for(path: &Path) -> Option<String> {
         } else {
             shed_note(shed, path)
         };
-        // Measured on the assembled payload rather than on its parts: `with_note`
-        // puts the note on a line of its own, and a fit decision that leaves that
-        // byte out is a ceiling resting on how the renderer happened to end the
-        // last unit.
-        let whole = with_note(join_units(&rendered[i]), &note);
-        let fits = whole.len() <= MAP_BUDGET;
-        let candidate = if fits {
+        let whole = whole_payload(&rendered[i], &note);
+        let fits = whole.is_some();
+        let candidate = if let Some(payload) = whole {
             let delivered = entry_count(&rendered[i]);
             Candidate {
-                payload: whole,
+                payload,
                 required: delivered,
                 delivered,
             }
@@ -168,11 +165,15 @@ fn render_map_for(path: &Path) -> Option<String> {
             for (_, leaner) in levels.iter().skip(rendered.len()) {
                 rendered.push(crate::core::render_map_units(&res, leaner));
             }
-            let required = required_ids(&rendered[i + 1..], &levels[i + 1..], path);
+            // The same set at every level that reaches here, since the loop stops
+            // at the first level that fits: a scan from any earlier level finds
+            // that same one. Computed at the first, and reused.
+            let required = required
+                .get_or_insert_with(|| required_ids(&rendered[i + 1..], &levels[i + 1..], path));
             cap_map(
                 &rendered[i],
                 &rendered[i + 1..],
-                &required,
+                required,
                 shed,
                 full_bytes,
                 path,
@@ -223,6 +224,22 @@ impl Candidate {
     }
 }
 
+/// The payload `units` and `note` make, if it is one the hook may deliver.
+///
+/// The size is taken from the assembled payload rather than from its parts:
+/// [`with_note`] puts the note on a line of its own, and a fit decided without
+/// that byte is a ceiling resting on how the renderer happened to end its last
+/// unit. Assembling it costs a copy of the map, so the parts are added up first
+/// — the payload is never smaller than they are — and a level already over the
+/// ceiling by that measure is refused without the copy.
+fn whole_payload(units: &[MapUnit], note: &str) -> Option<String> {
+    if map_bytes(units) + note.len() > MAP_BUDGET {
+        return None;
+    }
+    let out = with_note(join_units(units), note);
+    (out.len() <= MAP_BUDGET).then_some(out)
+}
+
 /// The declarations a trimmed candidate must carry to be worth preferring.
 ///
 /// They are the leanest whole answer available: the richest of the leaner levels
@@ -235,8 +252,7 @@ fn required_ids(
     path: &Path,
 ) -> HashSet<usize> {
     for (units, (shed, _)) in leaner.iter().zip(levels) {
-        let note = shed_note(shed, path);
-        if with_note(join_units(units), &note).len() <= MAP_BUDGET {
+        if whole_payload(units, &shed_note(shed, path)).is_some() {
             return declaration_ids(units);
         }
     }
