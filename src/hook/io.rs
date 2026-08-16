@@ -44,6 +44,10 @@ const AUGMENT_NOTICE: &str = "\
 # not return the file. Read a range with offset/limit, or run
 # `ast-bro show <file> <symbol>` for one symbol's body.";
 
+/// What [`payload`] adds around the notice: the blank line it puts between the
+/// notice and the map, and the newline it ends with.
+const SEPARATOR_BYTES: usize = 3;
+
 /// The most a notice plus its separators can add to a map in [`payload`].
 ///
 /// `decide` holds this back from its byte ceiling, so the ceiling bounds what is
@@ -52,7 +56,7 @@ pub(super) const MAX_NOTICE_BYTES: usize = widest(
     DENY_NOTICE.len(),
     REPLACE_NOTICE.len(),
     AUGMENT_NOTICE.len(),
-) + 3;
+) + SEPARATOR_BYTES;
 
 const fn widest(a: usize, b: usize, c: usize) -> usize {
     let ab = if a > b { a } else { b };
@@ -206,7 +210,7 @@ mod tests {
             let slack = super::super::decide::MAX_MAP_BYTES - framed;
             assert_eq!(
                 slack,
-                MAX_NOTICE_BYTES - (notice.len() + 3),
+                MAX_NOTICE_BYTES - (notice.len() + SEPARATOR_BYTES),
                 "{channel:?}: {framed} bytes delivered, and only the notice's own \
                  width may be under the ceiling"
             );
