@@ -52,7 +52,7 @@ pub(super) const MAX_NOTICE_BYTES: usize = widest(
     DENY_NOTICE.len(),
     REPLACE_NOTICE.len(),
     AUGMENT_NOTICE.len(),
-) + 3; // payload joins with "\n\n" and ends with "\n"
+) + 3;
 
 const fn widest(a: usize, b: usize, c: usize) -> usize {
     let ab = if a > b { a } else { b };
@@ -143,8 +143,19 @@ pub fn emit_substitute(channel: Channel, map: String) -> i32 {
 /// and appears once: a duplicate at the end is noise on the tool's
 /// highest-frequency output path, and a reader who has scrolled that far has
 /// already decided what to do with the payload.
+///
+/// This is where the byte ceiling is finally either kept or broken, since it is
+/// the last thing that adds to a map, so the claim is checked here rather than
+/// inferred from the two sizings that lead to it.
 fn payload(notice: &str, map: &str) -> String {
-    format!("{}\n\n{}\n", notice, map)
+    let out = format!("{}\n\n{}\n", notice, map);
+    debug_assert!(
+        out.len() <= super::decide::MAX_MAP_BYTES,
+        "delivered {} bytes against a {} byte ceiling",
+        out.len(),
+        super::decide::MAX_MAP_BYTES
+    );
+    out
 }
 
 fn emit<T: Serialize>(response: &T) -> i32 {
@@ -175,6 +186,30 @@ mod tests {
             Channel::Deny => DENY_NOTICE,
             Channel::Replace => REPLACE_NOTICE,
             Channel::Augment => AUGMENT_NOTICE,
+        }
+    }
+
+    /// A map that spends the whole budget lands exactly on the ceiling, whichever
+    /// notice leads it.
+    ///
+    /// [`MAX_NOTICE_BYTES`] is what `decide` holds back for this function, so a
+    /// separator it adds and the constant does not count is a byte over the
+    /// ceiling on every full-budget payload. Equality pins it in both directions:
+    /// short, and the ceiling breaks; wide, and the map is smaller than it needed
+    /// to be.
+    #[test]
+    fn a_full_budget_map_lands_exactly_on_the_ceiling() {
+        let map = "x".repeat(super::super::decide::MAP_BUDGET);
+        for channel in ALL_CHANNELS {
+            let notice = notice_of(channel);
+            let framed = payload(notice, &map).len();
+            let slack = super::super::decide::MAX_MAP_BYTES - framed;
+            assert_eq!(
+                slack,
+                MAX_NOTICE_BYTES - (notice.len() + 3),
+                "{channel:?}: {framed} bytes delivered, and only the notice's own \
+                 width may be under the ceiling"
+            );
         }
     }
 
