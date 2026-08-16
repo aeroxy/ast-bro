@@ -756,11 +756,16 @@ fn _render_decl(decl: &Declaration, opts: &MapOptions, indent: usize, out: &mut 
     };
 
     if decl.kind == Namespace {
-        out.push(format!(
-            "{}namespace {}",
-            prefix,
-            decl.name.magenta().bold()
-        ));
+        // `name` carries the dots every qualified path is joined with, which
+        // is not how PHP or C++ spell a namespace. The adapter's signature is
+        // the clause as written, so a language that writes one gets its own
+        // spelling back here; `package`, `module` and `mod` keep the uniform
+        // wording this line has always used.
+        let spelled = decl
+            .signature
+            .strip_prefix("namespace ")
+            .unwrap_or(&decl.name);
+        out.push(format!("{}namespace {}", prefix, spelled.magenta().bold()));
     } else {
         out.push(format!(
             "{}{}{}{}",
@@ -1237,7 +1242,13 @@ fn _search_walk(
     for d in decls {
         let mut new_trail = trail.clone();
         if !d.name.is_empty() {
-            new_trail.push(d.name.clone());
+            // A name that is itself qualified — `namespace Foo.Bar` in C#,
+            // and PHP's and C++'s multi-segment namespaces — enters the trail
+            // as its segments. The query is split on the same dot, so a
+            // one-element `Foo.Bar` could never match the `Foo`, `Bar` the
+            // caller typed, which made the qualified name `surface` prints a
+            // name `show` rejects.
+            new_trail.extend(d.name.split('.').map(str::to_string));
         }
 
         // For markdown headings, fall back to case-insensitive substring
