@@ -301,19 +301,43 @@ fn surface_carries_a_blocks_documentation() {
     // and the member it missed was `Circle` — the only one carrying both
     // its own `docs` and a `group`, so the only one whose result differs
     // between copying `group` always and copying it when `docs` is empty.
-    // Through `--no-private`, because `surface` drops unexported symbols
-    // and a set derived without that filter would fail this test on the
-    // first unexported member the fixture gains — blaming the resolver
-    // for behaving correctly.
+    //
+    // Both sides are keyed by name *and* line. A name alone joins a
+    // grouped declaration to whichever entry shares its spelling, and a
+    // struct field may share it: `type Board struct { Square int }` above
+    // the `type ( … )` block makes the field answer for the type, and the
+    // test fails `surface` for correctly reporting a field with no block.
+    //
+    // Derived through `--no-private`, because `surface` drops unexported
+    // symbols; without that filter the first unexported member the
+    // fixture gains fails this test on correct resolver behaviour.
     let v: serde_json::Value =
         serde_json::from_str(&run(&["map", FIXTURE, "--no-private", "--json"])).expect("json");
-    let in_a_documented_block: std::collections::HashSet<String> = decls(&v)
-        .iter()
-        .filter(|(_, d)| !docs(d, "group").is_empty())
-        .map(|(name, _)| name.clone())
-        .collect();
+
+    fn walk(list: &[serde_json::Value], out: &mut std::collections::HashSet<(String, u64)>) {
+        for d in list {
+            if !d["group"]["docs"].as_array().is_none_or(|a| a.is_empty()) {
+                out.insert((
+                    d["name"].as_str().unwrap_or_default().to_string(),
+                    d["start_line"].as_u64().unwrap_or_default(),
+                ));
+            }
+            if let Some(children) = d["children"].as_array() {
+                walk(children, out);
+            }
+        }
+    }
+    let mut in_a_documented_block = std::collections::HashSet::new();
+    walk(
+        v["files"][0]["declarations"]
+            .as_array()
+            .expect("declarations"),
+        &mut in_a_documented_block,
+    );
     assert!(
-        in_a_documented_block.contains("Circle"),
+        in_a_documented_block
+            .iter()
+            .any(|(name, _)| name == "Circle"),
         "fixture must keep a member that documents itself inside a documented block"
     );
 
@@ -323,14 +347,18 @@ fn surface_carries_a_blocks_documentation() {
 
     let mut seen = std::collections::HashSet::new();
     for e in surfaced["entries"].as_array().expect("entries") {
-        let name = e["source_name"].as_str().unwrap_or_default();
-        if !in_a_documented_block.contains(name) {
+        let key = (
+            e["source_name"].as_str().unwrap_or_default().to_string(),
+            e["source_line"].as_u64().unwrap_or_default(),
+        );
+        if !in_a_documented_block.contains(&key) {
             continue;
         }
-        seen.insert(name.to_string());
+        seen.insert(key.clone());
         assert!(
             !docs(e, "group").is_empty(),
-            "{name} is a member of a documented block but surface reports no group:\n{e:#?}"
+            "{} is a member of a documented block but surface reports no group:\n{e:#?}",
+            key.0
         );
     }
     assert_eq!(
