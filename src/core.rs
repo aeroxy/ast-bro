@@ -688,10 +688,10 @@ fn _group_id(decl: &Declaration) -> Option<usize> {
 /// Members of one block render as one block.
 ///
 /// A type pushes a blank line after itself, which for a `type ( … )`
-/// group separates every member after the first from the `[group]` line
-/// documenting it. A member set off by a blank line reads as an
-/// undocumented declaration of its own, which is the misreading the
-/// marker exists to prevent.
+/// group would separate every member after the first from the `[group]`
+/// line documenting it, so this closes the gap. A member set off by a
+/// blank line reads as an undocumented declaration of its own, which is
+/// the misreading the marker exists to prevent.
 ///
 /// Gated on the same option as [`_push_group_docs`], since the two are one
 /// feature: with no `[group]` line on screen there is nothing for the

@@ -301,7 +301,12 @@ fn surface_carries_a_blocks_documentation() {
     // and the member it missed was `Circle` — the only one carrying both
     // its own `docs` and a `group`, so the only one whose result differs
     // between copying `group` always and copying it when `docs` is empty.
-    let v = json();
+    // Through `--no-private`, because `surface` drops unexported symbols
+    // and a set derived without that filter would fail this test on the
+    // first unexported member the fixture gains — blaming the resolver
+    // for behaving correctly.
+    let v: serde_json::Value =
+        serde_json::from_str(&run(&["map", FIXTURE, "--no-private", "--json"])).expect("json");
     let in_a_documented_block: std::collections::HashSet<String> = decls(&v)
         .iter()
         .filter(|(_, d)| !docs(d, "group").is_empty())
