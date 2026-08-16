@@ -620,29 +620,82 @@ fn _size_label(line_count: usize) -> &'static str {
 
 
 pub fn render_map(result: &ParseResult, opts: &MapOptions) -> String {
-    render_map_units(result, opts).join("\n")
+    render_map_units(result, opts)
+        .iter()
+        .map(|u| u.text.as_str())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// What a map is assembled from: one piece of text plus the structure that text
+/// does not carry.
+///
+/// [`render_map`] joins the text and drops the rest, which is all a reader needs.
+/// A caller that has to *shorten* a map needs the rest: which declaration a piece
+/// renders, and which declaration encloses it. Rendered text answers neither
+/// question. Indentation looks like an answer and is not one — a doc comment
+/// keeps the indentation it had in the source, so its continuation lines land at
+/// arbitrary columns, and a separator has no indentation at all.
+#[derive(Debug, Clone)]
+pub struct MapUnit {
+    /// The text [`render_map`] writes for this piece.
+    pub text: String,
+    /// What this piece is, and for a declaration, which one.
+    pub kind: MapUnitKind,
+    /// The declaration this piece nests under, `None` at the top level.
+    pub parent: Option<usize>,
+}
+
+/// What a [`MapUnit`] is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MapUnitKind {
+    /// The file header or a parse warning: not a declaration, and a map missing
+    /// one reads as a map of a different file.
+    Preamble,
+    /// One declaration together with its doc comment.
+    ///
+    /// `id` numbers the declaration in pre-order over the whole tree, counting
+    /// the declarations [`MapOptions`] filtered out as well, so the number means
+    /// the same thing in every render of one file and two renders can be matched
+    /// against each other.
+    Declaration { id: usize },
+    /// A `... +N more member(s)` marker: a statement about the enclosing type
+    /// rather than a declaration of its own.
+    MoreMembers,
+    /// The blank line between items, which carries no structure.
+    Separator,
+}
+
+impl MapUnit {
+    fn preamble(text: String) -> Self {
+        Self {
+            text,
+            kind: MapUnitKind::Preamble,
+            parent: None,
+        }
+    }
+
+    fn separator() -> Self {
+        Self {
+            text: String::new(),
+            kind: MapUnitKind::Separator,
+            parent: None,
+        }
+    }
 }
 
 /// The map as the units it is assembled from, rather than as one string.
-///
-/// A unit is the file header, a warning, one declaration together with its doc
-/// comment, a `... +N more member(s)` marker, or a blank separator. Text is what
-/// [`render_map`] joins these into; a caller that has to *shorten* a map needs
-/// the units, because a physical line does not tell you what nests under what:
-/// a doc comment keeps the indentation it had in the source, so its continuation
-/// lines land at arbitrary columns, and a separator has no indentation at all.
-/// The unit's own indentation is the render prefix, and children are separate
-/// units indented one level deeper.
-pub fn render_map_units(result: &ParseResult, opts: &MapOptions) -> Vec<String> {
-    let mut units = vec![_format_file_header(
+pub fn render_map_units(result: &ParseResult, opts: &MapOptions) -> Vec<MapUnit> {
+    let mut units = vec![MapUnit::preamble(_format_file_header(
         &format!("# {}", result.path.display()),
         result,
-    )];
+    ))];
     if let Some(warn) = _format_error_warning(result) {
-        units.push(warn);
+        units.push(MapUnit::preamble(warn));
     }
+    let mut next_id = 0usize;
     for decl in &result.declarations {
-        _render_decl(decl, opts, 0, &mut units);
+        _render_decl(decl, opts, 0, None, &mut next_id, &mut units);
     }
     units
 }
@@ -734,7 +787,14 @@ fn _collect_counts(decls: &[Declaration]) -> std::collections::HashMap<&'static 
     out
 }
 
-fn _render_decl(decl: &Declaration, opts: &MapOptions, indent: usize, out: &mut Vec<String>) {
+fn _render_decl(
+    decl: &Declaration,
+    opts: &MapOptions,
+    indent: usize,
+    parent: Option<usize>,
+    next_id: &mut usize,
+    out: &mut Vec<MapUnit>,
+) {
     use DeclarationKind::*;
 
     let push_docs = |prefix: &str, lines_out: &mut Vec<String>| {
@@ -747,7 +807,14 @@ fn _render_decl(decl: &Declaration, opts: &MapOptions, indent: usize, out: &mut 
         }
     };
 
+    let id = *next_id;
+    *next_id += 1;
+
     if !_map_eligible(decl, opts) {
+        // Number the subtree anyway: a declaration's number has to name the same
+        // declaration whatever the options dropped, or two renders of one file
+        // cannot be matched against each other.
+        *next_id += _decl_count(decl);
         return;
     }
 
@@ -790,7 +857,11 @@ fn _render_decl(decl: &Declaration, opts: &MapOptions, indent: usize, out: &mut 
         let inner_prefix = "    ".repeat(indent + 1);
         push_docs(&inner_prefix, &mut unit);
     }
-    out.push(unit.join("\n"));
+    out.push(MapUnit {
+        text: unit.join("\n"),
+        kind: MapUnitKind::Declaration { id },
+        parent,
+    });
 
     // `--max-members` caps how many members a type renders; the remainder
     // is reported, never silently dropped (issues #37 / #32).
@@ -806,21 +877,24 @@ fn _render_decl(decl: &Declaration, opts: &MapOptions, indent: usize, out: &mut 
         if visible(child) && _counts_toward_member_cap(&child.kind) {
             if shown >= cap {
                 hidden += 1;
+                *next_id += 1 + _decl_count(child);
                 continue;
             }
             shown += 1;
         }
-        _render_decl(child, opts, indent + 1, out);
+        _render_decl(child, opts, indent + 1, Some(id), next_id, out);
     }
     if hidden > 0 {
-        out.push(
-            format!(
+        out.push(MapUnit {
+            text: format!(
                 "{}    ... +{} more member(s) (raise --max-members)",
                 prefix, hidden
             )
             .dimmed()
             .to_string(),
-        );
+            kind: MapUnitKind::MoreMembers,
+            parent: Some(id),
+        });
     }
 
     if indent == 0
@@ -829,8 +903,13 @@ fn _render_decl(decl: &Declaration, opts: &MapOptions, indent: usize, out: &mut 
             Class | Struct | Interface | Record | Enum | Namespace
         )
     {
-        out.push(String::new());
+        out.push(MapUnit::separator());
     }
+}
+
+/// Declarations under `decl`, `decl` itself excluded.
+fn _decl_count(decl: &Declaration) -> usize {
+    decl.children.iter().map(|c| 1 + _decl_count(c)).sum()
 }
 
 fn _clip_docs(docs: &[String], limit: usize) -> Vec<String> {
