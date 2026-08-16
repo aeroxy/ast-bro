@@ -216,6 +216,84 @@ mod tests {
         (!field.is_empty() && !value.is_empty()).then_some((field, value))
     }
 
+    /// The text with Rust comments removed, strings left intact.
+    ///
+    /// Rust, and only Rust: `sources()` yields `*.rs` and nothing else, so
+    /// `//` and `/*` are the whole comment syntax this ever meets. The
+    /// hard-coded pair is the language these guards read, not an assumption
+    /// about source files in general — the adapters that parse *other*
+    /// languages live in `src/adapters/` and share nothing with this.
+    ///
+    /// Block comments nest in Rust, so the close is matched by depth rather
+    /// than by the first `*/`. Taking the first one left the tail of
+    /// `/* a /* b */ arg(default_value = 5) */` outside the comment, which is
+    /// the forged-attribute hole this function exists to close. An unterminated
+    /// comment runs to the end of the accumulated text, as it does in the
+    /// compiler.
+    fn strip_comments(text: &str) -> String {
+        let masked = strip_string_literals(text);
+        let mut out = String::with_capacity(text.len());
+        let mut rest = 0usize;
+        while rest < text.len() {
+            let line = masked[rest..].find("//").map(|i| rest + i);
+            let block = masked[rest..].find("/*").map(|i| rest + i);
+            let Some(cut) = line.into_iter().chain(block).min() else {
+                out.push_str(&text[rest..]);
+                break;
+            };
+            out.push_str(&text[rest..cut]);
+            if Some(cut) == line {
+                break;
+            }
+            let Some(end) = block_comment_end(&masked, cut) else {
+                break;
+            };
+            rest = end;
+        }
+        out
+    }
+
+    /// Where the block comment opening at `start` closes, counting nesting.
+    fn block_comment_end(masked: &str, start: usize) -> Option<usize> {
+        let mut depth = 0usize;
+        let mut scan = start;
+        while scan < masked.len() {
+            let open = masked[scan..].find("/*").map(|i| scan + i);
+            let close = masked[scan..].find("*/").map(|i| scan + i);
+            match (open, close) {
+                (Some(o), Some(c)) if o < c => {
+                    depth += 1;
+                    scan = o + 2;
+                }
+                (_, Some(c)) => {
+                    depth -= 1;
+                    scan = c + 2;
+                    if depth == 0 {
+                        return Some(scan);
+                    }
+                }
+                _ => return None,
+            }
+        }
+        None
+    }
+
+    /// Whether an attribute body is clap's own `arg(…)` or `clap(…)`.
+    ///
+    /// The name has to be matched at a boundary, not as a substring:
+    /// `#[my_arg(default_value = 5)]` contains `arg(` and prints nothing, so
+    /// a `contains` test failed the build on the doc comment above someone
+    /// else's macro. `#[cfg_attr(unix, arg(default_value = …))]` is why the
+    /// match cannot simply be anchored at the start.
+    fn names_clap_attribute(body: &str) -> bool {
+        ["arg(", "clap(", "command("].iter().any(|name| {
+            body.match_indices(name).any(|(i, _)| {
+                let before = body[..i].chars().next_back();
+                before.is_none_or(|c| !c.is_alphanumeric() && c != '_')
+            })
+        })
+    }
+
     /// The text with every `"…"` literal blanked out.
     ///
     /// Brackets and markers inside a string are data, not syntax. Escapes are
@@ -453,6 +531,60 @@ mod tests {
         );
     }
 
+    /// A commented-out clap attribute is not a clap attribute.
+    ///
+    /// The compiler drops the comment before it means anything, so the guard
+    /// has to as well, or someone else's `#[serde(…)]` can be made to look
+    /// like clap's and fail the build on the doc comment above it.
+    #[test]
+    fn commented_out_text_cannot_forge_a_clap_attribute() {
+        let forged = vec![
+            "        /// Cap results (default 5).",
+            "        #[serde(/* arg(default_value = 5) */ rename = \"limit\")]",
+            "        limit: usize,",
+        ];
+        assert!(
+            docs_restating_a_default(&forged).is_empty(),
+            "commented-out text must not count as clap syntax"
+        );
+
+        // The real thing beside a comment still counts.
+        let real = vec![
+            "        /// Cap results (default 200).",
+            "        #[arg(long, /* historical */ default_value_t = crate::defaults::LIMIT)]",
+            "        limit: usize,",
+        ];
+        assert_eq!(docs_restating_a_default(&real).len(), 1);
+
+        // Rust nests block comments, so the close has to be matched by depth.
+        // Taking the first `*/` left `arg(default_value = 5)` outside the
+        // comment and forged the match all over again.
+        let nested = vec![
+            "        /// Cap results (default 5).",
+            "        #[serde(/* a /* b */ arg(default_value = 5) */ rename = \"limit\")]",
+            "        limit: usize,",
+        ];
+        assert!(
+            docs_restating_a_default(&nested).is_empty(),
+            "a nested block comment is still a comment"
+        );
+    }
+
+    /// The attribute scan says so when it loses the thread.
+    ///
+    /// The bound is the one mechanism here that fires only on input nothing in
+    /// the tree produces, which is exactly the kind of alarm that rots: move
+    /// the counter reset above the increment and every other test still
+    /// passes while the guard silently returns to checking nothing. A char
+    /// literal holding a quote is the shape that reaches it today.
+    #[test]
+    #[should_panic(expected = "attribute scan never closed")]
+    fn an_attribute_that_never_closes_is_an_error_not_a_silence() {
+        let mut lines = vec!["        #[arg(value_delimiter = '\"', long)]"];
+        lines.extend(std::iter::repeat_n("        more: usize,", 30));
+        let _ = docs_restating_a_default(&lines);
+    }
+
     /// The opt-out marker is exact, and it costs a reason.
     ///
     /// The composed test above covers the verdict; this one covers the marker
@@ -471,6 +603,141 @@ mod tests {
         // And nothing is exempt by accident.
         assert!(!is_exempt("    Self { hits: 0 }"));
         assert!(!is_exempt("    // the defaults are ok as they stand"));
+    }
+
+    /// The doc-block reader survives a multi-line `#[arg(…)]`.
+    ///
+    /// `default_value` is often not the first argument, and the continuation
+    /// lines of an attribute look like ordinary code. Reading forwards and
+    /// balancing the brackets is what keeps the doc block attached to the
+    /// declaration it belongs to.
+    #[test]
+    fn default_value_is_found_behind_a_multi_line_attribute() {
+        assert!(states_a_default_value("/// Repository root (default: \".\").").is_some());
+        assert!(states_a_default_value("/// Cap results (default 200).").is_some());
+        // Mentioning the word without naming a value is what a reader needs.
+        assert!(states_a_default_value("/// Shown by default (tagged `[external]`).").is_none());
+        assert!(states_a_default_value("/// The default; pass it to say so.").is_none());
+        assert!(states_a_default_value("/// The `default` mode is the widest.").is_none());
+        // A number the sentence carries on past is not a stated value, or
+        // ordinary prose about a defaulted argument would fail the build.
+        assert!(states_a_default_value("/// The default 64-bit mode is portable.").is_none());
+        assert!(states_a_default_value("/// Uses the default 2x scale factor.").is_none());
+        assert!(states_a_default_value("/// Falls back to the default 2 levels up.").is_none());
+        // …but a number the sentence ends on is one, in every spelling a
+        // default is actually written in.
+        assert!(states_a_default_value("/// Cap results (default 200).").is_some());
+        assert!(states_a_default_value("/// Depth, default 3, in hops.").is_some());
+        assert!(states_a_default_value("/// Budget (default 8_000).").is_some());
+        assert!(states_a_default_value("/// Timeout (default 200ms).").is_some());
+        assert!(states_a_default_value("/// Chunk (default 4KB).").is_some());
+
+        // A non-clap attribute that happens to spell `default_value` prints
+        // nothing, so the doc comment above it duplicates nothing.
+        let other_macro = vec![
+            "        /// Uses default 5.",
+            "        #[my_macro(default_value = 5)]",
+            "        field: usize,",
+        ];
+        assert!(
+            docs_restating_a_default(&other_macro).is_empty(),
+            "only clap's own attribute makes a doc comment a duplicate"
+        );
+
+        // …and the name is matched at a boundary, so someone else's macro
+        // whose name merely ends in `arg` is not clap either.
+        let arg_suffixed = vec![
+            "        /// Uses default 5.",
+            "        #[my_arg(default_value = 5)]",
+            "        field: usize,",
+        ];
+        assert!(
+            docs_restating_a_default(&arg_suffixed).is_empty(),
+            "`my_arg(` is not `arg(`"
+        );
+
+        // A conditional clap attribute still is clap.
+        let conditional = vec![
+            "        /// Repo root (default: \".\").",
+            "        #[cfg_attr(unix, arg(default_value = crate::defaults::ROOT))]",
+            "        root: PathBuf,",
+        ];
+        assert_eq!(
+            docs_restating_a_default(&conditional).len(),
+            1,
+            "cfg_attr-wrapped clap attributes still print a default"
+        );
+
+        // A bracket inside a string must not latch the attribute scan open,
+        // which would silently stop checking the rest of the file.
+        let bracket_in_string = vec![
+            "        /// First (default: \".\").",
+            "        #[arg(long, help = \"index [0..n\", default_value = crate::defaults::ROOT)]",
+            "        first: PathBuf,",
+            "        /// Second (default: \".\").",
+            "        #[arg(long, default_value = crate::defaults::ROOT)]",
+            "        second: PathBuf,",
+        ];
+        assert_eq!(
+            docs_restating_a_default(&bracket_in_string).len(),
+            2,
+            "a `[` inside a string must not swallow the rest of the file"
+        );
+
+        // A doc block separated from its attributes by an ordinary comment is
+        // still that declaration's doc block.
+        let commented = vec![
+            "        /// Repo root (default: \".\").",
+            "        // clap needs the value_name here, see #12",
+            "        #[arg(long, default_value = crate::defaults::ROOT)]",
+            "        root: PathBuf,",
+        ];
+        assert_eq!(
+            docs_restating_a_default(&commented).len(),
+            1,
+            "a comment between the docs and the attribute must not clear the block"
+        );
+
+        // `default_value` last, behind a multi-line attribute: the shape the
+        // backwards walk missed, because `long,` reads as ordinary code.
+        let spread = vec![
+            "        /// Repo root to scan (default: \".\").",
+            "        #[arg(",
+            "            long,",
+            "            value_name = \"PATH\",",
+            "            default_value = crate::defaults::ROOT",
+            "        )]",
+            "        root: PathBuf,",
+        ];
+        assert_eq!(
+            docs_restating_a_default(&spread).len(),
+            1,
+            "a doc block behind a multi-line attribute must still be read"
+        );
+
+        // The same doc text on a field clap does not default is not a
+        // duplicate of anything, so it passes.
+        let no_default = vec![
+            "        /// Repo root to scan (default: \".\").",
+            "        #[arg(long)]",
+            "        root: PathBuf,",
+        ];
+        assert!(docs_restating_a_default(&no_default).is_empty());
+
+        // A doc block belongs to the declaration that follows it, not to the
+        // next one along.
+        let two_fields = vec![
+            "        /// Repo root to scan (default: \".\").",
+            "        #[arg(long)]",
+            "        root: PathBuf,",
+            "        /// Cap results.",
+            "        #[arg(long, default_value_t = crate::defaults::LIMIT)]",
+            "        limit: usize,",
+        ];
+        assert!(
+            docs_restating_a_default(&two_fields).is_empty(),
+            "the first field's docs must not be judged against the second field's attribute"
+        );
     }
 
     /// A clap default names a constant from this module, never a literal.
@@ -676,4 +943,157 @@ mod tests {
         );
     }
 
+    /// A clap doc comment leaves the default to clap.
+    ///
+    /// The sibling guard above covers the MCP schema, where a description is a
+    /// runtime `String` and the repair is to interpolate the constant. A clap
+    /// doc comment cannot interpolate anything — it is an attribute, fixed at
+    /// compile time — so the rule here is the other one: say nothing, because
+    /// clap already appends `[default: .]` from the `default_value` beside it.
+    /// Stating it too renders the value twice and gives it a second place to
+    /// drift from:
+    ///
+    /// ```text
+    /// [PATH]  Repository root to scan (default: ".") [default: .]
+    /// ```
+    ///
+    /// Phrasings that mention the word without naming a value — "shown by
+    /// default", "the default; pass it to say so" — are what the reader needs
+    /// and are left alone.
+    #[test]
+    fn clap_doc_comments_leave_the_default_to_clap() {
+        let mut hits = Vec::new();
+        for path in sources() {
+            let src = fs::read_to_string(&path).expect("source is readable");
+            for (i, text) in docs_restating_a_default(&production_lines(&src)) {
+                hits.push((path.clone(), i, text));
+            }
+        }
+        assert!(
+            hits.is_empty(),
+            "clap doc comments naming a default clap already prints; drop the \
+             value and let `[default: …]` say it once:\n{:#?}",
+            offenders(hits)
+        );
+    }
+
+    /// The doc comments that restate a default their `default_value` prints.
+    ///
+    /// Reads forwards, accumulating the doc block and the attributes after it,
+    /// and judges both when the declaration arrives. Walking backwards from
+    /// the `default_value` line was the obvious shape and the wrong one:
+    /// `#[arg(` may span lines, and its continuation lines (`long,`,
+    /// `value_enum,`) look like ordinary code, so the walk stopped short of
+    /// the doc block whenever `default_value` was not the first argument.
+    fn docs_restating_a_default(lines: &[&str]) -> Vec<(usize, String)> {
+        let mut hits = Vec::new();
+        let mut docs: Vec<(usize, String)> = Vec::new();
+        let mut attrs = String::new();
+        let mut in_attr = false;
+        let mut attr_lines = 0usize;
+        for (i, line) in lines.iter().enumerate() {
+            let t = line.trim_start();
+            if t.starts_with("///") {
+                docs.push((i, t.to_string()));
+                continue;
+            }
+            if t.starts_with("#[") || in_attr {
+                // Comments inside an attribute are not attribute syntax. The
+                // compiler drops `#[serde(/* arg(default_value = 5) */ …)]`
+                // before it means anything, so reading it raw let commented-out
+                // text forge a clap match.
+                attrs.push_str(&strip_comments(t));
+                // The attribute ends where its brackets balance. Brackets
+                // inside a string are not syntax: `help = "index [0..n"` once
+                // latched this open for the rest of the file, and a guard that
+                // silently checks nothing reports success.
+                let outside_strings = strip_string_literals(&attrs);
+                in_attr =
+                    outside_strings.matches('[').count() > outside_strings.matches(']').count();
+                attr_lines = if in_attr { attr_lines + 1 } else { 0 };
+                // A bound rather than another special case. The balance is
+                // computed textually, so some spelling this does not model —
+                // a char literal holding a quote, a raw string — can latch it
+                // open, and the failure mode is the worst one available: the
+                // guard checks nothing and reports success. No attribute in
+                // this tree spans close to this many lines, so crossing it
+                // means the scan is lost, and saying so is better than going
+                // quiet.
+                assert!(
+                    attr_lines < 20,
+                    "attribute scan never closed near line {}; the bracket \
+                     balance is lost, so this guard is checking nothing:\n{}",
+                    i + 1,
+                    attrs
+                );
+                continue;
+            }
+            // A blank line or an ordinary comment sits between a doc block and
+            // its attributes often enough — a `// SAFETY:` note, a commented-out
+            // attribute — and neither ends the declaration. Treating them as
+            // one would clear the doc block and check nothing.
+            if t.is_empty() || t.starts_with("//") || t.starts_with("/*") || t.starts_with('*') {
+                continue;
+            }
+            // A declaration line: judge it against what preceded it.
+            // Only clap prints `[default: …]`, so only clap's attribute makes a
+            // doc comment a duplicate. `#[my_macro(default_value = 5)]` names
+            // the same words and prints nothing, and failing the build on the
+            // doc comment above it would be a rule about the wrong thing.
+            let clap_default = strip_string_literals(&attrs).split("#[").any(|a| {
+                a.contains("default_value") && names_clap_attribute(a)
+            });
+            if clap_default {
+                for (n, doc) in &docs {
+                    if let Some(text) = states_a_default_value(doc) {
+                        hits.push((*n, text));
+                    }
+                }
+            }
+            docs.clear();
+            attrs.clear();
+        }
+        hits
+    }
+
+    /// The doc-comment text, when it names a concrete default value.
+    ///
+    /// Same shape as the schema rule, minus the interpolation escape: a digit
+    /// or a quoted value after the word `default` is the copy, while a bare
+    /// `(default)` or `by default (tagged …)` names nothing and passes.
+    fn states_a_default_value(line: &str) -> Option<String> {
+        let lowered = line.to_ascii_lowercase();
+        for rest in lowered.split("default").skip(1) {
+            let value = rest
+                .trim_start_matches([':', '=', ' '])
+                .trim_start_matches("s to ")
+                .trim_start_matches([':', '=', ' ']);
+            // A quoted value is always the copy. A number is the copy only
+            // when it stands on its own: `(default 200)` states one, while
+            // "the default 64-bit mode" is a sentence about a mode, and
+            // failing the build on it would cost a real sentence to catch a
+            // hypothetical one. A backtick is left alone for the same reason
+            // — prose says "the `default` mode".
+            if value.starts_with('"') {
+                return Some(line.to_string());
+            }
+            // The token is the number with the spellings a default actually
+            // uses — `8_000`, `200ms`, `4KB` — and it is a stated value only
+            // when the sentence ends there. "the default 2 levels up" carries
+            // on into a noun, and failing the build on it would cost ordinary
+            // prose; `(default 200)` and `default 3,` do not.
+            let token: String = value
+                .chars()
+                .take_while(|c| c.is_ascii_digit() || *c == '_' || c.is_ascii_alphabetic())
+                .collect();
+            if token.starts_with(|c: char| c.is_ascii_digit()) {
+                let after = value[token.len()..].chars().next();
+                let ends_there = after.is_none_or(|c| matches!(c, ')' | '.' | ',' | ';'));
+                if ends_there {
+                    return Some(line.to_string());
+                }
+            }
+        }
+        None
+    }
 }
