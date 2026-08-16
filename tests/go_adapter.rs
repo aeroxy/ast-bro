@@ -302,32 +302,47 @@ fn surface_carries_a_blocks_documentation() {
     // its own `docs` and a `group`, so the only one whose result differs
     // between copying `group` always and copying it when `docs` is empty.
     //
-    // Both sides are keyed by name *and* line. A name alone joins a
-    // grouped declaration to whichever entry shares its spelling, and a
-    // struct field may share it: `type Board struct { Square int }` above
-    // the `type ( … )` block makes the field answer for the type, and the
-    // test fails `surface` for correctly reporting a field with no block.
+    // Both sides are keyed by kind, name and line, and the surface side is
+    // narrowed to this file. Every weaker key joins a grouped declaration
+    // to something that merely resembles it, and the test then fails
+    // `surface` for correctly reporting a symbol that belongs to no block:
+    // a name alone is answered by `type Board struct { Square int }` above
+    // the block, name and line by `Square struct{ Square int }` inside it,
+    // and any of them by a second `.go` file in the directory, which
+    // `surface` walks and this `map` does not. `kind` agrees across the
+    // two by construction: `surface::fallback` copies it off the same
+    // `Declaration` that `map` prints.
     //
     // Derived through `--no-private`, because `surface` drops unexported
     // symbols; without that filter the first unexported member the
     // fixture gains fails this test on correct resolver behaviour.
+    fn key(
+        kind: &serde_json::Value,
+        name: &serde_json::Value,
+        line: &serde_json::Value,
+    ) -> (String, String, u64) {
+        (
+            kind.as_str().unwrap_or_default().to_string(),
+            name.as_str().unwrap_or_default().to_string(),
+            line.as_u64().unwrap_or_default(),
+        )
+    }
+    type Keys = std::collections::HashSet<(String, String, u64)>;
+
     let v: serde_json::Value =
         serde_json::from_str(&run(&["map", FIXTURE, "--no-private", "--json"])).expect("json");
 
-    fn walk(list: &[serde_json::Value], out: &mut std::collections::HashSet<(String, u64)>) {
+    fn walk(list: &[serde_json::Value], out: &mut Keys) {
         for d in list {
-            if !d["group"]["docs"].as_array().is_none_or(|a| a.is_empty()) {
-                out.insert((
-                    d["name"].as_str().unwrap_or_default().to_string(),
-                    d["start_line"].as_u64().unwrap_or_default(),
-                ));
+            if !docs(d, "group").is_empty() {
+                out.insert(key(&d["kind"], &d["name"], &d["start_line"]));
             }
             if let Some(children) = d["children"].as_array() {
                 walk(children, out);
             }
         }
     }
-    let mut in_a_documented_block = std::collections::HashSet::new();
+    let mut in_a_documented_block = Keys::new();
     walk(
         v["files"][0]["declarations"]
             .as_array()
@@ -337,7 +352,7 @@ fn surface_carries_a_blocks_documentation() {
     assert!(
         in_a_documented_block
             .iter()
-            .any(|(name, _)| name == "Circle"),
+            .any(|(_, name, _)| name == "Circle"),
         "fixture must keep a member that documents itself inside a documented block"
     );
 
@@ -345,20 +360,25 @@ fn surface_carries_a_blocks_documentation() {
     let out = run(&["surface", dir.to_str().unwrap(), "--json"]);
     let surfaced: serde_json::Value = serde_json::from_str(&out).expect("json");
 
-    let mut seen = std::collections::HashSet::new();
+    let fixture_file = std::path::Path::new(FIXTURE).file_name().unwrap();
+    let mut seen = Keys::new();
     for e in surfaced["entries"].as_array().expect("entries") {
-        let key = (
-            e["source_name"].as_str().unwrap_or_default().to_string(),
-            e["source_line"].as_u64().unwrap_or_default(),
-        );
-        if !in_a_documented_block.contains(&key) {
+        let from_fixture = e["source_path"]
+            .as_str()
+            .is_some_and(|p| std::path::Path::new(p).file_name() == Some(fixture_file));
+        if !from_fixture {
             continue;
         }
-        seen.insert(key.clone());
+        let k = key(&e["kind"], &e["source_name"], &e["source_line"]);
+        if !in_a_documented_block.contains(&k) {
+            continue;
+        }
+        seen.insert(k.clone());
         assert!(
             !docs(e, "group").is_empty(),
-            "{} is a member of a documented block but surface reports no group:\n{e:#?}",
-            key.0
+            "{} {} is a member of a documented block but surface reports no group:\n{e:#?}",
+            k.0,
+            k.1
         );
     }
     assert_eq!(
