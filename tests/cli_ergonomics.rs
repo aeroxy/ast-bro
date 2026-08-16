@@ -986,6 +986,88 @@ fn the_counted_form_settles_like_the_spelled_out_one() {
     );
 }
 
+/// Builds a two-file fixture whose `map` stdout is exactly `target` bytes.
+///
+/// The renderer prints each name once, so one character of padding in a
+/// function name moves stdout by one byte, which is what makes an exact
+/// landing possible at all. Returns the directory and the stderr of the run
+/// that hit the target.
+fn fixture_with_stdout_of_exactly(target: usize) -> (tempfile::TempDir, String) {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let bulk: String = (0..300)
+        .map(|i| {
+            format!("pub fn generated_function_{i}(argument: usize) -> usize {{ argument }}\n")
+        })
+        .collect();
+    std::fs::write(dir.path().join("bulk.rs"), &bulk).expect("write fixture");
+    let mut pad = 1usize;
+    for _ in 0..40 {
+        std::fs::write(
+            dir.path().join("pad.rs"),
+            format!("pub fn {}() {{}}\n", "p".repeat(pad)),
+        )
+        .expect("write fixture");
+        let (code, stdout, stderr) = run(&["map", dir.path().to_str().expect("utf8")]);
+        assert_eq!(code, Some(0), "stderr:\n{stderr}");
+        match stdout.len().cmp(&target) {
+            std::cmp::Ordering::Equal => return (dir, stderr),
+            std::cmp::Ordering::Less => pad += target - stdout.len(),
+            std::cmp::Ordering::Greater => {
+                let over = stdout.len() - target;
+                assert!(
+                    pad > over,
+                    "cannot shrink below a one-character name; overshoot {over}"
+                );
+                pad -= over;
+            }
+        }
+    }
+    panic!("could not land stdout on exactly {target} bytes");
+}
+
+#[test]
+fn the_threshold_is_measured_on_what_was_written_not_on_the_string() {
+    // `println!` appends a newline the size check used to miss, which moved
+    // the firing point by one byte. Both sides of the boundary are pinned
+    // here because the middle case is the one a fixture never lands on by
+    // accident: every other test in this file clears the bar by 50 KB.
+    let (_dir, quiet) = fixture_with_stdout_of_exactly(25_000);
+    assert!(
+        !quiet.contains("# hint:"),
+        "25 000 emitted bytes do not clear a 25 000-byte bar:\n{quiet}"
+    );
+    let (_dir, hinted) = fixture_with_stdout_of_exactly(25_001);
+    assert!(
+        hinted.contains("# hint:"),
+        "25 001 emitted bytes clear it, and the newline is one of them:\n{hinted}"
+    );
+}
+
+#[test]
+fn an_unspellable_glob_withholds_the_hint() {
+    // The glob rides inside the same backtick span as the command, and
+    // unlike a path it has no fallback: the counted form carries it too, and
+    // dropping it would prescribe a broader question.
+    let dir = oversized_map_fixture();
+    // Both spellings still match every file, so the answer stays over the
+    // threshold and the missing hint is the guard rather than a small answer.
+    for glob in ["{*.rs,zz`zz}", "{*.rs,zz\nzz}"] {
+        let (code, stdout, stderr) = run(&["map", dir.path().to_str().unwrap(), "--glob", glob]);
+        assert_eq!(code, Some(0), "stderr:\n{stderr}");
+        assert!(stdout.len() > 25_000, "fixture must exceed the threshold");
+        assert!(
+            !stderr.contains("# hint:"),
+            "{glob:?} cannot be written into the hint, so there is none:\n{stderr}"
+        );
+    }
+    // The ordinary glob still reaches the suggestion.
+    let (_, _, stderr) = run(&["map", dir.path().to_str().unwrap(), "--glob", "*.rs"]);
+    assert!(
+        stderr.contains("--glob='*.rs'"),
+        "a spellable glob must survive into the suggestion:\n{stderr}"
+    );
+}
+
 #[test]
 fn map_hint_quotes_a_path_a_shell_would_split() {
     // The hint exists to be pasted. A directory named `my code` has to come

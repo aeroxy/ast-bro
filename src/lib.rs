@@ -1283,6 +1283,22 @@ fn map_directory_hint(
     }
     let path_count = call.requested_paths.len();
 
+    // Everything the hint interpolates goes inside one backtick-delimited
+    // span, so every caller-controlled string in it has to survive being
+    // written on one line: a backtick closes the delimiter from inside the
+    // shell quotes that correctly protect it, and a control character — a
+    // newline above all — splits the hint, where every reader of it is
+    // line-oriented, this repository's own tests included.
+    let fits_on_one_line = |s: &str| !s.contains('`') && !s.chars().any(char::is_control);
+
+    // The glob is the second such string, and unlike a path it has no
+    // fallback: the counted form carries it too, and dropping it would
+    // prescribe a broader question than the one being qualified. An
+    // unspellable glob therefore withholds the hint outright.
+    if call.glob.is_some_and(|g| !fits_on_one_line(g)) {
+        return None;
+    }
+
     let cap = call.max_members.map_or(8, |m| m.min(8));
     let mut flags = format!("--preset digest --max-members {}", cap);
     if let Some(glob) = call.glob {
@@ -1311,28 +1327,20 @@ fn map_directory_hint(
     // preset and there is nothing left for it to change.
     let counted = || format!("running `{}` on {}", flags, same_paths_phrase(path_count));
 
-    // The spelled-out form needs paths that survive being written into one
-    // backtick-delimited line. Three ways they do not, and all three end the
-    // same way: `display()` is lossy for a path that is not UTF-8; a
-    // backtick closes the delimiter from inside the shell quotes that
-    // correctly protect it; and a control character — a newline above all —
-    // splits the hint across lines, where every reader of it is
-    // line-oriented, this repository's own tests included. None of that
-    // reaches the counted form, which names no paths, so each case falls
-    // back to it rather than losing the hint.
+    // A path fails the same test in one more way — `display()` is lossy for
+    // one that is not UTF-8, so there is no faithful spelling of it — but
+    // unlike the glob it has a fallback: the counted form names no paths, so
+    // each case falls back to it rather than losing the hint.
     let spellable: Option<Vec<&str>> = call.requested_paths.iter().map(|p| p.to_str()).collect();
-    let one_line = |rendered: &[&str]| {
-        !rendered
-            .iter()
-            .any(|p| p.contains('`') || p.chars().any(char::is_control))
-    };
 
     // Past a handful of paths the caller did not type them — a shell expanded
     // a glob — so repeating all of them buys nothing and costs the one thing
     // the hint exists to protect: a line cheaper to read than the answer it
     // qualifies. 117 paths render a 2.5 KB hint.
     let body = match spellable {
-        Some(rendered) if path_count <= MAX_ECHOED_PATHS && one_line(&rendered) => {
+        Some(rendered)
+            if path_count <= MAX_ECHOED_PATHS && rendered.iter().all(|p| fits_on_one_line(p)) =>
+        {
             let quoted = rendered
                 .iter()
                 .map(|p| shell_quote(p))
@@ -2527,6 +2535,47 @@ mod tests {
 #[cfg(test)]
 mod hint_tests {
     use super::{kb_ceil, shell_quote};
+
+    /// A path with no UTF-8 spelling takes the counted form rather than
+    /// losing the hint.
+    ///
+    /// This is the one unspellable class the end-to-end table cannot reach:
+    /// APFS rejects the filename outright, and an argument naming nothing is
+    /// a rejected call long before the hint is built. Restoring the early
+    /// `return None` that this arm replaced is caught here and nowhere else.
+    #[cfg(unix)]
+    #[test]
+    fn a_path_with_no_utf8_spelling_still_gets_the_counted_form() {
+        use super::{map_directory_hint, MapHintCall};
+        use std::os::unix::ffi::OsStringExt;
+
+        let invalid = std::path::PathBuf::from(std::ffi::OsString::from_vec(vec![0xff, 0xfe]));
+        assert!(
+            invalid.to_str().is_none(),
+            "the fixture must be unspellable"
+        );
+        let paths = [invalid, std::path::PathBuf::from("plain.rs")];
+        let call = MapHintCall {
+            requested_paths: &paths,
+            glob: None,
+            max_members: None,
+            json: false,
+            compact: false,
+            no_attrs: false,
+            no_lines: false,
+            already_digest: false,
+        };
+        let hint =
+            map_directory_hint(&call, 2, 30_000).expect("an unspellable path keeps the hint");
+        assert!(
+            hint.contains("running `--preset digest --max-members 8` on the same 2 paths"),
+            "expected the counted form, got:\n{hint}"
+        );
+        assert!(
+            !hint.contains("ast-bro map"),
+            "nothing spells the path, so no command may claim to:\n{hint}"
+        );
+    }
 
     #[test]
     fn kb_never_reads_below_the_threshold_it_just_crossed() {
