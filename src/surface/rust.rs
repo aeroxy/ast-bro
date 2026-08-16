@@ -261,6 +261,7 @@ impl SurfaceWalker {
             re_export_chain: chain,
             via_glob,
             docs: decl.docs.clone(),
+            group: decl.group.clone(),
         });
     }
 
@@ -287,6 +288,7 @@ impl SurfaceWalker {
             re_export_chain: chain,
             via_glob,
             docs: source_decl.docs.clone(),
+            group: source_decl.group.clone(),
         });
     }
 

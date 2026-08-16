@@ -505,6 +505,8 @@ One rule set for every subcommand, so a consumer never needs a per-command table
 
 `map` and `digest` are one command: `digest` is an alias for `map --preset digest` (= `--detail names --no-private --no-fields --max-members 50`), and both accept the full flag set — detail (`--detail names|signatures|full`), visibility (`--no-private`, `--no-fields`, `--no-docs`, `--include-private`, `--include-fields`, …), and scope (`--glob`, `--max-members`) are independent axes. Explicit flags override the preset. At `names`/`signatures` detail the JSON payload sheds doc comments, which are routinely a third of its weight — including under `digest`, where the preset opts in on the caller's behalf. Any payload with keys removed carries a `projected` object (`{docs, line_numbers, attributes}`) so a consumer can guard on it instead of inferring the absence; an unprojected payload has no such key and is byte-identical to before.
 
+A `[group]` line in `map` output is a comment on the enclosing block, not on the symbol below it. Go's `const ( … )`, `var ( … )` and `type ( … )` take a doc comment of their own — one sentence covering every member — and printing it bare above the first member is how it gets mistaken for that member's own. In JSON it is `group` (`{docs, start_line, end_line}`), carried by every member of the block and by no member's `docs`, so "what documents this symbol" and "what documents the block it lives in" are two questions with two answers. It is documentation, so it sheds with `docs` when documentation is projected out (`--no-docs`, `--detail names|signatures`), which `projected.docs: false` reports; `--no-lines` keeps its range, the only thing a block can be identified by.
+
 ---
 
 ## MCP server
