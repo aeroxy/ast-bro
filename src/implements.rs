@@ -1322,6 +1322,13 @@ fn _external_spellings(
 /// qname `Client`, and the segments the qname does not account for have to
 /// show up in the path of the file that declares it — otherwise every
 /// invented qualifier would match every bare name.
+///
+/// The exception is an *anchor*: a leading segment that names where to start
+/// looking rather than a namespace or a directory. Rust writes `crate`,
+/// `super` and `self`; C# writes `global`, and generated C# writes it on
+/// nearly every reference (`class Child : global::Example.Base`), where
+/// reading it as a namespace rejected the declaration it names and dropped
+/// the edge in silence.
 fn _qualifiers_agree(t: &TypeEntry<'_>, segments: &[String]) -> bool {
     let have: Vec<&str> = t.qname.split('.').collect();
     if have.len() >= segments.len() {
@@ -1339,9 +1346,15 @@ fn _qualifiers_agree(t: &TypeEntry<'_>, segments: &[String]) -> bool {
             .components()
             .any(|c| Path::new(c.as_os_str()).file_stem() == Some(std::ffi::OsStr::new(seg)))
     };
-    extra
-        .iter()
-        .all(|seg| matches!(seg.as_str(), "crate" | "super" | "self") || in_path(seg))
+    extra.iter().all(|seg| _is_an_anchor(seg) || in_path(seg))
+}
+
+/// Does this leading segment name where to start looking rather than a
+/// namespace or a directory? Rust's `crate`, `super` and `self`, and C#'s
+/// `global`, are all reserved words, so a segment spelling one is never a
+/// real qualifier.
+fn _is_an_anchor(segment: &str) -> bool {
+    matches!(segment, "crate" | "super" | "self" | "global")
 }
 
 /// Does `qname` end with the segments the reference spelled out? A bare
@@ -1428,7 +1441,7 @@ fn _import_names(t: &TypeEntry<'_>, imp: &FileImport, simple: &str) -> bool {
     // segment to offer, not two, and counting `crate` would sink it.
     let module: Vec<&String> = full[..full.len() - 1]
         .iter()
-        .filter(|s| !matches!(s.as_str(), "crate" | "super" | "self"))
+        .filter(|s| !_is_an_anchor(s))
         .collect();
     let have = _path_segments(t.path);
     let common = module

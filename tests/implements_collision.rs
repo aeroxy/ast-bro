@@ -1116,3 +1116,37 @@ fn a_shared_direct_subtype_does_not_close_the_other_root_s_branch() {
     assert_eq!(names("mb.Base"), ["Base", "C", "D"]);
     assert_eq!(names("Base"), ["Base", "C", "D"]);
 }
+
+/// A leading `global::` names where to start looking, not a namespace.
+///
+/// C# writes it to escape namespace lookup, and generated code writes it on
+/// nearly every reference. Read as a namespace segment it agreed with no
+/// declaration, so the qualifier rule rejected the very type it names and
+/// the edge went out as external — silently, since a rule that rejects every
+/// candidate leaves nothing to report. Rust's `crate`, `super` and `self`
+/// were already treated this way; `global` is the same kind of word.
+#[test]
+fn a_leading_anchor_is_not_a_namespace_segment() {
+    let dir = fixture("anchors");
+    let names = |target: &str| -> Vec<String> {
+        let (code, stdout, stderr) = run(&["implements", target, &dir]);
+        assert_eq!(code, Some(0), "{target}: {stderr}");
+        let mut out: Vec<String> = stdout
+            .lines()
+            .skip(1)
+            .filter_map(|l| l.split_whitespace().nth(2).map(str::to_string))
+            .collect();
+        out.sort();
+        out
+    };
+    for target in ["Root", "Anchored.Root", "global::Anchored.Root"] {
+        assert_eq!(
+            names(target),
+            ["GlobalChild", "PlainChild"],
+            "{target}: the anchored reference lost its edge"
+        );
+    }
+    // The anchor does not make the rest of the qualifier optional.
+    let (code, _, _) = run(&["implements", "global::Other.Root", &dir]);
+    assert_eq!(code, Some(2), "an anchor let a wrong namespace through");
+}
