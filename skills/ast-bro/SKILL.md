@@ -38,7 +38,7 @@ Stop at the step that answers the question:
    sb digest src/ --glob '*.java' --max-members 8
    ```
 
-2. **One file's shape** — `sb map <file>`: signatures with line ranges, no bodies (5–10× smaller than a full read). Three orthogonal axes: detail (`--detail names|signatures|full`), visibility (`--no-private`, `--no-fields`, `--no-docs`, …), and scope (`--glob`, `--max-members`). `--detail signatures --max-members N` is the middle ground when a directory-wide `map` is too big and `digest`'s bare names are too little. Every visibility flag reaches `--json` as well as the text, so `--no-docs` is the lever when a payload is too large to read; a payload with keys removed says which ones in a `projected` object.
+2. **One file's shape** — `sb map <file>`: signatures with line ranges, no bodies (5–10× smaller than a full read). Three orthogonal axes: detail (`--detail names|signatures|full`), visibility (`--no-private`, `--no-fields`, `--no-docs`, …), and scope (`--glob`, `--max-members`). `--detail signatures --max-members N` is the middle ground when a directory-wide `map` is too big and `digest`'s bare names are too little. Every visibility flag reaches `--json` as well as the text, so `--no-docs` is the lever when a payload is too large to read; a payload with keys removed says which ones in a `projected` object. `--no-fields` hides properties and events along with plain fields, so `digest` — which sets it — shows a C# property or a Python `@property` only under `--include-fields`; reach for that when a type's state is what you are after.
    ```bash
    sb map src/file_filter.rs
    sb map src/ --detail signatures --max-members 8

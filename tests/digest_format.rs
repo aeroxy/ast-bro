@@ -189,7 +189,10 @@ fn python_decorator_modifiers_and_deprecation() {
         "@deprecated\nasync def fetch(): pass\n\nclass C:\n    @classmethod\n    def k(cls): pass\n    @staticmethod\n    def s(): pass\n    @property\n    def n(self): return 0\n",
     )
     .expect("write");
-    let s = run(&["digest", f.to_str().unwrap()]);
+    // `--include-fields` because a `@property` is a field-like member, which
+    // the digest preset hides: this test is about the decorator reaching the
+    // rendered modifier, not about the visibility projection.
+    let s = run(&["digest", f.to_str().unwrap(), "--include-fields"]);
     assert!(s.contains("[async]") && s.contains("[deprecated]"), "py async/deprecated:\n{s}");
     assert!(s.contains("[classmethod]"), "py classmethod:\n{s}");
     assert!(s.contains("[static]"), "py staticmethod:\n{s}");
@@ -810,4 +813,60 @@ fn qualified_trait_path_is_resolved_not_collapsed_to_its_bare_name() {
         digest.contains("secret"),
         "crate::-anchored trait paths are unknowable here; keep inherited visibility:\n{digest}"
     );
+}
+
+#[test]
+fn no_fields_means_the_same_thing_in_every_renderer() {
+    // `--no-fields` used to mean "drop `Field`" on the digest path and "drop
+    // `Field | Property | Event | Indexer`" everywhere else, so a C# property
+    // survived `digest` while `map --detail full` dropped it, and the JSON
+    // payload disagreed with the text beside it. One predicate now answers
+    // for all three; this pins that they agree rather than that they happen
+    // to today.
+    //
+    // `Indexer` is in the predicate but not in this fixture, because no
+    // adapter emits it: `csharp.rs` maps `indexer_declaration` to the kind,
+    // and a C# `this[int i]` still comes back with no declaration at all. A
+    // case here would assert nothing until that is fixed.
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path().join("W.cs");
+    std::fs::write(
+        &p,
+        "public class W {\n    public int Count;\n    public string Name { get; set; }\n    public event EventHandler Changed;\n    public void Go() {}\n}\n",
+    )
+    .unwrap();
+    let p = p.to_str().unwrap();
+
+    let hidden = ["Count", "Name", "Changed"];
+    for args in [
+        vec!["digest", p],
+        vec!["map", p, "--detail", "names", "--no-fields"],
+        vec!["map", p, "--detail", "signatures", "--no-fields"],
+        vec!["map", p, "--detail", "full", "--no-fields"],
+    ] {
+        let out = run(&args);
+        for name in hidden {
+            assert!(
+                !out.contains(name),
+                "{args:?} must drop the field-like member `{name}`:\n{out}"
+            );
+        }
+        assert!(out.contains("Go"), "{args:?} must keep the method:\n{out}");
+    }
+
+    // The JSON payload is the fourth renderer and answers the same way.
+    let json: serde_json::Value =
+        serde_json::from_str(run(&["digest", p, "--json", "--compact"]).trim()).unwrap();
+    let names: Vec<String> = json["files"][0]["declarations"][0]["children"]
+        .as_array()
+        .map(|cs| cs.iter().map(|c| c["name"].as_str().unwrap_or("").to_string()).collect())
+        .unwrap_or_default();
+    assert_eq!(names, vec!["Go"], "JSON disagrees with the text renderers");
+
+    // And `--include-fields` brings every one of them back, so the rule is a
+    // projection rather than a parse gap.
+    let back = run(&["digest", p, "--include-fields"]);
+    for name in hidden {
+        assert!(back.contains(name), "--include-fields must restore `{name}`:\n{back}");
+    }
 }
