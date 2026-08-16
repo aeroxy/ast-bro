@@ -638,8 +638,16 @@ fn _walk_csharp<'a, D: Doc>(node: &Node<'a, D>, out: &mut Vec<RawImport>) {
                 local_name: None,
                 raw_path: Some(dotted),
             });
-        } else if matches!(kind, "namespace_declaration" | "file_scoped_namespace_declaration") {
-            // Recurse into namespace bodies; usings can live inside.
+        } else if matches!(
+            kind,
+            "namespace_declaration" | "file_scoped_namespace_declaration" | "declaration_list"
+        ) {
+            // Recurse into namespace bodies; usings can live inside. A braced
+            // namespace holds them one level further down than it looks: its
+            // own children are the name and a `declaration_list`, so stopping
+            // at the namespace node found nothing and every alias written
+            // inside a namespace body was invisible — which cost the type its
+            // edge, or handed it to whatever else carried the alias's name.
             _walk_csharp(&c, out);
         }
     }

@@ -1011,3 +1011,48 @@ fn the_dropped_edge_note_respects_a_direct_only_answer() {
         "the direct subtypes themselves went missing:\n{stdout}"
     );
 }
+
+/// Where two visible imports bind one name, the inner one is in force.
+///
+/// Visibility alone cannot answer that: a `using Base = B.Root` inside
+/// `namespace N` and a file-scope `using Base = A.Root` are both visible to a
+/// class in `N`, and taking both made the reference ambiguous where the
+/// language has an answer. It was worse than ambiguity in C#, because a
+/// `using` written inside a namespace *body* was not extracted at all — the
+/// walker stopped at the namespace node, whose own children are the name and
+/// a `declaration_list` — so the outer binding won unopposed and the class
+/// was reported under a type it does not implement.
+#[test]
+fn the_inner_binding_of_a_name_shadows_the_outer_one() {
+    let cs = format!("{}/csharp_shadow", fixture("scope"));
+    let subtypes = |target: &str, dir: &str| -> Vec<String> {
+        let (code, stdout, stderr) = run(&["implements", target, dir]);
+        assert_eq!(code, Some(0), "{target}: {stderr}");
+        let mut out: Vec<String> = stdout
+            .lines()
+            .skip(1)
+            .filter_map(|l| l.split_whitespace().nth(2).map(str::to_string))
+            .collect();
+        out.sort();
+        out
+    };
+    // `Child` takes the nested binding, and nothing else takes the outer one.
+    assert_eq!(subtypes("B.Root", &cs), ["Child"]);
+    // An alias that is a namespace body's only binding still binds: the sole
+    // `A.Root` subtype is the class that goes through it.
+    assert_eq!(subtypes("A.Root", &cs), ["InnerOnly"]);
+
+    // Rust reads it the same way through a `mod` block.
+    let rs = format!("{}/rust_shadow", fixture("scope"));
+    assert_eq!(subtypes("other.Root", &rs), ["Child"]);
+    assert!(subtypes("api.Root", &rs).is_empty());
+
+    // And it is decided, not dropped: nothing is reported as ambiguous.
+    for dir in [&cs, &rs] {
+        let (_, _, stderr) = run(&["implements", "Root", dir]);
+        assert!(
+            !stderr.contains("could be"),
+            "a shadowed binding was reported as ambiguous:\n{stderr}"
+        );
+    }
+}

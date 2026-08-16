@@ -553,19 +553,43 @@ impl<'a> ImportIndex<'a> {
         }
     }
 
-    /// The imports of `file` that a declaration at `line` can see.
+    /// How wide the scope an import written at `import_line` serves is, in
+    /// lines. The whole file is the widest there is.
+    ///
+    /// This orders two visible bindings of one name, which is a question
+    /// visibility alone cannot answer: a `using Base = B.Root` inside
+    /// `namespace N` and a file-scope `using Base = A.Root` are both visible
+    /// to a class in `N`, and the language says the narrower one is the one
+    /// in force.
+    fn scope_span(&self, file: usize, import_line: u32) -> usize {
+        match _innermost_namespace(&self.results[file].declarations, import_line as usize) {
+            Some((start, end)) => end.saturating_sub(start),
+            None => usize::MAX,
+        }
+    }
+
+    /// The imports of `file` that a declaration at `line` can see, innermost
+    /// scope first.
     ///
     /// This is the only way in. Scoping was a check applied at the call
     /// sites that remembered it, and three of five did not — an alias from
     /// one Rust `mod` expanded a qualifier in its sibling, and the
     /// out-of-walk path took a rename that was never in scope. Putting the
     /// filter inside the accessor leaves no call site able to forget.
+    ///
+    /// The order is part of the answer, for the same reason: where two
+    /// visible imports bind one name, the inner one shadows the outer, so a
+    /// caller that takes the first match takes the binding in force. Sorting
+    /// is stable, so imports sharing a scope keep source order.
     fn visible_from(&self, file: usize, line: usize) -> Vec<FileImport> {
-        self.all(file)
+        let mut out: Vec<FileImport> = self
+            .all(file)
             .iter()
             .filter(|i| self.visible_at(file, i.line, line))
             .cloned()
-            .collect()
+            .collect();
+        out.sort_by_key(|i| self.scope_span(file, i.line));
+        out
     }
 
     fn all(&self, file: usize) -> std::rc::Rc<Vec<FileImport>> {
@@ -963,6 +987,11 @@ fn _resolve_rename(
                 live.push(c);
             }
         }
+        // The list is innermost-scope first, so this is the binding in force
+        // and anything after it is the enclosing scope's, shadowed. Taking
+        // both made two bindings of one name ambiguous where the language
+        // has an answer.
+        break;
     }
     live.sort_unstable();
     live.dedup();
