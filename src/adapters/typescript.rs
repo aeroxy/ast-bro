@@ -632,27 +632,45 @@ fn _strip_leading_decorators(text: &str) -> String {
     s.to_string()
 }
 
+/// Supertypes of a class.
+///
+/// TypeScript wraps each supertype list in an `extends_clause` or
+/// `implements_clause`; JavaScript hangs the base directly off
+/// `class_heritage` with no wrapper. Descending unconditionally read a
+/// JavaScript base's own parts instead of the base — `ns.Root` came out as
+/// `ns` and `Root`, and a bare `Root` came out as nothing at all, which
+/// left `implements` with no JavaScript edges to walk.
 fn _class_bases<'a, D: Doc>(node: &Node<'a, D>, _src: &[u8]) -> Vec<String> {
     let mut out = Vec::new();
-    for child in node.children() {
-        if child.kind() == "class_heritage" {
-            for h in child.children() {
-                if !h.is_named() {
+    for child in node.children().filter(|c| c.kind() == "class_heritage") {
+        for h in child.children().filter(|h| h.is_named()) {
+            let is_clause = matches!(
+                h.kind().as_ref(),
+                "extends_clause" | "implements_clause" | "extends_type_clause"
+            );
+            if !is_clause {
+                _push_base(&mut out, &h);
+                continue;
+            }
+            for inner in h.children().filter(|i| i.is_named()) {
+                // `extends Y<string>` puts the argument list beside the
+                // type, not inside it, so pushing every named child made
+                // `<string>` a base of its own.
+                if inner.kind() == "type_arguments" {
                     continue;
                 }
-                for inner in h.children() {
-                    if !inner.is_named() {
-                        continue;
-                    }
-                    let t = collapse_ws(&inner.text()).trim_end_matches(',').to_string();
-                    if !t.is_empty() {
-                        out.push(t);
-                    }
-                }
+                _push_base(&mut out, &inner);
             }
         }
     }
     out
+}
+
+fn _push_base<'a, D: Doc>(out: &mut Vec<String>, node: &Node<'a, D>) {
+    let t = collapse_ws(&node.text()).trim_end_matches(',').to_string();
+    if !t.is_empty() {
+        out.push(t);
+    }
 }
 
 fn _interface_bases<'a, D: Doc>(node: &Node<'a, D>, _src: &[u8]) -> Vec<String> {

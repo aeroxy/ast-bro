@@ -72,3 +72,41 @@ fn top_level_function_surfaced() {
         "top-level function missing:\n{s}"
     );
 }
+
+/// A namespace is spelled two ways, and each surface takes the one it needs.
+///
+/// `map` prints the file as written, so the clause keeps PHP's `\`. Every
+/// other surface prints a *qualified path*, and those are joined with dots —
+/// which produced `App\Lib.Service`, a spelling that is neither PHP nor a
+/// target this tool takes back. C++17's `namespace A::B` had the same shape.
+/// The declaration's name therefore carries the dots and its signature keeps
+/// the source, so `show` still names the enclosing clause as written.
+#[test]
+fn a_multi_segment_namespace_is_spelled_for_the_surface_that_prints_it() {
+    let dir = "tests/fixtures/implements_collision/namespace_separators/php";
+    let mapped = run(&["map", dir]);
+    assert!(
+        mapped.contains("namespace App\\Base"),
+        "map lost PHP's own spelling:\n{mapped}"
+    );
+
+    let surfaced = run(&["surface", dir]);
+    for want in ["App.Base.Root", "App.Models.Child"] {
+        assert!(
+            surfaced.contains(want),
+            "surface did not spell the qualified path in dots, expected {want:?}:\n{surfaced}"
+        );
+    }
+    assert!(
+        !surfaced.contains("App\\"),
+        "a qualified path kept a separator only PHP understands:\n{surfaced}"
+    );
+
+    // The name `surface` printed is a name `show` accepts, and the clause it
+    // reports around it is still the source's.
+    let shown = run(&["show", &format!("{dir}/child.php"), "App.Models.Child"]);
+    assert!(
+        shown.contains("class Child") && shown.contains("namespace App\\Models"),
+        "the printed qualified path did not resolve back:\n{shown}"
+    );
+}

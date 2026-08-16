@@ -756,11 +756,16 @@ fn _render_decl(decl: &Declaration, opts: &MapOptions, indent: usize, out: &mut 
     };
 
     if decl.kind == Namespace {
-        out.push(format!(
-            "{}namespace {}",
-            prefix,
-            decl.name.magenta().bold()
-        ));
+        // `name` carries the dots every qualified path is joined with, which
+        // is not how PHP or C++ spell a namespace. The adapter's signature is
+        // the clause as written, so a language that writes one gets its own
+        // spelling back here; `package`, `module` and `mod` keep the uniform
+        // wording this line has always used.
+        let spelled = decl
+            .signature
+            .strip_prefix("namespace ")
+            .unwrap_or(&decl.name);
+        out.push(format!("{}namespace {}", prefix, spelled.magenta().bold()));
     } else {
         out.push(format!(
             "{}{}{}{}",
@@ -1237,7 +1242,24 @@ fn _search_walk(
     for d in decls {
         let mut new_trail = trail.clone();
         if !d.name.is_empty() {
-            new_trail.push(d.name.clone());
+            // A namespace name is itself qualified — `namespace Foo.Bar` in
+            // C#, and PHP's and C++'s multi-segment forms — so it enters the
+            // trail as its segments. The query is split on the same dot, so a
+            // one-element `Foo.Bar` could never match the `Foo`, `Bar` the
+            // caller typed, which made the qualified name `surface` prints a
+            // name `show` rejects.
+            //
+            // Only a namespace. Every other name is one segment whatever it
+            // contains, and a markdown heading is prose: splitting `##
+            // Internals (src/impact.rs)` put `Internals` in a segment no
+            // one-word query is ever compared against, so the heading search
+            // lost every word before a dot — `Node.js`, `vs.`, a version, a
+            // filename.
+            if d.kind == DeclarationKind::Namespace {
+                new_trail.extend(d.name.split('.').map(str::to_string));
+            } else {
+                new_trail.push(d.name.clone());
+            }
         }
 
         // For markdown headings, fall back to case-insensitive substring
@@ -1289,136 +1311,6 @@ fn _trail_matches(trail: &[String], parts: &[&str], substring: bool) -> bool {
         }
     }
     true
-}
-
-/// Whether any *type* declaration in `results` matches `target` — the gate
-/// that distinguishes "this type has no implementations" (a real answer)
-/// from "no such type anywhere" (a rejected query, issue #36). Shared by
-/// the CLI and MCP `implements` surfaces so the two cannot drift. Only
-/// type-shaped kinds count as proof: a function named `helper` must not
-/// validate `implements helper` — and a C# `delegate` is a declared type,
-/// so a 0-match answer on one is legitimate.
-pub fn implements_target_exists(results: &[ParseResult], target: &str) -> bool {
-    results.iter().any(|r| {
-        find_symbols(r, target).iter().any(|m| {
-            matches!(
-                m.kind.as_str(),
-                "class" | "struct" | "interface" | "record" | "enum" | "delegate"
-            )
-        })
-    })
-}
-
-#[derive(Clone, Serialize)]
-pub struct ImplMatch {
-    pub path: String,
-    pub start_line: usize,
-    pub kind: String,
-    pub name: String,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub via: Vec<String>,
-}
-
-pub fn find_implementations(
-    results: &[ParseResult],
-    type_name: &str,
-    transitive: bool,
-) -> Vec<ImplMatch> {
-    let target = _normalize_type_name(type_name);
-    let mut all_types: Vec<(&std::path::Path, &Declaration)> = Vec::new();
-    for r in results {
-        _collect_candidate_types(&r.declarations, &r.path, &mut all_types);
-    }
-
-    let mut direct = Vec::new();
-    for (path, d) in &all_types {
-        for b in &d.bases {
-            if _normalize_type_name(b) == target {
-                direct.push(_impl_match(path, d, Vec::new()));
-                break;
-            }
-        }
-    }
-
-    if !transitive {
-        return direct;
-    }
-
-    let mut out = direct.clone();
-    let mut seen: std::collections::HashSet<(String, usize)> = std::collections::HashSet::new();
-    for m in &direct {
-        seen.insert((m.path.clone(), m.start_line));
-    }
-
-    let mut frontier = direct;
-    while !frontier.is_empty() {
-        let mut next_frontier = Vec::new();
-        for parent in frontier {
-            let parent_name = _normalize_type_name(&parent.name);
-            for (path, d) in &all_types {
-                let key = (path.to_string_lossy().to_string(), d.start_line);
-                if seen.contains(&key) {
-                    continue;
-                }
-                for b in &d.bases {
-                    if _normalize_type_name(b) == parent_name {
-                        let mut chain = parent.via.clone();
-                        chain.push(parent.name.clone());
-                        let m = _impl_match(path, d, chain);
-                        seen.insert(key.clone());
-                        out.push(_impl_match(path, d, m.via.clone()));
-                        next_frontier.push(m);
-                        break;
-                    }
-                }
-            }
-        }
-        frontier = next_frontier;
-    }
-    out
-}
-
-fn _collect_candidate_types<'a>(
-    decls: &'a [Declaration],
-    path: &'a std::path::Path,
-    out: &mut Vec<(&'a std::path::Path, &'a Declaration)>,
-) {
-    use DeclarationKind::*;
-    for d in decls {
-        if matches!(d.kind, Class | Struct | Interface | Record) {
-            out.push((path, d));
-        }
-        if !d.children.is_empty() {
-            _collect_candidate_types(&d.children, path, out);
-        }
-    }
-}
-
-fn _impl_match(path: &std::path::Path, d: &Declaration, via: Vec<String>) -> ImplMatch {
-    ImplMatch {
-        path: path.to_string_lossy().to_string(),
-        start_line: d.start_line,
-        kind: d.kind.to_string(),
-        name: d.name.clone(),
-        via,
-    }
-}
-
-fn _normalize_type_name(name: &str) -> String {
-    let mut name = name.trim();
-    if let Some(i) = name.find('<') {
-        name = &name[..i];
-    }
-    if let Some(i) = name.find('[') {
-        name = &name[..i];
-    }
-    if let Some(i) = name.rfind('.') {
-        name = &name[i + 1..];
-    }
-    if let Some(i) = name.rfind("::") {
-        name = &name[i + 2..];
-    }
-    name.to_string()
 }
 
 fn _digest_markdown(
@@ -1559,14 +1451,6 @@ fn _is_zero(n: &usize) -> bool {
     *n == 0
 }
 
-#[derive(Serialize)]
-struct JsonImplementsDoc<'a> {
-    schema: &'static str,
-    target: &'a str,
-    transitive: bool,
-    matches: &'a [ImplMatch],
-}
-
 /// Render `map` (or `map --json`) — one entry per file.
 pub fn render_json_map(results: &[ParseResult], opts: &MapOptions, pretty: bool) -> String {
     let mut paths: Vec<String> = results
@@ -1676,23 +1560,7 @@ fn _strip_projected_keys(decls: &mut serde_json::Value, docs: bool, lines: bool,
     }
 }
 
-/// Render `implements --json`.
-pub fn render_json_implements(
-    target: &str,
-    matches: &[ImplMatch],
-    transitive: bool,
-    pretty: bool,
-) -> String {
-    let doc = JsonImplementsDoc {
-        schema: JSON_SCHEMA_IMPLEMENTS,
-        target,
-        transitive,
-        matches,
-    };
-    _to_json(&doc, pretty)
-}
-
-fn _to_json<T: Serialize>(value: &T, pretty: bool) -> String {
+pub(crate) fn _to_json<T: Serialize>(value: &T, pretty: bool) -> String {
     if pretty {
         serde_json::to_string_pretty(value)
     } else {

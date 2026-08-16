@@ -13,6 +13,7 @@ mod file_filter;
 mod graph_cache;
 mod hook;
 mod impact;
+mod implements;
 mod installers;
 mod main_helpers;
 mod mcp;
@@ -1508,12 +1509,13 @@ pub fn run() {
             let paths = require_paths("implements", paths, *json);
             let results = walk_and_parse(&paths, None);
             let transitive = !direct;
-            let matches = crate::core::find_implementations(&results, target, transitive);
+            let report = crate::implements::find_implementations(&results, target, transitive);
+            let matches = &report.matches;
             if matches.is_empty() {
                 // Distinguish "this type has no implementations" (a real,
                 // interesting answer: exit 0) from "no such type anywhere"
                 // (the query could not run as asked: exit 2) — issue #36.
-                if !crate::core::implements_target_exists(&results, target) {
+                if !crate::implements::target_exists(&results, &report, target) {
                     crate::cli_error::CliError::new(
                         "implements",
                         crate::cli_error::ErrorKind::SymbolNotFound,
@@ -1523,10 +1525,13 @@ pub fn run() {
                     .exit(*json);
                 }
             }
+            for note in crate::implements::implements_notes(&report, target) {
+                eprintln!("{}", note);
+            }
             if *json {
                 println!(
                     "{}",
-                    crate::core::render_json_implements(target, &matches, transitive, !(*compact),)
+                    crate::implements::render_json_implements(target, &report, transitive, !(*compact),)
                 );
             } else {
                 println!(

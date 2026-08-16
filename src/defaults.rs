@@ -47,6 +47,15 @@ pub const LIMIT: usize = 200;
 /// single explicit file is never capped.
 pub const SHOW_LIMIT: usize = 20;
 
+/// Dropped `implements` edges listed one per line before the note counts
+/// the rest.
+///
+/// The note qualifies an answer rather than being one, so it stays short: a
+/// repository where one colliding name is written in two hundred files
+/// would otherwise bury the result under its own caveat. The count is
+/// always the true total, as everywhere else a cap applies (issue #32).
+pub const AMBIGUOUS_SHOWN: usize = 10;
+
 /// Results `search` and `find-related` return.
 pub const TOP_K: usize = 10;
 
@@ -239,8 +248,14 @@ mod tests {
     /// and a value with no trailing brace, or a literal hides in plain sight.
     #[test]
     fn field_splitter_reads_one_line_bodies() {
-        assert_eq!(field_and_value("            max_depth: 16,"), Some(("max_depth", "16")));
-        assert_eq!(field_and_value("        Self { max_depth: 16 }"), Some(("max_depth", "16")));
+        assert_eq!(
+            field_and_value("            max_depth: 16,"),
+            Some(("max_depth", "16"))
+        );
+        assert_eq!(
+            field_and_value("        Self { max_depth: 16 }"),
+            Some(("max_depth", "16"))
+        );
         assert_eq!(
             field_and_value("    root: PathBuf::from(\".\"),"),
             Some(("root", "PathBuf::from(\".\")"))

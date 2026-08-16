@@ -705,3 +705,20 @@ fn reverse_deps_header_shapes_are_all_pinned() {
     assert!(header(&["--depth", "1", "--limit", "1"])
         .contains("(2 total within --depth 1; showing 1 — raise --limit to see the rest)"));
 }
+
+// ---- Kotlin ----
+
+/// A doc comment between an import and the declaration it documents is
+/// folded into the grammar's `import_header` node. The extractor used to
+/// take the header's raw text as the import path, so the edge pointed at
+/// `org.example.api.Widget\n\n/** … */` and resolved to nothing — every
+/// Kotlin file whose last import is followed by a comment lost that edge.
+#[test]
+fn kotlin_import_survives_a_following_comment() {
+    let s = run_ok(&[
+        "deps",
+        "tests/fixtures/deps/kotlin_comment_after_import/app/Main.kt",
+        "--rebuild",
+    ]);
+    assert!(s.contains("Widget.kt"), "expected the import edge:\n{s}");
+}

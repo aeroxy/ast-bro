@@ -26,13 +26,37 @@ impl LanguageAdapter for PhpAdapter {
 }
 
 fn _walk_program<'a, D: Doc>(node: &Node<'a, D>, src: &[u8], out: &mut Vec<Declaration>) {
+    // `namespace X;` has no body, so everything after it belongs to it.
+    // Leaving those declarations as siblings of the namespace left them with
+    // no package at all, which is what a namespace-qualified supertype has
+    // to be compared against — `implements \Ns\Root` had nothing to match.
+    // The braced form `namespace X { … }` carries its own body and is
+    // handled by `_namespace_to_decl`.
+    let mut open: Option<Declaration> = None;
     for child in node.children() {
         if !child.is_named() {
             continue;
         }
-        if let Some(decl) = _node_to_decl(&child, src, false) {
+        let statement_namespace =
+            child.kind() == "namespace_definition" && child.field("body").is_none();
+        let Some(decl) = _node_to_decl(&child, src, false) else {
+            continue;
+        };
+        if statement_namespace {
+            if let Some(previous) = open.take() {
+                out.push(previous);
+            }
+            open = Some(decl);
+        } else if let Some(ns) = &mut open {
+            ns.end_line = decl.end_line;
+            ns.end_byte = decl.end_byte;
+            ns.children.push(decl);
+        } else {
             out.push(decl);
         }
+    }
+    if let Some(ns) = open {
+        out.push(ns);
     }
 }
 
@@ -257,6 +281,13 @@ fn _namespace_to_decl<'a, D: Doc>(node: &Node<'a, D>, src: &[u8]) -> Option<Decl
     }
 
     let sig = format!("namespace {}", name);
+    // The signature keeps PHP's spelling; the name carries the dots every
+    // renderer joins a qualified path with. `surface` and `digest` print the
+    // enclosing namespace in front of each symbol, so a name that kept `\`
+    // came out as `App\Lib.Service` — a spelling that is neither PHP nor a
+    // target this tool accepts back. The resolver is unaffected either way:
+    // it splits both separators (see `implements::_join_dot`).
+    let name = name.replace('\\', ".");
     let range = node.range();
     Some(Declaration {
         kind: DeclarationKind::Namespace,
@@ -361,36 +392,41 @@ fn _property_to_decl<'a, D: Doc>(node: &Node<'a, D>, _src: &[u8]) -> Option<Decl
     })
 }
 
+/// Supertypes named by `extends`, which is one class or several
+/// interfaces.
 fn _class_extends<'a, D: Doc>(node: &Node<'a, D>) -> Vec<String> {
-    let mut extends = Vec::new();
-    let base_clause = node.field("extends");
-    if let Some(bc) = base_clause {
-        for child in bc.children() {
-            if child.is_named() {
-                let text = collapse_ws(&child.text()).trim().to_string();
-                if !text.is_empty() {
-                    extends.push(text);
-                }
-            }
-        }
-    }
-    extends
+    _clause_type_names(node, "base_clause")
 }
 
+/// Supertypes named by `implements`.
 fn _class_implements<'a, D: Doc>(node: &Node<'a, D>) -> Vec<String> {
-    let mut implements = Vec::new();
-    let impl_clause = node.field("implements");
-    if let Some(ic) = impl_clause {
-        for child in ic.children() {
-            if child.is_named() {
-                let text = collapse_ws(&child.text()).trim().to_string();
-                if !text.is_empty() {
-                    implements.push(text);
-                }
+    _clause_type_names(node, "class_interface_clause")
+}
+
+/// The type names inside a supertype clause.
+///
+/// The clause is an ordinary child of the declaration, not a field on it —
+/// asking for `node.field("extends")` returned nothing, so PHP recorded no
+/// supertypes at all and `implements` had no PHP edges to walk. What is
+/// left after the parts that are not types is the answer: the `extends` /
+/// `implements` keywords and the separating commas are anonymous, and a
+/// comment is the one named child that names nothing. Listing what to drop
+/// rather than the name kinds to keep is deliberate — a kind such a list
+/// forgets is dropped in silence, which reads as "this class has no base".
+fn _clause_type_names<'a, D: Doc>(node: &Node<'a, D>, clause: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for c in node.children().filter(|c| c.kind() == clause) {
+        for name in c.children() {
+            if !name.is_named() || name.kind() == "comment" {
+                continue;
+            }
+            let text = collapse_ws(&name.text()).trim().to_string();
+            if !text.is_empty() {
+                out.push(text);
             }
         }
     }
-    implements
+    out
 }
 
 fn _function_params<'a, D: Doc>(node: &Node<'a, D>, _src: &[u8]) -> Vec<String> {
