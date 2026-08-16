@@ -512,6 +512,12 @@ struct FileImport {
     /// a TypeScript or Python sibling import decide between two files of
     /// the same name — the specifier's own segments cannot.
     resolved: Option<PathBuf>,
+    /// How wide the scope this import serves is, in lines, filled in by
+    /// [`ImportIndex::visible_from`] against the file it was read from. It
+    /// orders two bindings of one name — the narrower shadows the wider —
+    /// and, just as importantly, says when they *tie*: two imports at one
+    /// scope are not ordered by anything the source states.
+    scope_span: usize,
 }
 
 /// The imports of each walked file, extracted on demand and cached for the
@@ -633,9 +639,12 @@ impl<'a> ImportIndex<'a> {
             .all(file)
             .iter()
             .filter(|i| self.visible_at(file, i.line, line))
-            .cloned()
+            .map(|i| FileImport {
+                scope_span: self.scope_span(file, i.line),
+                ..i.clone()
+            })
             .collect();
-        out.sort_by_key(|i| self.scope_span(file, i.line));
+        out.sort_by_key(|i| i.scope_span);
         out
     }
 
@@ -701,6 +710,9 @@ impl FileImport {
             binds,
             line: raw.line,
             resolved: _resolve_relative(module_spec, from),
+            // Filled in per query by `ImportIndex::visible_from`, which is
+            // the only place that knows the file the import was read from.
+            scope_span: usize::MAX,
             segments,
         }
     }
@@ -953,6 +965,31 @@ fn _resolve_base(
         return BaseRef::One(live[0]);
     }
 
+    // 2b. Declared in a namespace that encloses the referring one, innermost
+    //     first — C#'s rule, and the positive half of the one that makes a
+    //     `using` alias lose to the enclosing scope above. Only the negative
+    //     half was written, so the reference declined the alias and then fell
+    //     to the import rule, which pinned it to the alias's target anyway:
+    //     `using Alias = X.Alias;` above `namespace A.B` answered `X.Alias`
+    //     where C# says `A.Alias`. Every candidate here is a prefix of the
+    //     referring package, so the longest is the innermost.
+    if lang == "csharp" {
+        let referring = &types[from].package;
+        let innermost = live
+            .iter()
+            .filter(|&&c| _encloses(&types[c].package, referring))
+            .map(|&c| types[c].package.len())
+            .max();
+        if let Some(depth) = innermost {
+            _narrow(&mut live, |c| {
+                _encloses(&types[*c].package, referring) && types[*c].package.len() == depth
+            });
+            if live.len() == 1 {
+                return BaseRef::One(live[0]);
+            }
+        }
+    }
+
     // 3. Named by an explicit single-type import. This outranks the
     //    referring file's own package, and has to: `org.postgresql.jdbc.codec`
     //    declares `TextCodec` and its members still import
@@ -1015,13 +1052,17 @@ fn _resolve_rename(
         return None;
     }
     let want = Bind::Name(simple.to_string());
+    let visible = imports.visible_from(file, types[from].decl.start_line);
+    let bindings: Vec<&FileImport> = visible.iter().filter(|i| i.binds == want).collect();
+    // Only the innermost scope's bindings speak; the rest are shadowed. Two
+    // at one scope tie, and a tie is not evidence — Python's `from a import
+    // Base` followed by `from b import Base` rebinds the name, so reading
+    // the first as decisive answers the losing side. Both are kept, and the
+    // reference is reported instead.
+    let innermost = bindings.iter().map(|i| i.scope_span).min()?;
     let mut live: Vec<usize> = Vec::new();
     let mut bound = false;
-    for imp in imports
-        .visible_from(file, types[from].decl.start_line)
-        .iter()
-        .filter(|i| i.binds == want)
-    {
+    for imp in bindings.iter().filter(|i| i.scope_span == innermost) {
         let Some(real) = imp.segments.last() else {
             continue;
         };
@@ -1037,7 +1078,7 @@ fn _resolve_rename(
         if real == simple {
             // Not a rename, so this rule has no answer; but it has settled
             // which import speaks for the name, and `_narrow_by_imports`
-            // reads the same ordering to find it.
+            // reads the same scopes to find it.
             return None;
         }
         bound = true;
@@ -1046,7 +1087,6 @@ fn _resolve_rename(
                 live.push(c);
             }
         }
-        break;
     }
     live.sort_unstable();
     live.dedup();
@@ -1117,13 +1157,23 @@ fn _narrow_by_imports(
     simple: &str,
     on_demand: bool,
 ) {
-    let mut named = false;
+    // The innermost scope that binds the name, if any: bindings outside it
+    // are shadowed and must not be consulted. A *tie* is not shadowing —
+    // two imports written at one scope are ordered by nothing the source
+    // states — so every binding at that scope is kept and the rule below
+    // narrows on all of them, which reports the reference rather than
+    // picking whichever came first.
+    let innermost = imports
+        .iter()
+        .filter(|i| matches!(&i.binds, Bind::Name(n) if n == simple))
+        .map(|i| i.scope_span)
+        .min();
     let specs: Vec<&FileImport> = imports
         .iter()
         .filter(|i| match &i.binds {
             Bind::OnDemand => on_demand,
             Bind::Module => !on_demand,
-            Bind::Name(n) => !on_demand && n == simple && !std::mem::replace(&mut named, true),
+            Bind::Name(n) => !on_demand && n == simple && Some(i.scope_span) == innermost,
         })
         .collect();
     if specs.is_empty() {

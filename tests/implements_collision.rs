@@ -1150,3 +1150,54 @@ fn a_leading_anchor_is_not_a_namespace_segment() {
     let (code, _, _) = run(&["implements", "global::Other.Root", &dir]);
     assert_eq!(code, Some(2), "an anchor let a wrong namespace through");
 }
+
+/// Two bindings of one name at the *same* scope are ordered by nothing the
+/// source states, so the answer is the reference, not a coin toss.
+///
+/// Shadowing ranks bindings by how wide a scope each serves, and two written
+/// at one scope tie. Reading the earlier one as decisive is backwards in the
+/// language where it happens: Python's `from a.mod import Base` followed by
+/// `from b.mod import Base` rebinds the name, so the class below inherits
+/// from `b.mod.Base` — and the rule answered `a.mod.Base`. It was
+/// order-dependent rather than target-dependent, which is the tell.
+#[test]
+fn two_bindings_at_one_scope_decide_nothing() {
+    let dir = format!("{}/python_rebind", fixture("scope"));
+    for target in ["a.mod.Rebound", "b.mod.Rebound"] {
+        let (code, stdout, stderr) = run(&["implements", target, &dir]);
+        assert_eq!(code, Some(0), "{target}: {stderr}");
+        assert!(
+            stdout.contains("0 match(es)"),
+            "{target}: a tie was read as evidence:\n{stdout}"
+        );
+        assert!(
+            stderr.contains("could be"),
+            "{target}: the dropped edge went unreported:\n{stderr}"
+        );
+    }
+}
+
+/// C# reads each enclosing namespace's members before any `using` alias, and
+/// the rule needs both halves.
+///
+/// Only the negative one was written — the alias declines to answer when an
+/// enclosing namespace declares the name — so the reference fell through to
+/// the import rule, which pinned it to the alias's target anyway. With an
+/// identity alias (`using Alias = X.Alias;`, the spelling that exists to
+/// disambiguate) the rename rule never even ran, and the answer was `X.Alias`
+/// where C# says `A.Alias`.
+#[test]
+fn csharp_reads_an_enclosing_namespace_before_an_alias() {
+    let dir = format!("{}/csharp_enclosing", fixture("scope"));
+    let (code, stdout, stderr) = run(&["implements", "A.Alias", &dir]);
+    assert_eq!(code, Some(0), "{stderr}");
+    assert!(
+        stdout.contains("class Child"),
+        "the enclosing namespace lost to a file-scope alias:\n{stdout}"
+    );
+    let (_, stdout, _) = run(&["implements", "X.Alias", &dir]);
+    assert!(
+        stdout.contains("0 match(es)"),
+        "the alias target claimed a reference C# resolves elsewhere:\n{stdout}"
+    );
+}
