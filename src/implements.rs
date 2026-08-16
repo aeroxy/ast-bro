@@ -1060,25 +1060,38 @@ fn _resolve_rename(
     // the first as decisive answers the losing side. Both are kept, and the
     // reference is reported instead.
     let innermost = bindings.iter().map(|i| i.scope_span).min()?;
+    let at_scope: Vec<&&FileImport> = bindings
+        .iter()
+        .filter(|i| i.scope_span == innermost)
+        .collect();
+    // Several bindings of one name at one scope order themselves by nothing
+    // the source states, so none of them decides — including a mix of an
+    // ordinary import and a rename, which is where deferring to the rules
+    // below silently answered the ordinary import's target: they look for
+    // declarations named `Base`, and the rename's target is not one.
+    let competing = at_scope.len() > 1;
     let mut live: Vec<usize> = Vec::new();
     let mut bound = false;
-    for imp in bindings.iter().filter(|i| i.scope_span == innermost) {
+    // How many of the competing bindings found anything, which is what tells
+    // agreement from ignorance when they leave one candidate between them.
+    let mut considered = 0;
+    let mut contributed = 0;
+    for imp in at_scope {
         let Some(real) = imp.segments.last() else {
             continue;
         };
-        // The list is innermost-scope first, so this first binding of the
-        // name is the one in force and every later one is an enclosing
-        // scope's, shadowed. Which means the shadow rule is about the
-        // binding, not about whether it renames: skipping past an ordinary
-        // import to look for a rename let an outer `use other::Widget as
-        // Root` claim a name an inner `use api::Root` had already taken, and
-        // left two C# `using Root = …` aliases — the shape that exists
-        // precisely to say which same-named type is meant — deciding
-        // nothing between them.
-        if real == simple {
-            // Not a rename, so this rule has no answer; but it has settled
-            // which import speaks for the name, and `_narrow_by_imports`
-            // reads the same scopes to find it.
+        considered += 1;
+        let before = live.len();
+        // The shadow rule is about the binding, not about whether it renames:
+        // reading past an ordinary import to find a rename let an outer `use
+        // other::Widget as Root` claim a name an inner `use api::Root` had
+        // already taken, and left two C# `using Root = …` aliases — the shape
+        // that exists precisely to say which same-named type is meant —
+        // deciding nothing between them.
+        if real == simple && !competing {
+            // The binding in force, and not a rename, so this rule has no
+            // answer of its own: `_narrow_by_imports` reads the same scopes
+            // and applies it with the package rule in its proper place.
             return None;
         }
         bound = true;
@@ -1087,13 +1100,22 @@ fn _resolve_rename(
                 live.push(c);
             }
         }
+        if live.len() > before {
+            contributed += 1;
+        }
     }
     live.sort_unstable();
     live.dedup();
+    // Competing bindings that all land on one declaration agree, and that is
+    // an answer. Landing on one because the others name something outside the
+    // walk is not: which of them is in force is exactly what is unknown, so
+    // the edge is dropped rather than handed to the survivor.
+    let agreed = !competing || contributed == considered;
     match live.len() {
         0 if bound => Some(BaseRef::None),
         0 => None,
-        1 => Some(BaseRef::One(live[0])),
+        1 if agreed => Some(BaseRef::One(live[0])),
+        1 => Some(BaseRef::None),
         _ => Some(BaseRef::Several(live)),
     }
 }

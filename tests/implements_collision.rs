@@ -1163,7 +1163,12 @@ fn a_leading_anchor_is_not_a_namespace_segment() {
 #[test]
 fn two_bindings_at_one_scope_decide_nothing() {
     let dir = format!("{}/python_rebind", fixture("scope"));
-    for target in ["a.mod.Rebound", "b.mod.Rebound"] {
+    // Two ordinary imports, and — the shape that reached past the tie rule —
+    // an ordinary import beside a rename. Deferring the second to the rules
+    // below answered the ordinary import's target silently, because those
+    // rules look for declarations named `Rebound` and the rename's target is
+    // called something else.
+    for target in ["a.mod.Rebound", "b.mod.Rebound", "b.aliased.Aliased"] {
         let (code, stdout, stderr) = run(&["implements", target, &dir]);
         assert_eq!(code, Some(0), "{target}: {stderr}");
         assert!(
@@ -1175,6 +1180,12 @@ fn two_bindings_at_one_scope_decide_nothing() {
             "{target}: the dropped edge went unreported:\n{stderr}"
         );
     }
+    // Both subtypes are reported as dropped, not just the plain-tie one.
+    let (_, _, stderr) = run(&["implements", "a.mod.Rebound", &dir]);
+    assert!(
+        stderr.contains("Child ->") && stderr.contains("Mixed ->"),
+        "a competing binding went unreported:\n{stderr}"
+    );
 }
 
 /// C# reads each enclosing namespace's members before any `using` alias, and
