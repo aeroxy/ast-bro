@@ -164,7 +164,7 @@ pub fn find_implementations(
             .filter(|(i, t)| {
                 t.decl.bases.iter().any(|b| {
                     _names_external_target(b, &target_simple, &target_segments, need_qualifier)
-                        || _rename_names_external_target(
+                        || _import_names_external_target(
                             &imports,
                             &types,
                             *i,
@@ -818,10 +818,16 @@ fn _resolve_base(
         // the file. The import itself is the best evidence available: a
         // relative one knows the exact path it lands on, which is what
         // separates `./base` from every other `base.py` in the tree.
+        //
+        // It is evidence that stands whether or not it finds anything, for
+        // the reason a rename does: the head is bound to another name, so
+        // `api::Base` under `use external::stuff as api` is
+        // `external::stuff::Base` and no declaration this walk holds under
+        // some other module can be it. Keeping the candidates a rejecting
+        // rule left behind sent that reference to whichever unrelated
+        // `Base` the walk happened to declare.
         if let Some(HeadExpansion::Renamed(alias)) = &expanded {
-            if live.len() > 1 {
-                _narrow(&mut live, |c| _import_names(&types[*c], alias, &simple));
-            }
+            live.retain(|c| _import_names(&types[*c], alias, &simple));
         }
         match live.len() {
             0 => return BaseRef::None,
@@ -886,6 +892,13 @@ fn _resolve_base(
 /// carries on with the declaration index. `Some` means a rename claims it,
 /// and its answer stands even where a declaration of the same name exists
 /// elsewhere — the rename shadows it, in the resolver as in the language.
+///
+/// A rename whose target is outside the walk still claims the name:
+/// `Some(BaseRef::None)`, not `None`. The distinction is the whole point of
+/// the rule. An external dependency is normally *not* in the walk, so
+/// falling through there sent the alias to whatever unrelated declaration
+/// happened to carry the same simple name — the silent merge this resolver
+/// exists to stop, in the case where it is most likely to happen.
 fn _resolve_rename(
     imports: &ImportIndex<'_>,
     types: &[TypeEntry<'_>],
@@ -899,6 +912,7 @@ fn _resolve_rename(
     }
     let want = Bind::Name(simple.to_string());
     let mut live: Vec<usize> = Vec::new();
+    let mut bound = false;
     for imp in imports
         .visible_from(file, types[from].decl.start_line)
         .iter()
@@ -910,6 +924,7 @@ fn _resolve_rename(
         if real == simple {
             continue; // An ordinary import, not a rename.
         }
+        bound = true;
         for c in _candidates_for(types, index, from, real) {
             if _import_names(&types[c], imp, real) {
                 live.push(c);
@@ -919,6 +934,7 @@ fn _resolve_rename(
     live.sort_unstable();
     live.dedup();
     match live.len() {
+        0 if bound => Some(BaseRef::None),
         0 => None,
         1 => Some(BaseRef::One(live[0])),
         _ => Some(BaseRef::Several(live)),
@@ -1045,9 +1061,16 @@ fn _names_external_target(
         || _qualifier_matches(&target_segments.join("."), &segments)
 }
 
-/// The path an inheritance clause spells for `simple`, following a rename
-/// when the clause names one. `None` when the clause is about some other
-/// type entirely.
+/// The path an inheritance clause spells for `simple`, once the imports of
+/// the file it was written in have had their say. `None` when the clause is
+/// about some other type entirely.
+///
+/// An import speaks in two shapes, and the clause text shows neither. It
+/// renames the type: `import com.api.Base as Alias` makes `Alias` the whole
+/// clause. Or it binds the qualifier's leading segment: `use
+/// external::stuff as api` makes `api::Handle` mean
+/// `external::stuff::Handle`. Both are a local rebinding, so both are read
+/// here rather than at one of the two call sites.
 fn _spelled_reference(
     imports: &ImportIndex<'_>,
     types: &[TypeEntry<'_>],
@@ -1056,10 +1079,18 @@ fn _spelled_reference(
     simple: &str,
 ) -> Option<Vec<String>> {
     let written = _normalize_type_name(base);
-    if written == simple {
-        return Some(_type_ref_segments(base));
-    }
     let file = types[from].file;
+    if written == simple {
+        let mut segments = _type_ref_segments(base);
+        // An unqualified clause has no head to expand, and a file that
+        // renames nothing cannot have bound one — which is what keeps a
+        // large Java tree from being reparsed for a rule it has no syntax
+        // for.
+        if segments.len() > 1 && imports.may_rename(file) {
+            _expand_alias_qualifier(imports, types, from, &mut segments);
+        }
+        return Some(segments);
+    }
     if !imports.may_rename(file) {
         return None;
     }
@@ -1071,11 +1102,17 @@ fn _spelled_reference(
         .map(|i| i.segments)
 }
 
-/// Does the inheritance clause reach the out-of-walk target through a name
-/// the referring file renamed? `import com.api.Base as Alias` followed by
-/// `class Child : Alias` implements `com.api.Base`, and comparing the raw
-/// clause text alone never sees it.
-fn _rename_names_external_target(
+/// Does the inheritance clause reach the out-of-walk target through an
+/// import? `import com.api.Base as Alias` followed by `class Child : Alias`
+/// implements `com.api.Base`, and comparing the raw clause text alone never
+/// sees it — nor does it see `api::Handle` where `api` is bound to
+/// `external::stuff`.
+///
+/// Only a spelling the import *changed* is answered here; anything the
+/// clause text already says is [`_names_external_target`]'s, which is what
+/// keeps this from re-admitting the bare references a qualified target is
+/// meant to exclude.
+fn _import_names_external_target(
     imports: &ImportIndex<'_>,
     types: &[TypeEntry<'_>],
     from: usize,
@@ -1083,25 +1120,15 @@ fn _rename_names_external_target(
     target_simple: &str,
     target_segments: &[String],
 ) -> bool {
-    let simple = _normalize_type_name(base);
-    if simple == target_simple {
+    let Some(segments) = _spelled_reference(imports, types, from, base, target_simple) else {
+        return false;
+    };
+    if segments == _type_ref_segments(base) {
         return false; // Already handled by the plain comparison.
     }
-    let file = types[from].file;
-    if !imports.may_rename(file) {
-        return false;
-    }
-    let want = Bind::Name(simple);
-    imports
-        .visible_from(file, types[from].decl.start_line)
-        .iter()
-        .filter(|i| i.binds == want)
-        .any(|i| {
-            i.segments.last().map(String::as_str) == Some(target_simple)
-                && (target_segments.len() < 2
-                    || _qualifier_matches(&i.segments.join("."), target_segments)
-                    || _qualifier_matches(&target_segments.join("."), &i.segments))
-        })
+    target_segments.len() < 2
+        || _qualifier_matches(&segments.join("."), target_segments)
+        || _qualifier_matches(&target_segments.join("."), &segments)
 }
 
 /// The distinct qualified spellings a bare external target answered for.

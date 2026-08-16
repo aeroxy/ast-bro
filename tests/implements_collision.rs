@@ -894,3 +894,55 @@ fn a_namespace_written_in_one_declaration_still_has_segments() {
         "the sibling namespace claimed the reference:\n{stdout}"
     );
 }
+
+/// A name the file rebinds is bound whether or not the walk holds what it
+/// was bound to. An external dependency normally is *not* in the walk, so
+/// treating "the rename resolved to nothing" as "there was no rename" sent
+/// the alias on to whatever unrelated declaration carried the same simple
+/// name — the silent merge this resolver exists to stop, in the case where
+/// it is most likely to happen.
+///
+/// Two shapes rebind: the type itself (`import com.external.Thing as
+/// Widget`) and the head of a qualifier (`use external::stuff as api`,
+/// making `api::Handle` mean `external::stuff::Handle`). Both are checked
+/// in both directions, because suppressing an edge under the wrong name is
+/// only half an answer if the right name cannot find it either.
+#[test]
+fn a_rebinding_the_walk_cannot_follow_still_claims_the_name() {
+    let kt = format!("{}/kotlin", fixture("unresolved_rename"));
+    for target in ["Widget", "api.Widget"] {
+        let (code, stdout, stderr) = run(&["implements", target, &kt]);
+        assert_eq!(code, Some(0), "{target}: {stderr}");
+        assert!(
+            stdout.contains("0 match(es)"),
+            "{target}: an alias bound to an out-of-walk type claimed a local declaration:\n{stdout}"
+        );
+    }
+    let (code, stdout, _) = run(&["implements", "com.external.Thing", &kt]);
+    assert_eq!(code, Some(0));
+    assert!(
+        stdout.contains("class Child"),
+        "the alias's real target lost its implementor:\n{stdout}"
+    );
+
+    let rs = format!("{}/rust", fixture("unresolved_rename"));
+    let (code, stdout, stderr) = run(&["implements", "Handle", &rs]);
+    assert_eq!(code, Some(0), "{stderr}");
+    assert!(
+        stdout.contains("0 match(es)"),
+        "an aliased qualifier claimed a local declaration:\n{stdout}"
+    );
+    let (code, stdout, _) = run(&["implements", "external.stuff.Handle", &rs]);
+    assert_eq!(code, Some(0), "the aliased qualifier's real target");
+    assert!(
+        stdout.contains("struct Child"),
+        "the aliased qualifier's real target lost its implementor:\n{stdout}"
+    );
+    // The alias names one module, not any module ending in that segment.
+    let (code, _, _) = run(&["implements", "other.stuff.Handle", &rs]);
+    assert_eq!(
+        code,
+        Some(2),
+        "an unrelated qualifier was answered for by the alias"
+    );
+}
