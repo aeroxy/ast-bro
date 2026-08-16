@@ -308,23 +308,30 @@ fn surface_carries_a_blocks_documentation() {
     // `surface` for correctly reporting a symbol that belongs to no block:
     // a name alone is answered by `type Board struct { Square int }` above
     // the block, name and line by `Square struct{ Square int }` inside it,
-    // and any of them by a second `.go` file in the directory, which
-    // `surface` walks and this `map` does not. `kind` agrees across the
-    // two by construction: `surface::fallback` copies it off the same
-    // `Declaration` that `map` prints.
+    // and any of them by another `.go` file under the directory, which
+    // `surface` walks recursively and this `map` does not — a nested
+    // `sub/docs.go` shares the fixture's basename, so the filter compares
+    // the whole path. `kind` agrees across the two by construction:
+    // `surface::fallback` copies it off the same `Declaration` that `map`
+    // prints, and `source_path` is the walk's own spelling of `FIXTURE`.
     //
     // Derived through `--no-private`, because `surface` drops unexported
     // symbols; without that filter the first unexported member the
     // fixture gains fails this test on correct resolver behaviour.
+    /// Both payloads spell these fields differently (`name` / `start_line`
+    /// against `source_name` / `source_line`), so a rename on either side
+    /// is a live risk. Panic on the missing field rather than defaulting:
+    /// defaulted keys empty the join and surface as "surface is missing
+    /// members", which is the one assertion here that cannot name a cause.
     fn key(
         kind: &serde_json::Value,
         name: &serde_json::Value,
         line: &serde_json::Value,
     ) -> (String, String, u64) {
         (
-            kind.as_str().unwrap_or_default().to_string(),
-            name.as_str().unwrap_or_default().to_string(),
-            line.as_u64().unwrap_or_default(),
+            kind.as_str().expect("kind").to_string(),
+            name.as_str().expect("name").to_string(),
+            line.as_u64().expect("line"),
         )
     }
     type Keys = std::collections::HashSet<(String, String, u64)>;
@@ -360,12 +367,12 @@ fn surface_carries_a_blocks_documentation() {
     let out = run(&["surface", dir.to_str().unwrap(), "--json"]);
     let surfaced: serde_json::Value = serde_json::from_str(&out).expect("json");
 
-    let fixture_file = std::path::Path::new(FIXTURE).file_name().unwrap();
+    let fixture_path = std::path::Path::new(FIXTURE);
     let mut seen = Keys::new();
     for e in surfaced["entries"].as_array().expect("entries") {
         let from_fixture = e["source_path"]
             .as_str()
-            .is_some_and(|p| std::path::Path::new(p).file_name() == Some(fixture_file));
+            .is_some_and(|p| std::path::Path::new(p) == fixture_path);
         if !from_fixture {
             continue;
         }
