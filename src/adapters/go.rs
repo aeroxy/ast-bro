@@ -12,10 +12,11 @@ pub struct GoAdapter;
 /// The parens live inside it rather than on the declaration, so it is a
 /// group tell of its own, and reaching a var block's members means
 /// descending through it. [`_group_context`] and [`_const_var_to_decls`]
-/// both read this constant: spelled twice, a grammar rename leaves
-/// detection working through the `(` child while the traversal stops
-/// descending, emptying every parenthesised `var` block instead of
-/// failing.
+/// both read this constant so that a grammar rename cannot reach one and
+/// miss the other: updating only the detection side leaves every
+/// parenthesised `var` block detected as a group whose members are never
+/// reached, and updating only the traversal side silently restores the
+/// misattribution of issue #46.
 const VAR_SPEC_LIST: &str = "var_spec_list";
 
 /// The `tree-sitter-go` node kinds that mark a `const` / `var` / `type`
@@ -27,11 +28,12 @@ const VAR_SPEC_LIST: &str = "var_spec_list";
 ///
 /// Listing `const_spec_list` and `type_spec_list` here as well would read
 /// as insurance against a grammar that starts interposing one for them,
-/// and would not be: [`_const_var_to_decls`] reaches a block's members
-/// through [`VAR_SPEC_LIST`] alone, so such a block would be classified
-/// as a group and then yield nothing. What covers that upgrade is the
-/// fixture, whose `const ( … )` and `type ( … )` blocks fail the suite
-/// the moment their members stop being found.
+/// and would not be: neither [`_const_var_to_decls`] nor
+/// [`_type_declaration_to_decls`] descends into a spec list other than
+/// [`VAR_SPEC_LIST`], so such a block would be classified as a group and
+/// then yield nothing. What covers that upgrade is the fixture, whose
+/// `const ( … )` and `type ( … )` blocks fail the suite the moment their
+/// members stop being found.
 const GROUP_KINDS: &[&str] = &["(", VAR_SPEC_LIST];
 
 impl LanguageAdapter for GoAdapter {
