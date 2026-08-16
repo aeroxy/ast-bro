@@ -207,14 +207,155 @@ mod tests {
     fn field_and_value(line: &str) -> Option<(&str, &str)> {
         let (field, value) = line.split_once(": ")?;
         let field = field.rsplit(['{', '(']).next()?.trim();
+        // A trailing comment is not part of the value. Leaving it attached made
+        // `0 } // note` unparseable, so `is_literal_field` said "not a literal"
+        // and the guards skipped the line — any comment at all bought silence,
+        // whether or not it claimed anything.
+        let value = code_of(value);
         let value = value.trim().trim_end_matches([',', ' ', '}']).trim();
         (!field.is_empty() && !value.is_empty()).then_some((field, value))
     }
 
+    /// The text with every `"…"` literal blanked out.
+    ///
+    /// Brackets and markers inside a string are data, not syntax. Escapes are
+    /// honoured so `"a\"b"` does not end early; raw strings are not, because
+    /// no attribute in this tree uses one.
+    fn strip_string_literals(text: &str) -> String {
+        // Byte-for-byte: every position in the result is the same position in
+        // the input, so a match found here can be sliced out of the original.
+        // `code_of` and `comment_of` need that, and having one function serve
+        // both them and the bracket balance is what keeps the two from
+        // disagreeing about where a string ends.
+        let mut out = String::with_capacity(text.len());
+        let mut in_string = false;
+        let mut escaped = false;
+        for ch in text.chars() {
+            if in_string {
+                if escaped {
+                    escaped = false;
+                } else if ch == '\\' {
+                    escaped = true;
+                } else if ch == '"' {
+                    in_string = false;
+                }
+                out.extend(std::iter::repeat_n(' ', ch.len_utf8()));
+                if !in_string {
+                    // Restore the closing quote itself so the balance below
+                    // still sees a well-formed pair.
+                    out.pop();
+                    out.push('"');
+                }
+                continue;
+            }
+            if ch == '"' {
+                in_string = true;
+            }
+            out.push(ch);
+        }
+        out
+    }
+
+    /// Where a line's trailing comment starts, ignoring `//` inside a string.
+    ///
+    /// A path value spelling `"// defaults-ok: x"` used to open a comment as
+    /// far as this was concerned, so the value exempted itself — the bypass
+    /// the marker exists to replace.
+    fn comment_start(line: &str) -> Option<usize> {
+        let outside = strip_string_literals(line);
+        [outside.find("//"), outside.find("/*")]
+            .into_iter()
+            .flatten()
+            .min()
+    }
+
+    /// The part of a line before its trailing comment.
+    fn code_of(line: &str) -> &str {
+        comment_start(line).map_or(line, |i| &line[..i])
+    }
+
+    /// The part of a line inside its trailing comment, if it has one.
+    fn comment_of(line: &str) -> &str {
+        comment_start(line).map_or("", |i| &line[i..])
+    }
+
+    /// Whether a line is a literal default the guards should reject.
+    ///
+    /// The composition is what needs testing, not the three predicates under
+    /// it: `field_and_value` decides what the value is, `is_literal_field`
+    /// whether it is a literal, and `is_exempt` whether the author claimed it
+    /// deliberately. Checking them one at a time is how a defect survived where
+    /// a trailing comment made the value unparseable — every commented line was
+    /// exempt, marked or not, while the marker's own test passed.
+    fn is_unmarked_literal(line: &str) -> bool {
+        is_literal_field(line) && !is_exempt(line)
+    }
+
     /// Whether a value is a number or a path typed in place.
+    ///
+    /// `_` separators are stripped before parsing, so `budget: 8_000` is as
+    /// much a literal as `budget: 8000`. The doc-comment rule learned that
+    /// spelling first, and for a while the two halves of this module disagreed
+    /// about it: a comment describing `8_000` failed the build while the
+    /// literal itself walked past both guards. `src/calls/trace.rs` and
+    /// `src/lib.rs` both write numbers that way.
     fn is_literal_field(line: &str) -> bool {
-        field_and_value(line)
-            .is_some_and(|(_, v)| v.parse::<usize>().is_ok() || v.starts_with("PathBuf::from(\""))
+        field_and_value(line).is_some_and(|(_, v)| {
+            v.replace('_', "").parse::<usize>().is_ok() || v.starts_with("PathBuf::from(\"")
+        })
+    }
+
+    /// Whether a line opts out of the guards, and says why.
+    ///
+    /// Two shapes are correct code the guards cannot recognise on their own: a
+    /// counter whose default is `0`, and a literal that deliberately departs
+    /// from the defaults (`DepOptions { max_depth: 1, ..Default::default() }`).
+    /// Both were first handled by inferring intent from the source text —
+    /// exempting every zero, and tracking brace frames to find `..`. Both
+    /// inferences were wrong in ways that mattered: the zero rule let a real
+    /// zero default through, and the brace scan counted braces inside comments
+    /// and strings, so it blindly exempted 24 lines across five files while
+    /// missing the two `..Type::default()` spellings in the tree.
+    ///
+    /// Intent that cannot be read off the syntax is asked for instead. The
+    /// reason after the colon is required: it is what a reviewer reads, and
+    /// demanding it keeps the marker from becoming a reflex.
+    ///
+    /// ```text
+    /// Self { hits: 0 } // defaults-ok: a counter's starting point, not a setting
+    /// ```
+    fn is_exempt(line: &str) -> bool {
+        // Only a comment can carry the claim. Scanning the whole line let a
+        // string value containing the marker exempt itself, which is the
+        // silent bypass the marker exists to replace.
+        comment_of(line)
+            .split_once("defaults-ok:")
+            .is_some_and(|(_, reason)| !reason.trim().is_empty())
+    }
+
+    /// Field names that read a constant from this module anywhere in the tree.
+    ///
+    /// Derived rather than listed: a name earns its place by being set from
+    /// `crate::defaults` somewhere, which is what a hand-written allowlist got
+    /// wrong — it omitted `max_members_per_type`, the very field the class was
+    /// found through.
+    fn shared_field_names() -> Vec<String> {
+        let mut shared: Vec<String> = Vec::new();
+        for path in sources() {
+            let src = fs::read_to_string(&path).expect("source is readable");
+            for line in production_lines(&src) {
+                if let Some((field, value)) = field_and_value(line) {
+                    if value.starts_with("crate::defaults::")
+                        || value.starts_with("PathBuf::from(crate::defaults::")
+                    {
+                        shared.push(field.to_string());
+                    }
+                }
+            }
+        }
+        shared.sort();
+        shared.dedup();
+        shared
     }
 
     /// Reports each offending line as `path:line: text`, relative to `src/`.
@@ -255,6 +396,81 @@ mod tests {
         assert!(is_literal_field("    root: PathBuf::from(\".\"),"));
         assert!(!is_literal_field("    limit: crate::defaults::LIMIT,"));
         assert!(!is_literal_field("    output: OutputMode::Text,"));
+        // A zero is a literal like any other. Whether it is a *default* is a
+        // question about intent, which the marker answers and the text cannot.
+        assert!(is_literal_field("        Self { hits: 0 }"));
+    }
+
+    /// The guards' verdict on a line, over every shape a line can take.
+    ///
+    /// This is the test the round-2 review said was missing, and it is missing
+    /// in a specific way worth naming: `is_exempt` had a passing test of its
+    /// own while being unreachable, because a trailing comment left the value
+    /// unparseable and `is_literal_field` answered "not a literal" first. Each
+    /// link was green and the chain was broken, so the assertions here are on
+    /// the composed verdict rather than on any one predicate.
+    #[test]
+    fn the_guards_verdict_over_every_shape_of_line() {
+        // (line, rejected?)
+        let cases = [
+            ("        Self { max_depth: 3 }", true),
+            ("    limit: 200,", true),
+            ("    root: PathBuf::from(\".\"),", true),
+            // A comment does not excuse anything on its own — this is the
+            // defect: every one of these used to pass.
+            ("        Self { max_depth: 3 } // TODO: revisit", true),
+            ("        Self { max_depth: 3 } // defaults-ok:", true),
+            ("        Self { max_depth: 3 } // defaults-ok:    ", true),
+            // A claim with a reason does.
+            ("        Self { max_depth: 3 } // defaults-ok: fixture, not shipped", false),
+            ("    limit: 200, // defaults-ok: the protocol fixes this one", false),
+            // The marker only counts inside a comment, or a value could
+            // exempt itself — including a value that spells a comment.
+            ("    root: PathBuf::from(\"defaults-ok: not a claim\"),", true),
+            ("    root: PathBuf::from(\"// defaults-ok: not a claim\"),", true),
+            ("    root: PathBuf::from(\"/* defaults-ok: x */\"),", true),
+            // `_` separators are how this tree writes large numbers, so they
+            // are literals here as much as in a doc comment.
+            ("    budget: 8_000,", true),
+            ("    budget: 8_000, // defaults-ok: the format fixes this", false),
+            // Values that were never literals stay uninteresting.
+            ("    limit: crate::defaults::LIMIT,", false),
+            ("    output: OutputMode::Text,", false),
+        ];
+        let mut rejected = 0;
+        for (line, expected) in cases {
+            let verdict = is_unmarked_literal(line);
+            assert_eq!(verdict, expected, "wrong verdict for: {line}");
+            // Count what the code answered, not what the table declared.
+            // Summing `expected` made this 7 by construction — a number that
+            // holds however the predicate behaves, which is the shape of an
+            // assertion that cannot fail.
+            rejected += usize::from(verdict);
+        }
+        assert!(
+            rejected >= 7,
+            "only {rejected} shapes reached the rejecting branch"
+        );
+    }
+
+    /// The opt-out marker is exact, and it costs a reason.
+    ///
+    /// The composed test above covers the verdict; this one covers the marker
+    /// itself, so a change to its spelling fails here with a name that says
+    /// what broke rather than inside a table of line shapes.
+    #[test]
+    fn the_exemption_marker_demands_a_reason() {
+        assert!(is_exempt("    Self { hits: 0 } // defaults-ok: a counter's start"));
+        assert!(is_exempt(
+            "    DepOptions { max_depth: 1, ..Default::default() } // defaults-ok: caller wants 1"
+        ));
+
+        // No reason, no exemption.
+        assert!(!is_exempt("    Self { hits: 0 } // defaults-ok:"));
+        assert!(!is_exempt("    Self { hits: 0 } // defaults-ok:   "));
+        // And nothing is exempt by accident.
+        assert!(!is_exempt("    Self { hits: 0 }"));
+        assert!(!is_exempt("    // the defaults are ok as they stand"));
     }
 
     /// A clap default names a constant from this module, never a literal.
@@ -325,27 +541,14 @@ mod tests {
     #[test]
     fn struct_defaults_come_from_this_module() {
         // Pass one: every field name that already reads a constant.
-        let mut shared: Vec<String> = Vec::new();
-        for path in sources() {
-            let src = fs::read_to_string(&path).expect("source is readable");
-            for line in production_lines(&src) {
-                if let Some((field, value)) = field_and_value(line) {
-                    if value.starts_with("crate::defaults::")
-                        || value.starts_with("PathBuf::from(crate::defaults::")
-                    {
-                        shared.push(field.to_string());
-                    }
-                }
-            }
-        }
-        shared.sort();
-        shared.dedup();
+        let shared = shared_field_names();
         assert!(
             shared.len() > 5,
             "expected several shared fields, found {shared:?}"
         );
 
-        // Pass two: the same names, set from a literal instead.
+        // Pass two: the same names, set from a literal instead — unless the
+        // line says why it departs from the default on purpose.
         let mut hits = Vec::new();
         for path in sources() {
             let src = fs::read_to_string(&path).expect("source is readable");
@@ -353,7 +556,10 @@ mod tests {
                 let Some((field, _)) = field_and_value(line) else {
                     continue;
                 };
-                if shared.iter().any(|f| f == field) && is_literal_field(line) {
+                if is_exempt(line) {
+                    continue;
+                }
+                if shared.iter().any(|f| f == field) && is_unmarked_literal(line) {
                     hits.push((path.clone(), i, line.to_string()));
                 }
             }
@@ -362,7 +568,9 @@ mod tests {
             hits.is_empty(),
             "fields set from a literal whose name reads `crate::defaults` \
              elsewhere; an `impl Default` or a struct literal reaches the CLI \
-             and MCP as surely as an attribute does:\n{:#?}",
+             and MCP as surely as an attribute does. If the value is a \
+             deliberate departure rather than a default, say so on the line: \
+             `// defaults-ok: <why>`:\n{:#?}",
             offenders(hits)
         );
     }
@@ -401,7 +609,7 @@ mod tests {
                     opened = true;
                 }
                 depth = depth.saturating_sub(line.matches('}').count());
-                if is_literal_field(trimmed) {
+                if is_unmarked_literal(trimmed) {
                     hits.push((path.clone(), i, line.to_string()));
                 }
                 if opened && depth == 0 {
@@ -413,7 +621,9 @@ mod tests {
             hits.is_empty(),
             "literal values inside an `impl Default`; a default belongs in \
              `crate::defaults`, where the CLI, the serde args, and the MCP \
-             schema all reach it:\n{:#?}",
+             schema all reach it. If the value is not a tunable default — a \
+             counter's starting point, a fixture — say so on the line: \
+             `// defaults-ok: <why>`:\n{:#?}",
             offenders(hits)
         );
     }
@@ -465,4 +675,5 @@ mod tests {
             offenders(hits)
         );
     }
+
 }
