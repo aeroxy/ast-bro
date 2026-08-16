@@ -946,3 +946,68 @@ fn a_rebinding_the_walk_cannot_follow_still_claims_the_name() {
         "an unrelated qualifier was answered for by the alias"
     );
 }
+
+/// A target the walk declares more than once answers for all of them, and one
+/// of those declarations can inherit from another. Seeding the walk's visited
+/// set with the roots deleted exactly that answer: `implements Base` over
+/// `a.Base` and `b.Base extends a.Base` reported `Leaf` and not `b.Base`,
+/// while the note beside it claimed to cover both declarations. The bare
+/// answer is the union of the qualified ones, which is what the note
+/// promises.
+#[test]
+fn a_root_that_inherits_from_a_sibling_root_is_still_an_answer() {
+    let dir = fixture("root_chain");
+    let names = |target: &str, extra: &[&str]| -> Vec<String> {
+        let mut args = vec!["implements", target, &dir];
+        args.extend_from_slice(extra);
+        let (code, stdout, stderr) = run(&args);
+        assert_eq!(code, Some(0), "{target}: {stderr}");
+        let mut out: Vec<String> = stdout
+            .lines()
+            .skip(1)
+            .filter_map(|l| l.split_whitespace().nth(2).map(str::to_string))
+            .collect();
+        out.sort();
+        out
+    };
+    assert_eq!(
+        names("Base", &[]),
+        ["Base", "Leaf"],
+        "the root that inherits from the other root went missing"
+    );
+    // The union of what each qualified target answers, which is what the
+    // bare one covers: `a.Base` reaches both, `b.Base` reaches `Leaf`.
+    assert_eq!(names("a.Base", &[]), ["Base", "Leaf"]);
+    assert_eq!(names("b.Base", &[]), ["Leaf"]);
+    // A direct-only answer keeps both for the same reason: each is a direct
+    // subtype of one of the two roots.
+    assert_eq!(names("Base", &["--direct"]), ["Base", "Leaf"]);
+}
+
+/// A dropped edge is reported when pinning it would have grown *this* answer.
+/// Under `--direct` a reference pinned to a direct subtype would have made
+/// the referring type transitive, which a direct-only answer does not report
+/// at all — so the note asked the reader to disambiguate something that could
+/// not change what they saw.
+#[test]
+fn the_dropped_edge_note_respects_a_direct_only_answer() {
+    let dir = fixture("direct_ambiguity");
+    let (code, stdout, stderr) = run(&["implements", "R", &dir]);
+    assert_eq!(code, Some(0), "{stderr}");
+    assert!(
+        stderr.contains("could be"),
+        "the reference that would have joined a transitive answer went unreported:\n{stderr}"
+    );
+    assert!(stdout.contains("2 match(es)"), "{stdout}");
+
+    let (code, stdout, stderr) = run(&["implements", "R", &dir, "--direct"]);
+    assert_eq!(code, Some(0), "{stderr}");
+    assert!(
+        !stderr.contains("could be"),
+        "a direct-only answer reported an edge that could not have joined it:\n{stderr}"
+    );
+    assert!(
+        stdout.contains("2 match(es)"),
+        "the direct subtypes themselves went missing:\n{stdout}"
+    );
+}

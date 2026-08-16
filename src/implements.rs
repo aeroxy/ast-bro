@@ -193,7 +193,14 @@ pub fn find_implementations(
     };
 
     let mut closure: Vec<(usize, Vec<String>)> = Vec::new();
-    let mut seen: HashSet<usize> = roots.iter().copied().collect();
+    // Nothing is visited before the walk starts, roots included. A bare
+    // target that several declarations answer for can hold one that inherits
+    // from another — `b.Base extends a.Base` — and that one is an answer to
+    // the query as much as any other subtype is. Seeding the visited set with
+    // the roots deleted it, while the note beside the answer went on claiming
+    // to cover every declaration the name matched. A type still never reaches
+    // its own answer, because nothing inherits from itself.
+    let mut seen: HashSet<usize> = HashSet::new();
     // A direct subtype carries no chain; every hop past it appends the type
     // it came through, and the renderer shows the last one.
     let mut frontier: Vec<(usize, Vec<String>)> = Vec::new();
@@ -226,13 +233,26 @@ pub fn find_implementations(
 
     // An unpinned reference is only worth reporting when pinning it the
     // other way would have grown the answer: one of its candidates is in the
-    // closure and the subtype is not there already. Everything else is a
+    // answer and the subtype is not there already. Everything else is a
     // collision somewhere else in the repository, which this query is not
     // about.
+    //
+    // The answer is the closure plus the roots, which the walk no longer
+    // visits on its own. What a candidate has to be, though, depends on how
+    // deep this answer goes: with `--direct` a reference pinned to anything
+    // but a root would have made the referring type a *transitive* subtype,
+    // which this answer does not report at all, so reporting it asks the
+    // reader to disambiguate something that cannot change what they see.
+    let in_answer: HashSet<usize> = seen.iter().copied().chain(roots.iter().copied()).collect();
+    let could_grow: HashSet<usize> = if transitive {
+        in_answer.clone()
+    } else {
+        roots.iter().copied().collect()
+    };
     let mut ambiguous: Vec<AmbiguousBase> = unpinned
         .into_iter()
         .filter(|(subtype, _, cands)| {
-            !seen.contains(subtype) && cands.iter().any(|c| seen.contains(c))
+            !in_answer.contains(subtype) && cands.iter().any(|c| could_grow.contains(c))
         })
         .map(|(subtype, base, cands)| {
             let t = &types[subtype];
@@ -452,12 +472,25 @@ struct FileImport {
     resolved: Option<PathBuf>,
 }
 
-/// The imports of each walked file, extracted on demand.
+/// The imports of each walked file, extracted on demand and cached for the
+/// life of one query, so a file is reparsed at most once however many
+/// references consult it.
 ///
-/// Only a supertype name that several packages declare needs them, which is
-/// rare, and extraction reparses the file — so a repository with no name
-/// collisions never pays for this at all. Extraction itself is the one the
-/// dep graph uses, rather than a second one that could disagree with it.
+/// What decides whether a file is reparsed at all is [`may_rename`], not the
+/// name collision that motivated this index: the rename rule outranks the
+/// declaration index, so it has to run before the index is consulted, and
+/// every reference in a file that could rename an import therefore pays. In
+/// a language with no import rename — Java — nothing is ever extracted; in
+/// one where the probe is loose, `implements` costs about a `map` plus a
+/// `deps` extraction over the same tree (measured at 1.5s against 0.3s over
+/// 550 Python files of ~7 KB). The alternative is a probe keyed on the name
+/// the reference spells, and that trade is the wrong way round: a false
+/// negative there deletes an edge and reports nothing.
+///
+/// Extraction itself is the one the dep graph uses, rather than a second one
+/// that could disagree with it.
+///
+/// [`may_rename`]: ImportIndex::may_rename
 struct ImportIndex<'a> {
     results: &'a [ParseResult],
     cache: RefCell<HashMap<usize, std::rc::Rc<Vec<FileImport>>>>,
