@@ -729,6 +729,50 @@ mod tests {
         }
     }
 
+    /// A whole map is measured assembled, because its parts do not show the line
+    /// the marker takes.
+    ///
+    /// Every map a renderer produces ends in a newline — a top-level declaration
+    /// is followed by a separator — so on any real file the two measures agree
+    /// and the assembled check reads as redundant. It is not: on a map ending in
+    /// a declaration, parts adding up to exactly the budget are delivered a byte
+    /// over the ceiling. The three points are the budget on the nose, one byte
+    /// under it, and the same map ending in a separator, which is the shape that
+    /// hides the byte.
+    #[test]
+    fn a_map_is_measured_with_the_line_its_marker_takes() {
+        let note = shed_note(map_levels()[1].0, Path::new("/tmp/x.rs"));
+        let exact = MAP_BUDGET - note.len();
+
+        // Filled to just under the target, then one unit sized to land on it.
+        let mut units = vec![preamble("# header")];
+        while map_bytes(&units) + 300 < exact {
+            let id = units.len();
+            units.push(decl_unit("pub fn f() {}", id, None));
+        }
+        let last = exact - map_bytes(&units) - 1;
+        units.push(decl_unit(&"x".repeat(last), units.len(), None));
+        assert_eq!(map_bytes(&units), exact, "the fixture missed the boundary");
+
+        assert!(
+            whole_payload(&units, &note).is_none(),
+            "a map ending in a declaration costs a byte more than its parts"
+        );
+
+        let shorter = decl_unit(&"x".repeat(last - 1), units.len(), None);
+        units.pop();
+        units.push(shorter);
+        let payload = whole_payload(&units, &note).expect("one byte under the budget must fit");
+        assert_eq!(payload.len(), MAP_BUDGET, "the budget is there to be spent");
+
+        units.push(separator());
+        assert_eq!(map_bytes(&units), exact, "the separator restores the byte");
+        assert!(
+            whole_payload(&units, &note).is_some(),
+            "a map already ending in a newline pays nothing for the marker's line"
+        );
+    }
+
     /// A declaration unit ends without a newline, so `cap_map` has to give the
     /// marker a line of its own rather than glue it to the last declaration.
     #[test]
