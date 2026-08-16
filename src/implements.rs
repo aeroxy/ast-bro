@@ -607,10 +607,11 @@ impl<'a> ImportIndex<'a> {
     }
 
     /// How wide the scope an import written at `import_line` serves is, in
-    /// lines. The whole file is the widest there is.
+    /// lines.
     ///
-    /// This orders two visible bindings of one name, which is a question
-    /// visibility alone cannot answer: a `using Base = B.Root` inside
+    /// The whole file is the widest there is. The span orders two visible
+    /// bindings of one name, which is a question visibility alone cannot
+    /// answer: a `using Base = B.Root` inside
     /// `namespace N` and a file-scope `using Base = A.Root` are both visible
     /// to a class in `N`, and the language says the narrower one is the one
     /// in force.
@@ -1234,8 +1235,9 @@ fn _names_external_target(
 }
 
 /// The path an inheritance clause spells for `simple`, once the imports of
-/// the file it was written in have had their say. `None` when the clause is
-/// about some other type entirely.
+/// the file it was written in have had their say.
+///
+/// `None` means the clause is about some other type entirely.
 ///
 /// An import speaks in two shapes, and the clause text shows neither. It
 /// renames the type: `import com.api.Base as Alias` makes `Alias` the whole
@@ -1275,7 +1277,9 @@ fn _spelled_reference(
 }
 
 /// Does the inheritance clause reach the out-of-walk target through an
-/// import? `import com.api.Base as Alias` followed by `class Child : Alias`
+/// import?
+///
+/// `import com.api.Base as Alias` followed by `class Child : Alias`
 /// implements `com.api.Base`, and comparing the raw clause text alone never
 /// sees it — nor does it see `api::Handle` where `api` is bound to
 /// `external::stuff`.
