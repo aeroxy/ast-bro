@@ -576,7 +576,10 @@ fn digest_hint(call: &DigestHintCall<'_>, payload: &str) -> Option<String> {
         return None;
     }
     // A path that is not UTF-8 cannot be spelled into JSON at all, and a
-    // suggestion naming a lossy substitute would point at nothing.
+    // suggestion naming a lossy substitute would point at nothing. Unlike
+    // the CLI there is no counted form to fall back to — and no way to reach
+    // this either, since these paths were parsed out of a JSON string and
+    // JSON strings are UTF-8.
     let paths: Vec<&str> = call
         .requested_paths
         .iter()
