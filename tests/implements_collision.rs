@@ -851,3 +851,46 @@ fn a_nested_type_resolves_however_the_import_shortened_it() {
         "an import that pinned the reference went unused:\n{stderr}"
     );
 }
+
+/// A namespace can be several segments in one declaration — PHP writes
+/// `namespace App\Base`, C++17 writes `namespace A::B` — and a reference to
+/// it splits on those separators. The declaration's own qualified name did
+/// not, so the two sides never agreed: the qualifier rejected every
+/// candidate, the edge vanished, and it was not even reported as dropped,
+/// since a rule that rejects everything leaves nothing to be ambiguous
+/// about. That is essentially every PSR-4 project.
+#[test]
+fn a_namespace_written_in_one_declaration_still_has_segments() {
+    let php = format!("{}/php", fixture("namespace_separators"));
+    // The reference spells `\App\Base\Root`, and the two spellings of the
+    // target have to agree with each other as well as with it.
+    for target in ["App\\Base\\Root", "App.Base.Root"] {
+        let (code, stdout, stderr) = run(&["implements", target, &php]);
+        assert_eq!(code, Some(0), "{target}: {stderr}");
+        assert!(
+            stdout.contains("class Child"),
+            "{target}: a multi-segment namespace lost its edge:\n{stdout}"
+        );
+    }
+    // And the qualifier still discriminates, which is what says the
+    // segments are compared rather than ignored.
+    let (code, stdout, _) = run(&["implements", "App\\Other\\Root", &php]);
+    assert_eq!(code, Some(0));
+    assert!(
+        stdout.contains("0 match(es)"),
+        "the sibling namespace claimed the reference:\n{stdout}"
+    );
+
+    let cpp = format!("{}/cpp", fixture("namespace_separators"));
+    let (code, stdout, stderr) = run(&["implements", "A::B::Root", &cpp]);
+    assert_eq!(code, Some(0), "{stderr}");
+    assert!(
+        stdout.contains("class Child"),
+        "a C++17 nested namespace lost its edge:\n{stdout}"
+    );
+    let (_, stdout, _) = run(&["implements", "A::C::Root", &cpp]);
+    assert!(
+        stdout.contains("0 match(es)"),
+        "the sibling namespace claimed the reference:\n{stdout}"
+    );
+}

@@ -1207,9 +1207,22 @@ fn _qualifier_matches(qname: &str, segments: &[String]) -> bool {
             .all(|(a, b)| a == b)
 }
 
+/// Append `name` to the qualified name it sits under, in the one spelling
+/// every rule here compares against: dot-separated segments.
+///
+/// `name` arrives as its language spells it, and two languages spell a
+/// namespace with more than one segment in a single declaration — PHP's
+/// `namespace App\Base` and C++17's `namespace A::B`. Keeping that
+/// spelling left the declaration one segment where a reference to it split
+/// into three, so `_qualifiers_agree` could never agree and the edge
+/// disappeared without even being reported as ambiguous. Splitting on the
+/// same separators as a type reference is what puts both sides in one
+/// alphabet; it also drops the generic arguments a declared name may carry,
+/// which is what the name index already does to its keys.
 fn _join_dot(prefix: &str, name: &str) -> String {
+    let name = _type_ref_segments(name).join(".");
     match (prefix.is_empty(), name.is_empty()) {
-        (true, _) => name.to_string(),
+        (true, _) => name,
         (_, true) => prefix.to_string(),
         _ => format!("{}.{}", prefix, name),
     }
