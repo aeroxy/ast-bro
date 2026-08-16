@@ -1056,3 +1056,26 @@ fn the_inner_binding_of_a_name_shadows_the_outer_one() {
         );
     }
 }
+
+/// A type is not its own subtype, whatever the graph says.
+///
+/// Not a self-edge — a reference never resolves to the type it is written on
+/// — but a cycle: `class A extends B` beside `class B extends A` walks out of
+/// `A` and back into it, and the answer named `A` as an implementor of
+/// itself. Everything else below the cycle is still an answer, so the guard
+/// has to be the root of the branch rather than the cycle.
+#[test]
+fn a_cycle_does_not_make_a_type_its_own_subtype() {
+    let dir = fixture("cycle");
+    for (target, want) in [("A", vec!["B", "Leaf"]), ("B", vec!["A", "Leaf"])] {
+        let (code, stdout, stderr) = run(&["implements", target, &dir]);
+        assert_eq!(code, Some(0), "{target}: {stderr}");
+        let mut names: Vec<&str> = stdout
+            .lines()
+            .skip(1)
+            .filter_map(|l| l.split_whitespace().nth(2))
+            .collect();
+        names.sort_unstable();
+        assert_eq!(names, want, "{target}:\n{stdout}");
+    }
+}

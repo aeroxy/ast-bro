@@ -185,6 +185,16 @@ pub fn find_implementations(
         v.dedup();
         v
     };
+    // Which root each direct subtype came from, so the walk can keep a type
+    // out of its own answer. A target the walk does not declare has no root
+    // to come from, and `usize::MAX` is an index no type has.
+    let origin_of = |d: usize| -> usize {
+        roots
+            .iter()
+            .copied()
+            .find(|&r| edges[r].contains(&d))
+            .unwrap_or(usize::MAX)
+    };
 
     let external_spellings = if roots.is_empty() {
         _external_spellings(&imports, &types, &target_simple, &direct)
@@ -193,34 +203,41 @@ pub fn find_implementations(
     };
 
     let mut closure: Vec<(usize, Vec<String>)> = Vec::new();
-    // Nothing is visited before the walk starts, roots included. A bare
+    // Nothing is visited before the walk starts, roots included: a bare
     // target that several declarations answer for can hold one that inherits
     // from another — `b.Base extends a.Base` — and that one is an answer to
     // the query as much as any other subtype is. Seeding the visited set with
     // the roots deleted it, while the note beside the answer went on claiming
-    // to cover every declaration the name matched. A type still never reaches
-    // its own answer, because nothing inherits from itself.
+    // to cover every declaration the name matched.
+    //
+    // What a type must not be is its own subtype, and the seeded set was what
+    // enforced that. It is not a self-edge — `_candidates_for` already refuses
+    // one — but a cycle: `class A extends B` beside `class B extends A` walks
+    // out of `A` and back into it, and `implements A` reported `class A [via
+    // B]`. Each branch of the walk therefore carries the root it started
+    // from, which is the only thing it may not arrive at.
     let mut seen: HashSet<usize> = HashSet::new();
     // A direct subtype carries no chain; every hop past it appends the type
     // it came through, and the renderer shows the last one.
-    let mut frontier: Vec<(usize, Vec<String>)> = Vec::new();
+    let mut frontier: Vec<(usize, usize, Vec<String>)> = Vec::new();
     for d in direct {
-        if seen.insert(d) {
+        let origin = origin_of(d);
+        if d != origin && seen.insert(d) {
             closure.push((d, Vec::new()));
-            frontier.push((d, Vec::new()));
+            frontier.push((origin, d, Vec::new()));
         }
     }
     while transitive && !frontier.is_empty() {
         let mut next = Vec::new();
-        for (parent, via) in frontier {
+        for (origin, parent, via) in frontier {
             for &child in &edges[parent] {
-                if !seen.insert(child) {
+                if child == origin || !seen.insert(child) {
                     continue;
                 }
                 let mut chain = via.clone();
                 chain.push(types[parent].decl.name.clone());
                 closure.push((child, chain.clone()));
-                next.push((child, chain));
+                next.push((origin, child, chain));
             }
         }
         frontier = next;
@@ -476,16 +493,21 @@ struct FileImport {
 /// life of one query, so a file is reparsed at most once however many
 /// references consult it.
 ///
-/// What decides whether a file is reparsed at all is [`may_rename`], not the
-/// name collision that motivated this index: the rename rule outranks the
-/// declaration index, so it has to run before the index is consulted, and
-/// every reference in a file that could rename an import therefore pays. In
-/// a language with no import rename — Java — nothing is ever extracted; in
-/// one where the probe is loose, `implements` costs about a `map` plus a
-/// `deps` extraction over the same tree (measured at 1.5s against 0.3s over
-/// 550 Python files of ~7 KB). The alternative is a probe keyed on the name
-/// the reference spells, and that trade is the wrong way round: a false
-/// negative there deletes an edge and reports nothing.
+/// What it is not gated on is the name collision that motivated the index.
+/// Three rules read imports and each pays on its own terms. The rename rules
+/// ask [`may_rename`] first, and since a rename outranks the declaration
+/// index they run before it — so in a language that can rename, every
+/// reference in a file whose text hints at one pays. The qualifier expander
+/// and the two import narrowings ask nothing: they extract whenever they
+/// run, which is a reference spelling more than one segment, or a simple
+/// name two declarations carry. A Java tree therefore does extract, on
+/// exactly the queries this resolver exists for, however little Java can
+/// rename.
+///
+/// The cost that follows is about a `map` plus a `deps` extraction over the
+/// same tree — measured at 1.5s against 0.3s over 550 Python files of ~7 KB.
+/// A probe keyed on the name the reference spells would cut it and is the
+/// wrong trade: a false negative there deletes an edge and reports nothing.
 ///
 /// Extraction itself is the one the dep graph uses, rather than a second one
 /// that could disagree with it.

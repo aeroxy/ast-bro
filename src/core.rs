@@ -1242,13 +1242,24 @@ fn _search_walk(
     for d in decls {
         let mut new_trail = trail.clone();
         if !d.name.is_empty() {
-            // A name that is itself qualified — `namespace Foo.Bar` in C#,
-            // and PHP's and C++'s multi-segment namespaces — enters the trail
-            // as its segments. The query is split on the same dot, so a
+            // A namespace name is itself qualified — `namespace Foo.Bar` in
+            // C#, and PHP's and C++'s multi-segment forms — so it enters the
+            // trail as its segments. The query is split on the same dot, so a
             // one-element `Foo.Bar` could never match the `Foo`, `Bar` the
             // caller typed, which made the qualified name `surface` prints a
             // name `show` rejects.
-            new_trail.extend(d.name.split('.').map(str::to_string));
+            //
+            // Only a namespace. Every other name is one segment whatever it
+            // contains, and a markdown heading is prose: splitting `##
+            // Internals (src/impact.rs)` put `Internals` in a segment no
+            // one-word query is ever compared against, so the heading search
+            // lost every word before a dot — `Node.js`, `vs.`, a version, a
+            // filename.
+            if d.kind == DeclarationKind::Namespace {
+                new_trail.extend(d.name.split('.').map(str::to_string));
+            } else {
+                new_trail.push(d.name.clone());
+            }
         }
 
         // For markdown headings, fall back to case-insensitive substring
