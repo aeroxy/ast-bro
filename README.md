@@ -324,23 +324,29 @@ the read the host refuses outright — measured against its file-size
 limit, 256 KB on Claude Code 2.1.223. That limit counts bytes, not lines,
 so it catches files no `--min-lines` threshold does: a 90-line file of
 355 KB trips it. Without this the agent gets a bare error and nothing
-else. That event cannot replace a result, only
-add context, which is all the map needs when the result carries no file
-contents. Nothing is blocked on that path: the host already failed the
-call, so the map arrives beside the error rather than in place of
-anything.
+else. That event cannot replace a result, only add context, which is all
+the map needs when the result carries no file contents. Nothing is
+blocked on that path: the host already failed the call, so the map
+arrives beside the error rather than in place of anything.
 
 Whatever the channel, the map is capped at 64 KB. A map that would run
 over can shed detail — doc comments and attributes first, then fields and
 private items, with a per-type member cap as a last backstop that rarely
-comes up — or keep the detail and drop whole entries instead. Which one you get is decided by how many
-declarations each delivers, not by which fits first: a mostly-private
-file would fit the moment private items went, and hand you the public
-few, so it is trimmed at a richer level instead. A trim drops a
-declaration together with its doc comment and its members, rather than
-leaving them to read as someone else's. Either way the payload ends with
-a note saying what is missing and the `ast-bro map` command that returns
-it.
+comes up — or keep the detail and drop whole entries instead. Which one
+you get is decided by how many declarations each delivers, not by which
+fits first: a mostly-private file would fit the moment private items
+went, and hand you the public few, so it is trimmed at a richer level
+instead.
+
+A trim spends the 64 KB in the order that ladder ranks: whatever survives
+furthest down it goes in first, so a file's public surface arrives whole
+before its private helpers get the rest. Filling in file order instead
+handed back 1733 private items and none of that file's 500 public ones,
+because the publics ran to the end of a file twice the budget. What a
+trim drops, it drops entire — a declaration leaves with its doc comment
+and its members, rather than leaving them to read as someone else's. The
+payload then ends with a note saying what is missing and the
+`ast-bro map` command that returns it.
 
 ### Claude Code subagent shadowing
 
