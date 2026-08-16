@@ -400,17 +400,17 @@ fn _class_implements<'a, D: Doc>(node: &Node<'a, D>) -> Vec<String> {
 ///
 /// The clause is an ordinary child of the declaration, not a field on it —
 /// asking for `node.field("extends")` returned nothing, so PHP recorded no
-/// supertypes at all and `implements` had no PHP edges to walk. Only the
-/// name nodes are taken; the `extends` / `implements` keywords and the
-/// separating commas are anonymous.
+/// supertypes at all and `implements` had no PHP edges to walk. What is
+/// left after the parts that are not types is the answer: the `extends` /
+/// `implements` keywords and the separating commas are anonymous, and a
+/// comment is the one named child that names nothing. Listing what to drop
+/// rather than the name kinds to keep is deliberate — a kind such a list
+/// forgets is dropped in silence, which reads as "this class has no base".
 fn _clause_type_names<'a, D: Doc>(node: &Node<'a, D>, clause: &str) -> Vec<String> {
     let mut out = Vec::new();
     for c in node.children().filter(|c| c.kind() == clause) {
         for name in c.children() {
-            if !matches!(
-                name.kind().as_ref(),
-                "name" | "qualified_name" | "relative_name"
-            ) {
+            if !name.is_named() || name.kind() == "comment" {
                 continue;
             }
             let text = collapse_ws(&name.text()).trim().to_string();

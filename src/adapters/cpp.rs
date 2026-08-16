@@ -455,16 +455,19 @@ fn _field_to_decl<'a, D: Doc>(node: &Node<'a, D>, _src: &[u8]) -> Option<Declara
 /// The base clause is an ordinary child of the specifier, not a field on
 /// it — asking for `node.field("base_class_clause")` returned nothing, so
 /// C++ recorded no supertypes at all and `implements` had no C++ edges to
-/// walk. Inside the clause only the type names count: `public`, `private`
-/// and `protected` are `access_specifier` nodes and `virtual` is anonymous.
+/// walk. Inside the clause the type names are what is left once the parts
+/// that are not types are dropped: `public`, `private` and `protected` are
+/// `access_specifier` nodes, and `virtual`, the commas and the leading
+/// colon are anonymous. The rule names those rather than the type kinds it
+/// expects, because a kind this list forgot — `decltype(expr)`, or whatever
+/// a later grammar splits out of `qualified_identifier` — is dropped in
+/// silence, which reads as "this class has no base".
 fn _class_bases<'a, D: Doc>(node: &Node<'a, D>) -> Vec<String> {
     let mut bases = Vec::new();
     for bc in node.children().filter(|c| c.kind() == "base_class_clause") {
         for child in bc.children() {
-            if !matches!(
-                child.kind().as_ref(),
-                "type_identifier" | "qualified_identifier" | "template_type" | "dependent_type"
-            ) {
+            let skip = matches!(child.kind().as_ref(), "access_specifier" | "comment");
+            if !child.is_named() || skip {
                 continue;
             }
             let text = collapse_ws(&child.text());
