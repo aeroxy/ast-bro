@@ -348,7 +348,7 @@ enum Commands {
     },
     /// Find import cycles via Tarjan SCC.
     Cycles {
-        /// Repository root to scan (default: ".").
+        /// Repository root to scan.
         #[arg(default_value = crate::defaults::ROOT)]
         path: PathBuf,
         /// Smallest cycle to report, in files. The default skips
@@ -367,7 +367,7 @@ enum Commands {
     },
     /// Emit the dep graph (text or JSON).
     Graph {
-        /// Repository root to scan (default: ".").
+        /// Repository root to scan.
         #[arg(default_value = crate::defaults::ROOT)]
         path: PathBuf,
         /// Emit output as JSON instead of text
@@ -472,7 +472,7 @@ enum Commands {
         /// Symbol to look up. Optional when `--file` and `--symbol` are passed.
         #[arg(required_unless_present_all = ["file", "symbol"], conflicts_with_all = ["file", "symbol"])]
         target: Option<String>,
-        /// Repository root (default: ".").
+        /// Repository root.
         #[arg(default_value = crate::defaults::ROOT)]
         path: PathBuf,
         /// Alternative to the `<FILE>:<NAME>` positional form.
@@ -555,7 +555,7 @@ enum Commands {
         /// walked in full so their totals are exact.
         #[arg(long, default_value_t = crate::defaults::LIMIT)]
         limit: usize,
-        /// Section to show: `deps`, `dependents`, `tests`, or `all` (default).
+        /// Section to show: `deps`, `dependents`, `tests`, or `all`.
         #[arg(long, default_value = crate::defaults::IMPACT_MODE)]
         mode: String,
         /// Hide ambiguous call-edge matches from impact output.
