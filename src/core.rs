@@ -109,8 +109,10 @@ pub struct Declaration {
     pub attrs: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub docs: Vec<String>,
-    /// The documented declaration group this declaration is a member of,
-    /// when it is a member of one. See [`DeclarationGroup`].
+    /// The documented block this declaration is a member of, when it is a
+    /// member of one.
+    ///
+    /// See [`DeclarationGroup`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group: Option<DeclarationGroup>,
     pub docs_inside: bool,
@@ -674,19 +676,22 @@ pub fn render_map(result: &ParseResult, opts: &MapOptions) -> String {
 }
 
 /// Which group a declaration belongs to, for the renderer's "same group as
-/// the one above?" question. The block's start line, not its prose: two
-/// adjacent blocks can carry the same comment verbatim, and a boilerplate
-/// banner or a `// Deprecated: …` line above each of them is the case where
-/// they do.
+/// the one before it?" question.
+///
+/// The block's start line, not its prose: two adjacent blocks can carry
+/// the same comment verbatim, and a boilerplate banner or a
+/// `// Deprecated: …` line over each of them is the case where they do.
 fn _group_id(decl: &Declaration) -> Option<usize> {
     decl.group.as_ref().map(|g| g.start_line)
 }
 
-/// Members of one block render as one block. A type pushes a blank line
-/// after itself, which for a `type ( … )` group would separate every
-/// member after the first from the `[group]` line documenting it — and a
-/// member set off by a blank line reads as an undocumented declaration of
-/// its own, which is the misreading the marker exists to prevent.
+/// Members of one block render as one block.
+///
+/// A type pushes a blank line after itself, which for a `type ( … )`
+/// group separates every member after the first from the `[group]` line
+/// documenting it. A member set off by a blank line reads as an
+/// undocumented declaration of its own, which is the misreading the
+/// marker exists to prevent.
 ///
 /// Gated on the same option as [`_push_group_docs`], since the two are one
 /// feature: with no `[group]` line on screen there is nothing for the

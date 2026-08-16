@@ -8,8 +8,8 @@
 //!   2. A member of a group keeps its own comment; the group's comment
 //!      never displaces it.
 //!   3. Struct fields and interface methods report their doc comments
-//!      (issue #47) — `docs: null` there used to be indistinguishable
-//!      from a genuinely undocumented field.
+//!      (issue #47), so an empty `docs` there means the declaration
+//!      carries no comment rather than that none was read.
 //!   4. A trailing comment belongs to the declaration it sits beside, not
 //!      to the one on the next line.
 
@@ -243,7 +243,19 @@ fn a_groups_members_are_not_split_from_its_marker() {
         );
         checked += 1;
     }
+    // A `const` / `var` member never pushes a trailing blank, so only the
+    // `type` iteration can fail here — and only when its members have
+    // bodies. Assert that shape ran rather than counting a literal.
     assert_eq!(checked, 3, "all three block kinds must be exercised");
+    let shapes = s
+        .find("[group] // Shapes are the shapes")
+        .expect("type-group marker");
+    let square = shapes + s[shapes..].find("type Square").expect("Square");
+    assert!(
+        s[shapes..square].contains("        Radius int"),
+        "the type-group case must run over a member with children, or nothing \
+         in it pushes the blank line this test exists to catch:\n{s}"
+    );
     // The blank line still separates the block from what follows it.
     assert!(
         s.contains("type Square struct  L46\n\n"),
@@ -255,6 +267,11 @@ fn a_groups_members_are_not_split_from_its_marker() {
     // undocumented one. Otherwise the spacing alone tells the reader which
     // block carries the comment they asked to hide.
     let hidden = run(&["map", FIXTURE, "--no-docs"]);
+    // `Circle`/`Square` is the pair under test: it is the documented block,
+    // so it is the one whose spacing the gate can get wrong.
+    // `Undocumented`/`AlsoNone` carries no group and separates in every
+    // mode — it is the reference the first pair has to match, not a second
+    // test of the gate.
     for (first, second) in [
         ("type Circle struct", "type Square"),
         ("type Undocumented struct", "type AlsoNone"),
@@ -279,27 +296,42 @@ fn a_groups_members_are_not_split_from_its_marker() {
 /// exists to prevent, one surface over.
 #[test]
 fn surface_carries_a_blocks_documentation() {
+    // The expected set comes from the fixture, not from a list beside it:
+    // a hand-kept list silently stops covering a member the fixture gains,
+    // and the member it missed was `Circle` — the only one carrying both
+    // its own `docs` and a `group`, so the only one whose result differs
+    // between copying `group` always and copying it when `docs` is empty.
+    let v = json();
+    let in_a_documented_block: std::collections::HashSet<String> = decls(&v)
+        .iter()
+        .filter(|(_, d)| !docs(d, "group").is_empty())
+        .map(|(name, _)| name.clone())
+        .collect();
+    assert!(
+        in_a_documented_block.contains("Circle"),
+        "fixture must keep a member that documents itself inside a documented block"
+    );
+
     let dir = std::path::Path::new(FIXTURE).parent().unwrap();
     let out = run(&["surface", dir.to_str().unwrap(), "--json"]);
-    let v: serde_json::Value = serde_json::from_str(&out).expect("json");
-    let mut members = 0;
-    for e in v["entries"].as_array().expect("entries") {
+    let surfaced: serde_json::Value = serde_json::from_str(&out).expect("json");
+
+    let mut seen = std::collections::HashSet::new();
+    for e in surfaced["entries"].as_array().expect("entries") {
         let name = e["source_name"].as_str().unwrap_or_default();
-        // Every block member in the fixture, across all three block kinds.
-        if ![
-            "Red", "Blue", "MaxBytes", "MaxHops", "Ancient", "Obsolete", "CodeOK", "Square",
-        ]
-        .contains(&name)
-        {
+        if !in_a_documented_block.contains(name) {
             continue;
         }
-        members += 1;
+        seen.insert(name.to_string());
         assert!(
             !docs(e, "group").is_empty(),
             "{name} is a member of a documented block but surface reports no group:\n{e:#?}"
         );
     }
-    assert_eq!(members, 8, "every block member must be exercised");
+    assert_eq!(
+        seen, in_a_documented_block,
+        "surface must report every member `map` puts in a documented block"
+    );
 }
 
 #[test]

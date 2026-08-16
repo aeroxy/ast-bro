@@ -31,11 +31,18 @@ pub struct SurfaceEntry {
     pub via_glob: bool,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub docs: Vec<String>,
-    /// The declaration group documenting this symbol, when its own `docs`
-    /// are empty because the documentation belongs to the block it lives
-    /// in. Kept beside `docs` so a resolver copying one sees the other:
-    /// a surface that carries only `docs` reports every member of a
-    /// documented Go `const ( … )` block as undocumented.
+    /// The documented block this symbol is declared in, when it is
+    /// declared in one.
+    ///
+    /// Copied from the declaration whenever it has a group, independently
+    /// of `docs`, which stays whatever the symbol documents about itself.
+    /// The two answer different questions and a member can answer both,
+    /// so a resolver carrying `group` only when `docs` is empty erases a
+    /// block's comment from exactly the members that document themselves.
+    ///
+    /// Kept beside `docs` so a resolver copying one sees the other: a
+    /// surface carrying only `docs` reports every member of a documented
+    /// Go `const ( … )` block as undocumented (issue #46).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub group: Option<DeclarationGroup>,
 }

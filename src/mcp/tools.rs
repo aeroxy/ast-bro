@@ -14,7 +14,7 @@ pub fn list() -> Value {
         "tools": [
             {
                 "name": "map",
-                "description": "AST-based structural map of source files — signatures with line ranges, no method bodies. Returns text by default (5–10× smaller than reading the file). Set `json: true` for the machine-readable schema `ast-bro.map.v1`. A `[group]` line is a comment on the enclosing block, not on the symbol below it: Go's `const ( … )`, `var ( … )` and `type ( … )` take one doc comment covering every member. Read it as the block's, never as that member's. In `json: true` it is `group` (`{docs, start_line, end_line}`) on every member of the block; a member's own doc comment is `docs`, as always.",
+                "description": "AST-based structural map of source files — signatures with line ranges, no method bodies. Returns text by default (5–10× smaller than reading the file). Set `json: true` for the machine-readable schema `ast-bro.map.v1`. A `[group]` line is a comment on the enclosing block, not on the symbol below it: Go's `const ( … )`, `var ( … )` and `type ( … )` take one doc comment covering every member. Read it as the block's, never as that member's. In `json: true` it is `group` (`{docs, start_line, end_line}`) on every member of the block, shed with `docs` when documentation is projected out (`no_docs`, `detail` below `full`) and reported by `projected.docs: false`; a member's own doc comment is `docs`, as always.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {

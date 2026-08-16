@@ -425,6 +425,7 @@ fn mcp_map_description_explains_the_group_marker() {
             "start_line",
             "end_line",
             "`docs`",
+            "projected.docs: false",
         ] {
             assert!(
                 text.contains(needle),
