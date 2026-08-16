@@ -1025,8 +1025,20 @@ fn _resolve_rename(
         let Some(real) = imp.segments.last() else {
             continue;
         };
+        // The list is innermost-scope first, so this first binding of the
+        // name is the one in force and every later one is an enclosing
+        // scope's, shadowed. Which means the shadow rule is about the
+        // binding, not about whether it renames: skipping past an ordinary
+        // import to look for a rename let an outer `use other::Widget as
+        // Root` claim a name an inner `use api::Root` had already taken, and
+        // left two C# `using Root = …` aliases — the shape that exists
+        // precisely to say which same-named type is meant — deciding
+        // nothing between them.
         if real == simple {
-            continue; // An ordinary import, not a rename.
+            // Not a rename, so this rule has no answer; but it has settled
+            // which import speaks for the name, and `_narrow_by_imports`
+            // reads the same ordering to find it.
+            return None;
         }
         bound = true;
         for c in _candidates_for(types, index, from, real) {
@@ -1034,10 +1046,6 @@ fn _resolve_rename(
                 live.push(c);
             }
         }
-        // The list is innermost-scope first, so this is the binding in force
-        // and anything after it is the enclosing scope's, shadowed. Taking
-        // both made two bindings of one name ambiguous where the language
-        // has an answer.
         break;
     }
     live.sort_unstable();
@@ -1095,6 +1103,13 @@ enum HeadExpansion {
 /// Narrow to the candidates some import of the referring file could be
 /// naming. `on_demand` selects which half of the import list to consult:
 /// the two halves are separate rules with the package rule between them.
+///
+/// One binding of the name, not every visible one. `imports` arrives
+/// innermost-scope first, so the first import that binds the name is the one
+/// in force and the rest are enclosing scopes' — and this rule matches on
+/// "some spec names it", which took both and left a C# file with an inner
+/// `using Root = A.Root;` under an outer `using Root = B.Root;` unable to
+/// decide between two candidates the language tells apart.
 fn _narrow_by_imports(
     live: &mut Vec<usize>,
     types: &[TypeEntry<'_>],
@@ -1102,12 +1117,13 @@ fn _narrow_by_imports(
     simple: &str,
     on_demand: bool,
 ) {
+    let mut named = false;
     let specs: Vec<&FileImport> = imports
         .iter()
         .filter(|i| match &i.binds {
             Bind::OnDemand => on_demand,
             Bind::Module => !on_demand,
-            Bind::Name(n) => !on_demand && n == simple,
+            Bind::Name(n) => !on_demand && n == simple && !std::mem::replace(&mut named, true),
         })
         .collect();
     if specs.is_empty() {

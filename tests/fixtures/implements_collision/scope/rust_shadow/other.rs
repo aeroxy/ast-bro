@@ -1,1 +1,1 @@
-pub trait Root {}
+pub trait Widget {}

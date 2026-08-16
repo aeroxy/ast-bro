@@ -1038,14 +1038,20 @@ fn the_inner_binding_of_a_name_shadows_the_outer_one() {
     };
     // `Child` takes the nested binding, and nothing else takes the outer one.
     assert_eq!(subtypes("B.Root", &cs), ["Child"]);
-    // An alias that is a namespace body's only binding still binds: the sole
-    // `A.Root` subtype is the class that goes through it.
-    assert_eq!(subtypes("A.Root", &cs), ["InnerOnly"]);
+    // `InnerOnly` goes through an alias that is its namespace body's only
+    // binding. `NamedChild` goes through one named after the type it aliases
+    // — `using Root = A.Root`, the shape C# aliases exist for — under an
+    // outer binding of the same name: the resolver reads that as an ordinary
+    // import rather than a rename, and it is still the binding in force.
+    assert_eq!(subtypes("A.Root", &cs), ["InnerOnly", "NamedChild"]);
 
-    // Rust reads it the same way through a `mod` block.
+    // Rust reads it the same way through a `mod` block, and the same holds
+    // when the inner binding is the ordinary import and the outer one the
+    // rename: `Plain` takes `api::Root`, not `other::Widget`.
     let rs = format!("{}/rust_shadow", fixture("scope"));
     assert_eq!(subtypes("other.Root", &rs), ["Child"]);
-    assert!(subtypes("api.Root", &rs).is_empty());
+    assert_eq!(subtypes("api.Root", &rs), ["Plain"]);
+    assert!(subtypes("other.Widget", &rs).is_empty());
 
     // And it is decided, not dropped: nothing is reported as ambiguous.
     for dir in [&cs, &rs] {
