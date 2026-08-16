@@ -339,10 +339,11 @@ went, and hand you the public few, so it is trimmed at a richer level
 instead.
 
 A trim spends the 64 KB in the order that ladder ranks: whatever survives
-furthest down it goes in first, so a file's public surface arrives whole
-before its private helpers get the rest. Filling in file order instead
-handed back 1733 private items and none of that file's 500 public ones,
-because the publics ran to the end of a file twice the budget. What a
+furthest down it goes in first, so a file's public surface is what the
+budget buys before anything else — all of it, unless the public surface
+alone is over the cap. Filling in file order instead handed back 1733
+private items and none of that file's 500 public ones, because the
+publics ran to the end of a file twice the budget. What a
 trim drops, it drops entire — a declaration leaves with its doc comment
 and its members, rather than leaving them to read as someone else's. The
 payload then ends with a note saying what is missing and the
