@@ -185,15 +185,22 @@ pub fn find_implementations(
         v.dedup();
         v
     };
-    // Which root each direct subtype came from, so the walk can keep a type
-    // out of its own answer. A target the walk does not declare has no root
+    // Which roots each direct subtype came from, so the walk can keep a type
+    // out of its own answer. Every one of them, not the first: a subtype two
+    // roots both name is two branches of the walk, and past a cycle they do
+    // not see the same nodes. A target the walk does not declare has no root
     // to come from, and `usize::MAX` is an index no type has.
-    let origin_of = |d: usize| -> usize {
-        roots
+    let origins_of = |d: usize| -> Vec<usize> {
+        let out: Vec<usize> = roots
             .iter()
             .copied()
-            .find(|&r| edges[r].contains(&d))
-            .unwrap_or(usize::MAX)
+            .filter(|&r| edges[r].contains(&d))
+            .collect();
+        if out.is_empty() {
+            vec![usize::MAX]
+        } else {
+            out
+        }
     };
 
     let external_spellings = if roots.is_empty() {
@@ -216,14 +223,26 @@ pub fn find_implementations(
     // out of `A` and back into it, and `implements A` reported `class A [via
     // B]`. Each branch of the walk therefore carries the root it started
     // from, which is the only thing it may not arrive at.
-    let mut seen: HashSet<usize> = HashSet::new();
+    //
+    // Which makes the visited set per branch rather than shared. A type two
+    // roots both reach is one answer, but it is two branches, and stopping
+    // the second at the shared node would leave whatever lies past it
+    // reachable only through the origin the first branch may not return to.
+    // The closure dedupes on its own, so a node still appears once, under the
+    // first chain that found it.
+    let mut seen: HashSet<(usize, usize)> = HashSet::new();
+    let mut in_closure: HashSet<usize> = HashSet::new();
     // A direct subtype carries no chain; every hop past it appends the type
     // it came through, and the renderer shows the last one.
     let mut frontier: Vec<(usize, usize, Vec<String>)> = Vec::new();
     for d in direct {
-        let origin = origin_of(d);
-        if d != origin && seen.insert(d) {
-            closure.push((d, Vec::new()));
+        for origin in origins_of(d) {
+            if d == origin || !seen.insert((origin, d)) {
+                continue;
+            }
+            if in_closure.insert(d) {
+                closure.push((d, Vec::new()));
+            }
             frontier.push((origin, d, Vec::new()));
         }
     }
@@ -231,12 +250,14 @@ pub fn find_implementations(
         let mut next = Vec::new();
         for (origin, parent, via) in frontier {
             for &child in &edges[parent] {
-                if child == origin || !seen.insert(child) {
+                if child == origin || !seen.insert((origin, child)) {
                     continue;
                 }
                 let mut chain = via.clone();
                 chain.push(types[parent].decl.name.clone());
-                closure.push((child, chain.clone()));
+                if in_closure.insert(child) {
+                    closure.push((child, chain.clone()));
+                }
                 next.push((origin, child, chain));
             }
         }
@@ -260,7 +281,11 @@ pub fn find_implementations(
     // but a root would have made the referring type a *transitive* subtype,
     // which this answer does not report at all, so reporting it asks the
     // reader to disambiguate something that cannot change what they see.
-    let in_answer: HashSet<usize> = seen.iter().copied().chain(roots.iter().copied()).collect();
+    let in_answer: HashSet<usize> = in_closure
+        .iter()
+        .copied()
+        .chain(roots.iter().copied())
+        .collect();
     let could_grow: HashSet<usize> = if transitive {
         in_answer.clone()
     } else {

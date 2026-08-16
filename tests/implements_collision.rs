@@ -1079,3 +1079,34 @@ fn a_cycle_does_not_make_a_type_its_own_subtype() {
         assert_eq!(names, want, "{target}:\n{stdout}");
     }
 }
+
+/// A subtype two roots both name is two branches of the walk, not one.
+///
+/// The cycle guard is per branch — a branch may not arrive back at the root
+/// it started from — so sharing one visited set across branches stopped the
+/// second at the node the first had already taken, leaving everything past
+/// it reachable only through the origin that branch is barred from. Here `C`
+/// is direct under both `Base`es and `a.Base` sits past it, so a bare target
+/// dropped `a.Base` while `implements b.Base` reported it.
+#[test]
+fn a_shared_direct_subtype_does_not_close_the_other_root_s_branch() {
+    let dir = fixture("multi_root");
+    let names = |target: &str| -> Vec<String> {
+        let (code, stdout, stderr) = run(&["implements", target, &dir]);
+        assert_eq!(code, Some(0), "{target}: {stderr}");
+        let mut out: Vec<String> = stdout
+            .lines()
+            .skip(1)
+            .filter_map(|l| l.split_whitespace().nth(2).map(str::to_string))
+            .collect();
+        out.sort();
+        out.dedup();
+        out
+    };
+    // The bare target covers both declarations, so its answer is the union
+    // of theirs — computed from the fixture: a.Base reaches C and D, b.Base
+    // reaches C, a.Base (through C) and D (through a.Base).
+    assert_eq!(names("ma.Base"), ["C", "D"]);
+    assert_eq!(names("mb.Base"), ["Base", "C", "D"]);
+    assert_eq!(names("Base"), ["Base", "C", "D"]);
+}
