@@ -10,6 +10,11 @@
 //! Only the input parsing differs per host (field names, tool-name
 //! normalization), which lives in the protocol shims (`claude_code.rs`,
 //! `gemini.rs`).
+//!
+//! Assembling the payload is also what makes this the module that owns the byte
+//! ceiling — [`MAX_MAP_BYTES`], the notice it reserves room for, and the
+//! [`MAP_BUDGET`] that leaves for a map. `decide` sizes maps against the budget;
+//! it does not need to know what the framing costs.
 
 use std::io::{self, Read, Write};
 
@@ -17,6 +22,21 @@ use serde::Serialize;
 
 use super::decide::{decide, DecideOpts};
 use super::event::{Channel, Decision, ToolCallEvent};
+
+/// Ceiling on what the hook delivers, in bytes, notice included.
+///
+/// The host refuses a read at roughly 25k tokens, so answering with a payload of
+/// the same order defeats the point. 64 KB is about 16k tokens: under the limit
+/// the refusal was about, and above every real map measured — Apache Calcite's
+/// `SqlFunctions.java`, 7771 hand-written lines and the largest map in that
+/// repository, fits once doc comments and attributes are shed. What does not fit
+/// is a minified bundle, whose size is declaration count rather than detail, and
+/// that is what `decide::cap_map` is for.
+///
+/// It lives here because this is where a payload is finally assembled, and it is
+/// what [`MAP_BUDGET`] is derived from: `decide` sizes a map against the budget,
+/// and the notice this module wraps it in is the difference between the two.
+pub(super) const MAX_MAP_BYTES: usize = 64 * 1024;
 
 /// Notice leading a [`Channel::Deny`] payload. The host renders the refusal as
 /// a failed tool call, so the first line says outright that nothing failed —
@@ -50,9 +70,10 @@ const SEPARATOR_BYTES: usize = 3;
 
 /// The most a notice plus its separators can add to a map in [`payload`].
 ///
-/// `decide` holds this back from its byte ceiling, so the ceiling bounds what is
-/// delivered rather than only the map inside it.
-pub(super) const MAX_NOTICE_BYTES: usize = widest(
+/// Held back from [`MAX_MAP_BYTES`] so that ceiling bounds what is delivered
+/// rather than only the map inside it. Private, because that subtraction is this
+/// module's business: what `decide` needs is the [`MAP_BUDGET`] it leaves.
+const MAX_NOTICE_BYTES: usize = widest(
     DENY_NOTICE.len(),
     REPLACE_NOTICE.len(),
     AUGMENT_NOTICE.len(),
@@ -66,6 +87,12 @@ const fn widest(a: usize, b: usize, c: usize) -> usize {
         c
     }
 }
+
+/// What a map may occupy once the channel notice is accounted for.
+///
+/// [`payload`] prepends a notice to every map, so a map sized against
+/// [`MAX_MAP_BYTES`] alone would be delivered above it.
+pub(super) const MAP_BUDGET: usize = MAX_MAP_BYTES - MAX_NOTICE_BYTES;
 
 #[derive(Debug, Serialize)]
 struct PassThroughResponse {
@@ -154,10 +181,10 @@ pub fn emit_substitute(channel: Channel, map: String) -> i32 {
 fn payload(notice: &str, map: &str) -> String {
     let out = format!("{}\n\n{}\n", notice, map);
     debug_assert!(
-        out.len() <= super::decide::MAX_MAP_BYTES,
+        out.len() <= MAX_MAP_BYTES,
         "delivered {} bytes against a {} byte ceiling",
         out.len(),
-        super::decide::MAX_MAP_BYTES
+        MAX_MAP_BYTES
     );
     out
 }
@@ -196,18 +223,18 @@ mod tests {
     /// A map that spends the whole budget lands exactly on the ceiling, whichever
     /// notice leads it.
     ///
-    /// [`MAX_NOTICE_BYTES`] is what `decide` holds back for this function, so a
-    /// separator it adds and the constant does not count is a byte over the
+    /// [`MAX_NOTICE_BYTES`] is what [`MAP_BUDGET`] holds back for this function,
+    /// so a separator it adds and the constant does not count is a byte over the
     /// ceiling on every full-budget payload. Equality pins it in both directions:
     /// short, and the ceiling breaks; wide, and the map is smaller than it needed
     /// to be.
     #[test]
     fn a_full_budget_map_lands_exactly_on_the_ceiling() {
-        let map = "x".repeat(super::super::decide::MAP_BUDGET);
+        let map = "x".repeat(MAP_BUDGET);
         for channel in ALL_CHANNELS {
             let notice = notice_of(channel);
             let framed = payload(notice, &map).len();
-            let slack = super::super::decide::MAX_MAP_BYTES - framed;
+            let slack = MAX_MAP_BYTES - framed;
             assert_eq!(
                 slack,
                 MAX_NOTICE_BYTES - (notice.len() + SEPARATOR_BYTES),

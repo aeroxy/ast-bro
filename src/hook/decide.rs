@@ -2,6 +2,9 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use super::event::{Channel, Decision, ToolCallEvent};
+// The ceiling and the room the channel notice takes out of it both belong to the
+// module that assembles a payload; what this one needs is the budget that leaves.
+use super::io::{MAP_BUDGET, MAX_MAP_BYTES};
 use crate::core::{MapUnit, MapUnitKind};
 
 #[derive(Debug, Clone)]
@@ -58,26 +61,6 @@ fn line_count_at_least(path: &Path, threshold: usize) -> std::io::Result<bool> {
     }
     Ok(false)
 }
-
-/// Ceiling on what the hook delivers, in bytes, notice included.
-///
-/// The host refuses a read at roughly 25k tokens, so answering with a payload of
-/// the same order defeats the point. 64 KB is about 16k tokens: under the limit
-/// the refusal was about, and above every real map measured — Apache Calcite's
-/// `SqlFunctions.java`, 7771 hand-written lines and the largest map in that
-/// repository, fits once doc comments and attributes are shed. What does not fit
-/// is a minified bundle, whose size is declaration count rather than detail, and
-/// that is what [`cap_map`] is for.
-///
-/// The ceiling is hard: [`MAP_BUDGET`] holds back room for the channel notice and
-/// the marker, both of which are built before anything is cut.
-pub(super) const MAX_MAP_BYTES: usize = 64 * 1024;
-
-/// What a map may occupy once the channel notice is accounted for.
-///
-/// `io::payload` prepends a notice to every map, so a map sized against
-/// [`MAX_MAP_BYTES`] alone would be delivered above it.
-pub(super) const MAP_BUDGET: usize = MAX_MAP_BYTES - super::io::MAX_NOTICE_BYTES;
 
 /// Detail the hook sheds, in order, to bring a map under [`MAP_BUDGET`].
 ///
