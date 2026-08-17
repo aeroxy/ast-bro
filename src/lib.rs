@@ -63,8 +63,14 @@ enum Commands {
     /// `show src/*.cs Widget` before we see it, which used to search only the
     /// first file and silently drop the symbol's other definitions.
     Show {
+        /// File, directory, or quoted glob to search.
         path: PathBuf,
+        /// Symbol to extract. Suffix matching: `TakeDamage`, or
+        /// `Player.TakeDamage` when the bare name is ambiguous.
         symbol: String,
+        /// Further targets and symbols. Which is which is decided by asking
+        /// the filesystem, not by position, so an unquoted glob the shell
+        /// already expanded still names targets.
         #[arg(num_args = 0..)]
         others: Vec<String>,
         /// Cap on rendered bodies when more than one file is searched.
@@ -105,6 +111,7 @@ enum Commands {
     Digest(MapArgs),
     /// Find subclasses / implementations
     Implements {
+        /// Base class, trait, or interface whose implementors to find.
         target: String,
         /// Files or directories to search. Required — `implements` walks
         /// only what it is given, and an empty walk would answer "no
@@ -114,6 +121,8 @@ enum Commands {
         #[arg(required = true, num_args = 1..)]
         paths: Vec<PathBuf>,
 
+        /// Direct implementors only. Transitive ones are included by default,
+        /// tagged `[via Parent]`.
         #[arg(short, long)]
         direct: bool,
         /// Emit output as JSON instead of text
@@ -127,20 +136,32 @@ enum Commands {
     Prompt,
     /// Install ast-bro into a coding-agent CLI
     Install {
+        /// Which agent CLI to install into. `status` lists the names.
         #[arg(long, conflicts_with = "all")]
         target: Option<String>,
+        /// Install into every agent CLI detected on this machine.
         #[arg(long, conflicts_with = "target")]
         all: bool,
+        /// Install into the current directory instead of the user profile.
         #[arg(long)]
         local: bool,
+        /// Install into the user profile. The default; pass it to say so.
         #[arg(long, conflicts_with = "local")]
         global: bool,
+        /// Substitute a map for every Read the hook can parse, whatever the
+        /// file's length, instead of only past --min-lines.
         #[arg(long)]
         always: bool,
+        /// Shortest file the installed hook rewrites into a map. Files below
+        /// this are read as-is.
         #[arg(long, default_value_t = crate::defaults::HOOK_MIN_LINES)]
         min_lines: usize,
+        /// Report what would change without writing anything.
         #[arg(long)]
         dry_run: bool,
+        /// Overwrite hand-edited content: either inside the ast-bro block or
+        /// ast-bro content written outside it. Without this the file is left
+        /// alone and the install fails.
         #[arg(long)]
         force: bool,
         /// Install ast-bro as an MCP server entry instead of the agent prompt.
@@ -154,30 +175,42 @@ enum Commands {
     },
     /// Remove ast-bro from a coding-agent CLI
     Uninstall {
+        /// Which agent CLI to remove ast-bro from. `status` lists the names.
         #[arg(long, conflicts_with = "all")]
         target: Option<String>,
+        /// Remove from every agent CLI detected on this machine.
         #[arg(long, conflicts_with = "target")]
         all: bool,
+        /// Act on the current directory instead of the user profile.
         #[arg(long)]
         local: bool,
+        /// Act on the user profile. The default; pass it to say so.
         #[arg(long, conflicts_with = "local")]
         global: bool,
+        /// Report what would change without writing anything.
         #[arg(long)]
         dry_run: bool,
     },
     /// Report what's installed where
     Status {
+        /// Report on the current directory instead of the user profile.
         #[arg(long)]
         local: bool,
+        /// Report on the user profile. The default; pass it to say so.
         #[arg(long, conflicts_with = "local")]
         global: bool,
     },
     /// Internal: read a tool-call event from stdin and respond
     Hook {
+        /// Event dialect on stdin, which decides how the response is framed.
         #[arg(long)]
         protocol: String,
+        /// Shortest file to rewrite into a map. Files below this are read
+        /// as-is.
         #[arg(long, default_value_t = crate::defaults::HOOK_MIN_LINES)]
         min_lines: usize,
+        /// Substitute a map for every Read this can parse, whatever the
+        /// file's length, instead of only past --min-lines.
         #[arg(long)]
         always: bool,
     },
@@ -228,10 +261,13 @@ enum Commands {
         /// 1-indexed line number when using `--file`
         #[arg(long, requires = "file")]
         line: Option<u32>,
+        /// Number of results to return
         #[arg(short = 'k', long = "top-k", default_value_t = crate::defaults::TOP_K)]
         top_k: usize,
+        /// Emit output as JSON instead of text
         #[arg(long)]
         json: bool,
+        /// With --json: emit compact (single-line) JSON
         #[arg(long)]
         compact: bool,
     },
@@ -264,7 +300,9 @@ enum Commands {
     },
     /// Forward import-graph traversal: what does this file import (transitively)?
     Deps {
+        /// File whose imports to walk.
         file: PathBuf,
+        /// How many import hops to follow.
         #[arg(long, default_value_t = crate::defaults::FILE_DEPTH)]
         depth: usize,
         /// Hide unresolved external imports from the footer.
@@ -274,14 +312,18 @@ enum Commands {
         /// Force a fresh dep-graph build.
         #[arg(long)]
         rebuild: bool,
+        /// Emit output as JSON instead of text
         #[arg(long)]
         json: bool,
+        /// With --json: emit compact (single-line) JSON
         #[arg(long)]
         compact: bool,
     },
     /// Reverse import-graph: who imports this file (transitively)?
     ReverseDeps {
+        /// File whose importers to find.
         file: PathBuf,
+        /// How many import hops to follow back.
         #[arg(long, default_value_t = crate::defaults::FILE_DEPTH)]
         depth: usize,
         /// Cap how many importers are *displayed*. The walk is unbounded so
@@ -294,30 +336,41 @@ enum Commands {
         /// Exclude importers from test files (same path heuristic as --tests).
         #[arg(long, conflicts_with = "tests")]
         exclude_tests: bool,
+        /// Force a fresh dep-graph build.
         #[arg(long)]
         rebuild: bool,
+        /// Emit output as JSON instead of text
         #[arg(long)]
         json: bool,
+        /// With --json: emit compact (single-line) JSON
         #[arg(long)]
         compact: bool,
     },
     /// Find import cycles via Tarjan SCC.
     Cycles {
+        /// Repository root to scan.
         #[arg(default_value = crate::defaults::ROOT)]
         path: PathBuf,
+        /// Smallest cycle to report, in files. The default skips
+        /// self-imports.
         #[arg(long, default_value_t = crate::defaults::MIN_SIZE)]
         min_size: usize,
+        /// Force a fresh dep-graph build.
         #[arg(long)]
         rebuild: bool,
+        /// Emit output as JSON instead of text
         #[arg(long)]
         json: bool,
+        /// With --json: emit compact (single-line) JSON
         #[arg(long)]
         compact: bool,
     },
     /// Emit the dep graph (text or JSON).
     Graph {
+        /// Repository root to scan.
         #[arg(default_value = crate::defaults::ROOT)]
         path: PathBuf,
+        /// Emit output as JSON instead of text
         #[arg(long)]
         json: bool,
         /// Hide unresolved external imports from the graph.
@@ -327,8 +380,10 @@ enum Commands {
         /// (Deprecated — unresolved externals are shown by default now.)
         #[arg(long, hide = true)]
         include_external: bool,
+        /// Force a fresh dep-graph build.
         #[arg(long)]
         rebuild: bool,
+        /// With --json: emit compact (single-line) JSON
         #[arg(long)]
         compact: bool,
     },
@@ -349,10 +404,13 @@ enum Commands {
         /// Token budget. Rough estimate: 1 token ≈ 4 bytes.
         #[arg(long, default_value_t = crate::defaults::BUDGET)]
         budget: usize,
+        /// Force a fresh call-graph build.
         #[arg(long)]
         rebuild: bool,
+        /// Emit output as JSON instead of text
         #[arg(long)]
         json: bool,
+        /// With --json: emit compact (single-line) JSON
         #[arg(long)]
         compact: bool,
     },
@@ -399,8 +457,10 @@ enum Commands {
         /// Force a fresh call-graph build.
         #[arg(long)]
         rebuild: bool,
+        /// Emit output as JSON instead of text
         #[arg(long)]
         json: bool,
+        /// With --json: emit compact (single-line) JSON
         #[arg(long)]
         compact: bool,
     },
@@ -409,14 +469,19 @@ enum Commands {
     /// Same target-spec rules as `callers`: positional `<TARGET>` (with
     /// optional `<FILE>:<NAME>` scoping) or `--file --symbol`.
     Callees {
+        /// Symbol to look up. Optional when `--file` and `--symbol` are passed.
         #[arg(required_unless_present_all = ["file", "symbol"], conflicts_with_all = ["file", "symbol"])]
         target: Option<String>,
+        /// Repository root.
         #[arg(default_value = crate::defaults::ROOT)]
         path: PathBuf,
+        /// Alternative to the `<FILE>:<NAME>` positional form.
         #[arg(long, requires = "symbol")]
         file: Option<String>,
+        /// Symbol name when using `--file`.
         #[arg(long, requires = "file")]
         symbol: Option<String>,
+        /// Max BFS depth (1 = direct callees only).
         #[arg(long, default_value_t = crate::defaults::CALL_DEPTH)]
         depth: usize,
         /// Cap how many callees are *displayed* (the header always reports
@@ -430,10 +495,13 @@ enum Commands {
         /// (Deprecated — unresolved/external callees are shown by default now.)
         #[arg(long, hide = true)]
         external: bool,
+        /// Force a fresh call-graph build.
         #[arg(long)]
         rebuild: bool,
+        /// Emit output as JSON instead of text
         #[arg(long)]
         json: bool,
+        /// With --json: emit compact (single-line) JSON
         #[arg(long)]
         compact: bool,
     },
@@ -459,8 +527,10 @@ enum Commands {
         /// Force a fresh call-graph build.
         #[arg(long)]
         rebuild: bool,
+        /// Emit output as JSON instead of text
         #[arg(long)]
         json: bool,
+        /// With --json: emit compact (single-line) JSON
         #[arg(long)]
         compact: bool,
     },
@@ -485,7 +555,7 @@ enum Commands {
         /// walked in full so their totals are exact.
         #[arg(long, default_value_t = crate::defaults::LIMIT)]
         limit: usize,
-        /// Section to show: `deps`, `dependents`, `tests`, or `all` (default).
+        /// Section to show: `deps`, `dependents`, `tests`, or `all`.
         #[arg(long, default_value = crate::defaults::IMPACT_MODE)]
         mode: String,
         /// Hide ambiguous call-edge matches from impact output.
@@ -498,10 +568,13 @@ enum Commands {
         /// Exclude test files from the output (same path heuristic as --tests).
         #[arg(long, conflicts_with = "tests")]
         exclude_tests: bool,
+        /// Force a fresh call-graph build.
         #[arg(long)]
         rebuild: bool,
+        /// Emit output as JSON instead of text
         #[arg(long)]
         json: bool,
+        /// With --json: emit compact (single-line) JSON
         #[arg(long)]
         compact: bool,
     },
@@ -583,32 +656,42 @@ struct MapArgs {
     #[arg(long, value_enum)]
     preset: Option<MapPreset>,
 
+    /// Hide private declarations.
     #[arg(long)]
     no_private: bool,
+    /// Hide fields, properties, events, and indexers.
     #[arg(long)]
     no_fields: bool,
+    /// Drop doc comments — in JSON the `docs`, `docs_inside`, and
+    /// `doc_start_byte` keys, together routinely a third of the payload.
     #[arg(long)]
     no_docs: bool,
+    /// Hide attributes / decorators.
     #[arg(long)]
     no_attrs: bool,
+    /// Hide line ranges — in JSON the byte offsets too: `start_line`,
+    /// `end_line`, `start_byte`, `end_byte`, `doc_start_byte`.
     #[arg(long)]
     no_lines: bool,
 
     /// Include private members (overrides a preset that hides them).
     #[arg(long, conflicts_with = "no_private")]
     include_private: bool,
-    /// Include fields (overrides a preset that hides them).
+    /// Include fields, properties, events, and indexers (overrides a preset
+    /// that hides them).
     #[arg(long, conflicts_with = "no_fields")]
     include_fields: bool,
 
-    /// Cap members shown per type, at any detail level.
+    /// Cap members shown per type, at any detail level. A capped file says so:
+    /// `... +N more` in text, `truncated` and `dropped_members` in JSON.
     #[arg(long)]
     max_members: Option<usize>,
     /// Only walk files matching this glob (e.g. '*.java').
     #[arg(long)]
     glob: Option<String>,
 
-    /// Emit output as JSON instead of text
+    /// Emit output as JSON instead of text. A payload the projection flags
+    /// took keys out of carries a `projected` object naming which ones.
     #[arg(long)]
     json: bool,
     /// With --json: emit compact (single-line) JSON instead of pretty-printed
@@ -2306,5 +2389,78 @@ mod tests {
         assert_eq!(preset_max_members(Some(8), true), Some(8));
         assert_eq!(preset_max_members(Some(8), false), Some(8));
         assert_eq!(preset_max_members(None, false), None);
+    }
+
+    use clap::CommandFactory;
+
+    /// Every argument of every subcommand carries help text.
+    ///
+    /// A clap argument derives its description from the doc comment above the
+    /// field, and a field without one is not a compile error: it renders in
+    /// `--help` as a flag name followed by an empty line. That is invisible in
+    /// review and reads to a user as an option with nothing to say, which is
+    /// how all five `--no-*` projection flags shipped until #39.
+    ///
+    /// A failure names the subcommand path and the argument. Fix it by writing
+    /// a doc comment above the field, not by listing the argument here.
+    #[test]
+    fn every_argument_documents_itself() {
+        let mut undocumented = Vec::new();
+        collect_undocumented(&Cli::command(), &mut Vec::new(), &mut undocumented);
+        assert!(
+            undocumented.is_empty(),
+            "arguments with no help text (add a doc comment above the field): {undocumented:#?}"
+        );
+    }
+
+    /// Every subcommand carries an `about` line, for the same reason.
+    ///
+    /// Recurses, so a nested subcommand is held to the rule its parent is.
+    /// The tree is flat today, which is exactly when a check like this stops
+    /// being enforced and starts being assumed.
+    #[test]
+    fn every_subcommand_documents_itself() {
+        let mut bare = Vec::new();
+        collect_bare_subcommands(&Cli::command(), &mut Vec::new(), &mut bare);
+        assert!(
+            bare.is_empty(),
+            "subcommands with no about line (add a doc comment above the variant): {bare:#?}"
+        );
+    }
+
+    /// Depth-first over the subcommand tree, recording `<path> <arg>` for each
+    /// argument whose help is missing or blank. `path` is the ancestor chain,
+    /// so a nested subcommand's failure says where to look.
+    fn collect_undocumented(cmd: &clap::Command, path: &mut Vec<String>, out: &mut Vec<String>) {
+        path.push(cmd.get_name().to_string());
+        for arg in cmd.get_arguments() {
+            if !has_text(arg.get_help()) && !has_text(arg.get_long_help()) {
+                out.push(format!("{} {}", path.join(" "), arg.get_id()));
+            }
+        }
+        for sub in cmd.get_subcommands() {
+            collect_undocumented(sub, path, out);
+        }
+        path.pop();
+    }
+
+    /// Depth-first over the subcommand tree, recording `<path>` for each
+    /// subcommand with no about line. The root is skipped: its description
+    /// comes from `#[command(about = ...)]`, not from a variant.
+    fn collect_bare_subcommands(cmd: &clap::Command, path: &mut Vec<String>, out: &mut Vec<String>) {
+        path.push(cmd.get_name().to_string());
+        for sub in cmd.get_subcommands() {
+            if !has_text(sub.get_about()) && !has_text(sub.get_long_about()) {
+                out.push(format!("{} {}", path.join(" "), sub.get_name()));
+            }
+            collect_bare_subcommands(sub, path, out);
+        }
+        path.pop();
+    }
+
+    /// Whitespace-only help is the same defect as none: clap prints the line
+    /// and the reader learns nothing.
+    fn has_text(help: Option<&clap::builder::StyledStr>) -> bool {
+        help.is_some_and(|h| !h.to_string().trim().is_empty())
     }
 }

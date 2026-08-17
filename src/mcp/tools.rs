@@ -26,13 +26,13 @@ pub fn list() -> Value {
                         },
                         "detail":     { "type": "string", "enum": ["names", "signatures", "full"], "description": "Detail level: `full` (signatures + docs, default), `signatures` (no docs), `names` (bare member names — the digest renderer)." },
                         "no_private": { "type": "boolean", "description": "Hide private declarations." },
-                        "no_fields":  { "type": "boolean", "description": "Hide field declarations." },
-                        "no_docs":    { "type": "boolean", "description": "Hide doc comments." },
+                        "no_fields":  { "type": "boolean", "description": "Hide fields, properties, events, and indexers." },
+                        "no_docs":    { "type": "boolean", "description": "Drop doc comments — in JSON the `docs`, `docs_inside`, and `doc_start_byte` keys, together routinely a third of the payload." },
                         "no_attrs":   { "type": "boolean", "description": "Hide attributes / decorators." },
-                        "no_lines":   { "type": "boolean", "description": "Hide line-range suffixes." },
-                        "max_members": { "type": "integer", "minimum": 0, "description": "Cap members shown per type; the output reports what was cut." },
+                        "no_lines":   { "type": "boolean", "description": "Hide line ranges — in JSON the byte offsets too: `start_line`, `end_line`, `start_byte`, `end_byte`, `doc_start_byte`." },
+                        "max_members": { "type": "integer", "minimum": 0, "description": "Cap members shown per type; the output reports what was cut (`... +N more` in text, `truncated` and `dropped_members` under `json`)." },
                         "glob":       { "type": "string",  "description": "Glob filter applied during directory walk." },
-                        "json":       { "type": "boolean", "description": "Return JSON (schema `ast-bro.map.v1`) instead of text." }
+                        "json":       { "type": "boolean", "description": "Return JSON (schema `ast-bro.map.v1`) instead of text. A payload the projection flags took keys out of carries a `projected` object naming which ones." }
                     },
                     "required": ["paths"]
                 }
@@ -49,11 +49,11 @@ pub fn list() -> Value {
                             "description": "Files or directories to digest.",
                             "minItems": 1
                         },
-                        "include_private": { "type": "boolean" },
-                        "include_fields":  { "type": "boolean" },
-                        "max_members":     { "type": "integer", "minimum": 0, "description": format!("Cap members per type (default {}); the output reports what was cut.", crate::defaults::MAX_MEMBERS) },
+                        "include_private": { "type": "boolean", "description": "Include private declarations, overriding the digest preset." },
+                        "include_fields":  { "type": "boolean", "description": "Include fields, properties, events, and indexers, overriding the digest preset." },
+                        "max_members":     { "type": "integer", "minimum": 0, "description": format!("Cap members per type (default {}); the output reports what was cut (`... +N more` in text, `truncated` and `dropped_members` under `json`).", crate::defaults::MAX_MEMBERS) },
                         "glob":            { "type": "string", "description": "Glob filter applied during directory walk." },
-                        "json":            { "type": "boolean" }
+                        "json":            { "type": "boolean", "description": "Return JSON (schema `ast-bro.map.v1`) instead of text. The digest preset drops doc comments from the payload on the caller's behalf, so it carries a `projected` object naming what is gone." }
                     },
                     "required": ["paths"]
                 }
@@ -72,7 +72,7 @@ pub fn list() -> Value {
                             "minItems": 1
                         },
                         "limit":   { "type": "integer", "minimum": 0, "description": format!("Cap on rendered bodies when the target is a directory or glob (default {}). The reported total is always exact.", crate::defaults::SHOW_LIMIT) },
-                        "json":    { "type": "boolean" }
+                        "json":    { "type": "boolean", "description": "Return JSON (schema `ast-bro.show.v2`) instead of text." }
                     },
                     "required": ["path", "symbols"]
                 }
@@ -91,7 +91,7 @@ pub fn list() -> Value {
                             "minItems": 1
                         },
                         "direct": { "type": "boolean", "description": "Direct subtypes only (skip transitive)." },
-                        "json":   { "type": "boolean" }
+                        "json":   { "type": "boolean", "description": "Return JSON (schema `ast-bro.implements.v1`) instead of text." }
                     },
                     "required": ["target", "paths"]
                 }
@@ -108,7 +108,7 @@ pub fn list() -> Value {
                         "max_depth":       { "type": "integer", "description": format!("Recursion guard for re-export chains (default {}).", crate::defaults::SURFACE_MAX_DEPTH) },
                         "include_private": { "type": "boolean", "description": "Include private items — only meaningful for the fallback resolver." },
                         "lang":            { "type": "string",  "description": "Force a resolver: `rust`, `python`, or `fallback`." },
-                        "json":            { "type": "boolean" }
+                        "json":            { "type": "boolean", "description": "Return JSON (schema `ast-bro.surface.v1`) instead of text." }
                     }
                 }
             },
@@ -122,7 +122,7 @@ pub fn list() -> Value {
                         "depth":   { "type": "integer", "description": format!("Max BFS depth (default {}).", crate::defaults::FILE_DEPTH), "minimum": 1 },
                         "hide_external": { "type": "boolean", "description": "Drop unresolved imports. Default: false (shown with [external] tag)." },
                         "rebuild": { "type": "boolean", "description": "Drop the cached graph and rebuild." },
-                        "json":    { "type": "boolean" }
+                        "json":    { "type": "boolean", "description": "Return JSON (schema `ast-bro.deps.v1`) instead of text." }
                     },
                     "required": ["file"]
                 }
@@ -136,8 +136,8 @@ pub fn list() -> Value {
                         "file":    { "type": "string",  "description": "Path to the file whose importers to find." },
                         "depth":   { "type": "integer", "description": format!("Max BFS depth (default {}).", crate::defaults::FILE_DEPTH), "minimum": 1 },
                         "limit":   { "type": "integer", "description": format!("Cap result count (default {}).", crate::defaults::LIMIT), "minimum": 1 },
-                        "rebuild": { "type": "boolean" },
-                        "json":    { "type": "boolean" }
+                        "rebuild": { "type": "boolean", "description": "Drop the cached graph and rebuild." },
+                        "json":    { "type": "boolean", "description": "Return JSON (schema `ast-bro.reverse-deps.v1`) instead of text." }
                     },
                     "required": ["file"]
                 }
@@ -150,8 +150,8 @@ pub fn list() -> Value {
                     "properties": {
                         "path":     { "type": "string",  "description": format!("Repo root (default \"{}\").", crate::defaults::ROOT) },
                         "min_size": { "type": "integer", "description": format!("Drop SCCs smaller than this (default {}).", crate::defaults::MIN_SIZE), "minimum": 1 },
-                        "rebuild":  { "type": "boolean" },
-                        "json":     { "type": "boolean" }
+                        "rebuild":  { "type": "boolean", "description": "Drop the cached graph and rebuild." },
+                        "json":     { "type": "boolean", "description": "Return JSON (schema `ast-bro.cycles.v1`) instead of text." }
                     }
                 }
             },
@@ -164,7 +164,7 @@ pub fn list() -> Value {
                         "path":             { "type": "string",  "description": format!("Repo root (default \"{}\").", crate::defaults::ROOT) },
                         "json":             { "type": "boolean", "description": "Return JSON (schema `ast-bro.graph.v1`) instead of text." },
                         "hide_external":    { "type": "boolean", "description": "Drop unresolved imports. Default: false (shown with [external] tag)." },
-                        "rebuild":          { "type": "boolean" }
+                        "rebuild":          { "type": "boolean", "description": "Drop the cached graph and rebuild." }
                     }
                 }
             },
@@ -194,7 +194,7 @@ pub fn list() -> Value {
                         "line":  { "type": "integer", "description": "1-indexed line within `path`.", "minimum": 1 },
                         "root":  { "type": "string",  "description": format!("Repo root containing the index (default \"{}\").", crate::defaults::ROOT) },
                         "top_k": { "type": "integer", "description": format!("Max results (default {}).", crate::defaults::TOP_K), "minimum": 1 },
-                        "json":  { "type": "boolean" }
+                        "json":  { "type": "boolean", "description": "Return JSON (schema `ast-bro.related.v1`) instead of text." }
                     },
                     "required": ["path", "line"]
                 }
@@ -208,7 +208,7 @@ pub fn list() -> Value {
                         "path":    { "type": "string",  "description": format!("Repo root (default \"{}\").", crate::defaults::ROOT) },
                         "rebuild": { "type": "boolean", "description": "Drop existing cache and rebuild." },
                         "stats":   { "type": "boolean", "description": "Print index stats and return." },
-                        "json":    { "type": "boolean" }
+                        "json":    { "type": "boolean", "description": "Return JSON (schema `ast-bro.index-stats.v1`) instead of text." }
                     }
                 }
             },
@@ -223,8 +223,7 @@ pub fn list() -> Value {
                         "depth":             { "type": "integer", "description": format!("Max BFS depth (default {}).", crate::defaults::CALL_DEPTH), "minimum": 1 },
                         "limit":             { "type": "integer", "description": format!("Cap result count (default {}).", crate::defaults::LIMIT), "minimum": 1 },
                         "hide_ambiguous":    { "type": "boolean", "description": "Drop callers with multiple candidates. Default: false (shown with Ambiguous tag)." },
-                        "rebuild":           { "type": "boolean" },
-                        "json":              { "type": "boolean" }
+                        "json":              { "type": "boolean", "description": "Return JSON (schema `ast-bro.callers.v1`) instead of text." }
                     },
                     "required": ["target"]
                 }
@@ -240,8 +239,7 @@ pub fn list() -> Value {
                         "depth":          { "type": "integer", "description": format!("Max BFS depth (default {}).", crate::defaults::CALL_DEPTH), "minimum": 1 },
                         "limit":          { "type": "integer", "description": format!("Cap result count (default {}). The reported total stays exact.", crate::defaults::LIMIT), "minimum": 1 },
                         "hide_external":  { "type": "boolean", "description": "Drop unresolved/external callees. Default: false (shown with [unresolved]/[external] tags)." },
-                        "rebuild":        { "type": "boolean" },
-                        "json":           { "type": "boolean" }
+                        "json":           { "type": "boolean", "description": "Return JSON (schema `ast-bro.callees.v1`) instead of text." }
                     },
                     "required": ["target"]
                 }
@@ -256,8 +254,7 @@ pub fn list() -> Value {
                         "to":      { "type": "string",  "description": "Destination symbol — where the path should reach." },
                         "path":    { "type": "string",  "description": format!("Repo root (default \"{}\").", crate::defaults::ROOT) },
                         "depth":   { "type": "integer", "description": format!("Max path length in hops (default {}).", crate::defaults::TRACE_DEPTH), "minimum": 1 },
-                        "rebuild": { "type": "boolean" },
-                        "json":    { "type": "boolean" }
+                        "json":    { "type": "boolean", "description": "Return JSON (schema `ast-bro.trace.v1`) instead of text." }
                     },
                     "required": ["from", "to"]
                 }
@@ -276,7 +273,7 @@ pub fn list() -> Value {
                         "hide_ambiguous":    { "type": "boolean", "description": "Drop ambiguous call-edge matches. Default: false (shown with Ambiguous tag)." },
                         "tests":             { "type": "boolean", "description": "Show only test files." },
                         "exclude_tests":     { "type": "boolean", "description": "Exclude test files from output." },
-                        "json":              { "type": "boolean" }
+                        "json":              { "type": "boolean", "description": "Return JSON (schema `ast-bro.impact.v1`) instead of text." }
                     },
                     "required": ["target"]
                 }
@@ -290,7 +287,7 @@ pub fn list() -> Value {
                         "target": { "type": "string",  "description": "Symbol to build context for (same form as callers)." },
                         "path":   { "type": "string",  "description": format!("Repo root (default \"{}\").", crate::defaults::ROOT) },
                         "budget": { "type": "integer", "description": format!("Token budget (default {}). ~4 bytes per token rough.", crate::defaults::BUDGET), "minimum": 100 },
-                        "json":   { "type": "boolean" }
+                        "json":   { "type": "boolean", "description": "Return JSON (schema `ast-bro.context.v1`) instead of text." }
                     },
                     "required": ["target"]
                 }
@@ -1493,5 +1490,62 @@ fn run_squeeze(args: Value) -> CallResult {
         CallResult::Text(crate::squeeze::render::render_json(&report, true))
     } else {
         CallResult::Text(crate::squeeze::render::render_text(&report))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// Every tool and every input property in `tools/list` carries a
+    /// description.
+    ///
+    /// `tools.rs` is a hand-written JSON literal, so nothing forces a
+    /// property to say what it does; 21 of them shipped blank until an agent
+    /// would have been the one to find out. The CLI has the same rule and its
+    /// own test, but that one walks `Cli::command()` and can never reach this
+    /// file — the two surfaces are documented separately and so are guarded
+    /// separately.
+    ///
+    /// A failure names `<tool>.<property>`. Fix it by describing the property
+    /// in the schema, not by listing it here.
+    #[test]
+    fn every_tool_and_property_documents_itself() {
+        let catalogue = super::list();
+        let tools = catalogue["tools"]
+            .as_array()
+            .expect("tools/list returns a tools array");
+        assert!(!tools.is_empty(), "the catalogue must not be empty");
+
+        let mut bare = Vec::new();
+        for tool in tools {
+            let name = tool["name"].as_str().expect("every tool has a name");
+            if !has_text(&tool["description"]) {
+                bare.push(name.to_string());
+            }
+            // Demanded rather than probed: `as_object()` answers `None` for a
+            // key that is absent *and* for one that is misspelled, so treating
+            // `None` as "this tool takes no arguments" would let a typo in
+            // `inputSchema` drop a whole tool's properties past the check that
+            // exists to police them. Every tool here takes arguments; one that
+            // genuinely takes none says so with an empty object.
+            let props = tool["inputSchema"]["properties"]
+                .as_object()
+                .unwrap_or_else(|| panic!("tool `{name}` has no inputSchema.properties object"));
+            for (prop, spec) in props {
+                if !has_text(&spec["description"]) {
+                    bare.push(format!("{name}.{prop}"));
+                }
+            }
+        }
+        assert!(
+            bare.is_empty(),
+            "tools/list entries with no description (describe them in the schema): {bare:#?}"
+        );
+    }
+
+    /// Whitespace-only is the same defect as absent: the client renders the
+    /// key and the reader learns nothing. A non-string is also not a
+    /// description, so it fails here rather than passing as "present".
+    fn has_text(v: &serde_json::Value) -> bool {
+        v.as_str().is_some_and(|s| !s.trim().is_empty())
     }
 }

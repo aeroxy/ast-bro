@@ -359,3 +359,57 @@ fn mcp_impact_depth_cutoff_reports_the_frontier() {
     let (_, _, text) = result_of(&resp);
     assert!(text.contains("raise --depth"), "{text}");
 }
+
+/// `no_fields` drops the same kinds over MCP as it does on the CLI.
+///
+/// The CLI-side regression test covers the text and JSON renderers; this is
+/// the third route to the same predicate, and the one with its own option
+/// plumbing in `mcp/tools.rs`. A `MapArgs` / `DigestArgs` field wired to the
+/// wrong flag would leave both other renderers correct and this one silently
+/// answering the old way.
+#[test]
+fn mcp_no_fields_drops_properties_and_events_too() {
+    let tmp = tempfile::tempdir().unwrap();
+    let f = tmp.path().join("W.cs");
+    std::fs::write(
+        &f,
+        "public class W {\n    public int Count;\n    public string Name { get; set; }\n    public event EventHandler Changed;\n    public void Go() {}\n}\n",
+    )
+    .unwrap();
+    let path = f.to_str().unwrap();
+
+    for (tool, args) in [
+        ("map", serde_json::json!({"paths": [path], "no_fields": true})),
+        ("digest", serde_json::json!({"paths": [path]})),
+    ] {
+        let (_, is_error, text) = {
+            let resp = call_tool(tmp.path(), tool, args);
+            let r = result_of(&resp);
+            (r.0.clone(), r.1, r.2.to_string())
+        };
+        assert!(!is_error, "{tool} rejected the call: {text}");
+        for hidden in ["Count", "Name", "Changed"] {
+            assert!(
+                !text.contains(hidden),
+                "{tool} over MCP still shows the field-like member `{hidden}`:\n{text}"
+            );
+        }
+        assert!(text.contains("Go"), "{tool} dropped the method too:\n{text}");
+    }
+
+    // And the opt-in restores them, so this is a projection rather than a
+    // parse gap on the MCP path.
+    let resp = call_tool(
+        tmp.path(),
+        "digest",
+        serde_json::json!({"paths": [path], "include_fields": true}),
+    );
+    let (_, is_error, text) = result_of(&resp);
+    assert!(!is_error, "digest --include-fields rejected: {text}");
+    for back in ["Count", "Name", "Changed"] {
+        assert!(
+            text.contains(back),
+            "include_fields must restore `{back}` over MCP:\n{text}"
+        );
+    }
+}

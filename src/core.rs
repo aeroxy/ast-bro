@@ -1241,10 +1241,7 @@ fn _flatten_free_functions<'a>(
         } else if matches!(d.kind, Class | Struct | Interface | Record | Enum) {
             continue;
         } else {
-            if d.kind == Field && !opts.include_fields {
-                continue;
-            }
-            if d.visibility == "private" && !opts.include_private {
+            if !_member_visible(d, opts.include_fields, opts.include_private) {
                 continue;
             }
             out.push(d);
@@ -1254,7 +1251,6 @@ fn _flatten_free_functions<'a>(
 }
 
 fn _digest_members<'a>(type_decl: &'a Declaration, opts: &DigestOptions) -> Vec<&'a Declaration> {
-    use DeclarationKind::*;
     let mut members = Vec::new();
     for c in &type_decl.children {
         // Nested types and enum variants via the shared predicate: neither
@@ -1263,10 +1259,7 @@ fn _digest_members<'a>(type_decl: &'a Declaration, opts: &DigestOptions) -> Vec<
         if !_counts_toward_member_cap(&c.kind) {
             continue;
         }
-        if c.kind == Field && !opts.include_fields {
-            continue;
-        }
-        if c.visibility == "private" && !opts.include_private {
+        if !_member_visible(c, opts.include_fields, opts.include_private) {
             continue;
         }
         members.push(c);
@@ -1608,16 +1601,25 @@ fn _filter_one(d: &Declaration, opts: &MapOptions, dropped: &mut usize) -> Decla
     clone
 }
 
-/// Whether a declaration survives the MapOptions projection — the one
-/// predicate shared by the text renderer (both its early-return and its
-/// member-cap counting) and the JSON filter, so the two cannot drift.
-fn _map_eligible(d: &Declaration, opts: &MapOptions) -> bool {
+/// Whether a member survives the visibility projection.
+///
+/// The single place that decides what `--no-fields` and `--no-private` mean.
+/// `MapOptions` and `DigestOptions` are separate structs carrying the same two
+/// booleans, and each renderer used to re-derive the rule from them: the
+/// digest path tested `kind == Field` alone while this one tested all four
+/// field-like kinds, so `map --detail names --no-fields` kept a C# property
+/// that `map --detail full --no-fields` dropped. Taking both flags as plain
+/// arguments is what lets the two option types share one answer.
+fn _member_visible(d: &Declaration, include_fields: bool, include_private: bool) -> bool {
     use DeclarationKind::*;
-    let is_field = matches!(d.kind, Field | Property | Event | Indexer);
-    if is_field && !opts.include_fields {
+    // A property, an event, and an indexer are fields as far as this
+    // projection is concerned: each is state on the type rather than
+    // behaviour, which is what a caller passing `--no-fields` is asking to
+    // drop. `Indexer` is here for the languages whose adapters emit it.
+    if matches!(d.kind, Field | Property | Event | Indexer) && !include_fields {
         return false;
     }
-    if d.visibility == "private" && !opts.include_private {
+    if d.visibility == "private" && !include_private {
         return false;
     }
     // Markdown headings and fenced blocks are the *structure* of a
@@ -1626,6 +1628,13 @@ fn _map_eligible(d: &Declaration, opts: &MapOptions) -> bool {
     // must not delete the declarations themselves; the text renderer
     // never did.
     true
+}
+
+/// Whether a declaration survives the MapOptions projection — the one
+/// predicate shared by the text renderer (both its early-return and its
+/// member-cap counting) and the JSON filter, so the two cannot drift.
+fn _map_eligible(d: &Declaration, opts: &MapOptions) -> bool {
+    _member_visible(d, opts.include_fields, opts.include_private)
 }
 
 #[derive(Serialize)]
