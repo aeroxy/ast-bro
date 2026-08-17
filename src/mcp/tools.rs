@@ -535,6 +535,128 @@ fn with_missing_paths(json: String, missing: &[String]) -> String {
     }
 }
 
+/// A resolved tool call, reduced to what the suggested call has to carry.
+struct DigestHintCall<'a> {
+    /// The paths as the caller sent them, including any that did not
+    /// resolve — dropping one would return an answer without the
+    /// `missing_paths` qualification the original carried.
+    requested_paths: &'a [PathBuf],
+    /// How many files the walk actually parsed, which is what decides
+    /// whether this was a multi-file answer at all.
+    files_inspected: usize,
+    glob: Option<&'a str>,
+    /// The cap in force, not the tool's default.
+    max_members: Option<usize>,
+    json: bool,
+    no_attrs: bool,
+    no_lines: bool,
+    /// Whether the call already renders the digest answer.
+    already_digest: bool,
+}
+
+/// Message pointing an oversized directory answer at the cheaper tool call,
+/// or `None` when none is due (issue #35).
+///
+/// The CLI puts this on stderr and suggests a shell command. An MCP client
+/// has neither, so the suggestion names the tool call that shrinks the
+/// answer and the response carries it: a leading `# hint:` line on text, a
+/// `hint` field on JSON, the shape `missing_paths` already established. The
+/// message is returned bare — the `# hint:` marker is a text-mode
+/// convention and would be noise inside a JSON field.
+///
+/// The suggested arguments are spelled out as the JSON object to send. It
+/// names the `map` tool rather than `digest` for the same reason the CLI
+/// spells out `map --preset digest`: `map` takes every axis, so the
+/// suggestion can carry the call's own `glob`, `json`, and display filters
+/// alongside a `max_members` that never loosens a tighter one. A message
+/// that named only a tool would answer a different question than the call
+/// it qualifies, exactly as the CLI's would if it dropped `--glob`.
+fn digest_hint(call: &DigestHintCall<'_>, payload: &str) -> Option<String> {
+    if !crate::map_hint_is_due(call.files_inspected, call.already_digest, payload.len()) {
+        return None;
+    }
+    // A path that is not UTF-8 cannot be spelled into JSON at all, and a
+    // suggestion naming a lossy substitute would point at nothing. Unlike
+    // the CLI there is no counted form to fall back to — and no way to reach
+    // this either, since these paths were parsed out of a JSON string and
+    // JSON strings are UTF-8.
+    let paths: Vec<&str> = call
+        .requested_paths
+        .iter()
+        .map(|p| p.to_str())
+        .collect::<Option<_>>()?;
+    let cap = call.max_members.map_or(8, |m| m.min(8));
+    let mut args = serde_json::Map::new();
+    // `paths` stays in whatever the list costs. It is the one field of the
+    // tool's arguments with no default, so an object without it is not a
+    // call an agent can send — and an object is exactly what an agent
+    // copies whole. The CLI can shorten its own hint because there the
+    // suggestion is prose the reader completes from a command line they
+    // still have in front of them.
+    args.insert("paths".into(), serde_json::json!(paths));
+    args.insert("detail".into(), serde_json::json!("names"));
+    args.insert("no_private".into(), serde_json::json!(true));
+    args.insert("no_fields".into(), serde_json::json!(true));
+    args.insert("max_members".into(), serde_json::json!(cap));
+    if let Some(glob) = call.glob {
+        args.insert("glob".into(), serde_json::json!(glob));
+    }
+    if call.no_attrs {
+        args.insert("no_attrs".into(), serde_json::json!(true));
+    }
+    if call.no_lines {
+        args.insert("no_lines".into(), serde_json::json!(true));
+    }
+    if call.json {
+        args.insert("json".into(), serde_json::json!(true));
+    }
+    Some(format!(
+        "this was a multi-file answer ({} KB); the `map` tool with {} answers the same question in a fraction of the size",
+        crate::kb_ceil(payload.len()),
+        Value::Object(args),
+    ))
+}
+
+/// The same message as a `# note:`-style line, for the text responses.
+fn hint_line(hint: &Option<String>) -> Option<String> {
+    hint.as_ref().map(|h| format!("# hint: {}", h))
+}
+
+/// JSON response with the hint attached as a field.
+///
+/// A prepended line would break every parser on the other end, which is the
+/// same reason `with_missing_paths` injects rather than prefixes.
+///
+/// `json` comes from `render_json_map`, so failing to parse it back is an
+/// internal contradiction rather than a caller error. Debug builds and the
+/// test suite say so; a release build drops the hint rather than the answer.
+fn with_hint(json: String, hint: &Option<String>) -> String {
+    let Some(hint) = hint else {
+        return json;
+    };
+    match serde_json::from_str::<Value>(&json) {
+        Ok(mut doc) => {
+            doc["hint"] = serde_json::json!(hint);
+            serde_json::to_string_pretty(&doc).unwrap_or(json)
+        }
+        Err(e) => {
+            debug_assert!(false, "rendered payload is not valid JSON: {e}");
+            json
+        }
+    }
+}
+
+/// Text response with each note that applies in front of it, in the order a
+/// reader needs them: what was missed, then what to do differently.
+fn with_notes(notes: &[&Option<String>], out: String) -> CallResult {
+    let mut prefix = String::new();
+    for note in notes.iter().filter_map(|n| n.as_ref()) {
+        prefix.push_str(note);
+        prefix.push('\n');
+    }
+    CallResult::Text(format!("{}{}", prefix, out))
+}
+
 fn run_map(args: Value) -> CallResult {
     let a: MapArgs = match serde_json::from_value(args) {
         Ok(v) => v,
@@ -567,11 +689,34 @@ fn run_map(args: Value) -> CallResult {
         max_doc_lines: crate::defaults::MAX_DOC_LINES,
         max_members: a.max_members,
     };
+    // The digest answer is the resolved axes, not the tool that was called:
+    // `map` asked for bare names with nothing private, no fields and a cap
+    // no looser than the preset's is the answer the hint would otherwise
+    // point at. The bound is the shared constant, not a literal: the CLI and
+    // this server are documented to share one decision, and a literal here
+    // is exactly what no `defaults` guard can see.
+    let already_digest = detail == "names"
+        && a.no_private
+        && a.no_fields
+        && a.max_members
+            .is_some_and(|m| m <= crate::defaults::MAX_MEMBERS);
+    let hint_call = DigestHintCall {
+        requested_paths: &a.paths,
+        files_inspected: results.len(),
+        glob: a.glob.as_deref(),
+        max_members: a.max_members,
+        json: a.json,
+        no_attrs: a.no_attrs,
+        no_lines: a.no_lines,
+        already_digest,
+    };
     if a.json {
-        CallResult::Text(with_missing_paths(
-            core::render_json_map(&results, &opts, true),
-            &missing,
-        ))
+        // Measured before `missing_paths` is injected: the suggested call
+        // keeps every unresolved path, so metadata it cannot shrink must not
+        // be what pushes the answer over the bar.
+        let mapped = core::render_json_map(&results, &opts, true);
+        let hint = digest_hint(&hint_call, &mapped);
+        CallResult::Text(with_hint(with_missing_paths(mapped, &missing), &hint))
     } else if detail == "names" {
         let d_opts = DigestOptions {
             include_private: !a.no_private,
@@ -586,7 +731,9 @@ fn run_map(args: Value) -> CallResult {
         } else {
             None
         };
-        note(core::render_digest(&results, &d_opts, root))
+        let out = core::render_digest(&results, &d_opts, root);
+        let hint = hint_line(&digest_hint(&hint_call, &out));
+        with_notes(&[&path_note, &hint], out)
     } else if results.is_empty() {
         // Same empty-answer message as the CLI (issue #33): the paths
         // exist but contain nothing parseable — say so rather than return
@@ -598,7 +745,8 @@ fn run_map(args: Value) -> CallResult {
             out.push_str(&core::render_map(res, &opts));
             out.push('\n');
         }
-        note(out)
+        let hint = hint_line(&digest_hint(&hint_call, &out));
+        with_notes(&[&path_note, &hint], out)
     }
 }
 
@@ -623,6 +771,22 @@ fn run_digest(args: Value) -> CallResult {
     };
     let path_note = partial_note(&missing);
     let results = crate::walk_and_parse(&paths, a.glob.as_deref());
+    // Explicit arguments override the tool's own defaults, so calling
+    // `digest` is not by itself the digest answer: with private members,
+    // fields, or a loosened cap it renders what `map` renders.
+    let already_digest =
+        !a.include_private && !a.include_fields && a.max_members <= crate::defaults::MAX_MEMBERS;
+    let hint_call = DigestHintCall {
+        requested_paths: &a.paths,
+        files_inspected: results.len(),
+        glob: a.glob.as_deref(),
+        max_members: Some(a.max_members),
+        json: a.json,
+        // The `digest` tool has no display filters to preserve.
+        no_attrs: false,
+        no_lines: false,
+        already_digest,
+    };
     if a.json {
         // Mirrors the CLI's digest preset: names-level detail sheds doc
         // comments from the JSON payload too (issue #37).
@@ -635,10 +799,12 @@ fn run_digest(args: Value) -> CallResult {
             max_doc_lines: crate::defaults::MAX_DOC_LINES,
             max_members: Some(a.max_members),
         };
-        CallResult::Text(with_missing_paths(
-            core::render_json_map(&results, &opts, true),
-            &missing,
-        ))
+        // Measured before `missing_paths` is injected: the suggested call
+        // keeps every unresolved path, so metadata it cannot shrink must not
+        // be what pushes the answer over the bar.
+        let mapped = core::render_json_map(&results, &opts, true);
+        let hint = digest_hint(&hint_call, &mapped);
+        CallResult::Text(with_hint(with_missing_paths(mapped, &missing), &hint))
     } else {
         let opts = DigestOptions {
             include_private: a.include_private,
@@ -652,7 +818,9 @@ fn run_digest(args: Value) -> CallResult {
         } else {
             None
         };
-        with_note(&path_note, core::render_digest(&results, &opts, root))
+        let out = core::render_digest(&results, &opts, root);
+        let hint = hint_line(&digest_hint(&hint_call, &out));
+        with_notes(&[&path_note, &hint], out)
     }
 }
 
