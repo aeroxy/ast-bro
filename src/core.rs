@@ -1476,6 +1476,255 @@ pub fn find_implementations(
     out
 }
 
+/// A base type the walk named but could not read.
+///
+/// `implements` resolves a hierarchy by matching a `bases` entry against the
+/// name of a type the walk parsed, so a link whose declaration sits outside
+/// the walked path(s) ends the chain and takes every subtype below it with
+/// it. `path` is where the project does declare the type, which is what a
+/// caller adds to the walk to get the rest of the answer.
+#[derive(Clone, Debug, Serialize)]
+pub struct UnseenBase {
+    pub name: String,
+    pub path: String,
+}
+
+/// Base type names the walked files reference but do not declare.
+///
+/// The list is the input to the on-disk probe, not an answer: most entries
+/// on a wide walk are library types (`Connection`, `Map`) that no walk can
+/// resolve. [`classify_unseen_bases`] is what separates those from the
+/// project types a narrower path excluded.
+///
+/// The probe calls this again over the walk plus what it has parsed so far,
+/// so the parameter is an iterator rather than one slice.
+pub fn unresolved_base_names<'a>(
+    results: impl IntoIterator<Item = &'a ParseResult>,
+) -> Vec<String> {
+    let mut types: Vec<(&std::path::Path, &Declaration)> = Vec::new();
+    for r in results {
+        _collect_candidate_types(&r.declarations, &r.path, &mut types);
+    }
+    let declared: std::collections::HashSet<String> = types
+        .iter()
+        .map(|(_, d)| _normalize_type_name(&d.name))
+        .collect();
+    let mut unresolved: Vec<String> = types
+        .iter()
+        .flat_map(|(_, d)| d.bases.iter())
+        .map(|b| _normalize_type_name(b))
+        .filter(|b| !b.is_empty() && !declared.contains(b))
+        .collect();
+    unresolved.sort();
+    unresolved.dedup();
+    unresolved
+}
+
+/// Names of the type declarations in `results`, normalized the way bases are.
+///
+/// The probe subtracts this from the names it asked about to learn which it
+/// never placed — a name still missing after the search is one no file named
+/// after it declares, which is a library type or a declaration this probe
+/// cannot find (see [`crate::hierarchy`]).
+pub fn declared_type_names<'a>(
+    results: impl IntoIterator<Item = &'a ParseResult>,
+) -> std::collections::HashSet<String> {
+    let mut types: Vec<(&std::path::Path, &Declaration)> = Vec::new();
+    for r in results {
+        _collect_candidate_types(&r.declarations, &r.path, &mut types);
+    }
+    types
+        .iter()
+        .map(|(_, d)| _normalize_type_name(&d.name))
+        .collect()
+}
+
+/// Which of `unresolved` are project types the walk left out, rather than
+/// library types nothing could resolve.
+///
+/// `outside` holds the declarations the probe in [`crate::hierarchy`] found
+/// elsewhere in the project, followed to a fixed point: every base named by
+/// a declaration it parsed was itself looked up. A name survives when it is
+/// `target` or when the merged view proves it inherits `target`. Everything
+/// else is dropped, and the fixed point is what makes that sound — a name
+/// the whole project never declares belongs to a library, and a library type
+/// cannot inherit a type of this project, so an ancestry that reaches one
+/// has stopped rather than gone unread.
+///
+/// Reporting an unproven name instead would make the note say the same thing
+/// whatever the target: in a language whose types bottom out in library
+/// interfaces, almost every base leaves some ancestor unread.
+pub fn classify_unseen_bases(
+    walked: &[ParseResult],
+    outside: &[ParseResult],
+    target: &str,
+    unresolved: &[String],
+) -> Vec<UnseenBase> {
+    let target = _normalize_type_name(target);
+    let mut merged: Vec<(&std::path::Path, &Declaration)> = Vec::new();
+    for r in walked.iter().chain(outside) {
+        _collect_candidate_types(&r.declarations, &r.path, &mut merged);
+    }
+    let mut by_name: std::collections::HashMap<String, Vec<&Declaration>> =
+        std::collections::HashMap::new();
+    for (_, d) in &merged {
+        by_name
+            .entry(_normalize_type_name(&d.name))
+            .or_default()
+            .push(d);
+    }
+
+    // Only declarations from `outside` can name a file to add: a name the
+    // walk itself declares is not a gap, and one nothing declares is a
+    // library type. Two files may declare the same simple name, so the
+    // candidates are kept in path order rather than collapsed — which of
+    // them is the route to `target` is decided below, and naming the other
+    // would send the reader to add a path that changes nothing.
+    let mut declared_outside: std::collections::HashMap<String, Vec<(String, &Declaration)>> =
+        std::collections::HashMap::new();
+    for r in outside {
+        let mut types: Vec<(&std::path::Path, &Declaration)> = Vec::new();
+        _collect_candidate_types(&r.declarations, &r.path, &mut types);
+        for (path, d) in types {
+            declared_outside
+                .entry(_normalize_type_name(&d.name))
+                .or_default()
+                .push((path.to_string_lossy().into_owned(), d));
+        }
+    }
+    for candidates in declared_outside.values_mut() {
+        candidates.sort_by(|a, b| a.0.cmp(&b.0));
+    }
+
+    let mut out: Vec<UnseenBase> = unresolved
+        .iter()
+        .filter_map(|name| {
+            // The target's own declaration is not a gap: [`find_implementations`]
+            // seeds direct matches from base-name equality and never reads it,
+            // so a walk that holds the implementations but not the interface
+            // is already complete. Listing it would qualify the api/impl split
+            // — the most ordinary layout there is — for nothing.
+            if *name == target {
+                return None;
+            }
+            let (path, _) = declared_outside
+                .get(name)?
+                .iter()
+                .find(|(_, d)| _decl_descends_from(&by_name, d, &target))?;
+            Some(UnseenBase {
+                name: name.clone(),
+                path: path.clone(),
+            })
+        })
+        .collect();
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    out
+}
+
+/// Whether *this* declaration inherits `target`.
+///
+/// Names are pooled in `by_name`, so asking about a name asks about every
+/// type that shares it: on a project holding an unrelated `a/Middle` beside
+/// a `z/Middle extends Base`, the name descends from `Base` while the first
+/// declaration does not. The note has to name the file that is the route, so
+/// the decision is per declaration and the walk starts from its own bases.
+fn _decl_descends_from(
+    by_name: &std::collections::HashMap<String, Vec<&Declaration>>,
+    start: &Declaration,
+    target: &str,
+) -> bool {
+    let seeds: Vec<String> = start.bases.iter().map(|b| _normalize_type_name(b)).collect();
+    seeds
+        .iter()
+        .any(|name| name == target || _descends_from(by_name, name, target))
+}
+
+/// Whether `start` inherits `target` somewhere up its ancestry.
+///
+/// A name the merged view does not declare ends that branch. The caller
+/// probes to a fixed point first, so such a name is one the project never
+/// declares at all — a library type, which cannot inherit a type of this
+/// project and therefore cannot be a route to `target`.
+fn _descends_from(
+    by_name: &std::collections::HashMap<String, Vec<&Declaration>>,
+    start: &str,
+    target: &str,
+) -> bool {
+    let mut queue = vec![start.to_string()];
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    while let Some(name) = queue.pop() {
+        if !seen.insert(name.clone()) {
+            continue;
+        }
+        if name == target {
+            return true;
+        }
+        for d in by_name.get(&name).into_iter().flatten() {
+            queue.extend(d.bases.iter().map(|b| _normalize_type_name(b)));
+        }
+    }
+    false
+}
+
+/// The one wording for "part of this hierarchy is outside the walked
+/// path(s)" across the CLI (stderr) and MCP (response text) — the
+/// hierarchy counterpart of
+/// [`frontier_note`](crate::calls::render::frontier_note).
+///
+/// `None` when the walk saw every link, which is the whole answer on a walk
+/// that covers the project. The count leads and the list is capped at
+/// [`UNSEEN_BASES_SHOWN`], so a long list still reports its own total.
+pub fn hierarchy_note(target: &str, unseen: &[UnseenBase]) -> Option<String> {
+    if unseen.is_empty() {
+        return None;
+    }
+    let mut note = format!(
+        "# note: {} base type(s) named by the walked files are declared outside the walked path(s). Any subtype that reaches '{}' through one of them is absent from this answer:",
+        unseen.len(),
+        target
+    );
+    for b in unseen.iter().take(UNSEEN_BASES_SHOWN) {
+        note.push_str(&format!("\n#   {}  {}", b.name, b.path));
+    }
+    if unseen.len() > UNSEEN_BASES_SHOWN {
+        note.push_str(&format!(
+            "\n#   +{} more",
+            unseen.len() - UNSEEN_BASES_SHOWN
+        ));
+    }
+    note.push_str("\n# add those paths to the walk to resolve the rest");
+    Some(note)
+}
+
+/// The coverage line for an answer of zero when the search could not place
+/// every name it asked about.
+///
+/// A bare `0 match(es)` carries no other signal, and a base the search never
+/// placed — a type whose file is not named after it — is exactly what would
+/// hide the subtypes that would have filled it. Only an empty answer gets
+/// this line: on a walk of any Java tree the unplaced names are the library
+/// surface the walked files inherit, so a note beside a real result would
+/// fire on nearly every query and teach the reader to skip it.
+///
+/// The count carries the qualification and the names do not appear, for the
+/// same reason: most of them are library types no reader can act on, and
+/// naming five of those invites a search for a route that was never there.
+/// `--json` carries the list as `unlocated_bases` at every size of answer,
+/// where it costs the reader nothing to ignore.
+pub fn empty_answer_note(target: &str, unlocated: &[String]) -> Option<String> {
+    if unlocated.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "# note: no implementation found, but {} base type(s) named in this hierarchy are declared nowhere the search could reach — a library type, or a declaration in a file not named after it. A subtype of '{}' inheriting through one of those is not visible here, so this zero is not proof of none. `--json` lists them as `unlocated_bases`.",
+        unlocated.len(),
+        target
+    ))
+}
+
+/// How many unseen bases the note lists before it summarizes the remainder.
+const UNSEEN_BASES_SHOWN: usize = 5;
+
 fn _collect_candidate_types<'a>(
     decls: &'a [Declaration],
     path: &'a std::path::Path,
@@ -1662,6 +1911,17 @@ struct JsonImplementsDoc<'a> {
     schema: &'static str,
     target: &'a str,
     transitive: bool,
+    /// Set when a link in the hierarchy is declared outside the walked
+    /// path(s), the coverage counterpart of `frontier_truncated` on the
+    /// depth-bounded commands. Always `false` under `--direct`,
+    /// which resolves nothing beyond the level the walk can see anyway.
+    hierarchy_truncated: bool,
+    unseen_bases: &'a [UnseenBase],
+    /// Base names the search never placed in the project. Each is a library
+    /// type or a declaration in a file not named after it, so `false` on
+    /// `hierarchy_truncated` beside a non-empty list here means no gap was
+    /// proved rather than that there is none.
+    unlocated_bases: &'a [String],
     matches: &'a [ImplMatch],
 }
 
@@ -1779,12 +2039,17 @@ pub fn render_json_implements(
     target: &str,
     matches: &[ImplMatch],
     transitive: bool,
+    unseen_bases: &[UnseenBase],
+    unlocated_bases: &[String],
     pretty: bool,
 ) -> String {
     let doc = JsonImplementsDoc {
         schema: JSON_SCHEMA_IMPLEMENTS,
         target,
         transitive,
+        hierarchy_truncated: !unseen_bases.is_empty(),
+        unseen_bases,
+        unlocated_bases,
         matches,
     };
     _to_json(&doc, pretty)

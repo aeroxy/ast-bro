@@ -11,6 +11,7 @@ mod defaults;
 mod deps;
 mod file_filter;
 mod graph_cache;
+mod hierarchy;
 mod hook;
 mod impact;
 mod installers;
@@ -104,6 +105,12 @@ enum Commands {
     /// One-page module map — alias for `map --preset digest`.
     Digest(MapArgs),
     /// Find subclasses / implementations
+    ///
+    /// A transitive answer says when a link in the hierarchy is declared
+    /// outside the walked path(s): the chain stops there, so the subtypes
+    /// under it are absent. The names and the files that declare them go to
+    /// stderr as a `# note:`, and to `hierarchy_truncated` / `unseen_bases`
+    /// under `--json`.
     Implements {
         target: String,
         /// Files or directories to search. Required — `implements` walks
@@ -710,7 +717,7 @@ fn parse_file_line(s: &str) -> Option<(String, u32)> {
 
 /// Filter out non-existent paths, build a WalkBuilder with filters and glob overrides,
 /// and return (builder, existing_paths). Returns None if no paths exist.
-fn build_filtered_walker(
+pub(crate) fn build_filtered_walker(
     paths: &[PathBuf],
     glob_str: Option<&str>,
 ) -> Option<(WalkBuilder, Vec<PathBuf>)> {
@@ -1523,10 +1530,34 @@ pub fn run() {
                     .exit(*json);
                 }
             }
+            // A chain that leaves the walked path(s) stops there and takes
+            // its subtypes with it, so a scoped walk can report a fraction
+            // of the hierarchy — or a zero — and look complete.
+            let gap = if transitive {
+                crate::hierarchy::unseen_bases(&results, target)
+            } else {
+                crate::hierarchy::HierarchyGap::none()
+            };
+            // A proved gap is reported at any size of answer; an unplaced
+            // name only beside a zero, which is the answer that carries no
+            // other signal.
+            let note = crate::core::hierarchy_note(target, &gap.unseen).or_else(|| {
+                matches
+                    .is_empty()
+                    .then(|| crate::core::empty_answer_note(target, &gap.unlocated))
+                    .flatten()
+            });
             if *json {
                 println!(
                     "{}",
-                    crate::core::render_json_implements(target, &matches, transitive, !(*compact),)
+                    crate::core::render_json_implements(
+                        target,
+                        &matches,
+                        transitive,
+                        &gap.unseen,
+                        &gap.unlocated,
+                        !(*compact),
+                    )
                 );
             } else {
                 println!(
@@ -1542,6 +1573,9 @@ pub fn run() {
                     };
                     println!("{}:{}  {} {}{}", m.path, m.start_line, m.kind, m.name, via);
                 }
+            }
+            if let Some(note) = note {
+                eprintln!("{}", note);
             }
         }
         Commands::Prompt => {
