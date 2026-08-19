@@ -18,3 +18,7 @@ The architecture page links to eight deeper wiki files — read them on-demand w
 - [wiki/squeeze.md](wiki/squeeze.md) — log/text token compression (squeeze): multi-stage pipeline, reversible legend, degenerate fallback
 - [wiki/network-security.md](wiki/network-security.md) — model download, TLS policy, mirror fallback
 - [wiki/file-filtering.md](wiki/file-filtering.md) — what gets walked, ignore layers, escape hatches, shebang detection, test-file heuristics
+
+## CLI and MCP are one feature set
+
+Each MCP tool in `src/mcp/tools.rs` mirrors a CLI subcommand; only the maintenance commands (`install`, `uninstall`, `status`, `hook`, `prompt`, `mcp`) are CLI-only. A flag added, renamed, or redefaulted on one surface is unfinished until the other carries it — the documentation guards check that an existing argument describes itself, not that it exists on both sides. The two are declared in different places: clap derives in `src/lib.rs`, a hand-written JSON literal in `src/mcp/tools.rs`. Change them in the same commit, and state any intended asymmetry in the tool description.
