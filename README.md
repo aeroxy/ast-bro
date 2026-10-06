@@ -349,6 +349,55 @@ and its members, rather than leaving them to read as someone else's. The
 payload then ends with a note saying what is missing and the
 `ast-bro map` command that returns it.
 
+### Keeping a document out of the outline
+
+A map is the right answer for a file you consult a section of, and the
+wrong one for a file that has to be loaded whole before acting. An
+instruction document is the second kind: an agent that reads the outline
+of a `SKILL.md` and judges itself informed has failed with nothing in the
+transcript to show it — the map looked like an answer, and the body it
+indexed never arrived.
+
+Which documents are which is knowledge you have and the hook does not, so
+you state it. Two files carry the policy, because the documents that need
+it do not live in one place:
+
+```toml
+# ~/.config/ast-bro/config.toml — patterns relative to your home directory,
+# for everything you read. Skills and agent instructions live here and
+# belong to no repository at all.
+[hook]
+keep_source = ["**/SKILL.md", "**/AGENTS.md"]
+```
+
+```toml
+# .ast-bro.toml at a project root — patterns relative to the root, for this
+# project's own documents. Commit it and a teammate gets the policy with a
+# checkout.
+[hook]
+keep_source = ["docs/runbooks/**", "!docs/runbooks/api-reference.md"]
+```
+
+A path either file protects is delivered in full, with no map substituted.
+Union rather than precedence: every entry is the same kind of claim, and
+neither file can quietly cancel the other. Entries use gitignore syntax —
+the same matcher `.ast-bro-ignore` uses — so `**/` globs, directory
+prefixes, and `!` re-inclusions read the way they do everywhere else.
+
+Two things it deliberately is not:
+
+- **Not `.ast-bro-ignore`.** That file excludes paths from every walk. This
+  one does the opposite: a listed file is handed over *more* fully. One
+  name for both would mean two contradictory things.
+- **Not inside `.ast-bro/`.** That directory is derived state — the search
+  subsystem writes a `.gitignore` of `*` into it, so config there could
+  never be committed, and `rm -rf .ast-bro/` (the cure for a stale cache)
+  would take your policy with it.
+
+A read the host refused is the exception: there the map arrives beside an
+error rather than in place of contents, so `keep_source` does not suppress
+it. Withholding it would leave a bare error and no map, which helps nobody.
+
 ### Claude Code subagent shadowing
 
 Claude Code has isolated subagents (Explore, Plan, general-purpose) that run in

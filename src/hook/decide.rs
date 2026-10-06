@@ -31,6 +31,16 @@ pub fn decide(event: &ToolCallEvent, opts: &DecideOpts, channel: Channel) -> Dec
     if !crate::main_helpers::can_parse_for_hook(path) {
         return Decision::PassThrough;
     }
+    // A path its owner asked to receive in full: `keep_source`, in the user's
+    // config or the project's `.ast-bro.toml` (see `config`). It outranks
+    // `always`, which only lowers the bar on file size, because this is not a
+    // claim about size: no length makes an index stand in for a document that
+    // has to be read whole. The additive channel still renders a map, where the
+    // read returned nothing for it to withhold and the alternative is a bare
+    // error.
+    if !channel.is_additive() && super::config::KeepSource::for_file(path).covers(path) {
+        return Decision::PassThrough;
+    }
     if !opts.always && !channel.is_additive() {
         match line_count_at_least(path, opts.min_lines) {
             Ok(true) => {}
@@ -448,7 +458,10 @@ fn trim_note(kept: usize, full_bytes: usize, dropped: usize, shed: &str, path: &
         "# note: {shed_clause}map trimmed to {kept} bytes from a {full_bytes} byte full map{}; \
 `ast-bro map {}` for the whole map, `ast-bro show {} <symbol>` for one body\n",
         if dropped > 0 {
-            format!(", {dropped} entr{} dropped", if dropped == 1 { "y" } else { "ies" })
+            format!(
+                ", {dropped} entr{} dropped",
+                if dropped == 1 { "y" } else { "ies" }
+            )
         } else {
             String::new()
         },
@@ -514,13 +527,21 @@ mod tests {
 
     #[test]
     fn pass_through_for_non_read_tool() {
-        let d = decide(&ev("Bash", Some(PathBuf::from("a.rs")), false), &opts(), replacing());
+        let d = decide(
+            &ev("Bash", Some(PathBuf::from("a.rs")), false),
+            &opts(),
+            replacing(),
+        );
         assert!(matches!(d, Decision::PassThrough));
     }
 
     #[test]
     fn pass_through_when_offset_or_limit_set() {
-        let d = decide(&ev("Read", Some(PathBuf::from("a.rs")), true), &opts(), replacing());
+        let d = decide(
+            &ev("Read", Some(PathBuf::from("a.rs")), true),
+            &opts(),
+            replacing(),
+        );
         assert!(matches!(d, Decision::PassThrough));
     }
 
@@ -579,10 +600,16 @@ mod tests {
         let pad = "x".repeat(4000);
         let mut src = String::new();
         for i in 0..20 {
-            src.push_str(&format!("pub fn f{}() {{ let s = \"{}\"; let _ = s; }}\n", i, pad));
+            src.push_str(&format!(
+                "pub fn f{}() {{ let s = \"{}\"; let _ = s; }}\n",
+                i, pad
+            ));
         }
         std::fs::write(&p, &src).unwrap();
-        assert!(src.lines().count() < 200, "the fixture must be under the threshold");
+        assert!(
+            src.lines().count() < 200,
+            "the fixture must be under the threshold"
+        );
 
         let e = ev("Read", Some(p.clone()), false);
         assert!(
@@ -602,7 +629,10 @@ mod tests {
         let p = dir.path().join("img.png");
         std::fs::write(&p, "not source").unwrap();
         let e = ev("Read", Some(p), false);
-        assert!(matches!(decide(&e, &opts(), additive()), Decision::PassThrough));
+        assert!(matches!(
+            decide(&e, &opts(), additive()),
+            Decision::PassThrough
+        ));
     }
 
     /// A ranged retry of a read the host refused still gets the map.
@@ -649,7 +679,11 @@ mod tests {
                     map.len(),
                     MAP_BUDGET
                 );
-                assert!(map.contains("map trimmed to"), "no marker:\n{}", &map[..300]);
+                assert!(
+                    map.contains("map trimmed to"),
+                    "no marker:\n{}",
+                    &map[..300]
+                );
                 assert!(map.contains("ast-bro map "), "no route to the rest");
                 assert!(map.starts_with('#'), "the header line must survive");
             }
@@ -670,7 +704,9 @@ mod tests {
         let doc = "/// ".to_string() + &"documentation ".repeat(40);
         let mut src = String::new();
         for i in 0..900 {
-            src.push_str(&format!("{doc}\npub fn f{i}(a: u32, b: u32) -> u32 {{ a + b }}\n"));
+            src.push_str(&format!(
+                "{doc}\npub fn f{i}(a: u32, b: u32) -> u32 {{ a + b }}\n"
+            ));
         }
         std::fs::write(&p, &src).unwrap();
 
@@ -766,7 +802,15 @@ mod tests {
             units.push(decl_unit("pub fn f() {}", id, None));
         }
         let full = map_bytes(&units);
-        let out = cap_map(&units, &[], &HashSet::new(), "", full, Path::new("/tmp/x.rs")).payload;
+        let out = cap_map(
+            &units,
+            &[],
+            &HashSet::new(),
+            "",
+            full,
+            Path::new("/tmp/x.rs"),
+        )
+        .payload;
         assert!(out.len() <= MAP_BUDGET, "{} bytes", out.len());
         assert!(out.starts_with("# header\n"));
         assert!(out.contains("map trimmed to"));
@@ -809,12 +853,24 @@ mod tests {
         // whole budget, which is the path that keeps a single unit.
         let header_only = vec![
             preamble("# header"),
-            decl_unit(&format!("pub fn wide({})", "a: u32, ".repeat(20_000)), 0, None),
+            decl_unit(
+                &format!("pub fn wide({})", "a: u32, ".repeat(20_000)),
+                0,
+                None,
+            ),
         ];
 
         for (label, units) in [("most of a map", many), ("header only", header_only)] {
             let full = map_bytes(&units);
-            let out = cap_map(&units, &[], &HashSet::new(), "", full, Path::new("/tmp/x.rs")).payload;
+            let out = cap_map(
+                &units,
+                &[],
+                &HashSet::new(),
+                "",
+                full,
+                Path::new("/tmp/x.rs"),
+            )
+            .payload;
             let (delivered, claimed) = delivered_and_claimed(&out);
             assert_eq!(delivered, claimed, "{label}: marker in {out:.0}");
             assert!(out.len() <= MAP_BUDGET, "{label}: {} bytes", out.len());
