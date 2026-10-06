@@ -43,15 +43,17 @@ pub(super) const MAX_MAP_BYTES: usize = 64 * 1024;
 /// a reader who takes the wrapper at face value abandons the answer it holds.
 const DENY_NOTICE: &str = "\
 # ast-bro substituted this structure map for the full Read: nothing failed.
-# The map below is the answer, with line ranges. For more detail, re-read with
-# offset/limit, or `ast-bro show <file> <symbol>` for a symbol's body.";
+# The map is an index, not the contents: the text inside each line range was
+# not delivered. Re-read a range with offset/limit, or run
+# `ast-bro show <file> <symbol>` for one entry's body.";
 
 /// Notice leading a [`Channel::Replace`] payload. The read succeeded here, so
 /// this one has no failure to disclaim and spends its words on what arrived.
 const REPLACE_NOTICE: &str = "\
-# ast-bro replaced the file contents with this structure map, with line ranges.
-# For more detail, re-read with offset/limit, or `ast-bro show <file> <symbol>`
-# for a symbol's body.";
+# ast-bro replaced the file contents with this structure map. The map is an
+# index, not the contents: the text inside each line range was not delivered.
+# Re-read a range with offset/limit, or `ast-bro show <file> <symbol>` for one
+# entry's body.";
 
 /// Notice leading a [`Channel::Augment`] payload.
 ///
@@ -60,9 +62,10 @@ const REPLACE_NOTICE: &str = "\
 /// that a retry fails again would be a guess — and a wrong one whenever the
 /// read failed for a reason a retry would clear.
 const AUGMENT_NOTICE: &str = "\
-# ast-bro supplies this structure map, with line ranges, because the Read did
-# not return the file. Read a range with offset/limit, or run
-# `ast-bro show <file> <symbol>` for one symbol's body.";
+# ast-bro supplies this structure map because the Read did not return the file.
+# The map is an index, not the contents: the text inside each line range was
+# not delivered. Read a range with offset/limit, or run
+# `ast-bro show <file> <symbol>` for one entry's body.";
 
 /// What [`payload`] adds around the notice: the blank line it puts between the
 /// notice and the map, and the newline it ends with.
