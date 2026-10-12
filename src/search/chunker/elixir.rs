@@ -12,9 +12,10 @@
 //!
 //! - `defmodule` / `defprotocol` / `defimpl` is a member that is opened, and
 //!   its name becomes the breadcrumb of everything inside it.
-//! - A `def`-family clause is a callable member. Adjacent clauses of one
-//!   name/arity are one outline entry, but each clause stays a split point, so
-//!   a forty-clause function still packs into chunks the embedder accepts.
+//! - A `def`-family clause, or one of a def-like macro such as `defk`, is a
+//!   callable member. Adjacent clauses of one name/arity are one outline
+//!   entry, but each clause stays a split point, so a forty-clause function
+//!   still packs into chunks the embedder accepts.
 //! - Any other macro call with a `do` block directly in a module body (`test`,
 //!   `describe`, `setup`, `schema`) is a callable member too, so a test module
 //!   splits per test. One whose block holds definitions (`if … do def …`,
