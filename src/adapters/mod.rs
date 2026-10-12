@@ -1,6 +1,7 @@
 pub mod base;
 pub mod cpp;
 pub mod csharp;
+pub mod elixir;
 pub mod go;
 pub mod java;
 pub mod kotlin;

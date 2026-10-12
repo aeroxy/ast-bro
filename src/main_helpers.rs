@@ -6,6 +6,7 @@ use ast_grep_language::{LanguageExt, SupportLang};
 use crate::adapters::base::LanguageAdapter;
 use crate::adapters::cpp::CppAdapter;
 use crate::adapters::csharp::CSharpAdapter;
+use crate::adapters::elixir::ElixirAdapter;
 use crate::adapters::go::GoAdapter;
 use crate::adapters::java::JavaAdapter;
 use crate::adapters::kotlin::KotlinAdapter;
@@ -61,6 +62,7 @@ fn is_supported_adapter(lang: SupportLang) -> bool {
             | SupportLang::Cpp
             | SupportLang::Ruby
             | SupportLang::Php
+            | SupportLang::Elixir
     )
 }
 
@@ -149,6 +151,11 @@ pub fn parse_file_for_hook(path: &Path) -> Option<ParseResult> {
             lang.ast_grep(source.clone()).root(),
         ),
         SupportLang::Php => PhpAdapter.parse(
+            path,
+            source.as_bytes(),
+            lang.ast_grep(source.clone()).root(),
+        ),
+        SupportLang::Elixir => ElixirAdapter.parse(
             path,
             source.as_bytes(),
             lang.ast_grep(source.clone()).root(),
