@@ -91,6 +91,10 @@ brings that to 41%, and p90 chunk height from 196 lines to 57. Rust gains less
 (53% → 39%), since it already has many top-level items and only `impl` blocks
 are affected. Go and C barely change.
 
+Elixir has no declaration kinds to match (`defmodule`, `def` and `test "…" do`
+are all `call`s), so it gets its own walk (`chunker/elixir.rs`) that recognises
+members by macro name, as the `map` adapter does.
+
 ### Breadcrumbs
 
 Every chunk carries the declaration path that encloses it (`QueryExecutorBase >
@@ -192,6 +196,7 @@ src/search/
 ├── bm25.rs        sparse BM25 (lucene variant), get_scores(tokens, mask)
 ├── chunker.rs     chunking: ast-grep decls, tree-sitter-md sections (markdown),
 │                  blank-line paragraphs (toml / powershell)
+├── chunker/elixir.rs  Elixir member walk, by macro name (no decl node kinds)
 ├── download.rs    HF probe + hf-mirror fallback + sha256 manifest
 ├── embed.rs       safetensors mmap + tokenizer.json + cosine_topk (SIMD via wide)
 ├── fusion.rs      RRF (k=60) + alpha resolver
