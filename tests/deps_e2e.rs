@@ -509,6 +509,74 @@ fn ruby_reverse_deps() {
     assert!(s.contains("lib.rb"), "expected lib.rb as importer:\n{s}");
 }
 
+// ---- Elixir ----
+
+const SHOP: &str = "tests/fixtures/deps/elixir_modules";
+
+#[test]
+fn elixir_directives_and_references_resolve_by_module_name() {
+    let s = run_ok(&[
+        "deps",
+        &format!("{SHOP}/lib/shop.ex"),
+        "--depth",
+        "1",
+        "--rebuild",
+    ]);
+    for (file, kind) in [
+        // `alias Shop.{Cart, Pricing}` is two edges.
+        ("shop/cart.ex", "(alias)"),
+        ("shop/pricing.ex", "(alias)"),
+        ("shop/inventory.ex", "(alias) [as Stock]"),
+        ("shop/format.ex", "(import)"),
+        ("shop/macros.ex", "(use)"),
+        // No directive: a remote call, a struct, an `unquote` in a macro.
+        ("shop/payment.ex", "(ref)"),
+        ("shop/receipt.ex", "(ref)"),
+        ("shop/unquoted.ex", "(ref)"),
+    ] {
+        assert!(
+            s.lines().any(|l| l.contains(file) && l.contains(kind)),
+            "expected {file} {kind} in deps:\n{s}"
+        );
+    }
+    // A typespec and the inside of a `quote` are not this file's deps.
+    assert!(!s.contains("typed.ex"), "{s}");
+    assert!(!s.contains("shop/quoted.ex"), "{s}");
+    assert!(s.contains("[external] Logger"), "{s}");
+}
+
+#[test]
+fn elixir_aliases_expand_and_nested_modules_resolve() {
+    let s = run_ok(&[
+        "deps",
+        &format!("{SHOP}/lib/shop/pricing.ex"),
+        "--depth",
+        "1",
+        "--rebuild",
+    ]);
+    // `alias Shop.Rules` then `Rules.Tax.rate/1` names `Shop.Rules.Tax`.
+    assert!(s.contains("shop/rules/tax.ex"), "{s}");
+    // `Shop.Cart.Line` is defined nested inside cart.ex.
+    assert!(s.contains("shop/cart.ex"), "{s}");
+    // An exact name only: `Shop.Rules` is defined nowhere, and must not
+    // fall back to the file defining `Shop`.
+    assert!(s.contains("[external] Shop.Rules"), "{s}");
+    assert!(!s.contains("lib/shop.ex"), "{s}");
+}
+
+#[test]
+fn elixir_reverse_deps() {
+    let s = run_ok(&[
+        "reverse-deps",
+        &format!("{SHOP}/lib/shop/cart.ex"),
+        "--depth",
+        "1",
+        "--rebuild",
+    ]);
+    assert!(s.contains("lib/shop.ex"), "{s}");
+    assert!(s.contains("shop/pricing.ex"), "{s}");
+}
+
 // ---- Idempotency ----
 
 #[test]

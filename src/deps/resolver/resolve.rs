@@ -263,6 +263,18 @@ pub fn resolve(spec: &str, ctx: &ResolveCtx<'_>, idx: &SuffixIndex) -> Option<Pa
         return None;
     }
 
+    // Elixir: `alias Foo.Bar` names a module, and the file that defines it
+    // is the target. Exact names only — dropping a trailing segment would
+    // turn `use Defk.Missing` into an edge to whatever defines `Defk`. The
+    // stdlib, Erlang modules (`:crypto`) and dependencies define nothing
+    // here, so they fall through to the external bucket.
+    if ctx.lang == Lang::Elixir {
+        return pick_closest(
+            idx.elixir_modules.get(spec).map(|v| v.as_slice()),
+            ctx.from_file,
+        );
+    }
+
     // Python `from a.b import c` arrives normalised to `a/b/c` already.
     let key = spec.replace('.', "/");
     pick_closest(idx.lookup(&key), ctx.from_file)

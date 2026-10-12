@@ -53,13 +53,19 @@ impl LanguageAdapter for ElixirAdapter {
     }
 
     fn parse<'a, D: Doc>(&self, path: &Path, source: &[u8], root: Node<'a, D>) -> ParseResult {
-        let mut walker = Walker {
-            src: source,
-            imports: Vec::new(),
-        };
+        let mut walker = Walker::new(source);
         // A script (`.exs`) may hold top-level forms outside any module, so
         // the file root is walked with the same body walker as a module.
         let body = walker.walk_body(&root, "");
+        let imports = walker
+            .directives
+            .into_iter()
+            .map(|d| ImportBinding {
+                local: d.local,
+                module: d.module,
+                line: d.line,
+            })
+            .collect();
         ParseResult {
             path: path.to_path_buf(),
             language: self.language_name(),
@@ -67,8 +73,68 @@ impl LanguageAdapter for ElixirAdapter {
             line_count: source.iter().filter(|&&b| b == b'\n').count() + 1,
             declarations: body.decls,
             error_count: count_parse_errors(root.clone()),
-            imports: walker.imports,
+            imports,
         }
+    }
+}
+
+/// One `alias` / `import` / `require` / `use`, naming its module in full —
+/// or, with keyword `reference`, a module used without one (a remote call
+/// or a struct).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Directive {
+    pub keyword: &'static str,
+    /// The full dotted module name: `__MODULE__` and an earlier alias
+    /// in scope are expanded, so `alias Defk.Bench` then `alias Bench.Tick`
+    /// names `Defk.Bench.Tick`.
+    pub module: String,
+    /// The name the file sees: the last segment (or `as:`) for `alias`, the
+    /// module itself otherwise.
+    pub local: String,
+    /// Whether `local` came from `as:`.
+    pub renamed: bool,
+    pub line: u32,
+}
+
+/// What the dependency graph needs from one Elixir file: the modules it
+/// defines (nested ones by their full name) and the modules it names.
+pub(crate) struct ModuleScan {
+    pub defined: Vec<String>,
+    pub directives: Vec<Directive>,
+}
+
+pub(crate) fn scan_modules(source: &str) -> ModuleScan {
+    scan(source, true)
+}
+
+/// The modules one Elixir file defines — `scan_modules` without the walk
+/// for references, which defining needs none of.
+pub(crate) fn defined_modules(source: &str) -> Vec<String> {
+    scan(source, false).defined
+}
+
+fn scan(source: &str, references: bool) -> ModuleScan {
+    use ast_grep_language::{LanguageExt, SupportLang};
+    let grep = SupportLang::Elixir.ast_grep(source);
+    let mut walker = Walker::new(source.as_bytes());
+    walker.scan_references = references;
+    walker.walk_body(&grep.root(), "");
+    // Directives first, then each referenced module once, so an edge takes
+    // the kind of the directive that names it when there is one.
+    let (mut directives, references): (Vec<_>, Vec<_>) = walker
+        .directives
+        .into_iter()
+        .partition(|d| d.keyword != "reference");
+    let mut seen: std::collections::HashSet<String> =
+        directives.iter().map(|d| d.module.clone()).collect();
+    directives.extend(
+        references
+            .into_iter()
+            .filter(|r| seen.insert(r.module.clone())),
+    );
+    ModuleScan {
+        defined: walker.defined,
+        directives,
     }
 }
 
@@ -98,6 +164,16 @@ const NOT_DEF_LIKE: &[&str] = &[
     "defrecordp",
 ];
 
+/// Typespec attributes. A module named in one is not a dependency.
+const TYPESPEC_ATTRS: &[&str] = &[
+    "spec",
+    "type",
+    "typep",
+    "opaque",
+    "callback",
+    "macrocallback",
+];
+
 /// Attributes that annotate the *next* definition rather than declaring a
 /// module attribute of their own.
 const ANNOTATION_ATTRS: &[&str] = &["spec", "impl", "deprecated"];
@@ -109,7 +185,15 @@ const MAX_INLINE_TYPE: usize = 100;
 
 struct Walker<'s> {
     src: &'s [u8],
-    imports: Vec<ImportBinding>,
+    directives: Vec<Directive>,
+    /// Every module defined, by its full name.
+    defined: Vec<String>,
+    /// Aliases in effect, innermost module last. A module body sees its
+    /// parent's aliases and the ones it adds itself, in source order.
+    scopes: Vec<std::collections::HashMap<String, String>>,
+    /// Also record the modules a form uses without a directive. Only the
+    /// dependency graph wants them; `map` skips the walk.
+    scan_references: bool,
 }
 
 /// What a module body yields besides its child declarations.
@@ -154,7 +238,25 @@ struct LastFn {
 }
 
 impl<'s> Walker<'s> {
+    fn new(src: &'s [u8]) -> Self {
+        Walker {
+            src,
+            directives: Vec::new(),
+            defined: Vec::new(),
+            scopes: Vec::new(),
+            scan_references: false,
+        }
+    }
+
     fn walk_body<'a, D: Doc>(&mut self, body: &Node<'a, D>, module_fqn: &str) -> Body {
+        let scope = self.scopes.last().cloned().unwrap_or_default();
+        self.scopes.push(scope);
+        let out = self.walk_forms(body, module_fqn);
+        self.scopes.pop();
+        out
+    }
+
+    fn walk_forms<'a, D: Doc>(&mut self, body: &Node<'a, D>, module_fqn: &str) -> Body {
         let mut out = Body::default();
         let mut pending = Pending::default();
         let mut typedoc: Vec<String> = Vec::new();
@@ -163,6 +265,22 @@ impl<'s> Walker<'s> {
         for child in body.children() {
             if !child.is_named() || child.kind() == "comment" {
                 continue;
+            }
+            if self.scan_references {
+                let keyword = _call_keyword(&child);
+                let walked_elsewhere = matches!(
+                    keyword.as_deref(),
+                    Some("defmodule" | "defprotocol" | "defimpl")
+                        | Some("alias" | "import" | "require" | "use")
+                );
+                if !walked_elsewhere {
+                    // A form's own aliases (`alias` inside a `def`) last
+                    // until the form ends.
+                    let scope = self.scopes.last().cloned().unwrap_or_default();
+                    self.scopes.push(scope);
+                    self.references_in(&child, module_fqn);
+                    self.scopes.pop();
+                }
             }
             if child.kind() == "unary_operator" {
                 let Some((attr, value)) = _attribute(&child) else {
@@ -234,6 +352,15 @@ impl<'s> Walker<'s> {
                     last_fn = None;
                     pending = Pending::default();
                     let decls = self.module_decl(&child, &keyword, module_fqn);
+                    // A nested `defmodule B.C` aliases `B` in the
+                    // enclosing module.
+                    if let Some(decl) = decls.first() {
+                        if keyword == "defmodule" && !module_fqn.is_empty() {
+                            let first = decl.name.split('.').next().unwrap_or_default();
+                            let full = format!("{}.{}", module_fqn, first);
+                            self.alias(first.to_string(), full);
+                        }
+                    }
                     out.decls.extend(decls);
                 }
                 k if DEF_MACROS.iter().any(|(kw, _, _)| *kw == k) => {
@@ -246,7 +373,7 @@ impl<'s> Walker<'s> {
                     out.decls.push(self.struct_decl(&child, &keyword));
                 }
                 "alias" | "import" | "require" | "use" => {
-                    self.import(&child, &keyword);
+                    self.import(&child, &keyword, module_fqn);
                 }
                 // A user macro that defines a function the way `def` does
                 // (`defk`, Nx's `defn`). Last, so it never shadows a macro
@@ -321,11 +448,23 @@ impl<'s> Walker<'s> {
             ),
         };
 
-        let fqn = if parent_fqn.is_empty() {
-            written.clone()
+        // `defimpl` names its modules itself (`P.T`); a nested `defmodule`
+        // qualifies under its parent.
+        let fqn = if keyword == "defimpl" || parent_fqn.is_empty() {
+            names
+                .first()
+                .map(|(n, _)| n.clone())
+                .unwrap_or_else(|| written.clone())
         } else {
             format!("{}.{}", parent_fqn, written)
         };
+        // A list-form `defimpl` defines one module per type, but its body
+        // is walked once, under the first.
+        if keyword == "defimpl" {
+            self.defined.extend(names.iter().map(|(n, _)| n.clone()));
+        } else {
+            self.defined.push(fqn.clone());
+        }
         let body = match node.children().find(|c| c.kind() == "do_block") {
             Some(b) => self.walk_body(&b, &fqn),
             None => Body::default(),
@@ -628,7 +767,7 @@ impl<'s> Walker<'s> {
     /// `alias` / `import` / `require` / `use`, including the multi form
     /// `alias Foo.{Bar, Baz}`. `alias` binds the last segment (or `as:`);
     /// the others are referenced by their full name.
-    fn import<'a, D: Doc>(&mut self, node: &Node<'a, D>, keyword: &str) {
+    fn import<'a, D: Doc>(&mut self, node: &Node<'a, D>, keyword: &str, module_fqn: &str) {
         let args = _named_args(node);
         let Some(first) = args.first() else {
             return;
@@ -654,7 +793,14 @@ impl<'s> Walker<'s> {
             modules.push(_text(first));
         }
 
+        let keyword = match keyword {
+            "alias" => "alias",
+            "import" => "import",
+            "require" => "require",
+            _ => "use",
+        };
         for module in modules {
+            let module = self.expand(&module, module_fqn);
             let local = if keyword == "alias" {
                 as_name
                     .clone()
@@ -662,11 +808,120 @@ impl<'s> Walker<'s> {
             } else {
                 module.clone()
             };
-            self.imports.push(ImportBinding {
-                local,
+            if keyword == "alias" {
+                self.alias(local.clone(), module.clone());
+            }
+            // `require Foo, as: F` aliases `F` as well.
+            if keyword == "require" {
+                if let Some(name) = &as_name {
+                    self.alias(name.clone(), module.clone());
+                }
+            }
+            self.directives.push(Directive {
+                keyword,
                 module,
+                local,
+                renamed: as_name.is_some(),
                 line,
             });
+        }
+    }
+
+    /// Record the modules `node` uses without a directive — every module
+    /// name it mentions: a remote call's target (`Defk.Build.build!(…)`), a
+    /// struct (`%Defk.Errors{}`), a module passed as a value. That is what
+    /// `mix xref` counts as a dependency. Three places are left out because
+    /// xref leaves them out too: typespecs, the inside of a `quote` (the
+    /// caller's code, not this module's — only its `unquote`s run here), and
+    /// a nested module's own name. A directive in the form (`alias` inside a
+    /// `def`) is recorded as a directive.
+    fn references_in<'a, D: Doc>(&mut self, node: &Node<'a, D>, module_fqn: &str) {
+        let line = node.start_pos().line() as u32 + 1;
+        match node.kind().as_ref() {
+            "alias" => return self.reference(&_text(node), module_fqn, line),
+            "dot" if _is_module_dot(node) => return self.reference(&_text(node), module_fqn, line),
+            "unary_operator" => {
+                if let Some((attr, _)) = _attribute(node) {
+                    if TYPESPEC_ATTRS.contains(&attr.as_str()) {
+                        return;
+                    }
+                }
+            }
+            "call" => match _call_keyword(node).as_deref() {
+                Some(kw @ ("alias" | "import" | "require" | "use")) => {
+                    let kw = kw.to_string();
+                    return self.import(node, &kw, module_fqn);
+                }
+                Some("quote") => return self.unquoted_in(node, module_fqn),
+                Some("defmodule" | "defprotocol" | "defimpl") => {
+                    if let Some(b) = node.children().find(|c| c.kind() == "do_block") {
+                        self.references_in(&b, module_fqn);
+                    }
+                    return;
+                }
+                _ => {}
+            },
+            _ => {}
+        }
+        for child in node.children().filter(|c| c.is_named()) {
+            self.references_in(&child, module_fqn);
+        }
+    }
+
+    /// The `unquote(…)` / `unquote_splicing(…)` inside a `quote`: the only
+    /// part of it that runs in this module.
+    fn unquoted_in<'a, D: Doc>(&mut self, node: &Node<'a, D>, module_fqn: &str) {
+        for child in node.children().filter(|c| c.is_named()) {
+            let kw = _call_keyword(&child);
+            if matches!(kw.as_deref(), Some("unquote" | "unquote_splicing")) {
+                for arg in _named_args(&child) {
+                    self.references_in(&arg, module_fqn);
+                }
+            } else {
+                self.unquoted_in(&child, module_fqn);
+            }
+        }
+    }
+
+    fn reference(&mut self, written: &str, module_fqn: &str, line: u32) {
+        let module = self.expand(written, module_fqn);
+        if module.starts_with("__MODULE__") {
+            return;
+        }
+        self.directives.push(Directive {
+            keyword: "reference",
+            local: module.clone(),
+            module,
+            renamed: false,
+            line,
+        });
+    }
+
+    /// Bind `local` to `module` for the rest of the current module body.
+    fn alias(&mut self, local: String, module: String) {
+        if let Some(scope) = self.scopes.last_mut() {
+            scope.insert(local, module);
+        }
+    }
+
+    /// A module reference as Elixir expands it: a leading `__MODULE__` is
+    /// the enclosing module, and a leading segment an alias is bound to is
+    /// that alias's module. Anything else is already a full name.
+    fn expand(&self, module: &str, module_fqn: &str) -> String {
+        let (first, rest) = match module.split_once('.') {
+            Some((f, r)) => (f, Some(r)),
+            None => (module, None),
+        };
+        if first == "__MODULE__" {
+            return _expand_module(module, module_fqn);
+        }
+        let head = match self.scopes.last().and_then(|s| s.get(first)) {
+            Some(full) => full.clone(),
+            None => return module.to_string(),
+        };
+        match rest {
+            Some(r) => format!("{}.{}", head, r),
+            None => head,
         }
     }
 
@@ -824,6 +1079,13 @@ fn _function_signature<'a, D: Doc>(
         return format!("{} {}", keyword, args_text);
     }
     format!("{} {}", keyword, _text(head))
+}
+
+/// `__MODULE__.Foo` — a module named relative to the enclosing one.
+fn _is_module_dot<'a, D: Doc>(node: &Node<'a, D>) -> bool {
+    node.field("left")
+        .is_some_and(|l| l.kind() == "identifier" && l.text() == "__MODULE__")
+        && node.field("right").is_some_and(|r| r.kind() == "alias")
 }
 
 /// `node.text()` with whitespace runs collapsed — multi-line heads and
@@ -1021,6 +1283,56 @@ mod tests {
         // Both `zero/0` clauses fold into one entry.
         assert_eq!(names, vec!["<>", "zero", "unquote(:dyn)"]);
         assert_eq!((kids[1].start_line, kids[1].end_line), (3, 6));
+    }
+
+    fn scan(src: &str) -> (Vec<String>, Vec<(&'static str, String)>) {
+        let s = scan_modules(src);
+        let d = s
+            .directives
+            .into_iter()
+            .map(|d| (d.keyword, d.module))
+            .collect();
+        (s.defined, d)
+    }
+
+    #[test]
+    fn scan_names_nested_modules_in_full() {
+        let (defined, _) = scan(
+            "defmodule A do\n  defmodule B.C do\n    defmodule D, do: nil\n  end\nend\ndefimpl P, for: A do\nend\ndefimpl Q, for: [A, B] do\nend\n",
+        );
+        assert_eq!(defined, vec!["A", "A.B.C", "A.B.C.D", "P.A", "Q.A", "Q.B"]);
+    }
+
+    #[test]
+    fn scan_expands_aliases_and_module() {
+        let (_, d) = scan(
+            "defmodule A do\n  alias Foo.Bar\n  alias __MODULE__.{X, Y}\n  import Bar.Baz\n  require Long.Name, as: LN\n  def r, do: LN.x()\n  defmodule N do\n  end\n  def f, do: N.g()\n  def h do\n    alias Deep.Mod\n    Mod.run()\n  end\n  def i, do: Mod.run()\nend\n",
+        );
+        assert_eq!(
+            d,
+            vec![
+                ("alias", "Foo.Bar".to_string()),
+                ("alias", "A.X".to_string()),
+                ("alias", "A.Y".to_string()),
+                ("import", "Foo.Bar.Baz".to_string()),
+                // `require … as:` aliases like `alias … as:`.
+                ("require", "Long.Name".to_string()),
+                // An alias inside a `def` is a directive, scoped to it.
+                ("alias", "Deep.Mod".to_string()),
+                // A nested module aliases its short name in the parent.
+                ("reference", "A.N".to_string()),
+                ("reference", "Mod".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn scan_references_skip_typespecs_and_quoted_code() {
+        let (_, d) = scan(
+            "defmodule A do\n  @spec f(T.t()) :: :ok\n  def f(%S{} = s), do: R.call(s, V)\n  defmacro m do\n    quote do\n      Q.x(unquote(U.y()))\n    end\n  end\n  def e, do: :ets.new(1) && x.y()\nend\n",
+        );
+        let refs: Vec<&str> = d.iter().map(|(_, m)| m.as_str()).collect();
+        assert_eq!(refs, vec!["S", "R", "V", "U"]);
     }
 
     #[test]

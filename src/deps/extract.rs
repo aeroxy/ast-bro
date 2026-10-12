@@ -49,6 +49,7 @@ pub fn extract(path: &Path, lang: Lang) -> Vec<RawImport> {
         Lang::Cpp => extract_cpp(&src),
         Lang::Php => extract_php(&src),
         Lang::Ruby => extract_ruby(&src),
+        Lang::Elixir => extract_elixir(&src),
         Lang::Other => Vec::new(),
     }
 }
@@ -931,6 +932,38 @@ fn _php_extract_string_arg<'a, D: Doc>(node: &Node<'a, D>) -> Option<String> {
 }
 
 // ---- Ruby ----
+
+// ---- Elixir ----
+
+/// `alias` / `import` / `require` / `use`, one record per module named
+/// (`alias Foo.{A, B}` is two), then every other module the file uses —
+/// most Elixir code calls `Foo.Bar.baz()` with no directive at all. The
+/// spec is the full dotted module name; the resolver looks it up among the
+/// modules the project defines.
+fn extract_elixir(src: &str) -> Vec<RawImport> {
+    let lines: Vec<&str> = src.lines().collect();
+    crate::adapters::elixir::scan_modules(src)
+        .directives
+        .into_iter()
+        .map(|d| RawImport {
+            kind: match d.keyword {
+                "alias" => ImportKind::Alias,
+                "require" => ImportKind::Require,
+                "use" => ImportKind::Use,
+                "reference" => ImportKind::Reference,
+                _ => ImportKind::Bare,
+            },
+            line: d.line,
+            statement: lines
+                .get(d.line as usize - 1)
+                .map(|l| l.trim().to_string())
+                .unwrap_or_default(),
+            local_name: d.renamed.then_some(d.local),
+            raw_path: Some(d.module.clone()),
+            spec: d.module,
+        })
+        .collect()
+}
 
 fn extract_ruby(src: &str) -> Vec<RawImport> {
     let lang = SupportLang::Ruby;

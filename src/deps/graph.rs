@@ -37,6 +37,11 @@ pub enum ImportKind {
     Alias,
     /// Globbed wildcard import where we don't expand members.
     Glob,
+    /// Elixir `require Foo` — the module must be compiled first so its
+    /// macros can be used.
+    Require,
+    /// Elixir module used without a directive: `Foo.Bar.baz(…)`, `%Foo{}`.
+    Reference,
 }
 
 impl ImportKind {
@@ -51,6 +56,8 @@ impl ImportKind {
             Self::Static => "static",
             Self::Alias => "alias",
             Self::Glob => "glob",
+            Self::Require => "require",
+            Self::Reference => "ref",
         }
     }
 }
