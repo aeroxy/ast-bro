@@ -313,6 +313,7 @@ pub fn detect_language(path: &Path) -> Option<ast_grep_language::SupportLang> {
         "php" => Some(SupportLang::Php),
         "bash" | "sh" | "zsh" | "ksh" => Some(SupportLang::Bash),
         "lua" | "luajit" => Some(SupportLang::Lua),
+        "elixir" => Some(SupportLang::Elixir),
         _ => None,
     }
 }
@@ -472,6 +473,17 @@ mod tests {
         assert_eq!(
             detect_language(&path),
             Some(ast_grep_language::SupportLang::Ruby)
+        );
+    }
+
+    #[test]
+    fn shebang_elixir() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("task");
+        std::fs::write(&path, "#!/usr/bin/env elixir\nIO.puts(1)\n").unwrap();
+        assert_eq!(
+            detect_language(&path),
+            Some(ast_grep_language::SupportLang::Elixir)
         );
     }
 
