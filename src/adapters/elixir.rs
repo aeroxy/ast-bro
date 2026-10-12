@@ -34,6 +34,9 @@
 //! `@impl` and `@deprecated` ride as `attrs` on the next definition, and
 //! `@behaviour` lands in the module's `bases` so `implements` can follow it.
 //!
+//! A def-like user macro (Nx's `defn`) with a function head and a body is a
+//! function, its macro name the native kind.
+//!
 //! Each function carries the calls in its body, receivers expanded to full
 //! module names.
 
@@ -175,6 +178,18 @@ const DEF_MACROS: &[(&str, bool, Option<&str>)] = &[
     ("defguard", false, Some("guard")),
     ("defguardp", true, Some("guard")),
     ("defdelegate", false, Some("delegate")),
+];
+
+/// `def`-prefixed macros that never define a function.
+const NOT_DEF_LIKE: &[&str] = &[
+    "defmodule",
+    "defprotocol",
+    "defimpl",
+    "defstruct",
+    "defexception",
+    "defoverridable",
+    "defrecord",
+    "defrecordp",
 ];
 
 /// Typespec attributes. A module named in one is not a dependency.
@@ -445,6 +460,18 @@ impl<'s> Walker<'s> {
                 "alias" | "import" | "require" | "use" => {
                     self.import(&child, &keyword, module_fqn);
                 }
+                // A def-like user macro (Nx's `defn`); last, so it shadows none.
+                k if _is_def_like(&child, k) => {
+                    let p = std::mem::take(&mut pending);
+                    self.function_clause(
+                        &child,
+                        &keyword,
+                        p,
+                        module_fqn,
+                        &mut out.decls,
+                        &mut last_fn,
+                    );
+                }
                 // Any other macro call (`test`, `plug`, `defoverridable`, …)
                 // is not a definition; a dangling `@doc` must not leak past
                 // it onto the next one.
@@ -641,11 +668,7 @@ impl<'s> Walker<'s> {
             }
         }
 
-        let (_, private, modifier) = DEF_MACROS
-            .iter()
-            .find(|(kw, _, _)| *kw == keyword)
-            .copied()
-            .unwrap_or(("def", false, None));
+        let (private, modifier) = _def_traits(keyword);
         // `defdelegate` keeps its `to:` target in the signature; every other
         // macro shows only the head (the `do:` body is not signature).
         let signature = if keyword == "defdelegate" {
@@ -660,7 +683,7 @@ impl<'s> Walker<'s> {
         };
         let mut modifiers = Vec::new();
         if let Some(m) = modifier {
-            modifiers.push(m.to_string());
+            modifiers.push(m);
         }
         if pending.impl_ {
             modifiers.push("impl".to_string());
@@ -1580,6 +1603,54 @@ fn _push_children<'a, D: Doc>(stack: &mut Vec<Node<'a, D>>, node: &Node<'a, D>) 
     stack[start..].reverse();
 }
 
+/// Visibility and modifier for `keyword`. A def-like macro is its own modifier,
+/// private as the `p` of a one-letter macro (`defnp`).
+fn _def_traits(keyword: &str) -> (bool, Option<String>) {
+    if let Some((_, private, modifier)) = DEF_MACROS.iter().find(|(kw, _, _)| *kw == keyword) {
+        return (*private, modifier.map(str::to_string));
+    }
+    let private = keyword.len() == 5 && keyword.ends_with('p');
+    (private, Some(keyword.to_string()))
+}
+
+/// A `def[a-z_]*` user macro with a function head and a body; without both it
+/// is some other macro (`define(mod, op)`).
+fn _is_def_like<'a, D: Doc>(node: &Node<'a, D>, keyword: &str) -> bool {
+    let Some(rest) = keyword.strip_prefix("def") else {
+        return false;
+    };
+    if rest.is_empty()
+        || !rest.chars().all(|c| c.is_ascii_lowercase() || c == '_')
+        || NOT_DEF_LIKE.contains(&keyword)
+        || DEF_MACROS.iter().any(|(kw, _, _)| *kw == keyword)
+    {
+        return false;
+    }
+    let args = _named_args(node);
+    let Some(head) = args.first() else {
+        return false;
+    };
+    let has_body =
+        node.children().any(|c| c.kind() == "do_block") || _keyword_value(&args, "do").is_some();
+    _is_head(head) && has_body
+}
+
+/// A function head: `name(args)` or `name`, with an optional guard or `::`.
+fn _is_head<'a, D: Doc>(node: &Node<'a, D>) -> bool {
+    match node.kind().as_ref() {
+        "identifier" => true,
+        "call" => node
+            .field("target")
+            .is_some_and(|t| t.kind() == "identifier"),
+        "binary_operator" => {
+            let op = node.field("operator").map(|o| o.text().into_owned());
+            matches!(op.as_deref(), Some("when") | Some("::"))
+                && node.field("left").is_some_and(|l| _is_head(&l))
+        }
+        _ => false,
+    }
+}
+
 /// `__MODULE__.Foo` — a module named relative to the enclosing one.
 fn _is_module_dot<'a, D: Doc>(node: &Node<'a, D>) -> bool {
     node.field("left")
@@ -1748,8 +1819,10 @@ fn _spec_head<'a, D: Doc>(node: &Node<'a, D>) -> Node<'a, D> {
 }
 
 /// Name and arity of a definition head. Covers `name(args)`, a bare
-/// zero-arity `name`, a guarded head (`… when …`), operator definitions
-/// (`a <> b`, `-a`) and unquoted names (`unquote(n)(args)`).
+/// zero-arity `name`, a guarded head (`… when …`), a return-typed head
+/// (`f(a :: integer) :: integer`, as typed DSLs write it), operator
+/// definitions (`a <> b`, `-a`) and unquoted names
+/// (`unquote(n)(args)`).
 fn _head_name_arity<'a, D: Doc>(head: &Node<'a, D>) -> (String, usize) {
     match head.kind().as_ref() {
         "binary_operator" => {
@@ -1757,7 +1830,7 @@ fn _head_name_arity<'a, D: Doc>(head: &Node<'a, D>) -> (String, usize) {
                 .field("operator")
                 .map(|o| o.text().into_owned())
                 .unwrap_or_default();
-            if op == "when" {
+            if op == "when" || op == "::" {
                 if let Some(left) = head.field("left") {
                     return _head_name_arity(&left);
                 }

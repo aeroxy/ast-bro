@@ -11,6 +11,9 @@
 //!      and `@spec` / `@impl` / `@deprecated` attach to the next definition.
 //!   4. `@behaviour` and `defimpl` feed `implements`.
 //!   5. A `.exs` script with top-level code parses.
+//!   6. A user macro named `def…` (Nx's `defn`) with a
+//!      function head and a body is a function, its macro name the modifier;
+//!      `def…` calls without both are not.
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -21,6 +24,7 @@ fn bin() -> PathBuf {
 
 const FIXTURE: &str = "tests/fixtures/elixir_adapter/sample.ex";
 const SCRIPT: &str = "tests/fixtures/elixir_adapter/script.exs";
+const DEF_MACROS: &str = "tests/fixtures/elixir_adapter/def_macros.ex";
 const DIR: &str = "tests/fixtures/elixir_adapter";
 
 fn run(args: &[&str]) -> String {
@@ -321,4 +325,78 @@ fn defimpl_for_module_names_the_enclosing_module() {
     let s = run(&["implements", "Printable", DIR]);
     assert!(s.contains("Billing.Printable.Billing.Invoice"), "{s}");
     assert!(!s.contains("__MODULE__"), "{s}");
+}
+
+#[test]
+fn def_like_macros_define_functions() {
+    let f = map_json(DEF_MACROS);
+    assert_eq!(f["error_count"], 0);
+    let kids = &module(&f, "Kernels")["children"];
+    let expect = [
+        (
+            "add",
+            "deftyped",
+            "",
+            "deftyped add(a :: integer, b :: integer) :: integer",
+        ),
+        (
+            "count",
+            "deftyped",
+            "",
+            "deftyped count(n :: integer) :: integer",
+        ),
+        (
+            "double",
+            "deftyped",
+            "",
+            "deftyped double(x :: float) :: float",
+        ),
+        (
+            "sign",
+            "deftyped",
+            "",
+            "deftyped sign(x :: integer) :: integer when x < 0",
+        ),
+        ("softmax", "defn", "", "defn softmax(t)"),
+        ("helper", "defnp", "private", "defnp helper(t)"),
+        ("zero", "defn", "", "defn zero"),
+    ];
+    for (name, keyword, vis, sig) in expect {
+        let d = find(kids, name);
+        assert_eq!(d.len(), 1, "{name}: {kids:#}");
+        assert_eq!(d[0]["kind"], "function", "{name}");
+        assert_eq!(d[0]["native_kind"], keyword, "{name}");
+        assert_eq!(d[0]["visibility"], vis, "{name}");
+        assert_eq!(d[0]["signature"], sig, "{name}");
+    }
+    // `@doc` attaches, and the range widens back to it.
+    let add = find(kids, "add")[0];
+    assert_eq!(add["docs"][0], "@doc \"Adds two integers.\"");
+    assert_eq!(add["start_line"], 5);
+    // Both clauses of sign/1 fold into one entry.
+    let sign = find(kids, "sign")[0];
+    assert_eq!(
+        (&sign["start_line"], &sign["end_line"]),
+        (&16.into(), &17.into())
+    );
+    // Atom first argument, keyword list, no body: not definitions.
+    for name in ["search", "defoverridable", "mod", "define", "a"] {
+        assert!(find(kids, name).is_empty(), "{name}: {kids:#}");
+    }
+    assert_eq!(kids.as_array().unwrap().len(), expect.len(), "{kids:#}");
+
+    let d = run(&["digest", DEF_MACROS]);
+    assert!(
+        d.contains("[deftyped] add()") && d.contains("[defn] softmax()"),
+        "{d}"
+    );
+    assert!(
+        !d.contains("helper"),
+        "private defnp in the public digest: {d}"
+    );
+    let s = run(&["show", DEF_MACROS, "Kernels.add"]);
+    assert!(
+        s.contains("deftyped add(a :: integer, b :: integer) :: integer do"),
+        "{s}"
+    );
 }
