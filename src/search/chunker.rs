@@ -276,7 +276,13 @@ fn build_split_plan(source: &str, lang: SupportLang) -> SplitPlan {
         ..SplitPlan::default()
     };
     let mut trail: Vec<String> = Vec::new();
-    collect_split_points(&root, source, &mut plan, &mut trail, Descent::root(source.len()));
+    let d = Descent::root(source.len());
+    if lang == SupportLang::Elixir {
+        // Elixir declares nothing by node kind; its walk reads macro names.
+        elixir::collect_split_points(&root, source, &mut plan, &mut trail, d);
+    } else {
+        collect_split_points(&root, source, &mut plan, &mut trail, d);
+    }
     if *plan.member_points.last().unwrap() < source.len() {
         plan.member_points.push(source.len());
     }
@@ -1214,6 +1220,8 @@ fn build_outline_chunks(
     flush(&mut batch, &mut first, &mut last, &mut out);
     out
 }
+
+mod elixir;
 
 #[cfg(test)]
 mod langs;

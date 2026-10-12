@@ -91,6 +91,17 @@ brings that to 41%, and p90 chunk height from 196 lines to 57. Rust gains less
 (53% → 39%), since it already has many top-level items and only `impl` blocks
 are affected. Go and C barely change.
 
+Elixir has no declaration kinds to match: `defmodule`, `def` and `test "…" do`
+are all a `call` with a `do_block`, told apart only by the macro their target
+names. It gets its own walk (`chunker/elixir.rs`) that recognises definitions
+the way the `map` adapter does — modules are opened, `def`-family clauses are
+callable members, and any other `do`-block macro in a module body (`test`,
+`describe`, `schema`) is a callable member unless its block holds definitions.
+Adjacent clauses of one name/arity are one outline entry but stay separate
+split points, so a many-clause function still packs into embeddable chunks.
+On the defk project the 6,475-line `compiler.ex` went from one 234 KB chunk to
+207 chunks, none above 6.2 KB.
+
 ### Breadcrumbs
 
 Every chunk carries the declaration path that encloses it (`QueryExecutorBase >
@@ -192,6 +203,7 @@ src/search/
 ├── bm25.rs        sparse BM25 (lucene variant), get_scores(tokens, mask)
 ├── chunker.rs     chunking: ast-grep decls, tree-sitter-md sections (markdown),
 │                  blank-line paragraphs (toml / powershell)
+├── chunker/elixir.rs  Elixir member walk, by macro name (no decl node kinds)
 ├── download.rs    HF probe + hf-mirror fallback + sha256 manifest
 ├── embed.rs       safetensors mmap + tokenizer.json + cosine_topk (SIMD via wide)
 ├── fusion.rs      RRF (k=60) + alpha resolver

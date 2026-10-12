@@ -202,11 +202,6 @@ const KNOWN_GAPS: &[(SupportLang, &str)] = &[
          `function_body` nodes, so no single node spans the member",
     ),
     (
-        SupportLang::Elixir,
-        "every form is a `call` carrying a `do_block`; `def` is indistinguishable \
-         from any other macro call by node kind alone",
-    ),
-    (
         SupportLang::Haskell,
         "top-level `declarations` is not a container, and a definition is split \
          into sibling `signature` and `function` nodes",
@@ -355,6 +350,7 @@ const PYISH: &str = "        pad{j} = {j}  # grows the body\n";
 const RBISH: &str = "        pad{j} = {j} # grows the body\n";
 const PHPISH: &str = "        $pad{j} = {j}; // grows the body\n";
 const KTISH: &str = "        val pad{j} = {j} // grows the body\n";
+const EXISH: &str = "        pad{j} = {j} # grows the body\n";
 
 #[rustfmt::skip]
 fn shapes() -> Vec<(Shape, &'static str)> {
@@ -397,6 +393,12 @@ fn shapes() -> Vec<(Shape, &'static str)> {
             src: "<?php\nclass A {\n  function m() {\n{pad}  }\n}\n" }, PHPISH),
         (Shape { label: "C++ method", lang: SupportLang::Cpp,
             src: "class A {\npublic:\n  void m() {\n{pad}  }\n};\n" }, CISH),
+        (Shape { label: "Elixir def", lang: SupportLang::Elixir,
+            src: "defmodule A do\n  def m(x) do\n{pad}    x\n  end\nend\n" }, EXISH),
+        (Shape { label: "Elixir guarded defp", lang: SupportLang::Elixir,
+            src: "defmodule A do\n  defp m(x) when is_integer(x) do\n{pad}    x\n  end\nend\n" }, EXISH),
+        (Shape { label: "Elixir ExUnit test", lang: SupportLang::Elixir,
+            src: "defmodule ATest do\n  use ExUnit.Case\n\n  test \"m\" do\n{pad}    assert true\n  end\nend\n" }, EXISH),
     ]
 }
 
@@ -488,6 +490,16 @@ fn variants() -> Vec<(Variant, &'static str)> {
             src: "class Outer:\n    class Inner:\n{member}        def m{i}(self):\n{pad}            pass\n{member}" }, PYISH),
         (Variant { label: "TS namespace", lang: SupportLang::TypeScript,
             src: "export namespace N {\n  export class A {\n{member}    m{i}(): void {\n{pad}    }\n{member}  }\n}\n" }, TSISH),
+        (Variant { label: "Elixir nested module", lang: SupportLang::Elixir,
+            src: "defmodule O do\n  defmodule I do\n{member}    def m{i}(x) do\n{pad}      x\n    end\n{member}  end\nend\n" }, EXISH),
+        (Variant { label: "Elixir clauses of one function", lang: SupportLang::Elixir,
+            src: "defmodule A do\n{member}  def m(x) when x == {i} do\n{pad}    x\n  end\n{member}end\n" }, EXISH),
+        (Variant { label: "Elixir keyword bodies", lang: SupportLang::Elixir,
+            src: "defmodule A do\n{member}  defp m{i}(x),\n    do:\n      [\n{pad}        x\n      ]\n{member}end\n" }, "        {j}, # padding element that exists only to grow this list\n"),
+        (Variant { label: "Elixir ExUnit describe", lang: SupportLang::Elixir,
+            src: "defmodule ATest do\n  use ExUnit.Case\n\n{member}  test \"m{i}\" do\n{pad}    assert true\n  end\n{member}end\n" }, EXISH),
+        (Variant { label: "Elixir defs under if", lang: SupportLang::Elixir,
+            src: "defmodule A do\n  if Code.ensure_loaded?(B) do\n{member}    def m{i}(x) do\n{pad}      x\n    end\n{member}  end\nend\n" }, EXISH),
     ]
 }
 
@@ -578,6 +590,21 @@ fn sig_cases() -> Vec<SigCase> {
         SigCase { label: "Go method", lang: SupportLang::Go,
             src: "package a\n\ntype C struct{}\n\nfunc (c *C) Query(sql string) error {\n\treturn nil\n}\n",
             want: "func (c *C) Query(sql string) error" },
+        SigCase { label: "Elixir module", lang: SupportLang::Elixir,
+            src: "defmodule Db.Conn do\n  def connect(host, port), do: {host, port}\nend\n",
+            want: "defmodule Db.Conn" },
+        SigCase { label: "Elixir guarded def", lang: SupportLang::Elixir,
+            src: "defmodule Db do\n  def connect(host, port) when is_integer(port) do\n    {host, port}\n  end\nend\n",
+            want: "def connect(host, port) when is_integer(port)" },
+        SigCase { label: "Elixir keyword def", lang: SupportLang::Elixir,
+            src: "defmodule Db do\n  defp connect(host, port), do: {host, port}\nend\n",
+            want: "defp connect(host, port)" },
+        SigCase { label: "Elixir defimpl", lang: SupportLang::Elixir,
+            src: "defimpl String.Chars, for: Db do\n  def to_string(_), do: \"db\"\nend\n",
+            want: "defimpl String.Chars, for: Db" },
+        SigCase { label: "Elixir test", lang: SupportLang::Elixir,
+            src: "defmodule DbTest do\n  test \"connects\", %{db: db} do\n    assert db\n  end\nend\n",
+            want: "test \"connects\", %{db: db}" },
     ]
 }
 
