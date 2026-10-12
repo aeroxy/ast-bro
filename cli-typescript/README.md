@@ -89,7 +89,7 @@ cargo install ast-bro
 - **Structural rewrite** — `run` for AST-aware pattern matching with metavariables (find + replace)
 - **MCP server** — every command exposed as an MCP tool for LLM agents
 
-Supports Rust, Python, TypeScript, JavaScript, Java, C#, C++, Kotlin, Scala, Go, PHP, Ruby, SQL, and Markdown.
+Supports Rust, Python, TypeScript, JavaScript, Java, C#, C++, Kotlin, Scala, Go, PHP, Ruby, Elixir, SQL, and Markdown.
 
 ## Links
 

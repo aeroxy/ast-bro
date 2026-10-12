@@ -1334,8 +1334,27 @@ fn _search_walk(
 ) {
     for d in decls {
         let mut new_trail = trail.clone();
-        if !d.name.is_empty() {
-            new_trail.push(d.name.clone());
+        if d.kind == DeclarationKind::Heading {
+            // A heading is prose: `v1.2 Release` is one segment.
+            if !d.name.is_empty() {
+                new_trail.push(d.name.clone());
+            }
+        } else {
+            // A dotted declaration name (Elixir `defmodule Foo.Bar`, C#
+            // `namespace A.B`) is one segment per dot, the way the query is
+            // split — otherwise `Foo.Bar` and `Bar.baz` can never match it.
+            // A name that is nothing but dots (Elixir's `..` operator) stays
+            // whole, so it cannot collapse onto its parent's trail.
+            let before = new_trail.len();
+            new_trail.extend(
+                d.name
+                    .split('.')
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string),
+            );
+            if new_trail.len() == before && !d.name.is_empty() {
+                new_trail.push(d.name.clone());
+            }
         }
 
         // For markdown headings, fall back to case-insensitive substring

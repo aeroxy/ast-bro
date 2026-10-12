@@ -84,6 +84,7 @@ For "what does this package actually expose?" — historically the most expensiv
 | Go         | `.go` |
 | PHP        | `.php` |
 | Ruby       | `.rb` |
+| Elixir     | `.ex`, `.exs` |
 | SQL        | `.sql`, `.ddl`, `.dml` |
 | Markdown   | `.md`, `.markdown`, `.mdx`, `.mdown` |
 
@@ -114,7 +115,7 @@ frontmatter (`+++`) is not surfaced.
    benches/data/
    *.generated.rs
    ```
-4. **Extension allowlist** — files are only opened if their extension is one ast-bro knows how to parse (the table above for map/digest/show/implements; a broader set for the search commands). Explicitly-passed extensionless files fall back to shebang detection (`#!/usr/bin/env python3` → Python, `#!/usr/bin/ruby` → Ruby, `#!/usr/bin/env node` → TypeScript, etc.) — so CLI scripts like `~/.local/bin/my-script` or `bin/deploy` work without an extension. Directory walks do **not** open extensionless files; the shebang is only consulted for explicit inputs to keep the walk fast.
+4. **Extension allowlist** — files are only opened if their extension is one ast-bro knows how to parse (the table above for map/digest/show/implements; a broader set for the search commands). Explicitly-passed extensionless files fall back to shebang detection (`#!/usr/bin/env python3` → Python, `#!/usr/bin/ruby` → Ruby, `#!/usr/bin/env elixir` → Elixir, `#!/usr/bin/env node` → TypeScript, etc.) — so CLI scripts like `~/.local/bin/my-script` or `bin/deploy` work without an extension. Directory walks do **not** open extensionless files; the shebang is only consulted for explicit inputs to keep the walk fast.
 
 Want to see exactly what ast-bro walks? Compare `ast-bro digest some/dir` with `rg --files some/dir` — anything in `rg` but not the digest is being filtered by one of the layers above.
 

@@ -63,7 +63,7 @@ For `search` / `find-related` / `index` only, an additional check: the file must
 
 Everything else (binaries, lockfiles, images, fonts, `.min.js`, `.txt`, etc.) is skipped before the file is opened.
 
-`map` / `digest` / `show` / `implements` use a narrower set — only the languages with a hand-written adapter at [`src/adapters/`](../src/adapters/) (Rust, Python, TS family, Java, C#, C++, Go, Kotlin, Scala, PHP, Ruby, SQL, Markdown). The chunker's broader set means search supports more languages than map does. See [architecture.md](architecture.md).
+`map` / `digest` / `show` / `implements` use a narrower set — only the languages with a hand-written adapter at [`src/adapters/`](../src/adapters/) (Rust, Python, TS family, Java, C#, C++, Go, Kotlin, Scala, PHP, Ruby, Elixir, SQL, Markdown). The chunker's broader set means search supports more languages than map does. See [architecture.md](architecture.md).
 
 ### 5. File-level guards (search / index only)
 
