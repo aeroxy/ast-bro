@@ -41,9 +41,12 @@ def bump_version(part: str) -> str:
 
     formula = ROOT / "Formula/ast-bro.rb"
     originals[formula] = formula.read_bytes()
-    updates[formula] = (
-        originals[formula].decode("utf-8").replace(f"/download/{old}/", f"/download/{new}/")
-    )
+    formula_text = originals[formula].decode("utf-8")
+    urls = re.findall(r'^\s*url "[^"]*/download/([^/]+)/[^"]+"', formula_text, re.MULTILINE)
+    versions = re.findall(r'^\s*version "([^"]+)"', formula_text, re.MULTILINE)
+    if not urls or any(version != old for version in urls + versions):
+        raise ValueError(f"Formula/ast-bro.rb must reference release {old} before bumping")
+    updates[formula] = formula_text.replace(f"/download/{old}/", f"/download/{new}/")
     updates[formula] = updates[formula].replace(f'version "{old}"', f'version "{new}"')
     lockfile = ROOT / "Cargo.lock"
     originals[lockfile] = lockfile.read_bytes()
@@ -52,7 +55,7 @@ def bump_version(part: str) -> str:
             path.write_bytes(content.encode("utf-8"))
         subprocess.run(["cargo", "update", "--workspace"], cwd=ROOT, check=True)
         release_version()
-    except (OSError, subprocess.CalledProcessError, ValueError):
+    except (OSError, subprocess.CalledProcessError, ValueError, KeyboardInterrupt):
         for path, content in originals.items():
             path.write_bytes(content)
         raise

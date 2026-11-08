@@ -1,6 +1,10 @@
 .PHONY: build release release-windows check run test clean bump-patch bump-minor bump-major update-formula publish-npm publish-pypi setup-pypi
 
+ifeq ($(OS),Windows_NT)
+PYTHON ?= python
+else
 PYTHON ?= python3
+endif
 
 ## Build the project (debug)
 build:

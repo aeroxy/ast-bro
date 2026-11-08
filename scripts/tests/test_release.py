@@ -100,15 +100,62 @@ class ReleaseTests(unittest.TestCase):
                 self.assertEqual(package["version"], version)
 
     def test_failed_lockfile_refresh_restores_all_versions(self) -> None:
+        """Restore even a lockfile partially rewritten by the failed Cargo process."""
         snapshots = {path: path.read_bytes() for path in self.root.rglob("*") if path.is_file()}
+
+        def failed_refresh(*args, **kwargs) -> None:
+            (self.root / "Cargo.lock").write_bytes(b"partially refreshed lockfile")
+            raise subprocess.CalledProcessError(101, "cargo")
+
         with patch.object(package_release, "ROOT", self.root), patch.object(
             bump_version, "ROOT", self.root
-        ), patch(
-            "bump_version.subprocess.run", side_effect=subprocess.CalledProcessError(101, "cargo")
-        ), self.assertRaises(subprocess.CalledProcessError):
+        ), patch("bump_version.subprocess.run", side_effect=failed_refresh), self.assertRaises(
+            subprocess.CalledProcessError
+        ):
             bump_version.bump_version("patch")
         for path, content in snapshots.items():
             self.assertEqual(path.read_bytes(), content, str(path))
+
+    def test_interrupted_refresh_restores_all_versions(self) -> None:
+        """Ctrl+C during Cargo must leave the release metadata usable for a retry."""
+        snapshots = {path: path.read_bytes() for path in self.root.rglob("*") if path.is_file()}
+
+        def interrupted_refresh(*args, **kwargs) -> None:
+            (self.root / "Cargo.lock").write_bytes(b"interrupted lockfile")
+            raise KeyboardInterrupt
+
+        with patch.object(package_release, "ROOT", self.root), patch.object(
+            bump_version, "ROOT", self.root
+        ), patch("bump_version.subprocess.run", side_effect=interrupted_refresh), self.assertRaises(
+            KeyboardInterrupt
+        ):
+            bump_version.bump_version("patch")
+        for path, content in snapshots.items():
+            self.assertEqual(path.read_bytes(), content, str(path))
+
+    def test_stale_formula_metadata_is_rejected_without_changes(self) -> None:
+        """Validate both the URL tag and an optional explicit Homebrew version."""
+        formula = self.root / "Formula/ast-bro.rb"
+        original = formula.read_text(encoding="utf-8")
+        for content in (
+            original.replace(f"/download/{self.old}/", "/download/0.0.0/"),
+            original + '\n  version "0.0.0"\n',
+            original.replace("/download/", "/invalid/"),
+        ):
+            with self.subTest(content=content):
+                formula.write_text(content, encoding="utf-8")
+                snapshots = {
+                    path: path.read_bytes() for path in self.root.rglob("*") if path.is_file()
+                }
+                with patch.object(package_release, "ROOT", self.root), patch.object(
+                    bump_version, "ROOT", self.root
+                ), patch("bump_version.subprocess.run") as cargo, self.assertRaisesRegex(
+                    ValueError, "Formula/ast-bro.rb"
+                ):
+                    bump_version.bump_version("patch")
+                cargo.assert_not_called()
+                for path, data in snapshots.items():
+                    self.assertEqual(path.read_bytes(), data, str(path))
 
 
 if __name__ == "__main__":
