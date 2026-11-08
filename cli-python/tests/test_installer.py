@@ -63,14 +63,20 @@ class InstallerTests(unittest.TestCase):
                 f"https://github.com/aeroxy/ast-bro/releases/download/{cli.VERSION}/ast-bro-windows-x86_64.zip"
             )
         self.assertEqual(stdout.getvalue(), "")
-        self.assertEqual(len(list(self.cache.iterdir())), 3)
+        self.assertEqual(list(self.cache.iterdir()), [binary])
 
-    def test_incomplete_archive_is_not_cached(self) -> None:
+    def test_missing_entrypoint_is_not_cached(self) -> None:
         with patch(
-            "httpx.Client.get", return_value=self.response(("ast-bro.exe",))
-        ), self.assertRaisesRegex(RuntimeError, "missing ast-outline.exe"):
+            "httpx.Client.get", return_value=self.response(("ast-outline.exe", "sb.exe"))
+        ), self.assertRaisesRegex(RuntimeError, "missing ast-bro.exe"):
             cli.download_binary()
         self.assertEqual(list(self.cache.iterdir()), [])
+
+    def test_entrypoint_only_archive_is_sufficient(self) -> None:
+        with patch("httpx.Client.get", return_value=self.response(("ast-bro.exe",))):
+            binary = cli.download_binary()
+        self.assertEqual(binary.read_bytes(), b"binary")
+        self.assertEqual(list(self.cache.iterdir()), [binary])
 
     def test_http_error_is_not_cached(self) -> None:
         response = httpx.Response(404, request=httpx.Request("GET", "https://example.test"))
@@ -82,8 +88,7 @@ class InstallerTests(unittest.TestCase):
 
     def test_reuses_installation_completed_during_download(self) -> None:
         def competing_install(url: str) -> httpx.Response:
-            for name in ("ast-bro.exe", "ast-outline.exe", "sb.exe"):
-                (self.cache / name).write_bytes(b"winner")
+            (self.cache / "ast-bro.exe").write_bytes(b"winner")
             return self.response(("ast-bro.exe", "ast-outline.exe", "sb.exe"))
 
         with patch("httpx.Client.get", side_effect=competing_install):
@@ -91,13 +96,8 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(binary.read_bytes(), b"winner")
 
     def test_reuses_winner_published_between_check_and_replace(self) -> None:
-        replace = Path.replace
-
         def competing_replace(source: Path, destination: Path) -> Path:
-            if destination.name != "ast-bro.exe":
-                return replace(source, destination)
-            self.assertTrue((self.cache / "ast-outline.exe").is_file())
-            self.assertTrue((self.cache / "sb.exe").is_file())
+            self.assertEqual(destination, self.cache / "ast-bro.exe")
             destination.write_bytes(b"running winner")
             raise PermissionError("Executable is running")
 
@@ -107,7 +107,7 @@ class InstallerTests(unittest.TestCase):
         ):
             binary = cli.download_binary()
         self.assertEqual(binary.read_bytes(), b"running winner")
-        self.assertEqual(len(list(self.cache.iterdir())), 3)
+        self.assertEqual(list(self.cache.iterdir()), [binary])
 
     def test_publication_error_without_a_winner_is_not_suppressed(self) -> None:
         response = self.response(("ast-bro.exe", "ast-outline.exe", "sb.exe"))

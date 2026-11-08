@@ -91,42 +91,46 @@ function downloadBinary() {
   // Stage downloads so a failed extraction cannot leave a cached partial binary.
   const staging = fs.mkdtempSync(path.join(cacheDir, "install-"));
   const archivePath = path.join(staging, "archive.zip");
+  const binaryName = path.basename(binaryPath);
+  const source = path.join(staging, binaryName);
   try {
     execFileSync(osName === "windows" ? windowsSystemPath("curl.exe") : "curl", [
-      "-fsSL", "--connect-timeout", "30", "--max-time", "120", "--output", archivePath, url,
+      "-fsSL", "--connect-timeout", "30", "--speed-limit", "1024", "--speed-time", "60",
+      "--output", archivePath, url,
     ]);
     if (osName === "windows") {
       execFileSync(windowsSystemPath("WindowsPowerShell", "v1.0", "powershell.exe"), [
         "-NoProfile", "-NonInteractive", "-Command",
-        "$ErrorActionPreference = 'Stop'; Add-Type -AssemblyName System.IO.Compression.FileSystem; [System.IO.Compression.ZipFile]::ExtractToDirectory($env:AST_BRO_ARCHIVE, $env:AST_BRO_DESTINATION)",
+        [
+          "$ErrorActionPreference = 'Stop'",
+          "Add-Type -AssemblyName System.IO.Compression.FileSystem",
+          "$archive = [System.IO.Compression.ZipFile]::OpenRead($env:AST_BRO_ARCHIVE)",
+          "try {",
+          "  $entry = $archive.GetEntry('ast-bro.exe')",
+          "  if ($null -eq $entry) { throw 'Release archive is missing ast-bro.exe' }",
+          "  [System.IO.Compression.ZipFileExtensions]::ExtractToFile($entry, (Join-Path $env:AST_BRO_DESTINATION 'ast-bro.exe'))",
+          "} finally { $archive.Dispose() }",
+        ].join("\n"),
       ], {
         env: { ...process.env, AST_BRO_ARCHIVE: archivePath, AST_BRO_DESTINATION: staging },
         windowsHide: true,
       });
     } else {
-      execFileSync("unzip", ["-o", archivePath, "-d", staging]);
+      execFileSync("unzip", ["-o", archivePath, binaryName, "-d", staging]);
     }
 
-    // Publish the entrypoint last: its presence marks a complete installation.
-    const names = ["ast-outline", "sb", BINARY_NAME].map(
-      (name) => `${name}${osName === "windows" ? ".exe" : ""}`
-    );
-    for (const name of names) {
-      if (!fs.statSync(path.join(staging, name)).isFile()) {
-        throw new Error(`Release archive is missing ${name}`);
-      }
+    if (!fs.existsSync(source) || !fs.statSync(source).isFile()) {
+      throw new Error(`Release archive is missing ${binaryName}`);
     }
-    for (const name of names) {
-      const source = path.join(staging, name);
-      const destination = path.join(cacheDir, name);
-      if (osName !== "windows") fs.chmodSync(source, 0o755);
-      if (fs.existsSync(destination) && fs.statSync(destination).isFile()) continue;
+    if (osName !== "windows") fs.chmodSync(source, 0o755);
+    // Every package alias launches this entrypoint; publish it in one atomic rename.
+    if (!fs.existsSync(binaryPath) || !fs.statSync(binaryPath).isFile()) {
       try {
-        fs.renameSync(source, destination);
+        fs.renameSync(source, binaryPath);
       } catch (error) {
         // A concurrent npm/Python install may have published and launched it.
         // Windows refuses to replace a running executable; reuse that winner.
-        if (!fs.existsSync(destination) || !fs.statSync(destination).isFile()) throw error;
+        if (!fs.existsSync(binaryPath) || !fs.statSync(binaryPath).isFile()) throw error;
       }
     }
   } finally {
@@ -144,7 +148,7 @@ if (require.main === module) {
   } catch (err) {
     console.error("Failed to install ast-bro binary:", err.message);
     console.error("You can manually install by running: cargo install ast-bro");
-    process.exitCode = 1;
+    // Postinstall only warms the cache; the launcher reports first-use failures.
   }
 }
 
