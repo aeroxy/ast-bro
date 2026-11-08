@@ -1,0 +1,4 @@
+# Release executables must work without a separately installed MSVC runtime.
+# Match the usual Unix stack reserve; the debug CLI exceeds Windows' 1 MiB default.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static", "-C", "link-arg=/STACK:8388608"]

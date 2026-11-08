@@ -165,6 +165,7 @@ fn the_shortest_spelling_is_the_one_displayed() {
     let dir = fixture();
     let (code, stdout, stderr) = run_in(dir.path(), &["map", "./sub", "sub"]);
     assert_eq!(code, Some(0), "stderr:\n{stderr}");
+    let stdout = stdout.replace('\\', "/");
     assert!(
         stdout.contains("# sub/a.rs"),
         "expected the bare spelling:\n{stdout}"
