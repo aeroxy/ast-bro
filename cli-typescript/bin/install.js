@@ -98,7 +98,8 @@ function downloadBinary() {
       execFileSync("unzip", ["-o", archivePath, "-d", staging]);
     }
 
-    const names = ["ast-bro", "ast-outline", "sb"].map(
+    // Publish the entrypoint last: its presence marks a complete installation.
+    const names = ["ast-outline", "sb", BINARY_NAME].map(
       (name) => `${name}${osName === "windows" ? ".exe" : ""}`
     );
     for (const name of names) {
@@ -108,8 +109,16 @@ function downloadBinary() {
     }
     for (const name of names) {
       const source = path.join(staging, name);
+      const destination = path.join(cacheDir, name);
       if (osName !== "windows") fs.chmodSync(source, 0o755);
-      fs.renameSync(source, path.join(cacheDir, name));
+      if (fs.existsSync(destination) && fs.statSync(destination).isFile()) continue;
+      try {
+        fs.renameSync(source, destination);
+      } catch (error) {
+        // A concurrent npm/Python install may have published and launched it.
+        // Windows refuses to replace a running executable; reuse that winner.
+        if (!fs.existsSync(destination) || !fs.statSync(destination).isFile()) throw error;
+      }
     }
   } finally {
     fs.rmSync(staging, { recursive: true, force: true });

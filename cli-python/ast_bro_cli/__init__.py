@@ -80,7 +80,8 @@ def download_binary() -> Path:
             resp.raise_for_status()
             archive_path.write_bytes(resp.content)
 
-        names = [f"{name}{binary_ext}" for name in ("ast-bro", "ast-outline", "sb")]
+        # Publish the entrypoint last: its presence marks a complete installation.
+        names = [f"{name}{binary_ext}" for name in ("ast-outline", "sb", BINARY_NAME)]
         with zipfile.ZipFile(archive_path) as zf:
             for name in names:
                 if name not in zf.namelist():
@@ -94,7 +95,16 @@ def download_binary() -> Path:
                     )
 
         for name in names:
-            (Path(staging) / name).replace(cache_dir / name)
+            destination = cache_dir / name
+            if destination.is_file():
+                continue
+            try:
+                (Path(staging) / name).replace(destination)
+            except OSError:
+                # Another npm/Python install can win after the existence check.
+                # Its running Windows executable cannot be replaced.
+                if not destination.is_file():
+                    raise
 
     print(f"Installed ast-bro to {binary_path}", file=sys.stderr)
     return binary_path
