@@ -41,9 +41,9 @@ def verify(commands: list[list[str]], fixture: Path, env: dict[str, str]) -> Non
     """Exercise aliases, arguments with spaces, clean JSON stdout, and exit codes."""
     for command in commands:
         assert run(command + ["--version"], env).strip() == f"ast-bro {release_version()}"
-    output = run(commands[0] + ["map", str(fixture), "--json"], env)
-    assert "greet" in json.dumps(json.loads(output)), output
-    run(commands[0] + ["--definitely-invalid"], env, expected=2)
+        output = run(command + ["map", str(fixture), "--json"], env)
+        assert "greet" in json.dumps(json.loads(output)), output
+        run(command + ["--definitely-invalid"], env, expected=2)
 
 
 def smoke(archive: Path, temp: Path) -> None:
@@ -94,10 +94,11 @@ def smoke(archive: Path, temp: Path) -> None:
         """
 const cp = require("node:child_process");
 const os = require("node:os");
+const path = require("node:path");
 os.homedir = () => process.env.AST_BRO_SMOKE_HOME;
 const execute = cp.execFileSync;
 cp.execFileSync = (file, args, options) => {
-  if (file === "curl.exe" || file === "curl") {
+  if (path.basename(file) === "curl.exe" || file === "curl") {
     if (args[args.length - 1] !== process.env.AST_BRO_EXPECTED_URL) {
       throw new Error("Wrong release URL: " + args[args.length - 1]);
     }

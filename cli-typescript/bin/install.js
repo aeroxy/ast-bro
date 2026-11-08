@@ -66,6 +66,15 @@ function getBinaryPath() {
   return path.join(cacheDir, `${BINARY_NAME}${ext}`);
 }
 
+/** Avoid resolving Windows utilities from the current checkout or PATH. */
+function windowsSystemPath(...parts) {
+  const root = process.env.SystemRoot || "C:\\Windows";
+  if (!path.win32.isAbsolute(root)) {
+    throw new Error("SystemRoot must be an absolute Windows path");
+  }
+  return path.win32.join(root, "System32", ...parts);
+}
+
 /** Download and extract a release without requiring a Unix shell on Windows. */
 function downloadBinary() {
   const { osName, archName } = getPlatform();
@@ -83,11 +92,11 @@ function downloadBinary() {
   const staging = fs.mkdtempSync(path.join(cacheDir, "install-"));
   const archivePath = path.join(staging, "archive.zip");
   try {
-    execFileSync(osName === "windows" ? "curl.exe" : "curl", [
-      "-fsSL", "--output", archivePath, url,
+    execFileSync(osName === "windows" ? windowsSystemPath("curl.exe") : "curl", [
+      "-fsSL", "--connect-timeout", "30", "--max-time", "120", "--output", archivePath, url,
     ]);
     if (osName === "windows") {
-      execFileSync("powershell.exe", [
+      execFileSync(windowsSystemPath("WindowsPowerShell", "v1.0", "powershell.exe"), [
         "-NoProfile", "-NonInteractive", "-Command",
         "$ErrorActionPreference = 'Stop'; Add-Type -AssemblyName System.IO.Compression.FileSystem; [System.IO.Compression.ZipFile]::ExtractToDirectory($env:AST_BRO_ARCHIVE, $env:AST_BRO_DESTINATION)",
       ], {

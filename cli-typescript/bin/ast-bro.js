@@ -13,7 +13,7 @@ try {
   const binary = downloadBinary();
   execFileSync(binary, args, { stdio: "inherit" });
 } catch (err) {
-  if (err.status !== undefined) {
+  if (typeof err.status === "number") {
     process.exit(err.status);
   }
   console.error(err.message);

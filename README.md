@@ -137,6 +137,8 @@ npm install -g @ast-bro/cli
 
 Pre-built binaries are available for macOS ARM64 and Windows x64. On Windows 10/11, run this command in PowerShell or Command Prompt with Node.js 18+ installed; Rust, Visual Studio, and a separate `unzip` installation are not required. All three commands (`ast-bro`, `ast-outline`, and `sb`) are installed.
 
+Windows support requires a new release containing these installers and the Windows binary asset. The published `4.2.0` npm/PyPI packages do not support Windows; until the new release is published, build from source instead.
+
 ### pip
 
 ```bash
