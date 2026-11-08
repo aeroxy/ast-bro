@@ -50,15 +50,10 @@ bump-minor:
 bump-major:
 	$(PYTHON) scripts/bump_version.py major
 
-## Update Formula/ast-bro.rb SHA256 from local release zip (run after release-macos, before upload)
+## Hash CI's macOS asset after the version tag has produced a draft release (requires gh)
 ##   make update-formula
 update-formula:
-	@mac_zip="target/release/ast-bro-macos-arm64.zip"; \
-	echo "Computing macOS SHA256 …"; \
-	mac_sha=$$(shasum -a 256 "$$mac_zip" | cut -d' ' -f1); \
-	echo "macOS SHA256: $$mac_sha"; \
-	sed -i '' "s/sha256 \"[a-f0-9]*\"/sha256 \"$$mac_sha\"/" Formula/ast-bro.rb; \
-	echo "Formula/ast-bro.rb updated"
+	$(PYTHON) scripts/update_formula.py
 
 ## Publish @ast-bro/cli to npm
 publish-npm:
