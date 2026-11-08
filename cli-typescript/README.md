@@ -59,7 +59,7 @@ ast-bro run -p '$FUNC($$$)' -l rust
 ast-bro run -p 'foo($A)' -r 'bar($A)' --write    # apply to disk
 ```
 
-During installation, the CLI downloads the pre-built binary for your platform from [GitHub releases](https://github.com/aeroxy/ast-bro/releases) and caches it locally. If your package manager skips install scripts, the first command downloads it instead. Failed downloads return a nonzero exit status and can be retried.
+During installation, the CLI downloads the pre-built binary for your platform from [GitHub releases](https://github.com/aeroxy/ast-bro/releases) and caches it locally. Download failures or unsupported platforms produce a warning without failing package installation. If the binary is not cached, the first command attempts the download and returns a nonzero exit status if it fails; a later command can retry.
 
 | Platform | Cache directory |
 | --- | --- |

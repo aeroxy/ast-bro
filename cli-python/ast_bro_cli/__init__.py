@@ -72,7 +72,7 @@ def download_binary() -> Path:
     url = f"https://github.com/{GITHUB_REPO}/releases/download/{VERSION}/{BINARY_NAME}-{os_name}-{arch}.zip"
     print(f"Downloading ast-bro {VERSION} for {os_name}-{arch}...", file=sys.stderr)
 
-    # Extract only the expected executables and publish after all are complete.
+    # Every package alias launches this entrypoint; publish it in one atomic rename.
     with tempfile.TemporaryDirectory(dir=cache_dir) as staging:
         archive_path = Path(staging) / "archive.zip"
         with httpx.Client(follow_redirects=True, timeout=60.0) as client:
@@ -80,30 +80,24 @@ def download_binary() -> Path:
             resp.raise_for_status()
             archive_path.write_bytes(resp.content)
 
-        # Publish the entrypoint last: its presence marks a complete installation.
-        names = [f"{name}{binary_ext}" for name in ("ast-outline", "sb", BINARY_NAME)]
+        staged_binary = Path(staging) / binary_path.name
         with zipfile.ZipFile(archive_path) as zf:
-            for name in names:
-                if name not in zf.namelist():
-                    raise RuntimeError(f"Release archive is missing {name}")
-                destination = Path(staging) / name
-                with zf.open(name) as source, destination.open("wb") as output:
-                    shutil.copyfileobj(source, output)
-                if os_name != "windows":
-                    destination.chmod(
-                        destination.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH
-                    )
+            if binary_path.name not in zf.namelist():
+                raise RuntimeError(f"Release archive is missing {binary_path.name}")
+            with zf.open(binary_path.name) as source, staged_binary.open("wb") as output:
+                shutil.copyfileobj(source, output)
+        if os_name != "windows":
+            staged_binary.chmod(
+                staged_binary.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH
+            )
 
-        for name in names:
-            destination = cache_dir / name
-            if destination.is_file():
-                continue
+        if not binary_path.is_file():
             try:
-                (Path(staging) / name).replace(destination)
+                staged_binary.replace(binary_path)
             except OSError:
                 # Another npm/Python install can win after the existence check.
                 # Its running Windows executable cannot be replaced.
-                if not destination.is_file():
+                if not binary_path.is_file():
                     raise
 
     print(f"Installed ast-bro to {binary_path}", file=sys.stderr)
