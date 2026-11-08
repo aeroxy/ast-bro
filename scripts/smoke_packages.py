@@ -46,6 +46,41 @@ def verify(commands: list[list[str]], fixture: Path, env: dict[str, str]) -> Non
         run(command + ["--definitely-invalid"], env, expected=2)
 
 
+def cleanup_processes(processes: list[subprocess.Popen[str]]) -> None:
+    """Stop smoke-test launchers and their Windows children without masking a test failure."""
+    original_failure = sys.exc_info()[0] is not None
+    errors = []
+    for process in processes:
+        try:
+            try:
+                process.communicate(timeout=30)
+            except subprocess.TimeoutExpired:
+                if sys.platform == "win32":
+                    taskkill = (
+                        Path(os.environ.get("SystemRoot", r"C:\Windows"))
+                        / "System32"
+                        / "taskkill.exe"
+                    )
+                    # Kill the tree before its launcher: the Rust child owns the pipes and EXE.
+                    subprocess.run(
+                        [str(taskkill), "/PID", str(process.pid), "/T", "/F"],
+                        capture_output=True,
+                        timeout=10,
+                        check=False,
+                    )
+                else:
+                    process.kill()
+                process.communicate(timeout=10)
+        except (OSError, subprocess.SubprocessError) as error:
+            errors.append(f"PID {process.pid}: {error}")
+    if errors:
+        message = "Smoke-test process cleanup failed: " + "; ".join(errors)
+        if original_failure:
+            print(message, file=sys.stderr)
+        else:
+            raise RuntimeError(message)
+
+
 def smoke(archive: Path, temp: Path) -> None:
     """Keep production download URLs intact; redirect transport only in test processes."""
     expected_url = (
@@ -189,13 +224,10 @@ else:
         finally:
             for event in proceed:
                 event.set()
-            for process in processes:
-                try:
-                    process.communicate(timeout=30)
-                except subprocess.TimeoutExpired:
-                    process.kill()
-                    process.communicate(timeout=10)
-            download_gates.clear()
+            try:
+                cleanup_processes(processes)
+            finally:
+                download_gates.clear()
 
     try:
         fresh_cache("native")
