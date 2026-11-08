@@ -5,12 +5,12 @@
  */
 
 const { execFileSync } = require("child_process");
-const { getBinaryPath } = require("./install");
-
-const binary = getBinaryPath();
+const { downloadBinary } = require("./install");
 const args = process.argv.slice(2);
 
 try {
+  // Package managers may skip postinstall; first use can finish installation.
+  const binary = downloadBinary();
   execFileSync(binary, args, { stdio: "inherit" });
 } catch (err) {
   if (err.status !== undefined) {

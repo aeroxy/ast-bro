@@ -13,6 +13,8 @@ npm installer for [ast-bro](https://github.com/aeroxy/ast-bro) — a fast, AST-b
 npm install -g @ast-bro/cli
 ```
 
+On Windows x64, use PowerShell or Command Prompt with Node.js 18+ installed. The installer uses Windows' built-in `curl.exe` and PowerShell ZIP support; no Rust toolchain or `unzip` is needed.
+
 This installs three commands, all forwarding to the same binary:
 
 - `ast-bro` — canonical name
@@ -57,18 +59,21 @@ ast-bro run -p '$FUNC($$$)' -l rust
 ast-bro run -p 'foo($A)' -r 'bar($A)' --write    # apply to disk
 ```
 
-On first run, the CLI downloads the pre-built binary for your platform from [GitHub releases](https://github.com/aeroxy/ast-bro/releases) and caches it locally.
+During installation, the CLI downloads the pre-built binary for your platform from [GitHub releases](https://github.com/aeroxy/ast-bro/releases) and caches it locally. If your package manager skips install scripts, the first command downloads it instead. Failed downloads return a nonzero exit status and can be retried.
 
 | Platform | Cache directory |
-|---|---|
+| --- | --- |
 | macOS | `~/Library/Caches/ast-bro-<version>/` |
 | Linux | `~/.cache/ast-bro-<version>/` |
+| Windows | `%LOCALAPPDATA%\ast-bro\Cache\<version>\` |
 
 ## Supported Platforms
 
 | Platform | Status |
-|---|---|
+| --- | --- |
 | macOS ARM64 | Pre-built binary available |
+| Windows x64 (Windows 10/11) | Pre-built binary available |
+| Windows ARM64 | Build from source |
 | Other platforms | Build from source (see below) |
 
 For unsupported platforms, build from source:

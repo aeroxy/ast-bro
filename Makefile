@@ -1,4 +1,6 @@
-.PHONY: build release check run test clean bump-patch bump-minor bump-major update-formula publish-npm publish-pypi setup-pypi
+.PHONY: build release release-windows check run test clean bump-patch bump-minor bump-major update-formula publish-npm publish-pypi setup-pypi
+
+PYTHON ?= python3
 
 ## Build the project (debug)
 build:
@@ -7,10 +9,12 @@ build:
 ## Release build — use this before manual testing
 release:
 	cargo build --release
-	zip -j target/release/ast-bro-macos-arm64.zip \
-	    target/release/ast-bro \
-	    target/release/ast-outline \
-	    target/release/sb
+	$(PYTHON) scripts/package_release.py --target aarch64-apple-darwin --binary-dir target/release
+
+## Build and package on a Windows x64 host (or use the commands in docs/releasing.md)
+release-windows:
+	cargo build --release --locked --bins --target x86_64-pc-windows-msvc
+	$(PYTHON) scripts/package_release.py --target x86_64-pc-windows-msvc
 
 ## Type-check without producing a binary
 check:

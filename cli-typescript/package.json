@@ -15,7 +15,11 @@
     "README.md"
   ],
   "scripts": {
-    "postinstall": "node bin/install.js"
+    "postinstall": "node bin/install.js",
+    "test": "node --test test/*.test.js"
+  },
+  "engines": {
+    "node": ">=18"
   },
   "keywords": [
     "ast-bro",
