@@ -36,48 +36,15 @@ clean:
 
 ## Bump the patch version (0.1.3 → 0.1.4) and update all version references
 bump-patch:
-	@old=$$(grep '^version' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/'); \
-	major=$$(echo $$old | cut -d. -f1); \
-	minor=$$(echo $$old | cut -d. -f2); \
-	patch=$$(echo $$old | cut -d. -f3); \
-	new="$$major.$$minor.$$((patch+1))"; \
-	sed -i '' "s/^version = \"$$old\"/version = \"$$new\"/" Cargo.toml; \
-	sed -i '' "s/version \"$$old\"/version \"$$new\"/" Formula/ast-bro.rb; \
-	sed -i '' "s|/$$old/|/$$new/|g" Formula/ast-bro.rb; \
-	sed -i '' "s/^version = \"$$old\"/version = \"$$new\"/" cli-python/pyproject.toml; \
-	sed -i '' "s/VERSION = \"$$old\"/VERSION = \"$$new\"/" cli-python/ast_bro_cli/__init__.py; \
-	sed -i '' "s/\"version\": \"$$old\"/\"version\": \"$$new\"/" cli-typescript/package.json; \
-	sed -i '' "s/const VERSION = \"$$old\"/const VERSION = \"$$new\"/" cli-typescript/bin/install.js; \
-	echo "$$old → $$new"
+	$(PYTHON) scripts/bump_version.py patch
 
 ## Bump the minor version (0.1.4 → 0.2.0) and update all version references
 bump-minor:
-	@old=$$(grep '^version' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/'); \
-	major=$$(echo $$old | cut -d. -f1); \
-	minor=$$(echo $$old | cut -d. -f2); \
-	new="$$major.$$((minor+1)).0"; \
-	sed -i '' "s/^version = \"$$old\"/version = \"$$new\"/" Cargo.toml; \
-	sed -i '' "s/version \"$$old\"/version \"$$new\"/" Formula/ast-bro.rb; \
-	sed -i '' "s|/$$old/|/$$new/|g" Formula/ast-bro.rb; \
-	sed -i '' "s/^version = \"$$old\"/version = \"$$new\"/" cli-python/pyproject.toml; \
-	sed -i '' "s/VERSION = \"$$old\"/VERSION = \"$$new\"/" cli-python/ast_bro_cli/__init__.py; \
-	sed -i '' "s/\"version\": \"$$old\"/\"version\": \"$$new\"/" cli-typescript/package.json; \
-	sed -i '' "s/const VERSION = \"$$old\"/const VERSION = \"$$new\"/" cli-typescript/bin/install.js; \
-	echo "$$old → $$new"
+	$(PYTHON) scripts/bump_version.py minor
 
 ## Bump the major version (0.1.4 → 1.0.0) and update all version references
 bump-major:
-	@old=$$(grep '^version' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/'); \
-	major=$$(echo $$old | cut -d. -f1); \
-	new="$$((major+1)).0.0"; \
-	sed -i '' "s/^version = \"$$old\"/version = \"$$new\"/" Cargo.toml; \
-	sed -i '' "s/version \"$$old\"/version \"$$new\"/" Formula/ast-bro.rb; \
-	sed -i '' "s|/$$old/|/$$new/|g" Formula/ast-bro.rb; \
-	sed -i '' "s/^version = \"$$old\"/version = \"$$new\"/" cli-python/pyproject.toml; \
-	sed -i '' "s/VERSION = \"$$old\"/VERSION = \"$$new\"/" cli-python/ast_bro_cli/__init__.py; \
-	sed -i '' "s/\"version\": \"$$old\"/\"version\": \"$$new\"/" cli-typescript/package.json; \
-	sed -i '' "s/const VERSION = \"$$old\"/const VERSION = \"$$new\"/" cli-typescript/bin/install.js; \
-	echo "$$old → $$new"
+	$(PYTHON) scripts/bump_version.py major
 
 ## Update Formula/ast-bro.rb SHA256 from local release zip (run after release-macos, before upload)
 ##   make update-formula

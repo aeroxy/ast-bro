@@ -24,6 +24,7 @@ def release_version() -> str:
     }
     for filename, pattern in (
         ("Cargo.toml", r'^version = "([^"]+)"'),
+        ("Cargo.lock", r'^\[\[package\]\]\nname = "ast-bro"\nversion = "([^"]+)"'),
         ("cli-python/pyproject.toml", r'^version = "([^"]+)"'),
         ("cli-python/ast_bro_cli/__init__.py", r'^VERSION = "([^"]+)"'),
         ("cli-typescript/bin/install.js", r'^const VERSION = "([^"]+)"'),
