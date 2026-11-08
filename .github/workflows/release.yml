@@ -61,6 +61,7 @@ jobs:
           python -m pip install build httpx
           node --test cli-typescript/test/*.test.js
           python -m unittest discover -s cli-python/tests
+          python -m unittest discover -s scripts/tests
       - name: Install and run the packed npm and Python packages
         run: python scripts/smoke_packages.py --archive 'target/release/ast-bro-${{ matrix.platform }}.zip'
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
