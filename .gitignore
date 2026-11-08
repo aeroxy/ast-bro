@@ -7,3 +7,4 @@
 .envrc
 
 **/*.rs.bk
+__pycache__/

@@ -13,6 +13,8 @@ PyPI installer for [ast-bro](https://github.com/aeroxy/ast-bro) — a fast, AST-
 pip install ast-bro
 ```
 
+For an isolated tool installation, use `uv tool install ast-bro`. Both commands work on Windows x64 with Python 3.8+; no Rust toolchain is needed.
+
 This installs three commands, all forwarding to the same binary:
 
 - `ast-bro` — canonical name
@@ -60,15 +62,18 @@ ast-bro run -p 'foo($A)' -r 'bar($A)' --write    # apply to disk
 On first run, the CLI downloads the pre-built binary for your platform from [GitHub releases](https://github.com/aeroxy/ast-bro/releases) and caches it locally.
 
 | Platform | Cache directory |
-|---|---|
-| macOS | `~/Library/Caches/ast-bro/` |
-| Linux | `~/.cache/ast-bro/` |
+| --- | --- |
+| macOS | `~/Library/Caches/ast-bro/<version>/` |
+| Linux | `~/.cache/ast-bro/<version>/` |
+| Windows | `%LOCALAPPDATA%\ast-bro\Cache\<version>\` |
 
 ## Supported Platforms
 
 | Platform | Status |
-|---|---|
+| --- | --- |
 | macOS ARM64 | Pre-built binary available |
+| Windows x64 (Windows 10/11) | Pre-built binary available |
+| Windows ARM64 | Build from source |
 | Other platforms | Build from source (see below) |
 
 For unsupported platforms, build from source:

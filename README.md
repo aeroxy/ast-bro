@@ -39,7 +39,7 @@ Modern agentic coding tools explore codebases by reading files directly. That's 
 
 **Before [ast-bro](https://github.com/aeroxy/ast-bro):**
 
-```
+```text
 Agent: Read Player.cs            # 1200 lines of tokens
 Agent: Read Enemy.cs             # 800 lines of tokens
 Agent: Read DamageSystem.cs      # 400 lines of tokens
@@ -72,20 +72,20 @@ For "what does this package actually expose?" — historically the most expensiv
 
 | Language | Extensions |
 | --- | --- |
-| Rust       | `.rs` |
-| C#         | `.cs` |
-| C++        | `.cpp`, `.cc`, `.cxx`, `.hpp`, `.hh` |
-| Python     | `.py`, `.pyi` |
+| Rust | `.rs` |
+| C# | `.cs` |
+| C++ | `.cpp`, `.cc`, `.cxx`, `.hpp`, `.hh` |
+| Python | `.py`, `.pyi` |
 | TypeScript | `.ts`, `.tsx` |
 | JavaScript | `.js`, `.jsx`, `.mjs`, `.cjs` |
-| Java       | `.java` |
-| Kotlin     | `.kt`, `.kts` |
-| Scala      | `.scala`, `.sc` |
-| Go         | `.go` |
-| PHP        | `.php` |
-| Ruby       | `.rb` |
-| SQL        | `.sql`, `.ddl`, `.dml` |
-| Markdown   | `.md`, `.markdown`, `.mdx`, `.mdown` |
+| Java | `.java` |
+| Kotlin | `.kt`, `.kts` |
+| Scala | `.scala`, `.sc` |
+| Go | `.go` |
+| PHP | `.php` |
+| Ruby | `.rb` |
+| SQL | `.sql`, `.ddl`, `.dml` |
+| Markdown | `.md`, `.markdown`, `.mdx`, `.mdown` |
 
 *More coming soon! Adding another language is a single new adapter file leveraging the massive `ast-grep` language ecosystem.*
 
@@ -114,6 +114,7 @@ frontmatter (`+++`) is not surfaced.
    benches/data/
    *.generated.rs
    ```
+
 4. **Extension allowlist** — files are only opened if their extension is one ast-bro knows how to parse (the table above for map/digest/show/implements; a broader set for the search commands). Explicitly-passed extensionless files fall back to shebang detection (`#!/usr/bin/env python3` → Python, `#!/usr/bin/ruby` → Ruby, `#!/usr/bin/env node` → TypeScript, etc.) — so CLI scripts like `~/.local/bin/my-script` or `bin/deploy` work without an extension. Directory walks do **not** open extensionless files; the shebang is only consulted for explicit inputs to keep the walk fast.
 
 Want to see exactly what ast-bro walks? Compare `ast-bro digest some/dir` with `rg --files some/dir` — anything in `rg` but not the digest is being filtered by one of the layers above.
@@ -134,11 +135,17 @@ brew install aeroxy/tap/ast-bro
 npm install -g @ast-bro/cli
 ```
 
+Pre-built binaries are available for macOS ARM64 and Windows x64. On Windows 10/11, run this command in PowerShell or Command Prompt with Node.js 18+ installed; Rust, Visual Studio, and a separate `unzip` installation are not required. All three commands (`ast-bro`, `ast-outline`, and `sb`) are installed.
+
 ### pip
 
 ```bash
 pip install ast-bro
 ```
+
+Or install into an isolated tool environment with `uv tool install ast-bro`. The Python installer supports the same pre-built platforms and downloads the binary on first use.
+
+Release builds and package smoke tests are documented in [docs/releasing.md](docs/releasing.md).
 
 ### Cargo
 
@@ -352,11 +359,12 @@ payload then ends with a note saying what is missing and the
 ### Claude Code subagent shadowing
 
 Claude Code has isolated subagents (Explore, Plan, general-purpose) that run in
-their own context and cannot see the main `CLAUDE.md`. `ast-bro install` 
-automatically shadows these subagents with `.claude/agents/<Name>.md` files 
+their own context and cannot see the main `CLAUDE.md`. `ast-bro install`
+automatically shadows these subagents with `.claude/agents/<Name>.md` files
 containing the full ast-bro prompt.
 
 When you run `ast-bro install --target claude-code`, you get:
+
 - `CLAUDE.md` — main agent prompt (global or local per-repo)
 - `.claude/settings.json` — `Read` hooks on `PreToolUse` and `PostToolUseFailure`
 - `.claude/agents/Explore.md` — Explore subagent with the prompt injected
@@ -413,7 +421,7 @@ When you run it yourself, you'll see a gorgeous ANSI-colored output. Don't worry
 
 ### Rust
 
-```
+```text
 # src/core.rs (490 lines, 3 types, 12 methods, 5 fields)
 pub struct Declaration  L10-120
     pub kind: DeclarationKind  L12
@@ -435,7 +443,7 @@ ast-bro show a.java b.java greet        # an explicit list works too
 A multi-file answer leads with its coverage, and caps rendered bodies at
 `--limit 20` while still reporting the true total:
 
-```
+```text
 # 3 match(es) for 'greet' in 2 of 47 file(s) searched
 ```
 
@@ -451,7 +459,7 @@ only the first file and dropped the symbol's other definitions silently.
 between the header and the body so you know what the extracted code is
 nested inside, without a second `map` call:
 
-```
+```text
 # Player.cs:30-48  Game.Player.PlayerController.TakeDamage  (method)
 # in: namespace Game.Player → public class PlayerController : MonoBehaviour, IDamageable
 /// <summary>Apply damage.</summary>
@@ -504,7 +512,7 @@ changes, so downstream tooling can guard on it:
 ```
 
 | Schema | Command |
-|--------|----------|
+| -------- | ---------- |
 | `ast-bro.map.v1` | `map --json`, `digest --json` |
 | `ast-bro.show.v2` | `show --json` |
 | `ast-bro.implements.v1` | `implements --json` |
@@ -566,26 +574,26 @@ The server speaks line-delimited JSON-RPC 2.0 on stdin/stdout and exposes ninete
 tools that map 1:1 to the CLI commands:
 
 | Tool | Equivalent CLI | Returns |
-|------|----------------|---------|
-| `map`          | `ast-bro map <paths>`                | text, or `ast-bro.map.v1` with `json: true` |
-| `digest`       | `ast-bro digest <paths>`             | text, or `ast-bro.map.v1` with `json: true` |
-| `show`         | `ast-bro show <target> <syms>`       | text, or `ast-bro.show.v2` with `json: true`; target may be a file, directory, or glob |
-| `implements`   | `ast-bro implements <type> <paths>`  | text, or `ast-bro.implements.v1` with `json: true` |
-| `callers`      | `ast-bro callers <symbol>`           | text, or `ast-bro.callers.v1` with `json: true` |
-| `callees`      | `ast-bro callees <symbol>`           | text, or `ast-bro.callees.v1` with `json: true` |
-| `trace`        | `ast-bro trace <from> <to>`          | text, or `ast-bro.trace.v1` with `json: true` |
-| `surface`      | `ast-bro surface [path]`             | text, or `ast-bro.surface.v1` with `json: true` |
-| `impact`       | `ast-bro impact <symbol>`            | text, or `ast-bro.impact.v1` with `json: true` |
-| `context`      | `ast-bro context <symbol>`           | text, or `ast-bro.context.v1` with `json: true` |
-| `deps`         | `ast-bro deps <file>`                | text, or `ast-bro.deps.v1` with `json: true` |
-| `reverse_deps` | `ast-bro reverse-deps <file>`        | text, or `ast-bro.reverse-deps.v1` with `json: true` |
-| `cycles`       | `ast-bro cycles [path]`              | text, or `ast-bro.cycles.v1` with `json: true` |
-| `graph`        | `ast-bro graph [path]`               | text by default; `json: true` for `ast-bro.graph.v1` |
-| `search`       | `ast-bro search "<query>"`           | text, or `ast-bro.search.v1` with `json: true` |
+| ------ | ---------------- | --------- |
+| `map` | `ast-bro map <paths>` | text, or `ast-bro.map.v1` with `json: true` |
+| `digest` | `ast-bro digest <paths>` | text, or `ast-bro.map.v1` with `json: true` |
+| `show` | `ast-bro show <target> <syms>` | text, or `ast-bro.show.v2` with `json: true`; target may be a file, directory, or glob |
+| `implements` | `ast-bro implements <type> <paths>` | text, or `ast-bro.implements.v1` with `json: true` |
+| `callers` | `ast-bro callers <symbol>` | text, or `ast-bro.callers.v1` with `json: true` |
+| `callees` | `ast-bro callees <symbol>` | text, or `ast-bro.callees.v1` with `json: true` |
+| `trace` | `ast-bro trace <from> <to>` | text, or `ast-bro.trace.v1` with `json: true` |
+| `surface` | `ast-bro surface [path]` | text, or `ast-bro.surface.v1` with `json: true` |
+| `impact` | `ast-bro impact <symbol>` | text, or `ast-bro.impact.v1` with `json: true` |
+| `context` | `ast-bro context <symbol>` | text, or `ast-bro.context.v1` with `json: true` |
+| `deps` | `ast-bro deps <file>` | text, or `ast-bro.deps.v1` with `json: true` |
+| `reverse_deps` | `ast-bro reverse-deps <file>` | text, or `ast-bro.reverse-deps.v1` with `json: true` |
+| `cycles` | `ast-bro cycles [path]` | text, or `ast-bro.cycles.v1` with `json: true` |
+| `graph` | `ast-bro graph [path]` | text by default; `json: true` for `ast-bro.graph.v1` |
+| `search` | `ast-bro search "<query>"` | text, or `ast-bro.search.v1` with `json: true` |
 | `find_related` | `ast-bro find-related <file>:<line>` | text, or `ast-bro.related.v1` with `json: true` |
-| `index`        | `ast-bro index`                      | text, or `ast-bro.index-stats.v1` with `json: true` |
-| `run`          | `ast-bro run -p <pattern>`           | text diff, or `ast-bro.run.v1` with `json: true` |
-| `squeeze`      | `ast-bro squeeze <file>`             | text, or `ast-bro.squeeze.v1` with `json: true` |
+| `index` | `ast-bro index` | text, or `ast-bro.index-stats.v1` with `json: true` |
+| `run` | `ast-bro run -p <pattern>` | text diff, or `ast-bro.run.v1` with `json: true` |
+| `squeeze` | `ast-bro squeeze <file>` | text, or `ast-bro.squeeze.v1` with `json: true` |
 
 Wire it into a client by pointing at the binary:
 
@@ -687,7 +695,7 @@ ast-bro callers Player.TakeDamage --include-ambiguous --json
 Both commands are **kind-aware**:
 
 | Target kind | `callers X` | `callees X` |
-|---|---|---|
+| --- | --- | --- |
 | function / method / constructor | call sites that invoke `X` | call sites inside `X`'s body |
 | class / struct / trait / interface / enum / record | implementors + constructions (covers `Foo()`, `new Foo()`, `Foo {}`, `Foo::new()`) | ancestor types and the methods they declare (transitive via `--depth N`) |
 
