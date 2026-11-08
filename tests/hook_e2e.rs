@@ -47,10 +47,10 @@ fn claude_code_pass_through_for_small_file() {
     let dir = TempDir::new().unwrap();
     let p = dir.path().join("small.rs");
     std::fs::write(&p, "fn main() {}\n").unwrap();
-    let stdin = format!(
-        r#"{{"tool_name":"Read","tool_input":{{"file_path":"{}"}}}}"#,
-        p.display()
-    );
+    let stdin = serde_json::json!({
+        "tool_name": "Read", "tool_input": {"file_path": p}
+    })
+    .to_string();
     let (stdout, _, code) = run_hook("claude-code", &stdin, &["--min-lines", "200"]);
     assert_eq!(code, 0);
     assert!(stdout.contains("\"continue\":true"), "stdout: {}", stdout);
@@ -60,10 +60,10 @@ fn claude_code_pass_through_for_small_file() {
 fn claude_code_substitutes_for_big_file() {
     let dir = TempDir::new().unwrap();
     let p = big_file(&dir);
-    let stdin = format!(
-        r#"{{"tool_name":"Read","tool_input":{{"file_path":"{}"}}}}"#,
-        p.display()
-    );
+    let stdin = serde_json::json!({
+        "tool_name": "Read", "tool_input": {"file_path": p}
+    })
+    .to_string();
     let (stdout, _, code) = run_hook("claude-code", &stdin, &["--min-lines", "200"]);
     assert_eq!(code, 0);
     assert!(stdout.contains("\"decision\":\"block\""));
@@ -77,10 +77,10 @@ fn claude_code_substitutes_for_big_file() {
 fn claude_code_post_tool_use_replaces_the_result() {
     let dir = TempDir::new().unwrap();
     let p = big_file(&dir);
-    let stdin = format!(
-        r#"{{"hook_event_name":"PostToolUse","tool_name":"Read","tool_input":{{"file_path":"{}"}}}}"#,
-        p.display()
-    );
+    let stdin = serde_json::json!({
+        "hook_event_name": "PostToolUse", "tool_name": "Read", "tool_input": {"file_path": p}
+    })
+    .to_string();
     let (stdout, _, code) = run_hook("claude-code", &stdin, &["--min-lines", "200"]);
     assert_eq!(code, 0);
     assert!(
@@ -88,7 +88,11 @@ fn claude_code_post_tool_use_replaces_the_result() {
         "stdout: {}",
         stdout
     );
-    assert!(stdout.contains(r#""updatedToolOutput""#), "stdout: {}", stdout);
+    assert!(
+        stdout.contains(r#""updatedToolOutput""#),
+        "stdout: {}",
+        stdout
+    );
     assert!(stdout.contains("ast-bro replaced the file contents"));
     assert!(!stdout.contains("\"decision\""), "stdout: {}", stdout);
     assert!(!stdout.contains("nothing failed"), "stdout: {}", stdout);
@@ -100,13 +104,17 @@ fn claude_code_post_tool_use_replaces_the_result() {
 fn claude_code_pre_tool_use_still_denies() {
     let dir = TempDir::new().unwrap();
     let p = big_file(&dir);
-    let stdin = format!(
-        r#"{{"hook_event_name":"PreToolUse","tool_name":"Read","tool_input":{{"file_path":"{}"}}}}"#,
-        p.display()
-    );
+    let stdin = serde_json::json!({
+        "hook_event_name": "PreToolUse", "tool_name": "Read", "tool_input": {"file_path": p}
+    })
+    .to_string();
     let (stdout, _, code) = run_hook("claude-code", &stdin, &["--min-lines", "200"]);
     assert_eq!(code, 0);
-    assert!(stdout.contains("\"decision\":\"block\""), "stdout: {}", stdout);
+    assert!(
+        stdout.contains("\"decision\":\"block\""),
+        "stdout: {}",
+        stdout
+    );
     assert!(stdout.contains("nothing failed"));
 }
 
@@ -117,10 +125,10 @@ fn claude_code_pre_tool_use_still_denies() {
 fn claude_code_post_tool_use_failure_augments_with_context() {
     let dir = TempDir::new().unwrap();
     let p = big_file(&dir);
-    let stdin = format!(
-        r#"{{"hook_event_name":"PostToolUseFailure","tool_name":"Read","tool_input":{{"file_path":"{}"}},"error":"File content (30000 tokens) exceeds maximum allowed tokens (25000)."}}"#,
-        p.display()
-    );
+    let stdin = serde_json::json!({
+        "hook_event_name": "PostToolUseFailure", "tool_name": "Read", "tool_input": {"file_path": p},
+        "error": "File content (30000 tokens) exceeds maximum allowed tokens (25000)."
+    }).to_string();
     let (stdout, _, code) = run_hook("claude-code", &stdin, &["--min-lines", "200"]);
     assert_eq!(code, 0);
     assert!(
@@ -128,8 +136,16 @@ fn claude_code_post_tool_use_failure_augments_with_context() {
         "stdout: {}",
         stdout
     );
-    assert!(stdout.contains(r#""additionalContext""#), "stdout: {}", stdout);
-    assert!(stdout.contains("because the Read did"), "stdout: {}", stdout);
+    assert!(
+        stdout.contains(r#""additionalContext""#),
+        "stdout: {}",
+        stdout
+    );
+    assert!(
+        stdout.contains("because the Read did"),
+        "stdout: {}",
+        stdout
+    );
     // The notice must not repeat the host's error back as a diagnosis: the shim
     // reads no error field, and the event fires for failures a retry would clear.
     assert!(!stdout.contains("exceeds maximum"), "stdout: {}", stdout);
@@ -144,10 +160,10 @@ fn claude_code_post_tool_use_passes_through_small_file() {
     let dir = TempDir::new().unwrap();
     let p = dir.path().join("small.rs");
     std::fs::write(&p, "fn main() {}\n").unwrap();
-    let stdin = format!(
-        r#"{{"hook_event_name":"PostToolUse","tool_name":"Read","tool_input":{{"file_path":"{}"}}}}"#,
-        p.display()
-    );
+    let stdin = serde_json::json!({
+        "hook_event_name": "PostToolUse", "tool_name": "Read", "tool_input": {"file_path": p}
+    })
+    .to_string();
     let (stdout, _, code) = run_hook("claude-code", &stdin, &["--min-lines", "200"]);
     assert_eq!(code, 0);
     assert!(stdout.contains("\"continue\":true"), "stdout: {}", stdout);
@@ -165,10 +181,10 @@ fn claude_code_pass_through_for_png() {
 fn claude_code_pass_through_when_offset_set() {
     let dir = TempDir::new().unwrap();
     let p = big_file(&dir);
-    let stdin = format!(
-        r#"{{"tool_name":"Read","tool_input":{{"file_path":"{}","offset":10,"limit":20}}}}"#,
-        p.display()
-    );
+    let stdin = serde_json::json!({
+        "tool_name": "Read", "tool_input": {"file_path": p, "offset": 10, "limit": 20}
+    })
+    .to_string();
     let (stdout, _, code) = run_hook("claude-code", &stdin, &["--min-lines", "200"]);
     assert_eq!(code, 0);
     assert!(stdout.contains("\"continue\":true"));
@@ -178,10 +194,10 @@ fn claude_code_pass_through_when_offset_set() {
 fn gemini_substitutes_for_big_file() {
     let dir = TempDir::new().unwrap();
     let p = big_file(&dir);
-    let stdin = format!(
-        r#"{{"tool_name":"read_file","tool_input":{{"absolute_path":"{}"}}}}"#,
-        p.display()
-    );
+    let stdin = serde_json::json!({
+        "tool_name": "read_file", "tool_input": {"absolute_path": p}
+    })
+    .to_string();
     let (stdout, _, code) = run_hook("gemini", &stdin, &["--min-lines", "200"]);
     assert_eq!(code, 0);
     assert!(stdout.contains("\"decision\":\"block\""));

@@ -18,6 +18,10 @@ env:
   CARGO_INCREMENTAL: 0
   RUST_BACKTRACE: 1
 
+defaults:
+  run:
+    shell: bash
+
 jobs:
   test:
     name: cargo test (${{ matrix.os }})
@@ -26,7 +30,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest, macos-latest, windows-latest]
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -49,7 +53,7 @@ jobs:
             target
           # Cargo.lock pins the dependency set; the rustc version is part of the
           # key because target/ is not portable across toolchain upgrades.
-          key: cargo-${{ runner.os }}-${{ steps.toolchain.outputs.version }}-${{ hashFiles('**/Cargo.lock') }}
+          key: cargo-${{ runner.os }}-${{ steps.toolchain.outputs.version }}-${{ hashFiles('**/Cargo.lock', '.cargo/config.toml') }}
           restore-keys: |
             cargo-${{ runner.os }}-${{ steps.toolchain.outputs.version }}-
 

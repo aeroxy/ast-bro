@@ -1,0 +1,2 @@
+# Embedded prompts and fixtures must have the same bytes on every platform.
+* text=auto eol=lf
