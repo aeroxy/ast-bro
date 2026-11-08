@@ -357,10 +357,14 @@ fn callers_with_flag_form_matches_positional_form() {
     // Strip the header line which differs ("for 'X:Y'" vs "for 'X:Y'") —
     // both spell the target the same way after compose_target, so they
     // should match exactly. We compare the body lines for safety.
-    let positional_out = positional_out.replace('\\', "/");
-    let flag_out = flag_out.replace('\\', "/");
-    let body_pos: Vec<&str> = positional_out.lines().filter(|l| l.starts_with("src/")).collect();
-    let body_flag: Vec<&str> = flag_out.lines().filter(|l| l.starts_with("src/")).collect();
+    let body_pos: Vec<&str> = positional_out
+        .lines()
+        .filter(|l| l.starts_with("src/") || l.starts_with("src\\"))
+        .collect();
+    let body_flag: Vec<&str> = flag_out
+        .lines()
+        .filter(|l| l.starts_with("src/") || l.starts_with("src\\"))
+        .collect();
     assert_eq!(body_pos, body_flag, "flag form should match positional form");
     assert!(
         body_pos.iter().any(|l| l.contains("run")),
