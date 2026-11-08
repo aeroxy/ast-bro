@@ -80,6 +80,43 @@ class InstallerTests(unittest.TestCase):
             cli.download_binary()
         self.assertEqual(list(self.cache.iterdir()), [])
 
+    def test_reuses_installation_completed_during_download(self) -> None:
+        def competing_install(url: str) -> httpx.Response:
+            for name in ("ast-bro.exe", "ast-outline.exe", "sb.exe"):
+                (self.cache / name).write_bytes(b"winner")
+            return self.response(("ast-bro.exe", "ast-outline.exe", "sb.exe"))
+
+        with patch("httpx.Client.get", side_effect=competing_install):
+            binary = cli.download_binary()
+        self.assertEqual(binary.read_bytes(), b"winner")
+
+    def test_reuses_winner_published_between_check_and_replace(self) -> None:
+        replace = Path.replace
+
+        def competing_replace(source: Path, destination: Path) -> Path:
+            if destination.name != "ast-bro.exe":
+                return replace(source, destination)
+            self.assertTrue((self.cache / "ast-outline.exe").is_file())
+            self.assertTrue((self.cache / "sb.exe").is_file())
+            destination.write_bytes(b"running winner")
+            raise PermissionError("Executable is running")
+
+        response = self.response(("ast-bro.exe", "ast-outline.exe", "sb.exe"))
+        with patch("httpx.Client.get", return_value=response), patch.object(
+            Path, "replace", competing_replace
+        ):
+            binary = cli.download_binary()
+        self.assertEqual(binary.read_bytes(), b"running winner")
+        self.assertEqual(len(list(self.cache.iterdir())), 3)
+
+    def test_publication_error_without_a_winner_is_not_suppressed(self) -> None:
+        response = self.response(("ast-bro.exe", "ast-outline.exe", "sb.exe"))
+        with patch("httpx.Client.get", return_value=response), patch.object(
+            Path, "replace", side_effect=PermissionError("Access denied")
+        ), self.assertRaisesRegex(PermissionError, "Access denied"):
+            cli.download_binary()
+        self.assertEqual(list(self.cache.iterdir()), [])
+
 
 class CacheVersionTests(unittest.TestCase):
     """Upgrades must not accidentally execute the previous release."""

@@ -27,6 +27,8 @@ For macOS ARM64, use `aarch64-apple-darwin` and `ast-bro-macos-arm64.zip`. The e
 
 The smoke test packs an npm tarball and a Python wheel, installs each into a disposable directory, and runs all three installed commands. It checks a cold download, HTTP redirects, cached execution, paths containing spaces and shell metacharacters, JSON output, exit-code forwarding, and npm's skipped-postinstall fallback. Test-only transport hooks redirect the normal GitHub release URL to the locally built archive; production installer files are not patched. Nothing is installed globally into the developer's own environment.
 
+On Windows, the smoke test also starts two cold installs against the same cache and keeps the first executable running as an MCP server while the second install finishes. It covers npm/npm, Python/Python, and both npm/Python orderings.
+
 The release regression tests exercise all three version bumps with real offline, locked Cargo builds and check rollback after a failed lockfile refresh.
 
 ## Publish a release

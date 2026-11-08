@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import queue
 import shutil
 import subprocess
 import sys
@@ -51,13 +52,21 @@ def smoke(archive: Path, temp: Path) -> None:
         f"https://github.com/aeroxy/ast-bro/releases/download/{release_version()}/{archive.name}"
     )
     requests = []
+    download_gates: dict[str, tuple[threading.Event, threading.Event]] = {}
 
     class Handler(BaseHTTPRequestHandler):
         """Serve the real ZIP through an HTTP redirect, like GitHub releases."""
 
         def do_GET(self) -> None:
             requests.append(self.path)
-            if self.path == "/download":
+            gate = download_gates.get(self.path)
+            if gate:
+                entered, proceed = gate
+                entered.set()
+                if not proceed.wait(timeout=30):
+                    self.send_error(504, "Timed out waiting for the concurrent installer")
+                    return
+            if self.path == "/download" or gate:
                 self.send_response(302)
                 self.send_header("Location", "/archive.zip")
                 self.end_headers()
@@ -129,6 +138,63 @@ else:
         cache.mkdir(parents=True)
         env["AST_BRO_SMOKE_HOME"] = str(cache)
         env["LOCALAPPDATA"] = str(cache)
+
+    def concurrent_installs(first: list[str], second: list[str], name: str) -> None:
+        """Make both installers miss the cache, then keep the winner's executable running."""
+        fresh_cache(name)
+        entered = [threading.Event(), threading.Event()]
+        proceed = [threading.Event(), threading.Event()]
+        processes = []
+        try:
+            for index, command in enumerate((first + ["mcp"], second + ["--version"])):
+                route = f"/download/{index}"
+                download_gates[route] = (entered[index], proceed[index])
+                child_env = dict(env, AST_BRO_SMOKE_URL=f"{url}/{index}")
+                processes.append(
+                    subprocess.Popen(
+                        command,
+                        env=child_env,
+                        cwd=ROOT,
+                        stdin=subprocess.PIPE,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        text=True,
+                    )
+                )
+                assert entered[index].wait(timeout=30), (
+                    f"{name}: installer {index} did not download"
+                )
+
+            winner, loser = processes
+            proceed[0].set()
+            winner.stdin.write(
+                json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}) + "\n"
+            )
+            winner.stdin.flush()
+            responses = queue.Queue()
+            threading.Thread(
+                target=lambda: responses.put(winner.stdout.readline()), daemon=True
+            ).start()
+            response = json.loads(responses.get(timeout=30))
+            assert response.get("id") == 1 and "result" in response, response
+
+            # The second download resumes only after Windows has loaded the cached EXE.
+            proceed[1].set()
+            stdout, stderr = loser.communicate(timeout=60)
+            assert loser.returncode == 0, f"{name}: {stderr}"
+            assert stdout.strip() == f"ast-bro {release_version()}", stdout
+            assert winner.poll() is None, f"{name}: the MCP process exited unexpectedly"
+            print(f"Concurrent installation passed ({name}, winner still running)", flush=True)
+        finally:
+            for event in proceed:
+                event.set()
+            for process in processes:
+                try:
+                    process.communicate(timeout=30)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.communicate(timeout=10)
+            download_gates.clear()
 
     try:
         fresh_cache("native")
@@ -213,6 +279,16 @@ else:
         )
         assert len(requests) == before + 2, requests
         print("Python wheel passed (first-run download and cached reruns)", flush=True)
+        if os.name == "nt":
+            node_cli = [node, str(prefix / "node_modules/@ast-bro/cli/bin/ast-bro.js")]
+            python_cli = [str(python), "-m", "ast_bro_cli"]
+            for first, second, name in (
+                (node_cli, node_cli, "npm-npm"),
+                (python_cli, python_cli, "python-python"),
+                (node_cli, python_cli, "npm-python"),
+                (python_cli, node_cli, "python-npm"),
+            ):
+                concurrent_installs(first, second, name)
     finally:
         server.shutdown()
         server.server_close()

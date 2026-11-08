@@ -64,3 +64,47 @@ test("rejects an incomplete archive and permits a later retry", (t) => {
   complete = true;
   assert.equal(api.downloadBinary(), api.getBinaryPath());
 });
+
+/** Populate the staged files as if the release ZIP had been extracted. */
+function extractedRelease(command, args, options) {
+  if (command !== "powershell.exe") return;
+  for (const name of ["ast-bro.exe", "ast-outline.exe", "sb.exe"]) {
+    fs.writeFileSync(path.join(options.env.AST_BRO_DESTINATION, name), "downloaded");
+  }
+}
+
+test("reuses a competing installation completed during download", (t) => {
+  const api = installer(t, "win32", "x64", (command, args, options) => {
+    extractedRelease(command, args, options);
+    if (command !== "powershell.exe") return;
+    for (const name of ["ast-bro.exe", "ast-outline.exe", "sb.exe"]) {
+      fs.writeFileSync(path.join(path.dirname(api.getBinaryPath()), name), "winner");
+    }
+  });
+  assert.equal(api.downloadBinary(), api.getBinaryPath());
+  assert.equal(fs.readFileSync(api.getBinaryPath(), "utf8"), "winner");
+});
+
+test("reuses a running winner that appears between the check and rename", (t) => {
+  const api = installer(t, "win32", "x64", extractedRelease);
+  const rename = fs.renameSync;
+  t.mock.method(fs, "renameSync", (source, destination) => {
+    if (path.basename(destination) !== "ast-bro.exe") return rename(source, destination);
+    const cache = path.dirname(destination);
+    assert.ok(fs.existsSync(path.join(cache, "ast-outline.exe")));
+    assert.ok(fs.existsSync(path.join(cache, "sb.exe")));
+    fs.writeFileSync(destination, "running winner");
+    throw Object.assign(new Error("Executable is running"), { code: "EPERM" });
+  });
+  assert.equal(api.downloadBinary(), api.getBinaryPath());
+  assert.equal(fs.readFileSync(api.getBinaryPath(), "utf8"), "running winner");
+  assert.equal(fs.readdirSync(path.dirname(api.getBinaryPath())).length, 3);
+});
+
+test("preserves publication errors when no competing file exists", (t) => {
+  const api = installer(t, "win32", "x64", extractedRelease);
+  const failure = Object.assign(new Error("Access denied"), { code: "EACCES" });
+  t.mock.method(fs, "renameSync", () => { throw failure; });
+  assert.throws(() => api.downloadBinary(), (error) => error === failure);
+  assert.deepEqual(fs.readdirSync(path.dirname(api.getBinaryPath())), []);
+});
