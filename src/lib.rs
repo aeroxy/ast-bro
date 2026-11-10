@@ -2624,6 +2624,8 @@ mod hint_tests {
         assert_eq!(shell_quote("~"), "'~'");
     }
 
+    // The quoting is POSIX, and only Unix has a `/bin/sh` to check it against.
+    #[cfg(unix)]
     #[test]
     fn a_quoted_value_round_trips_through_a_real_shell() {
         // Asserting the escaped spelling by hand tests the author's model of
