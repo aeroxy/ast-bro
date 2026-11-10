@@ -45,6 +45,16 @@ test("retains macOS ARM64 support", (t) => {
   assert.equal(path.basename(api.getBinaryPath()), "ast-bro");
 });
 
+test("reuses the native macOS cache when Node runs as x64 under Rosetta", (t) => {
+  const api = installer(t, "darwin", "arm64");
+  const binary = api.getBinaryPath();
+  fs.writeFileSync(binary, "cached ARM64 binary");
+  t.mock.method(os, "arch", () => "x64");
+  assert.equal(api.getBinaryPath(), binary);
+  assert.equal(api.downloadBinary(), binary);
+  assert.equal(fs.readFileSync(binary, "utf8"), "cached ARM64 binary");
+});
+
 test("rejects unshipped architectures before attempting a download", (t) => {
   const api = installer(t, "win32", "arm64");
   assert.throws(() => api.downloadBinary(), /No pre-built binary for windows-arm64/);
