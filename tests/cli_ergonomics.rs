@@ -533,6 +533,10 @@ fn run_in(cwd: &std::path::Path, args: &[&str]) -> (Option<i32>, String, String)
 /// The hint is documented as pasteable, so the assertion that matters is
 /// that a shell can run it as printed: quoting alone is not enough when clap
 /// reads a leading dash as a flag.
+///
+/// The quoting is POSIX, and only Unix has a `/bin/sh` to check it against,
+/// so this helper and the tests that call it are Unix-only.
+#[cfg(unix)]
 fn run_suggested_command(cwd: &std::path::Path, stderr: &str) -> (Option<i32>, String) {
     let line = stderr
         .lines()
@@ -561,6 +565,7 @@ fn run_suggested_command(cwd: &std::path::Path, stderr: &str) -> (Option<i32>, S
 /// A suggestion that hints again is a loop: the builder and the
 /// `already_digest` test are computed in separate places, and nothing but
 /// this assertion forces them to agree.
+#[cfg(unix)]
 fn assert_suggestion_runs_and_settles(cwd: &std::path::Path, stderr: &str) {
     let hint = stderr
         .lines()
@@ -595,6 +600,7 @@ fn fill_past_threshold(dir: &std::path::Path) {
     }
 }
 
+#[cfg(unix)]
 #[test]
 fn the_suggested_command_runs_for_a_dash_prefixed_path() {
     // A relative directory named `-generated` has to reach clap behind a
@@ -612,6 +618,7 @@ fn the_suggested_command_runs_for_a_dash_prefixed_path() {
     assert_suggestion_runs_and_settles(parent.path(), &stderr);
 }
 
+#[cfg(unix)]
 #[test]
 fn the_suggested_command_runs_for_a_dash_prefixed_glob() {
     // Same hazard on the other axis: `--glob -big*.rs` is read as a flag, so
@@ -876,6 +883,9 @@ fn the_echo_cap_switches_forms_where_it_says_it_does() {
     );
 }
 
+// Windows rejects a newline or a tab in a file name, so two of the three
+// fixtures cannot be created there.
+#[cfg(unix)]
 #[test]
 fn a_path_that_cannot_be_written_on_one_line_falls_back_to_the_counted_form() {
     // The spelled-out form is one backtick-delimited line. A backtick closes
