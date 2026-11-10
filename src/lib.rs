@@ -1299,7 +1299,8 @@ fn map_directory_hint(
         return None;
     }
 
-    let cap = call.max_members.map_or(8, |m| m.min(8));
+    let hint_cap = crate::defaults::HINT_MAX_MEMBERS;
+    let cap = call.max_members.map_or(hint_cap, |m| m.min(hint_cap));
     let mut flags = format!("--preset digest --max-members {}", cap);
     if let Some(glob) = call.glob {
         flags.push_str(&format!(" --glob={}", shell_quote(glob)));
@@ -2582,8 +2583,12 @@ mod hint_tests {
         };
         let hint =
             map_directory_hint(&call, 2, 30_000).expect("an unspellable path keeps the hint");
+        let counted = format!(
+            "running `--preset digest --max-members {}` on the same 2 paths",
+            crate::defaults::HINT_MAX_MEMBERS
+        );
         assert!(
-            hint.contains("running `--preset digest --max-members 8` on the same 2 paths"),
+            hint.contains(&counted),
             "expected the counted form, got:\n{hint}"
         );
         assert!(

@@ -53,6 +53,12 @@ pub const TOP_K: usize = 10;
 /// Members per type under `map --preset digest`.
 pub const MAX_MEMBERS: usize = 50;
 
+/// Members per type the oversized-directory hint suggests.
+///
+/// The CLI and the MCP hint both read it, and neither loosens a tighter cap
+/// the caller already set.
+pub const HINT_MAX_MEMBERS: usize = 8;
+
 /// Doc-comment lines `map` prints per declaration before clipping.
 pub const MAX_DOC_LINES: usize = 6;
 

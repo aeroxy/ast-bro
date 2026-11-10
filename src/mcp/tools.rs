@@ -585,7 +585,8 @@ fn digest_hint(call: &DigestHintCall<'_>, payload: &str) -> Option<String> {
         .iter()
         .map(|p| p.to_str())
         .collect::<Option<_>>()?;
-    let cap = call.max_members.map_or(8, |m| m.min(8));
+    let hint_cap = crate::defaults::HINT_MAX_MEMBERS;
+    let cap = call.max_members.map_or(hint_cap, |m| m.min(hint_cap));
     let mut args = serde_json::Map::new();
     // `paths` stays in whatever the list costs. It is the one field of the
     // tool's arguments with no default, so an object without it is not a
@@ -1661,5 +1662,76 @@ fn run_squeeze(args: Value) -> CallResult {
         CallResult::Text(crate::squeeze::render::render_json(&report, true))
     } else {
         CallResult::Text(crate::squeeze::render::render_text(&report))
+    }
+}
+
+#[cfg(test)]
+mod hint_tests {
+    use super::{digest_hint, DigestHintCall};
+    use crate::defaults::HINT_MAX_MEMBERS;
+    use std::path::PathBuf;
+
+    /// The number written right after `key` in `hint`.
+    fn number_after(hint: &str, key: &str) -> usize {
+        let start = hint
+            .find(key)
+            .unwrap_or_else(|| panic!("no `{key}` in:\n{hint}"))
+            + key.len();
+        let digits: String = hint[start..]
+            .chars()
+            .take_while(char::is_ascii_digit)
+            .collect();
+        digits
+            .parse()
+            .unwrap_or_else(|_| panic!("no number after `{key}` in:\n{hint}"))
+    }
+
+    /// The CLI and MCP hints both suggest the member cap `defaults` holds.
+    ///
+    /// Each surface builds its own suggestion, and the end-to-end tests look
+    /// for `--preset digest` rather than the number, so a cap restated as a
+    /// literal on either side would leave them green. A caller's cap above
+    /// the shared one comes back as the shared one, which pins the clamp too.
+    #[test]
+    fn both_hints_suggest_the_shared_member_cap() {
+        let paths = [PathBuf::from("a.rs"), PathBuf::from("b.rs")];
+        let payload = "x".repeat(crate::MAP_HINT_THRESHOLD_BYTES + 1);
+        for caller_cap in [None, Some(HINT_MAX_MEMBERS + 1)] {
+            let cli_call = crate::MapHintCall {
+                requested_paths: &paths,
+                glob: None,
+                max_members: caller_cap,
+                json: false,
+                compact: false,
+                no_attrs: false,
+                no_lines: false,
+                already_digest: false,
+            };
+            let cli = crate::map_directory_hint(&cli_call, paths.len(), payload.len())
+                .expect("a two-file answer over the bar is hinted");
+            assert_eq!(
+                number_after(&cli, "--max-members "),
+                HINT_MAX_MEMBERS,
+                "CLI hint, caller cap {caller_cap:?}"
+            );
+
+            let mcp_call = DigestHintCall {
+                requested_paths: &paths,
+                files_inspected: paths.len(),
+                glob: None,
+                max_members: caller_cap,
+                json: false,
+                no_attrs: false,
+                no_lines: false,
+                already_digest: false,
+            };
+            let mcp =
+                digest_hint(&mcp_call, &payload).expect("a two-file answer over the bar is hinted");
+            assert_eq!(
+                number_after(&mcp, "\"max_members\":"),
+                HINT_MAX_MEMBERS,
+                "MCP hint, caller cap {caller_cap:?}"
+            );
+        }
     }
 }
