@@ -77,14 +77,15 @@ function windowsSystemPath(...parts) {
 
 /** Download and extract a release without requiring a Unix shell on Windows. */
 function downloadBinary() {
-  const { osName, archName } = getPlatform();
   const cacheDir = getCacheDir();
   const binaryPath = getBinaryPath();
 
+  // A native binary cached by ARM64 Node also runs when Node uses Rosetta.
   if (fs.existsSync(binaryPath)) {
     return binaryPath;
   }
 
+  const { osName, archName } = getPlatform();
   const url = `https://github.com/${GITHUB_REPO}/releases/download/${VERSION}/${BINARY_NAME}-${osName}-${archName}.zip`;
   console.error(`Downloading ast-bro ${VERSION} for ${osName}-${archName}...`);
 
