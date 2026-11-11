@@ -152,6 +152,18 @@ pub fn find_implementations(
             }
         }
     }
+    // A reference to a `partial` type resolves to one of its parts, while a
+    // base clause sits on whichever part wrote it. Every part therefore
+    // carries the subtypes of all of them, so the walk finds the same
+    // subtypes whichever part it reaches.
+    for parts in _parts_of_one_type(&types) {
+        let mut all: Vec<usize> = parts.iter().flat_map(|&p| edges[p].iter().copied()).collect();
+        all.sort_unstable();
+        all.dedup();
+        for &p in &parts {
+            edges[p] = all.clone();
+        }
+    }
 
     // Direct subtypes. When the target resolved, they are the references
     // that resolved to it. When it did not, the supertype is outside the
@@ -324,7 +336,7 @@ pub fn find_implementations(
         .collect();
     ambiguous.sort_by(|a, b| (&a.path, a.start_line).cmp(&(&b.path, b.start_line)));
 
-    let target_candidates = if roots.len() > 1 {
+    let target_candidates = if roots.len() > 1 && _one_type(&types, &roots).is_none() {
         roots.iter().map(|&r| _candidate(&types[r])).collect()
     } else {
         Vec::new()
@@ -916,6 +928,92 @@ enum BaseRef {
 /// alone, exactly as the bare-name match used to, so the rules can only
 /// change an answer that was a guess to begin with.
 fn _resolve_base(
+    imports: &ImportIndex<'_>,
+    types: &[TypeEntry<'_>],
+    index: &HashMap<String, Vec<usize>>,
+    from: usize,
+    base: &str,
+) -> BaseRef {
+    match _resolve_base_by_rules(imports, types, index, from, base) {
+        BaseRef::Several { candidates, outside } if !outside => {
+            match _one_type(types, &candidates) {
+                Some(one) => BaseRef::One(one),
+                None => BaseRef::Several { candidates, outside },
+            }
+        }
+        resolved => resolved,
+    }
+}
+
+/// The declaration that stands for `candidates` when they are the parts of
+/// one C# `partial` type. Edges attach to the first of them, and
+/// [`_parts_of_one_type`] shares them with the rest.
+fn _one_type(types: &[TypeEntry<'_>], candidates: &[usize]) -> Option<usize> {
+    let first = *candidates.iter().min()?;
+    candidates
+        .iter()
+        .all(|&c| _is_a_part(&types[c]) && _same_type(&types[c], &types[first]))
+        .then_some(first)
+}
+
+/// Is this declaration one part of a type that several declarations make up?
+///
+/// C#'s `partial` is the one construct that splits a type, and its
+/// modifier is the evidence. Two declarations of one qualified name are
+/// otherwise two types: a Scala class and its companion `object`, one Java
+/// class in two modules, a Rust `mod m` that every file writes anew.
+fn _is_a_part(t: &TypeEntry<'_>) -> bool {
+    t.lang == "csharp" && t.decl.modifiers.iter().any(|m| m == "partial")
+}
+
+fn _same_type(a: &TypeEntry<'_>, b: &TypeEntry<'_>) -> bool {
+    a.lang == b.lang && a.package == b.package && a.qname == b.qname && _arity(a) == _arity(b)
+}
+
+/// How many type parameters the declaration's signature lists after its
+/// name. C# tells `Box<T>` from `Box` by this count, and the qualified name
+/// does not carry it.
+fn _arity(t: &TypeEntry<'_>) -> usize {
+    let sig = &t.decl.signature;
+    let Some(params) = sig
+        .match_indices(t.decl.name.as_str())
+        .find_map(|(at, name)| sig[at + name.len()..].strip_prefix('<'))
+    else {
+        return 0;
+    };
+    let mut depth = 1;
+    let mut count = 1;
+    for c in params.chars() {
+        match c {
+            '<' => depth += 1,
+            '>' => {
+                depth -= 1;
+                if depth == 0 {
+                    break;
+                }
+            }
+            ',' if depth == 1 => count += 1,
+            _ => {}
+        }
+    }
+    count
+}
+
+/// The declarations that [`_one_type`] counts as one type, as groups of two
+/// or more.
+fn _parts_of_one_type(types: &[TypeEntry<'_>]) -> Vec<Vec<usize>> {
+    let mut by_name: HashMap<(&str, &str, &str, usize), Vec<usize>> = HashMap::new();
+    for (i, t) in types.iter().enumerate() {
+        if _is_a_part(t) {
+            let key = (t.lang, t.package.as_str(), t.qname.as_str(), _arity(t));
+            by_name.entry(key).or_default().push(i);
+        }
+    }
+    by_name.into_values().filter(|parts| parts.len() > 1).collect()
+}
+
+/// [`_resolve_base`] before declarations of one type are merged.
+fn _resolve_base_by_rules(
     imports: &ImportIndex<'_>,
     types: &[TypeEntry<'_>],
     index: &HashMap<String, Vec<usize>>,

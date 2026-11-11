@@ -1391,3 +1391,103 @@ fn cpp_reaches_the_global_namespace() {
         "implements M.Global over {dir} took a namespace that does not enclose the reference:\n{stdout}"
     );
 }
+
+/// The parts of a C# `partial class` are one type, so a reference to it is
+/// not ambiguous and a target naming it is not declared twice.
+#[test]
+fn a_partial_class_is_one_type() {
+    let dir = format!("{}/csharp_partial", fixture("scope"));
+    let (code, stdout, stderr) = run(&["implements", "A.Part", &dir]);
+    assert_eq!(code, Some(0), "{stderr}");
+    assert!(
+        stdout.contains("1 match(es)") && stdout.contains("class Child"),
+        "implements A.Part over {dir}:\n{stdout}\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("could be") && !stderr.contains("declared in"),
+        "the parts of one class were reported as two:\n{stderr}"
+    );
+}
+
+/// A subtype of one part is a subtype of every part, including the part that
+/// wrote the base clause; here that part sorts after the one a reference
+/// resolves to.
+#[test]
+fn a_base_clause_on_any_part_reaches_the_subtypes_of_the_class() {
+    let dir = format!("{}/csharp_partial_base", fixture("scope"));
+    let (code, stdout, stderr) = run(&["implements", "A.IFoo", &dir]);
+    assert_eq!(code, Some(0), "{stderr}");
+    assert!(
+        stdout.contains("class Split") && stdout.contains("class Child [via Split]"),
+        "implements A.IFoo over {dir}:\n{stdout}\n{stderr}"
+    );
+}
+
+/// The parts of a `partial` class in the global namespace are one type too.
+#[test]
+fn a_partial_class_in_the_global_namespace_is_one_type() {
+    let dir = format!("{}/csharp_partial_global", fixture("scope"));
+    let (code, stdout, stderr) = run(&["implements", "IWhole", &dir]);
+    assert_eq!(code, Some(0), "{stderr}");
+    assert!(
+        stdout.contains("class WholeChild [via Whole]"),
+        "implements IWhole over {dir}:\n{stdout}\n{stderr}"
+    );
+}
+
+/// `Crate<T>` and `Crate` are two C# types, `partial` or not, so a subtype of
+/// one is not a subtype of what the other implements.
+#[test]
+fn partial_classes_of_different_generic_arity_are_two_types() {
+    let dir = format!("{}/csharp_partial_arity", fixture("scope"));
+    let (code, stdout, stderr) = run(&["implements", "A.ICrate", &dir]);
+    assert_eq!(code, Some(0), "{stderr}");
+    assert!(
+        stdout.contains("1 match(es)") && !stdout.contains("class Plain"),
+        "implements A.ICrate over {dir}:\n{stdout}\n{stderr}"
+    );
+}
+
+/// A Scala class and its companion `object` share a qualified name and are
+/// two types, so a subtype of the class is not a subtype of what the object
+/// extends.
+#[test]
+fn a_scala_companion_does_not_lend_its_supertypes_to_the_class() {
+    let dir = format!("{}/scala_companion", fixture("scope"));
+    let (code, stdout, stderr) = run(&["implements", "Maker", &dir]);
+    assert_eq!(code, Some(0), "{stderr}");
+    assert!(
+        stdout.contains("1 match(es)") && !stdout.contains("CompanionSub"),
+        "implements Maker over {dir}:\n{stdout}\n{stderr}"
+    );
+}
+
+/// One Java class name declared in two modules is two classes, so a subtype
+/// of one is not a subtype of what the other implements.
+#[test]
+fn one_java_name_in_two_modules_is_two_classes() {
+    let dir = format!("{}/java_two_modules", fixture("scope"));
+    let (code, stdout, stderr) = run(&["implements", "p.Marked", &dir]);
+    assert_eq!(code, Some(0), "{stderr}");
+    assert!(
+        stdout.contains("1 match(es)") && !stdout.contains("TwinSub"),
+        "implements p.Marked over {dir}:\n{stdout}\n{stderr}"
+    );
+}
+
+/// A Rust `mod m` is a different module in every file that writes it, so
+/// two `m::Twice` declarations in two files stay two types.
+#[test]
+fn rust_modules_of_one_name_in_two_files_are_two_types() {
+    let dir = format!("{}/rust_same_mod", fixture("scope"));
+    let (code, stdout, stderr) = run(&["implements", "Twice", &dir]);
+    assert_eq!(code, Some(0), "{stderr}");
+    assert!(
+        stderr.contains("'Twice' is declared in 2 places"),
+        "implements Twice over {dir} counted the two traits as one target:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("Z -> 'Twice' could be"),
+        "implements Twice over {dir} resolved a reference the two traits share:\n{stdout}\n{stderr}"
+    );
+}
