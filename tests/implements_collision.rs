@@ -1224,3 +1224,62 @@ fn a_rename_imported_from_the_parent_package_resolves() {
         "implements other.Parent over {dir} took the wrong package:\n{stdout}"
     );
 }
+
+/// Two imports of one name, one of them from outside the walk, leave the
+/// reference undecided and say so, whether or not the file renames anything
+/// else.
+#[test]
+fn a_tie_with_an_import_outside_the_walk_is_reported() {
+    let dir = format!("{}/python_rebind_external", fixture("scope"));
+    let (code, stdout, stderr) = run(&["implements", "a.mod.Rebound", &dir]);
+    assert_eq!(code, Some(0), "{stderr}");
+    assert!(
+        stdout.contains("0 match(es)"),
+        "implements a.mod.Rebound over {dir} read the tie as evidence:\n{stdout}"
+    );
+    let reported: Vec<&str> = ["Plain", "Renaming"]
+        .into_iter()
+        .filter(|subtype| {
+            stderr.lines().any(|l| {
+                l.contains(&format!("{subtype} ->"))
+                    && l.contains("a/mod.py")
+                    && l.contains("or a type outside the given path(s)")
+            })
+        })
+        .collect();
+    assert_eq!(reported, ["Plain", "Renaming"], "notes:\n{stderr}");
+}
+
+/// The JSON entry for such a reference says that its other meaning is
+/// outside the given paths.
+#[test]
+fn json_marks_a_meaning_outside_the_walk() {
+    let dir = format!("{}/python_rebind_external", fixture("scope"));
+    let (code, stdout, stderr) = run(&["implements", "a.mod.Rebound", &dir, "--json"]);
+    assert_eq!(code, Some(0), "{stderr}");
+    let doc: serde_json::Value = serde_json::from_str(&stdout).expect("valid json");
+    let marked: Vec<(&str, &serde_json::Value)> = doc["ambiguous"]
+        .as_array()
+        .expect("ambiguous array")
+        .iter()
+        .map(|a| (a["name"].as_str().unwrap_or("?"), &a["outside_walk"]))
+        .collect();
+    assert_eq!(
+        marked,
+        [("Plain", &serde_json::json!(true)), ("Renaming", &serde_json::json!(true))]
+    );
+}
+
+/// With one declaration of the name in the walk, the tie resolves to it as a
+/// unique name always does, whether or not the file renames something else.
+#[test]
+fn an_unrelated_rename_does_not_change_how_a_tie_resolves() {
+    let dir = format!("{}/python_rebind_single", fixture("scope"));
+    let (code, stdout, stderr) = run(&["implements", "a.mod.Rebound", &dir]);
+    assert_eq!(code, Some(0), "{stderr}");
+    let matched: Vec<&str> = ["Plain", "Renaming"]
+        .into_iter()
+        .filter(|subtype| stdout.contains(&format!("class {subtype}")))
+        .collect();
+    assert_eq!(matched, ["Plain", "Renaming"], "stdout:\n{stdout}\nstderr:\n{stderr}");
+}

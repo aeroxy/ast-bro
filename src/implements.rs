@@ -42,10 +42,10 @@ pub struct ImplMatch {
     pub via: Vec<String>,
 }
 
-/// A supertype reference that named a type declared in more than one
-/// package, where at least one of the colliding declarations is inside the
-/// answer. The edge is dropped rather than guessed, and a dropped edge is
-/// reported for the same reason a `--limit` or `--depth` cutoff is.
+/// A supertype reference that could mean more than one type, where at
+/// least one of the declarations it could mean is inside the answer. The
+/// edge is dropped rather than guessed, and a dropped edge is reported for
+/// the same reason a `--limit` or `--depth` cutoff is.
 #[derive(Clone, Serialize)]
 pub struct AmbiguousBase {
     /// File holding the subtype whose supertype reference could not be
@@ -61,6 +61,12 @@ pub struct AmbiguousBase {
     /// always tell them apart: in a language with no namespace syntax both
     /// candidates are just `Base`.
     pub candidates: Vec<BaseCandidate>,
+    /// Whether the reference could also mean a type the walk does not
+    /// declare: the file binds the name more than once, and one binding
+    /// names nothing in the given paths. `candidates` then lists only the
+    /// declarations the walk holds, possibly just one.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub outside_walk: bool,
 }
 
 /// One declaration a supertype reference could have meant.
@@ -133,13 +139,15 @@ pub fn find_implementations(
     // Resolve every supertype reference once, up front: which declaration it
     // means does not depend on which parent we happen to be expanding.
     let mut edges: Vec<Vec<usize>> = vec![Vec::new(); types.len()];
-    let mut unpinned: Vec<(usize, &str, Vec<usize>)> = Vec::new();
+    let mut unpinned: Vec<(usize, &str, Vec<usize>, bool)> = Vec::new();
     let imports = ImportIndex::new(results);
     for (i, t) in types.iter().enumerate() {
         for b in &t.decl.bases {
             match _resolve_base(&imports, &types, &index, i, b) {
                 BaseRef::One(target) => edges[target].push(i),
-                BaseRef::Several(cands) => unpinned.push((i, b.as_str(), cands)),
+                BaseRef::Several { candidates, outside } => {
+                    unpinned.push((i, b.as_str(), candidates, outside))
+                }
                 BaseRef::None => {}
             }
         }
@@ -296,10 +304,10 @@ pub fn find_implementations(
     };
     let mut ambiguous: Vec<AmbiguousBase> = unpinned
         .into_iter()
-        .filter(|(subtype, _, cands)| {
+        .filter(|(subtype, _, cands, _)| {
             !in_answer.contains(subtype) && cands.iter().any(|c| could_grow.contains(c))
         })
-        .map(|(subtype, base, cands)| {
+        .map(|(subtype, base, cands, outside)| {
             let t = &types[subtype];
             let mut candidates: Vec<BaseCandidate> =
                 cands.iter().map(|&c| _candidate(&types[c])).collect();
@@ -310,6 +318,7 @@ pub fn find_implementations(
                 name: t.decl.name.clone(),
                 base: base.to_string(),
                 candidates,
+                outside_walk: outside,
             }
         })
         .collect();
@@ -377,8 +386,8 @@ pub fn implements_notes(report: &ImplementsReport, target: &str) -> Vec<String> 
     if !report.ambiguous.is_empty() {
         let shown = report.ambiguous.len().min(crate::defaults::AMBIGUOUS_SHOWN);
         out.push(format!(
-            "# note: {} supertype reference(s) left out of the answer — the name is declared \
-             in more than one package and the referring file does not pick one:",
+            "# note: {} supertype reference(s) left out of the answer — the name can mean \
+             more than one type and the referring file does not pick one:",
             report.ambiguous.len()
         ));
         for a in &report.ambiguous[..shown] {
@@ -391,6 +400,10 @@ pub fn implements_notes(report: &ImplementsReport, target: &str) -> Vec<String> 
                 a.candidates
                     .iter()
                     .map(|c| c.to_string())
+                    .chain(
+                        a.outside_walk
+                            .then(|| "a type outside the given path(s)".to_string())
+                    )
                     .collect::<Vec<_>>()
                     .join(" or ")
             ));
@@ -855,8 +868,10 @@ enum BaseRef {
     One(usize),
     /// Several, with nothing in the referring file to choose between them.
     /// Not an edge: guessing would attach the subtype to a hierarchy it has
-    /// no relation to.
-    Several(Vec<usize>),
+    /// no relation to. `outside` is set when one of the meanings in
+    /// competition is a type the walk does not declare, so `candidates` can
+    /// hold a single declaration and still not be an answer.
+    Several { candidates: Vec<usize>, outside: bool },
     /// Nothing in the walk declares this name — an external supertype
     /// (`extends Exception`), which is the common case, not a problem.
     None,
@@ -979,6 +994,9 @@ fn _resolve_base(
     //    (JLS 6.4.1 — a single-type import shadows a type of the same name
     //    from the compilation unit's package).
     let file_imports = imports.visible_from(file, types[from].decl.start_line);
+    if let Some(undecided) = _tied_imports(&live, types, &file_imports, &simple) {
+        return undecided;
+    }
     _narrow_by_imports(&mut live, types, &file_imports, &simple, false);
     if live.len() == 1 {
         return BaseRef::One(live[0]);
@@ -1003,7 +1021,10 @@ fn _resolve_base(
     if live.len() == 1 {
         BaseRef::One(live[0])
     } else {
-        BaseRef::Several(live)
+        BaseRef::Several {
+            candidates: live,
+            outside: false,
+        }
     }
 }
 
@@ -1046,11 +1067,20 @@ fn _resolve_rename(
         .iter()
         .filter(|i| i.scope_span == innermost)
         .collect();
-    // Several bindings of one name at one scope order themselves by nothing
-    // the source states, so none of them decides — including a mix of an
-    // ordinary import and a rename, which is where deferring to the rules
-    // below silently answered the ordinary import's target: they look for
-    // declarations named `Base`, and the rename's target is not one.
+    // The resolver does not order several bindings of one name at one scope
+    // by line, so none of them decides. That includes a mix of an ordinary
+    // import and a rename, which the rules below cannot settle: they look
+    // for declarations named `Base`, and the rename's target is not one.
+    // A tie between imports that rename nothing is the import rule's to
+    // decide, under the same single-declaration shortcut as a file that
+    // could not rename anything, so an unrelated rename elsewhere in the
+    // file does not change the answer.
+    if at_scope
+        .iter()
+        .all(|i| i.segments.last().map(String::as_str) == Some(simple))
+    {
+        return None;
+    }
     let competing = at_scope.len() > 1;
     let mut live: Vec<usize> = Vec::new();
     let mut bound = false;
@@ -1097,8 +1127,10 @@ fn _resolve_rename(
         0 if bound => Some(BaseRef::None),
         0 => None,
         1 if agreed => Some(BaseRef::One(live[0])),
-        1 => Some(BaseRef::None),
-        _ => Some(BaseRef::Several(live)),
+        _ => Some(BaseRef::Several {
+            candidates: live,
+            outside: !agreed,
+        }),
     }
 }
 
@@ -1186,6 +1218,51 @@ fn _narrow_by_imports(
     _narrow(live, |c| {
         specs.iter().any(|i| _import_names(&types[*c], i, simple))
     });
+}
+
+/// Imports that bind `simple` at one scope and disagree about whether it is
+/// declared in the walk at all: `from a.base import Base` beside `from
+/// ext.base import Base`, where `ext` is not in the given paths.
+///
+/// The resolver does not order two bindings at one scope by line, so the
+/// one that names a declaration does not win by being the only one this
+/// walk can see. Python, the one language where such a tie compiles, binds
+/// the later import, which may be the one outside the walk.
+///
+/// `None` when there is no such tie and the ordinary narrowing applies.
+fn _tied_imports(
+    live: &[usize],
+    types: &[TypeEntry<'_>],
+    imports: &[FileImport],
+    simple: &str,
+) -> Option<BaseRef> {
+    let named = |i: &&FileImport| matches!(&i.binds, Bind::Name(n) if n == simple);
+    let innermost = imports.iter().filter(named).map(|i| i.scope_span).min()?;
+    let at_scope: Vec<&FileImport> = imports
+        .iter()
+        .filter(named)
+        .filter(|i| i.scope_span == innermost)
+        .collect();
+    if at_scope.len() < 2 {
+        return None;
+    }
+    let mut candidates: Vec<usize> = Vec::new();
+    let mut silent = false;
+    for imp in at_scope {
+        let names: Vec<usize> = live
+            .iter()
+            .copied()
+            .filter(|&c| _import_names(&types[c], imp, simple))
+            .collect();
+        silent |= names.is_empty();
+        candidates.extend(names);
+    }
+    candidates.sort_unstable();
+    candidates.dedup();
+    (silent && !candidates.is_empty()).then_some(BaseRef::Several {
+        candidates,
+        outside: true,
+    })
 }
 
 /// Keep the candidates `keep` accepts, unless it accepts none — a rule that
