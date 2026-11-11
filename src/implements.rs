@@ -638,6 +638,12 @@ impl<'a> ImportIndex<'a> {
         }
     }
 
+    /// The dotted name of the namespace whose body holds `line` in `file`,
+    /// or the empty string for the compilation unit itself.
+    fn namespace_at(&self, file: usize, line: usize) -> String {
+        _namespace_at(&self.results[file].declarations, line, "")
+    }
+
     /// The imports of `file` that a declaration at `line` can see, innermost
     /// scope first.
     ///
@@ -745,6 +751,20 @@ fn _is_a_source_extension(ext: &str) -> bool {
     )
 }
 
+/// Is a namespace, rather than the file, the scope a simple type name is
+/// looked up in? These languages let one file hold several namespaces, and
+/// a type in one of them is not visible in another.
+fn _namespace_is_the_scope(lang: &str) -> bool {
+    matches!(lang, "csharp" | "cpp" | "php")
+}
+
+/// Does a simple type name, not found in its own namespace, go on to the
+/// enclosing ones? It does in C# and C++; PHP resolves an unqualified class
+/// name in the current namespace only.
+fn _namespaces_nest(lang: &str) -> bool {
+    matches!(lang, "csharp" | "cpp")
+}
+
 /// Is a module in this language a file rather than a declaration?
 ///
 /// Such a language writes no namespace a qualifier could be checked
@@ -826,6 +846,18 @@ fn _encloses(outer: &str, inner: &str) -> bool {
                 .is_some_and(|rest| rest.starts_with('.')))
 }
 
+/// The dotted name of the innermost namespace in `decls` whose body holds
+/// `line`, `prefix` included.
+fn _namespace_at(decls: &[Declaration], line: usize, prefix: &str) -> String {
+    for d in decls {
+        if d.kind != DeclarationKind::Namespace || line < d.start_line || line > d.end_line {
+            continue;
+        }
+        return _namespace_at(&d.children, line, &_join_dot(prefix, &d.name));
+    }
+    prefix.to_string()
+}
+
 /// The line range of the innermost namespace containing `line`, if any.
 fn _innermost_namespace(decls: &[Declaration], line: usize) -> Option<(usize, usize)> {
     for d in decls {
@@ -892,24 +924,16 @@ fn _resolve_base(
 ) -> BaseRef {
     let simple = _normalize_type_name(base);
     let lang = types[from].lang;
+    if lang == "csharp" && _type_ref_segments(base).len() == 1 {
+        return _resolve_csharp_simple_name(imports, types, index, from, &simple);
+    }
 
     // A rename is the strongest evidence there is, because it is local and
     // explicit: `import a.b.Base as Alias` makes `Alias` mean `a.b.Base`
     // inside this file, whatever some other package declares under that
     // name. It therefore runs before the declaration index, not after it.
     if let Some(renamed) = _resolve_rename(imports, types, index, from, &simple) {
-        // …except in C#, which looks in the enclosing namespace before its
-        // using aliases. Kotlin, Rust and Scala read it the other way round,
-        // so this is one language's rule rather than a general one.
-        // C# consults each enclosing namespace's members innermost-first,
-        // so a type in an *ancestor* namespace outranks the alias too.
-        let own_scope_first = lang == "csharp"
-            && _candidates_for(types, index, from, &simple)
-                .iter()
-                .any(|&c| _encloses(&types[c].package, &types[from].package));
-        if !own_scope_first {
-            return renamed;
-        }
+        return renamed;
     }
     if !index.contains_key(&simple) {
         // No declaration carries this name: an external supertype, which is
@@ -980,9 +1004,18 @@ fn _resolve_base(
         return BaseRef::One(live[0]);
     }
 
-    // 2. Declared in the same file.
+    // 2. Declared in the same file — and, where a namespace rather than the
+    //    file is the scope, in the same namespace. A C#, C++ or PHP file may
+    //    hold several namespaces, and a type in one of them is not in scope
+    //    in another just because the two share a file: preferring it sent
+    //    `namespace B { class Child : Base }` to the `A.Base` beside it
+    //    rather than to the `B.Base` in another file.
     let file = types[from].file;
-    _narrow(&mut live, |c| types[*c].file == file);
+    let package = &types[from].package;
+    let file_is_not_a_scope = _namespace_is_the_scope(lang);
+    _narrow(&mut live, |c| {
+        types[*c].file == file && (!file_is_not_a_scope || &types[*c].package == package)
+    });
     if live.len() == 1 {
         return BaseRef::One(live[0]);
     }
@@ -1002,12 +1035,21 @@ fn _resolve_base(
         return BaseRef::One(live[0]);
     }
 
-    // 4. Declared in the same package — Java's own rule, and C#'s, and
-    //    Kotlin's. A file with no package clause has none, and an empty
-    //    package must not merge every such file into one scope.
-    let package = &types[from].package;
+    // 4. Declared in the same package — Java's own rule, and Kotlin's. C#
+    //    and C++ go on outward through the enclosing namespaces, innermost
+    //    first and the global namespace last, so in `namespace A.B` an
+    //    `A.Base` outranks an unrelated `C.Base`. A file with no package
+    //    clause has none, and an empty package must not merge every such
+    //    file into one scope.
     if !package.is_empty() {
-        _narrow(&mut live, |c| &types[*c].package == package);
+        let depth = |c: &usize| {
+            let p = &types[*c].package;
+            let enclosing = _namespaces_nest(lang) && (p.is_empty() || _encloses(p, package));
+            (p == package || enclosing).then(|| p.split('.').filter(|s| !s.is_empty()).count())
+        };
+        if let Some(innermost) = live.iter().filter_map(depth).max() {
+            _narrow(&mut live, |c| depth(c) == Some(innermost));
+        }
         if live.len() == 1 {
             return BaseRef::One(live[0]);
         }
@@ -1025,6 +1067,108 @@ fn _resolve_base(
             candidates: live,
             outside: false,
         }
+    }
+}
+
+/// Resolve an unqualified C# type name the way the compiler does.
+///
+/// C# walks outward one namespace at a time, starting at the namespace that
+/// holds the reference. At each level it looks first at the types that
+/// namespace declares, then at the `using` directives written in that
+/// namespace's body, and moves on only when neither names the type. The
+/// compilation unit comes last: the global namespace's types, then the
+/// file-scope `using` directives. So a type in an enclosing namespace
+/// outranks a file-scope alias, while an alias written inside the
+/// namespace body outranks that type, and a type in another file of the
+/// same namespace outranks one beside the reference in an unrelated
+/// namespace.
+///
+/// A reference that no level names falls back to whatever the walk
+/// declares under the name, which covers a type made visible by something
+/// the walk cannot see, such as a `global using` in another file.
+fn _resolve_csharp_simple_name(
+    imports: &ImportIndex<'_>,
+    types: &[TypeEntry<'_>],
+    index: &HashMap<String, Vec<usize>>,
+    from: usize,
+    simple: &str,
+) -> BaseRef {
+    let file = types[from].file;
+    let line = types[from].decl.start_line;
+    let candidates = _candidates_for(types, index, from, simple);
+    // Extracting imports is a reparse, and a name with one declaration and
+    // no way for the file to rename anything has no other answer.
+    let visible = if candidates.len() == 1 && !imports.may_rename(file) {
+        Vec::new()
+    } else {
+        imports.visible_from(file, line)
+    };
+    let found = |live: Vec<usize>| match live.len() {
+        1 => BaseRef::One(live[0]),
+        _ => BaseRef::Several {
+            candidates: live,
+            outside: false,
+        },
+    };
+
+    let mut level = Some(types[from].package.clone());
+    while let Some(namespace) = level {
+        let members: Vec<usize> = candidates
+            .iter()
+            .copied()
+            .filter(|&c| types[c].package == namespace)
+            .collect();
+        if !members.is_empty() {
+            return found(members);
+        }
+        let directives: Vec<&FileImport> = visible
+            .iter()
+            .filter(|i| imports.namespace_at(file, i.line as usize) == namespace)
+            .collect();
+        // An alias names one type, possibly under another name, and claims
+        // the name whether or not the walk holds that type.
+        let aliases: Vec<&&FileImport> = directives
+            .iter()
+            .filter(|i| matches!(&i.binds, Bind::Name(n) if n == simple))
+            .collect();
+        if !aliases.is_empty() {
+            let mut live: Vec<usize> = Vec::new();
+            for alias in &aliases {
+                let Some(real) = alias.segments.last() else {
+                    continue;
+                };
+                live.extend(
+                    _candidates_for(types, index, from, real)
+                        .into_iter()
+                        .filter(|&c| _import_names(&types[c], alias, real)),
+                );
+            }
+            live.sort_unstable();
+            live.dedup();
+            return if live.is_empty() {
+                BaseRef::None
+            } else {
+                found(live)
+            };
+        }
+        let imported: Vec<usize> = candidates
+            .iter()
+            .copied()
+            .filter(|&c| {
+                directives
+                    .iter()
+                    .any(|i| i.binds == Bind::OnDemand && _import_names(&types[c], i, simple))
+            })
+            .collect();
+        if !imported.is_empty() {
+            return found(imported);
+        }
+        level = (!namespace.is_empty())
+            .then(|| namespace.rsplit_once('.').map_or(String::new(), |(outer, _)| outer.to_string()));
+    }
+    match candidates.len() {
+        0 => BaseRef::None,
+        _ => found(candidates),
     }
 }
 

@@ -1207,6 +1207,68 @@ fn two_bindings_at_one_scope_decide_nothing() {
     );
 }
 
+/// Where a namespace is the scope, a type that only shares the referring
+/// file is not in scope: `namespace B { class Child : Shared }` means the
+/// `B.Shared` declared in another file, not the `A.Shared` beside it.
+fn assert_the_namespace_outranks_the_file(lang: &str) {
+    let dir = format!("{}/same_file/{lang}", fixture("scope"));
+    let (code, stdout, stderr) = run(&["implements", "B.Shared", &dir]);
+    assert_eq!(code, Some(0), "{lang}: {stderr}");
+    assert!(
+        stdout.contains("1 match(es)") && stdout.contains("class Child"),
+        "implements B.Shared over {dir} lost the edge to its own namespace:\n{stdout}"
+    );
+    let (code, stdout, stderr) = run(&["implements", "A.Shared", &dir]);
+    assert_eq!(code, Some(0), "{lang}: {stderr}");
+    assert!(
+        stdout.contains("0 match(es)"),
+        "implements A.Shared over {dir} took the type that only shares the file:\n{stdout}"
+    );
+}
+
+#[test]
+fn csharp_resolves_a_name_in_its_namespace_rather_than_its_file() {
+    assert_the_namespace_outranks_the_file("csharp");
+}
+
+#[test]
+fn cpp_resolves_a_name_in_its_namespace_rather_than_its_file() {
+    assert_the_namespace_outranks_the_file("cpp");
+}
+
+#[test]
+fn php_resolves_a_name_in_its_namespace_rather_than_its_file() {
+    assert_the_namespace_outranks_the_file("php");
+}
+
+/// C# and C++ look a name up in each enclosing namespace, innermost first,
+/// so in `namespace A.B` a bare `Enclosed` is `A.Enclosed` and not the
+/// `C.Enclosed` beside it.
+fn assert_an_enclosing_namespace_is_searched(lang: &str) {
+    let dir = format!("{}/enclosing/{lang}", fixture("scope"));
+    let (code, stdout, stderr) = run(&["implements", "A.Enclosed", &dir]);
+    assert_eq!(code, Some(0), "{lang}: {stderr}");
+    assert!(
+        stdout.contains("class Child") && !stderr.contains("could be"),
+        "implements A.Enclosed over {dir} did not reach the enclosing namespace:\n{stdout}\n{stderr}"
+    );
+    let (_, stdout, _) = run(&["implements", "C.Enclosed", &dir]);
+    assert!(
+        stdout.contains("0 match(es)"),
+        "implements C.Enclosed over {dir} took a namespace that does not enclose the reference:\n{stdout}"
+    );
+}
+
+#[test]
+fn csharp_searches_the_enclosing_namespaces() {
+    assert_an_enclosing_namespace_is_searched("csharp");
+}
+
+#[test]
+fn cpp_searches_the_enclosing_namespaces() {
+    assert_an_enclosing_namespace_is_searched("cpp");
+}
+
 /// `from .. import Parent as Renamed` names the parent package, the way
 /// `from ..mod import Parent` names a module in it.
 #[test]
@@ -1282,4 +1344,50 @@ fn an_unrelated_rename_does_not_change_how_a_tie_resolves() {
         .filter(|subtype| stdout.contains(&format!("class {subtype}")))
         .collect();
     assert_eq!(matched, ["Plain", "Renaming"], "stdout:\n{stdout}\nstderr:\n{stderr}");
+}
+
+/// C# looks a name up one namespace at a time, outward from the reference:
+/// the types a namespace declares, then the `using` directives in its body.
+/// The global namespace's types come before the file-scope directives.
+fn assert_the_csharp_alias_level(dir: &str, meant: &str, other: &str) {
+    let dir = format!("{}/csharp_alias_levels/{dir}", fixture("scope"));
+    let (code, stdout, stderr) = run(&["implements", meant, &dir]);
+    assert_eq!(code, Some(0), "{stderr}");
+    assert!(
+        stdout.contains("class Child"),
+        "implements {meant} over {dir} lost the edge:\n{stdout}\n{stderr}"
+    );
+    let (_, stdout, _) = run(&["implements", other, &dir]);
+    assert!(
+        stdout.contains("0 match(es)"),
+        "implements {other} over {dir} took the binding not in force:\n{stdout}"
+    );
+}
+
+#[test]
+fn a_csharp_alias_in_the_namespace_body_outranks_an_enclosing_namespace() {
+    assert_the_csharp_alias_level("in_body", "X.Picked", "A.Picked");
+}
+
+#[test]
+fn an_enclosing_csharp_namespace_outranks_a_file_scope_alias() {
+    assert_the_csharp_alias_level("file_scope", "A.Picked", "X.Picked");
+}
+
+/// C++ ends its outward lookup at the global namespace, so in `namespace N`
+/// a bare `Global` is `::Global` and not the `M::Global` in another file.
+#[test]
+fn cpp_reaches_the_global_namespace() {
+    let dir = format!("{}/global/cpp", fixture("scope"));
+    let (code, stdout, stderr) = run(&["implements", "Global", &dir]);
+    assert_eq!(code, Some(0), "{stderr}");
+    assert!(
+        stdout.contains("class Child") && !stderr.contains("could be"),
+        "implements Global over {dir} did not reach the global namespace:\n{stdout}\n{stderr}"
+    );
+    let (_, stdout, _) = run(&["implements", "M.Global", &dir]);
+    assert!(
+        stdout.contains("0 match(es)"),
+        "implements M.Global over {dir} took a namespace that does not enclose the reference:\n{stdout}"
+    );
 }
