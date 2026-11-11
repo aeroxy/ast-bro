@@ -211,13 +211,11 @@ mod tests {
     /// and the type name in front of it do not become part of the name, and
     /// the trailing brace does not become part of the value.
     fn field_and_value(line: &str) -> Option<(&str, &str)> {
-        let (field, value) = line.split_once(": ")?;
+        // Only the code before a comment can assign anything: a trailing
+        // comment is not part of the value, and a whole-line comment such as
+        // `// was max_depth: 16,` assigns nothing at all.
+        let (field, value) = code_of(line).split_once(": ")?;
         let field = field.rsplit(['{', '(']).next()?.trim();
-        // A trailing comment is not part of the value. Leaving it attached made
-        // `0 } // note` unparseable, so `is_literal_field` said "not a literal"
-        // and the guards skipped the line — any comment at all bought silence,
-        // whether or not it claimed anything.
-        let value = code_of(value);
         let value = value.trim().trim_end_matches([',', ' ', '}']).trim();
         (!field.is_empty() && !value.is_empty()).then_some((field, value))
     }
@@ -475,6 +473,8 @@ mod tests {
             Some(("limit", "crate::defaults::LIMIT"))
         );
         assert_eq!(field_and_value("    let x = 3;"), None);
+        assert_eq!(field_and_value("            // was max_depth: 16,"), None);
+        assert_eq!(field_and_value("            /* max_depth: 16 */"), None);
 
         assert!(is_literal_field("        Self { max_depth: 16 }"));
         assert!(is_literal_field("    root: PathBuf::from(\".\"),"));
@@ -520,6 +520,8 @@ mod tests {
             // Values that were never literals stay uninteresting.
             ("    limit: crate::defaults::LIMIT,", false),
             ("    output: OutputMode::Text,", false),
+            // A commented-out assignment is not code, whatever it spells.
+            ("            // was max_depth: 16,", false),
         ];
         let mut rejected = 0;
         for (line, expected) in cases {
