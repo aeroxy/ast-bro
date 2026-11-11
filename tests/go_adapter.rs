@@ -36,17 +36,18 @@ fn json() -> serde_json::Value {
     serde_json::from_str(&run(&["map", FIXTURE, "--json"])).expect("json")
 }
 
-/// Every declaration in the file, flattened, keyed by name.
+/// Every declaration in the file, flattened, keyed by name. Where two
+/// declarations share a name, the first in source order wins: the fixture
+/// gives the field `Square` the name of its own struct, and `Board` a field
+/// named `Red`, and each test here means the grouped declaration.
 fn decls(v: &serde_json::Value) -> std::collections::HashMap<String, serde_json::Value> {
     fn walk(
         list: &[serde_json::Value],
         out: &mut std::collections::HashMap<String, serde_json::Value>,
     ) {
         for d in list {
-            out.insert(
-                d["name"].as_str().unwrap_or_default().to_string(),
-                d.clone(),
-            );
+            out.entry(d["name"].as_str().unwrap_or_default().to_string())
+                .or_insert_with(|| d.clone());
             if let Some(children) = d["children"].as_array() {
                 walk(children, out);
             }
@@ -222,7 +223,6 @@ fn group_docs_render_once_and_marked() {
 #[test]
 fn a_groups_members_are_not_split_from_its_marker() {
     let s = run(&["map", FIXTURE]);
-    let mut checked = 0;
     for (marker, last_member) in [
         ("[group] // Colors are the palette", "const Blue"),
         ("[group] // Limits bound every request", "var MaxHops"),
@@ -234,31 +234,17 @@ fn a_groups_members_are_not_split_from_its_marker() {
         let to = s[from..]
             .find(last_member)
             .unwrap_or_else(|| panic!("no {last_member:?} after {marker:?}:\n{s}"));
-        // The renderer pushes `String::new()` for a separator, so a blank
-        // line inside the region is exactly "\n\n". Scanning `lines()`
+        // A separator renders as an empty line, so a blank line inside the
+        // region is exactly "\n\n". Scanning `lines()`
         // instead would count the indent before `last_member` as blank.
         assert!(
             !s[from..from + to].contains("\n\n"),
             "a blank line splits {last_member:?} from {marker:?}:\n{s}"
         );
-        checked += 1;
     }
-    // A `const` / `var` member never pushes a trailing blank, so only the
-    // `type` iteration can fail here — and only when its members have
-    // bodies. Assert that shape ran rather than counting a literal.
-    assert_eq!(checked, 3, "all three block kinds must be exercised");
-    let shapes = s
-        .find("[group] // Shapes are the shapes")
-        .expect("type-group marker");
-    let square = shapes + s[shapes..].find("type Square").expect("Square");
-    assert!(
-        s[shapes..square].contains("        Radius int"),
-        "the type-group case must run over a member with children, or nothing \
-         in it pushes the blank line this test exists to catch:\n{s}"
-    );
     // The blank line still separates the block from what follows it.
     assert!(
-        s.contains("type Square struct  L46\n\n"),
+        s.contains("type Square struct  L46\n        Square int  L46\n\n"),
         "the group's own trailing blank line was swallowed:\n{s}"
     );
 
@@ -296,24 +282,16 @@ fn a_groups_members_are_not_split_from_its_marker() {
 /// exists to prevent, one surface over.
 #[test]
 fn surface_carries_a_blocks_documentation() {
-    // The expected set comes from the fixture, not from a list beside it:
-    // a hand-kept list silently stops covering a member the fixture gains,
-    // and the member it missed was `Circle` — the only one carrying both
-    // its own `docs` and a `group`, so the only one whose result differs
-    // between copying `group` always and copying it when `docs` is empty.
+    // The expected set comes from the fixture, not from a list beside it,
+    // so a member the fixture gains is covered without an edit here.
     //
-    // Both sides are keyed by kind, name and line, and the surface side is
-    // narrowed to this file. Every weaker key joins a grouped declaration
-    // to something that merely resembles it, and the test then fails
-    // `surface` for correctly reporting a symbol that belongs to no block:
-    // a name alone is answered by `type Board struct { Square int }` above
-    // the block, name and line by `Square struct{ Square int }` inside it,
-    // and any of them by another `.go` file under the directory, which
-    // `surface` walks recursively and this `map` does not — a nested
-    // `sub/docs.go` shares the fixture's basename, so the filter compares
-    // the whole path. `kind` agrees across the two by construction:
-    // `surface::fallback` copies it off the same `Declaration` that `map`
-    // prints, and `source_path` is the walk's own spelling of `FIXTURE`.
+    // Both sides are keyed by kind, name, and line, and the surface side is
+    // narrowed to this file by its whole path. The fixture holds a symbol
+    // that each weaker key would join to a grouped declaration it is not:
+    // the field `Square` inside the struct `Square` shares name and line,
+    // `Board`'s field `Red` shares kind and name with the grouped `Red`, and
+    // `sub/docs.go` declares an ungrouped `Red` on the same line, under a
+    // directory `surface` walks and this `map` does not.
     //
     // Derived through `--no-private`, because `surface` drops unexported
     // symbols; without that filter the first unexported member the
@@ -339,28 +317,36 @@ fn surface_carries_a_blocks_documentation() {
     let v: serde_json::Value =
         serde_json::from_str(&run(&["map", FIXTURE, "--no-private", "--json"])).expect("json");
 
-    fn walk(list: &[serde_json::Value], out: &mut Keys) {
+    /// Collects the members of documented blocks into `out`, and the ones
+    /// among them that also carry a comment of their own into `self_documented`.
+    fn walk(list: &[serde_json::Value], out: &mut Keys, self_documented: &mut Keys) {
         for d in list {
             if !docs(d, "group").is_empty() {
-                out.insert(key(&d["kind"], &d["name"], &d["start_line"]));
+                let k = key(&d["kind"], &d["name"], &d["start_line"]);
+                if !docs(d, "docs").is_empty() {
+                    self_documented.insert(k.clone());
+                }
+                out.insert(k);
             }
             if let Some(children) = d["children"].as_array() {
-                walk(children, out);
+                walk(children, out, self_documented);
             }
         }
     }
     let mut in_a_documented_block = Keys::new();
+    let mut self_documented = Keys::new();
     walk(
         v["files"][0]["declarations"]
             .as_array()
             .expect("declarations"),
         &mut in_a_documented_block,
+        &mut self_documented,
     );
+    // Copying `group` only where `docs` is empty passes for every member
+    // except one that carries both, so the fixture has to keep one.
     assert!(
-        in_a_documented_block
-            .iter()
-            .any(|(_, name, _)| name == "Circle"),
-        "fixture must keep a member that documents itself inside a documented block"
+        !self_documented.is_empty(),
+        "fixture must keep a member with its own doc comment inside a documented block: {in_a_documented_block:?}"
     );
 
     let dir = std::path::Path::new(FIXTURE).parent().unwrap();

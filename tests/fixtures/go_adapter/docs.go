@@ -43,7 +43,7 @@ type (
 		// Radius carries the unit in metres.
 		Radius int
 	}
-	Square struct{}
+	Square struct{ Square int }
 )
 
 // Request is what the client sends.
@@ -70,3 +70,7 @@ type (
 	Undocumented struct{}
 	AlsoNone     struct{}
 )
+
+type Board struct {
+	Red int
+}
