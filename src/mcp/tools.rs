@@ -970,16 +970,6 @@ fn run_implements(args: Value) -> CallResult {
     let transitive = !a.direct;
     let matches = core::find_implementations(&results, &a.target, transitive);
 
-    // Same gate as the CLI (#36): a 0-match answer is only reported for
-    // types that exist — "no such type anywhere" is a rejected call, and
-    // MCP's one error channel is `isError`.
-    if matches.is_empty() && !core::implements_target_exists(&results, &a.target) {
-        return CallResult::Error(format!(
-            "no type named '{}' in the given path(s); check the spelling or widen the search path",
-            a.target
-        ));
-    }
-
     // A chain that leaves the walked path(s) stops there and takes its
     // subtypes with it. Same probe as the CLI, so the two
     // surfaces qualify an answer on the same evidence.
@@ -988,6 +978,20 @@ fn run_implements(args: Value) -> CallResult {
     } else {
         crate::hierarchy::HierarchyGap::none()
     };
+
+    // Same gate as the CLI (#36): a 0-match answer is only reported for
+    // types that exist — "no such type anywhere" is a rejected call, and
+    // MCP's one error channel is `isError`. A proved gap counts as
+    // existence, as it does on the CLI.
+    if matches.is_empty()
+        && gap.unseen.is_empty()
+        && !core::implements_target_exists(&results, &a.target)
+    {
+        return CallResult::Error(format!(
+            "no type named '{}' in the given path(s); check the spelling or widen the search path",
+            a.target
+        ));
+    }
 
     if a.json {
         CallResult::Text(with_missing_paths(

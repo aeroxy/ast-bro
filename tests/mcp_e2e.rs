@@ -250,6 +250,40 @@ fn mcp_implements_prepends_the_hierarchy_note() {
 }
 
 #[test]
+fn mcp_implements_answers_a_target_reached_only_through_an_unseen_base() {
+    // Neither `Base` nor `Middle` is inside `codec`, so the walk alone has
+    // no evidence `Base` exists; the probe's proved gap is that evidence,
+    // and the response names the file to add instead of rejecting the call.
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::create_dir(tmp.path().join(".git")).unwrap();
+    std::fs::create_dir(tmp.path().join("api")).unwrap();
+    std::fs::create_dir(tmp.path().join("codec")).unwrap();
+    std::fs::write(tmp.path().join("api/Base.java"), "public interface Base {}\n").unwrap();
+    std::fs::write(
+        tmp.path().join("api/Middle.java"),
+        "public interface Middle extends Base {}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        tmp.path().join("codec/Leaf.java"),
+        "public class Leaf implements Middle {}\n",
+    )
+    .unwrap();
+
+    let resp = call_tool(
+        tmp.path(),
+        "implements",
+        serde_json::json!({"target": "Base", "paths": ["codec"]}),
+    );
+    let (_, is_error, text) = result_of(&resp);
+    assert!(!is_error, "a proved gap is an answer, not a rejection: {resp}");
+    assert!(
+        text.starts_with("# note:") && text.contains("api/Middle.java"),
+        "note must lead the response body and name the file:\n{text}"
+    );
+}
+
+#[test]
 fn mcp_find_related_unknown_location_is_an_error_in_json_mode_too() {
     // The JSON empty-envelope special case said "nothing is similar to this
     // chunk" for a location that was never indexed — a different and wrong

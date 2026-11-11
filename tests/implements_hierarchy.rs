@@ -827,16 +827,51 @@ fn an_empty_answer_says_what_the_walk_could_not_see() {
     );
 }
 
-/// A scope that holds neither the target nor anything naming it stays a
-/// rejected call, not a qualified answer.
+/// A scope whose subtypes reach the target only through a base declared
+/// outside it answers zero at exit 0 and names that base, even though the
+/// target's own declaration is outside the scope too.
 ///
-/// The walk has no evidence the type exists at all, so issue #36's exit-2
-/// gate fires first and its hint is already the right advice — the note this
-/// file is about qualifies a delivered answer, and there is none here.
+/// The exit-2 gate asks whether the walk declares the target, and here it
+/// does not; the probe's proved gap is the evidence that the type exists.
 #[test]
-fn a_target_absent_from_the_scope_is_still_exit_2() {
+fn a_target_reached_only_through_an_unseen_base_is_an_answer() {
     let dir = project();
     std::fs::remove_file(dir.path().join("codec/LeafTwo.java")).unwrap();
+    let scope = dir.path().join("codec");
+    let (code, stdout, stderr) = run(&["implements", "Base", scope.to_str().unwrap()]);
+    assert_eq!(code, Some(0), "stderr:\n{stderr}");
+    assert!(stdout.contains("0 match(es)"), "stdout:\n{stdout}");
+    for named in ["api/Middle.java", "api/Deep.java"] {
+        assert!(stderr.contains(named), "note must name {named}:\n{stderr}");
+    }
+}
+
+/// `--direct` keeps the exit-2 gate as it was: the probe runs only for a
+/// transitive answer, so a direct query over the same scope has no proved gap
+/// to count as evidence that the target exists.
+#[test]
+fn a_direct_query_for_a_target_outside_the_scope_is_still_exit_2() {
+    let dir = project();
+    std::fs::remove_file(dir.path().join("codec/LeafTwo.java")).unwrap();
+    let scope = dir.path().join("codec");
+    let (code, stdout, stderr) =
+        run(&["implements", "Base", scope.to_str().unwrap(), "--direct"]);
+    assert_eq!(code, Some(2), "stderr:\n{stderr}");
+    assert!(stdout.is_empty(), "stdout must be empty:\n{stdout}");
+    assert!(stderr.contains("no type named 'Base'"), "stderr:\n{stderr}");
+}
+
+/// A scope whose types lead nowhere near the target stays a rejected call.
+///
+/// `Other` and `Boom` inherit only the quiet shapes of [`project`], so the
+/// probe proves no route to `Base`, and issue #36's exit-2 gate fires with
+/// its hint.
+#[test]
+fn a_target_nothing_in_the_scope_reaches_is_still_exit_2() {
+    let dir = project();
+    for leaf in ["LeafOne", "LeafTwo", "LeafThree", "LeafFour"] {
+        std::fs::remove_file(dir.path().join(format!("codec/{leaf}.java"))).unwrap();
+    }
     let scope = dir.path().join("codec");
     let (code, stdout, stderr) = run(&["implements", "Base", scope.to_str().unwrap()]);
     assert_eq!(code, Some(2), "stderr:\n{stderr}");

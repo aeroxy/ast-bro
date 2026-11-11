@@ -1755,20 +1755,6 @@ pub fn run() {
             let results = walk_and_parse(&paths, None);
             let transitive = !direct;
             let matches = crate::core::find_implementations(&results, target, transitive);
-            if matches.is_empty() {
-                // Distinguish "this type has no implementations" (a real,
-                // interesting answer: exit 0) from "no such type anywhere"
-                // (the query could not run as asked: exit 2) — issue #36.
-                if !crate::core::implements_target_exists(&results, target) {
-                    crate::cli_error::CliError::new(
-                        "implements",
-                        crate::cli_error::ErrorKind::SymbolNotFound,
-                        format!("no type named '{}' in the given path(s)", target),
-                    )
-                    .hint("A 0-match answer is only reported for types that exist. Check the spelling or widen the search path.")
-                    .exit(*json);
-                }
-            }
             // A chain that leaves the walked path(s) stops there and takes
             // its subtypes with it, so a scoped walk can report a fraction
             // of the hierarchy — or a zero — and look complete.
@@ -1777,6 +1763,24 @@ pub fn run() {
             } else {
                 crate::hierarchy::HierarchyGap::none()
             };
+            // Distinguish "this type has no implementations" (a real,
+            // interesting answer: exit 0) from "no such type anywhere"
+            // (the query could not run as asked: exit 2) — issue #36. A
+            // proved gap is evidence the type exists too: a walked type
+            // reaches it through a base declared outside the walk, and the
+            // note names the file to add.
+            if matches.is_empty()
+                && gap.unseen.is_empty()
+                && !crate::core::implements_target_exists(&results, target)
+            {
+                crate::cli_error::CliError::new(
+                    "implements",
+                    crate::cli_error::ErrorKind::SymbolNotFound,
+                    format!("no type named '{}' in the given path(s)", target),
+                )
+                .hint("A 0-match answer is only reported for types that exist. Check the spelling or widen the search path.")
+                .exit(*json);
+            }
             // A proved gap is reported at any size of answer; an unplaced
             // name only beside a zero, which is the answer that carries no
             // other signal.
