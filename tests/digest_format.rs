@@ -870,3 +870,44 @@ fn no_fields_means_the_same_thing_in_every_renderer() {
         assert!(back.contains(name), "--include-fields must restore `{name}`:\n{back}");
     }
 }
+
+#[test]
+fn no_fields_hides_markdown_code_blocks_in_every_renderer() {
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path().join("x.md");
+    std::fs::write(&p, "# Title\n\nText.\n\n```rust\nfn x() {}\n```\n").unwrap();
+    let p = p.to_str().unwrap();
+
+    for args in [
+        vec!["digest", p],
+        vec!["map", p, "--detail", "names", "--no-fields"],
+        vec!["map", p, "--detail", "signatures", "--no-fields"],
+        vec!["map", p, "--detail", "full", "--no-fields"],
+    ] {
+        let out = run(&args);
+        assert!(
+            !out.contains("code block  L"),
+            "{args:?} must drop the code block:\n{out}"
+        );
+        assert!(out.contains("# Title"), "{args:?} must keep the heading:\n{out}");
+    }
+
+    let json: serde_json::Value =
+        serde_json::from_str(run(&["digest", p, "--json", "--compact"]).trim()).unwrap();
+    let kinds: Vec<&str> = json["files"][0]["declarations"]
+        .as_array()
+        .expect("declarations array")
+        .iter()
+        .flat_map(|d| {
+            std::iter::once(d).chain(d["children"].as_array().into_iter().flatten())
+        })
+        .map(|d| d["kind"].as_str().unwrap_or(""))
+        .collect();
+    assert_eq!(kinds, vec!["heading"], "digest --json kinds");
+
+    let back = run(&["digest", p, "--include-fields"]);
+    assert!(
+        back.contains("rust code block  L5-7"),
+        "--include-fields must restore the code block:\n{back}"
+    );
+}

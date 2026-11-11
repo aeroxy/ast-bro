@@ -659,7 +659,7 @@ struct MapArgs {
     /// Hide private declarations.
     #[arg(long)]
     no_private: bool,
-    /// Hide fields, properties, events, and indexers.
+    /// Hide fields, properties, events, indexers, and Markdown code blocks.
     #[arg(long)]
     no_fields: bool,
     /// Drop doc comments — in JSON the `docs`, `docs_inside`, and
@@ -677,8 +677,8 @@ struct MapArgs {
     /// Include private members (overrides a preset that hides them).
     #[arg(long, conflicts_with = "no_private")]
     include_private: bool,
-    /// Include fields, properties, events, and indexers (overrides a preset
-    /// that hides them).
+    /// Include fields, properties, events, indexers, and Markdown code blocks
+    /// (overrides a preset that hides them).
     #[arg(long, conflicts_with = "no_fields")]
     include_fields: bool,
 
