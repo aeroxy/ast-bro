@@ -215,6 +215,27 @@ fn group_docs_render_once_and_marked() {
     );
 }
 
+#[test]
+fn group_docs_go_above_the_first_member_that_renders() {
+    for (args, first_rendered) in [
+        (&[][..], "const quantum = 10"),
+        (&["--no-private"][..], "const Slots = 4"),
+    ] {
+        let s = run(&[&["map", FIXTURE][..], args].concat());
+        assert_eq!(
+            s.matches("[group] // Tuning holds").count(),
+            1,
+            "map {args:?}:\n{s}"
+        );
+        assert!(
+            s.contains(&format!(
+                "[group] // Tuning holds the scheduler's knobs.\n    {first_rendered}"
+            )),
+            "map {args:?} must print the group's comment directly above {first_rendered:?}:\n{s}"
+        );
+    }
+}
+
 /// Every member of a documented block stays visually attached to the
 /// `[group]` line documenting it. The three block kinds are the axis: a
 /// `const` / `var` group renders its members as consecutive one-liners,
