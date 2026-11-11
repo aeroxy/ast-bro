@@ -1736,19 +1736,18 @@ fn _filter_one(d: &Declaration, opts: &MapOptions, dropped: &mut usize) -> Decla
 
 /// Whether a member survives the visibility projection.
 ///
-/// The single place that decides what `--no-fields` and `--no-private` mean.
-/// `MapOptions` and `DigestOptions` are separate structs carrying the same two
-/// booleans, and each renderer used to re-derive the rule from them: the
-/// digest path tested `kind == Field` alone while this one tested all four
-/// field-like kinds, so `map --detail names --no-fields` kept a C# property
-/// that `map --detail full --no-fields` dropped. Taking both flags as plain
-/// arguments is what lets the two option types share one answer.
+/// The single place that decides what `--no-fields` and `--no-private` mean,
+/// for the text renderers at every `--detail` level and for the JSON filter.
+/// It takes the two flags as plain booleans rather than an options struct, so
+/// `MapOptions` and `DigestOptions`, which carry the same pair separately,
+/// cannot answer differently.
 fn _member_visible(d: &Declaration, include_fields: bool, include_private: bool) -> bool {
     use DeclarationKind::*;
     // A property, an event, and an indexer are fields as far as this
     // projection is concerned: each is state on the type rather than
     // behaviour, which is what a caller passing `--no-fields` is asking to
-    // drop. `Indexer` is here for the languages whose adapters emit it.
+    // drop. `Indexer` is the kind `csharp.rs` maps `indexer_declaration` to,
+    // though no C# source produces one yet.
     // A markdown code block sits in the same slot under a heading: the digest
     // preset has always hidden it, and `--include-fields` brings it back.
     if matches!(d.kind, Field | Property | Event | Indexer | CodeBlock) && !include_fields {

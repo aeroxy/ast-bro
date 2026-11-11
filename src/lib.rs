@@ -65,8 +65,9 @@ enum Commands {
     Show {
         /// File, directory, or quoted glob to search.
         path: PathBuf,
-        /// Symbol to extract. Suffix matching: `TakeDamage`, or
-        /// `Player.TakeDamage` when the bare name is ambiguous.
+        /// Symbol to extract, or a further target when it names a file, a
+        /// directory, or a glob (see OTHERS). Suffix matching: `TakeDamage`,
+        /// or `Player.TakeDamage` when the bare name is ambiguous.
         symbol: String,
         /// Further targets and symbols. Which is which is decided by asking
         /// the filesystem, not by position, so an unquoted glob the shell
