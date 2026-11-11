@@ -778,14 +778,17 @@ fn _resolve_relative(spec: &str, from: &Path) -> Option<PathBuf> {
         return None;
     }
     let mut dir = from.parent()?.to_path_buf();
-    let mut rest = spec;
-    while let Some(r) = rest.strip_prefix("../") {
-        dir.pop();
-        rest = r;
-    }
-    let rest = rest.strip_prefix("./").unwrap_or(rest);
-    for seg in rest.split('/').filter(|s| !s.is_empty() && *s != ".") {
-        dir.push(seg);
+    // Segment by segment, so a bare `..` (Python's `from .. import Base`)
+    // climbs like `../` does instead of staying in the path as a literal
+    // component no declaration's path ever has.
+    for seg in spec.split('/') {
+        match seg {
+            "" | "." => {}
+            ".." => {
+                dir.pop();
+            }
+            _ => dir.push(seg),
+        }
     }
     // NodeNext TypeScript writes the *emitted* extension — `./base.js` for
     // a declaration that lives in `base.ts` — and the comparison is against

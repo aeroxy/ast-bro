@@ -1206,3 +1206,21 @@ fn two_bindings_at_one_scope_decide_nothing() {
         "a competing binding went unreported:\n{stderr}"
     );
 }
+
+/// `from .. import Parent as Renamed` names the parent package, the way
+/// `from ..mod import Parent` names a module in it.
+#[test]
+fn a_rename_imported_from_the_parent_package_resolves() {
+    let dir = format!("{}/python_parent", fixture("scope"));
+    let (code, stdout, stderr) = run(&["implements", "pkg.Parent", &dir]);
+    assert_eq!(code, Some(0), "{stderr}");
+    assert!(
+        stdout.contains("class Child"),
+        "implements pkg.Parent over {dir} lost the renamed parent import:\n{stdout}\n{stderr}"
+    );
+    let (_, stdout, _) = run(&["implements", "other.Parent", &dir]);
+    assert!(
+        stdout.contains("0 match(es)"),
+        "implements other.Parent over {dir} took the wrong package:\n{stdout}"
+    );
+}
