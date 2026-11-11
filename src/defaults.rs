@@ -487,12 +487,10 @@ mod tests {
 
     /// The guards' verdict on a line, over every shape a line can take.
     ///
-    /// This is the test the round-2 review said was missing, and it is missing
-    /// in a specific way worth naming: `is_exempt` had a passing test of its
-    /// own while being unreachable, because a trailing comment left the value
-    /// unparseable and `is_literal_field` answered "not a literal" first. Each
-    /// link was green and the chain was broken, so the assertions here are on
-    /// the composed verdict rather than on any one predicate.
+    /// The assertions are on the composed verdict rather than on any one
+    /// predicate. `is_exempt` once had a passing test of its own while being
+    /// unreachable, because a trailing comment left the value unparseable and
+    /// `is_literal_field` returned "not a literal" first.
     #[test]
     fn the_guards_verdict_over_every_shape_of_line() {
         // (line, rejected?)
@@ -523,20 +521,9 @@ mod tests {
             // A commented-out assignment is not code, whatever it spells.
             ("            // was max_depth: 16,", false),
         ];
-        let mut rejected = 0;
         for (line, expected) in cases {
-            let verdict = is_unmarked_literal(line);
-            assert_eq!(verdict, expected, "wrong verdict for: {line}");
-            // Count what the code answered, not what the table declared.
-            // Summing `expected` made this 7 by construction — a number that
-            // holds however the predicate behaves, which is the shape of an
-            // assertion that cannot fail.
-            rejected += usize::from(verdict);
+            assert_eq!(is_unmarked_literal(line), expected, "verdict for: {line}");
         }
-        assert!(
-            rejected >= 7,
-            "only {rejected} shapes reached the rejecting branch"
-        );
     }
 
     /// A commented-out clap attribute is not a clap attribute.
@@ -595,7 +582,8 @@ mod tests {
 
     /// The opt-out marker is exact, and it costs a reason.
     ///
-    /// The composed test above covers the verdict; this one covers the marker
+    /// `the_guards_verdict_over_every_shape_of_line` covers the verdict; this
+    /// one covers the marker
     /// itself, so a change to its spelling fails here with a name that says
     /// what broke rather than inside a table of line shapes.
     #[test]
@@ -953,7 +941,7 @@ mod tests {
 
     /// A clap doc comment leaves the default to clap.
     ///
-    /// The sibling guard above covers the MCP schema, where a description is a
+    /// `schema_descriptions_interpolate_their_default` covers the MCP schema, where a description is a
     /// runtime `String` and the repair is to interpolate the constant. A clap
     /// doc comment cannot interpolate anything — it is an attribute, fixed at
     /// compile time — so the rule here is the other one: say nothing, because
@@ -1066,9 +1054,10 @@ mod tests {
 
     /// The doc-comment text, when it names a concrete default value.
     ///
-    /// Same shape as the schema rule, minus the interpolation escape: a digit
-    /// or a quoted value after the word `default` is the copy, while a bare
-    /// `(default)` or `by default (tagged …)` names nothing and passes.
+    /// Same shape as the schema rule, minus the interpolation escape: a quoted
+    /// value after the word `default`, or a number the sentence ends on, is
+    /// the copy, while a bare `(default)` or `by default (tagged …)` names
+    /// nothing and passes.
     fn states_a_default_value(line: &str) -> Option<String> {
         let lowered = line.to_ascii_lowercase();
         for rest in lowered.split("default").skip(1) {
