@@ -2668,6 +2668,27 @@ mod tests {
         );
     }
 
+    /// Blank help counts as missing, and the walk reaches nested subcommands.
+    #[test]
+    fn the_help_guards_report_blank_and_nested_entries() {
+        let tree = clap::Command::new("t")
+            .about("root")
+            .arg(clap::Arg::new("missing").long("missing"))
+            .arg(clap::Arg::new("blank").long("blank").help("   "))
+            .arg(clap::Arg::new("described").long("described").help("Has text."))
+            .subcommand(
+                clap::Command::new("outer").about("described").subcommand(
+                    clap::Command::new("inner").arg(clap::Arg::new("deep").long("deep")),
+                ),
+            );
+        let mut args = Vec::new();
+        collect_undocumented(&tree, &mut Vec::new(), &mut args);
+        assert_eq!(args, ["t missing", "t blank", "t outer inner deep"]);
+        let mut subs = Vec::new();
+        collect_bare_subcommands(&tree, &mut Vec::new(), &mut subs);
+        assert_eq!(subs, ["t outer inner"]);
+    }
+
     /// Depth-first over the subcommand tree, recording `<path> <arg>` for each
     /// argument whose help is missing or blank. `path` is the ancestor chain,
     /// so a nested subcommand's failure says where to look.
