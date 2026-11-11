@@ -1657,7 +1657,9 @@ fn _digest_markdown(
         if matches!(d.kind, DeclarationKind::Heading) {
             out.push(format!("{}{}{}", pad, d.signature, d.lines_suffix()));
             out.extend(_digest_markdown(&d.children, opts, indent + 2, depth + 1));
-        } else if matches!(d.kind, DeclarationKind::CodeBlock) && opts.include_fields {
+        } else if matches!(d.kind, DeclarationKind::CodeBlock)
+            && _member_visible(d, opts.include_fields, opts.include_private)
+        {
             out.push(format!("{}{}{}", pad, d.signature, d.lines_suffix()));
         } else if matches!(d.kind, DeclarationKind::Frontmatter) {
             // Unconditional: for a file that is *only* frontmatter, dropping
@@ -1747,7 +1749,9 @@ fn _member_visible(d: &Declaration, include_fields: bool, include_private: bool)
     // projection is concerned: each is state on the type rather than
     // behaviour, which is what a caller passing `--no-fields` is asking to
     // drop. `Indexer` is here for the languages whose adapters emit it.
-    if matches!(d.kind, Field | Property | Event | Indexer) && !include_fields {
+    // A markdown code block sits in the same slot under a heading: the digest
+    // preset has always hidden it, and `--include-fields` brings it back.
+    if matches!(d.kind, Field | Property | Event | Indexer | CodeBlock) && !include_fields {
         return false;
     }
     if d.visibility == "private" && !include_private {

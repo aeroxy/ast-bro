@@ -26,7 +26,7 @@ pub fn list() -> Value {
                         },
                         "detail":     { "type": "string", "enum": ["names", "signatures", "full"], "description": "Detail level: `full` (signatures + docs, default), `signatures` (no docs), `names` (bare member names — the digest renderer)." },
                         "no_private": { "type": "boolean", "description": "Hide private declarations." },
-                        "no_fields":  { "type": "boolean", "description": "Hide fields, properties, events, and indexers." },
+                        "no_fields":  { "type": "boolean", "description": "Hide fields, properties, events, indexers, and Markdown code blocks." },
                         "no_docs":    { "type": "boolean", "description": "Drop doc comments — in JSON the `docs`, `docs_inside`, and `doc_start_byte` keys, together routinely a third of the payload." },
                         "no_attrs":   { "type": "boolean", "description": "Hide attributes / decorators." },
                         "no_lines":   { "type": "boolean", "description": "Hide line ranges — in JSON the byte offsets too: `start_line`, `end_line`, `start_byte`, `end_byte`, `doc_start_byte`." },
@@ -50,7 +50,7 @@ pub fn list() -> Value {
                             "minItems": 1
                         },
                         "include_private": { "type": "boolean", "description": "Include private declarations, overriding the digest preset." },
-                        "include_fields":  { "type": "boolean", "description": "Include fields, properties, events, and indexers, overriding the digest preset." },
+                        "include_fields":  { "type": "boolean", "description": "Include fields, properties, events, indexers, and Markdown code blocks, overriding the digest preset." },
                         "max_members":     { "type": "integer", "minimum": 0, "description": format!("Cap members per type (default {}); the output reports what was cut (`... +N more` in text, `truncated` and `dropped_members` under `json`).", crate::defaults::MAX_MEMBERS) },
                         "glob":            { "type": "string", "description": "Glob filter applied during directory walk." },
                         "json":            { "type": "boolean", "description": "Return JSON (schema `ast-bro.map.v1`) instead of text. The digest preset drops doc comments from the payload on the caller's behalf, so it carries a `projected` object naming what is gone." }
