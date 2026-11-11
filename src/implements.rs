@@ -1779,8 +1779,7 @@ fn _type_ref_segments(name: &str) -> Vec<String> {
     if let Some(i) = name.find('[') {
         name = &name[..i];
     }
-    name.replace("::", ".")
-        .split(['.', '\\'])
+    crate::core::qualified_segments(name)
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(str::to_string)

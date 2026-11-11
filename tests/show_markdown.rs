@@ -95,3 +95,15 @@ fn a_heading_with_a_dot_still_matches_its_first_word() {
         );
     }
 }
+
+/// A heading is prose, so a query holding `::` is one phrase to find in it,
+/// not two segments of a qualified name.
+#[test]
+fn a_heading_query_with_a_path_separator_is_one_phrase() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file = dir.path().join("README.md");
+    std::fs::write(&file, "# Doc\n\n## Using std::fs\n\nbody\n").expect("write");
+    let path = file.to_string_lossy().to_string();
+    let s = run(&["show", &path, "std::fs"]);
+    assert!(s.contains("## Using std::fs"), "show {path} std::fs:\n{s}");
+}

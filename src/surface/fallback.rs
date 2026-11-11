@@ -43,15 +43,23 @@ fn _walk(
     out: &mut Vec<SurfaceEntry>,
 ) {
     use DeclarationKind::*;
-    let qname = if prefix.is_empty() {
+    let is_namespace = matches!(decl.kind, Namespace);
+    // A namespace keeps its source spelling (`A::B`, `App\Lib`) in its
+    // name; the qualified path is spelled in dots, or PHP came out as
+    // `App\Lib.Service`.
+    let name = if is_namespace {
+        crate::core::dotted(&decl.name)
+    } else {
         decl.name.clone()
-    } else if decl.name.is_empty() {
+    };
+    let qname = if prefix.is_empty() {
+        name
+    } else if name.is_empty() {
         prefix.to_string()
     } else {
-        format!("{}.{}", prefix, decl.name)
+        format!("{}.{}", prefix, name)
     };
 
-    let is_namespace = matches!(decl.kind, Namespace);
     let visible = include_private || decl.visibility != "private";
 
     // Don't emit for the namespace shell itself, but pass its name into

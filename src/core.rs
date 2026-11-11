@@ -841,16 +841,11 @@ fn _render_decl(
     };
 
     if decl.kind == Namespace {
-        // `name` carries the dots every qualified path is joined with, which
-        // is not how PHP or C++ spell a namespace. The adapter's signature is
-        // the clause as written, so a language that writes one gets its own
-        // spelling back here; `package`, `module` and `mod` keep the uniform
-        // wording this line has always used.
-        let spelled = decl
-            .signature
-            .strip_prefix("namespace ")
-            .unwrap_or(&decl.name);
-        unit.push(format!("{}namespace {}", prefix, spelled.magenta().bold()));
+        unit.push(format!(
+            "{}namespace {}",
+            prefix,
+            decl.name.magenta().bold()
+        ));
     } else {
         unit.push(format!(
             "{}{}{}{}",
@@ -1207,11 +1202,7 @@ fn _flatten_types(decls: &[Declaration], prefix: &str, opts: &DigestOptions) -> 
             if d.visibility == "private" && !opts.include_private {
                 continue;
             }
-            let new_prefix = if prefix.is_empty() {
-                format!("{}.", d.name)
-            } else {
-                format!("{}{}.", prefix, d.name)
-            };
+            let new_prefix = format!("{}{}.", prefix, dotted(&d.name));
             out.extend(_flatten_types(&d.children, &new_prefix, opts));
         } else if matches!(d.kind, Class | Struct | Interface | Record | Enum) {
             if d.visibility == "private" && !opts.include_private {
@@ -1315,8 +1306,29 @@ pub struct SymbolMatch {
     pub ancestor_signatures: Vec<String>,
 }
 
+/// The segments of a qualified name, whichever separator its language
+/// writes: `A.B` in C#, `A::B` in C++, `App\Lib` in PHP.
+///
+/// A declaration keeps its name as the source spells it; this is what lets
+/// the qualified paths built from it be spelled in dots only, and what lets
+/// `show` take back the source's own spelling as well as the dotted one.
+pub fn qualified_segments(name: &str) -> impl Iterator<Item = &str> {
+    name.split("::").flat_map(|s| s.split(['.', '\\']))
+}
+
+/// `name` spelled as a dotted qualified path. See [`qualified_segments`].
+pub fn dotted(name: &str) -> String {
+    qualified_segments(name).collect::<Vec<_>>().join(".")
+}
+
 pub fn find_symbols(result: &ParseResult, symbol: &str) -> Vec<SymbolMatch> {
-    let parts: Vec<&str> = symbol.split('.').collect();
+    // A heading is prose, where `std::fs` is one phrase to look for rather
+    // than two segments of a path.
+    let parts: Vec<&str> = if result.language == "markdown" {
+        symbol.split('.').collect()
+    } else {
+        qualified_segments(symbol).collect()
+    };
     let mut matches = Vec::new();
     _search_walk(
         &result.declarations,
@@ -1341,8 +1353,8 @@ fn _search_walk(
         let mut new_trail = trail.clone();
         if !d.name.is_empty() {
             // A namespace name is itself qualified — `namespace Foo.Bar` in
-            // C#, and PHP's and C++'s multi-segment forms — so it enters the
-            // trail as its segments. The query is split on the same dot, so a
+            // C#, `A::B` in C++, `App\Lib` in PHP — so it enters the trail as
+            // its segments. The query is split on the same separators, so a
             // one-element `Foo.Bar` could never match the `Foo`, `Bar` the
             // caller typed, which made the qualified name `surface` prints a
             // name `show` rejects.
@@ -1354,7 +1366,7 @@ fn _search_walk(
             // lost every word before a dot — `Node.js`, `vs.`, a version, a
             // filename.
             if d.kind == DeclarationKind::Namespace {
-                new_trail.extend(d.name.split('.').map(str::to_string));
+                new_trail.extend(qualified_segments(&d.name).map(str::to_string));
             } else {
                 new_trail.push(d.name.clone());
             }

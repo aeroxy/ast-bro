@@ -75,12 +75,10 @@ fn top_level_function_surfaced() {
 
 /// A namespace is spelled two ways, and each surface takes the one it needs.
 ///
-/// `map` prints the file as written, so the clause keeps PHP's `\`. Every
-/// other surface prints a *qualified path*, and those are joined with dots —
-/// which produced `App\Lib.Service`, a spelling that is neither PHP nor a
-/// target this tool takes back. C++17's `namespace A::B` had the same shape.
-/// The declaration's name therefore carries the dots and its signature keeps
-/// the source, so `show` still names the enclosing clause as written.
+/// `map` prints the file as written, so the clause keeps PHP's `\`.
+/// `surface` and `digest` print a *qualified path*, joined with dots, and a namespace
+/// kept whole in it came out as `App\Lib.Service`, a spelling that is
+/// neither PHP nor dotted.
 #[test]
 fn a_multi_segment_namespace_is_spelled_for_the_surface_that_prints_it() {
     let dir = "tests/fixtures/implements_collision/namespace_separators/php";
@@ -88,6 +86,12 @@ fn a_multi_segment_namespace_is_spelled_for_the_surface_that_prints_it() {
     assert!(
         mapped.contains("namespace App\\Base"),
         "map lost PHP's own spelling:\n{mapped}"
+    );
+
+    let digested = run(&["digest", dir]);
+    assert!(
+        digested.contains("class App.Base.Root"),
+        "digest did not spell the qualified path in dots:\n{digested}"
     );
 
     let surfaced = run(&["surface", dir]);

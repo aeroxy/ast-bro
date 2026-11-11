@@ -488,3 +488,35 @@ fn a_qualified_name_surface_prints_resolves_in_show() {
         assert!(stdout.contains("interface Codec"), "{target}:\n{stdout}");
     }
 }
+
+/// The name `map` prints for a namespace is a name `show` takes back, in the
+/// language's own spelling as well as in dots.
+#[test]
+fn a_namespace_resolves_in_its_own_spelling() {
+    let file = "tests/fixtures/implements_collision/namespace_separators/cpp/a.cpp";
+    let (code, stdout, stderr) = run(&["show", file, "A::B"]);
+    assert_eq!(code, Some(0), "show {file} A::B: {stderr}");
+    assert!(
+        stdout.contains(" A.B (namespace)"),
+        "the match is not reported under the dotted name `surface` prints:\n{stdout}"
+    );
+    for target in ["A::B::Root", "A.B.Root"] {
+        let (code, stdout, stderr) = run(&["show", file, target]);
+        assert_eq!(code, Some(0), "show {file} {target}: {stderr}");
+        assert!(
+            stdout.contains("struct Root {}"),
+            "show {file} {target}:\n{stdout}"
+        );
+    }
+}
+
+/// A backslash is PHP's namespace separator, and outside Windows no path
+/// carries one, so `App\Base` is a symbol rather than a missing file.
+#[cfg(not(windows))]
+#[test]
+fn a_php_namespace_with_a_backslash_is_a_symbol() {
+    let file = "tests/fixtures/implements_collision/namespace_separators/php/base.php";
+    let (code, stdout, stderr) = run(&["show", file, "App\\Base\\Root"]);
+    assert_eq!(code, Some(0), "{stderr}");
+    assert!(stdout.contains("class Root"), "{stdout}");
+}
