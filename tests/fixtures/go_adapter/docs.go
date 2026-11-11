@@ -74,3 +74,9 @@ type (
 type Board struct {
 	Red int
 }
+
+// Tuning holds the scheduler's knobs.
+const (
+	quantum = 10
+	Slots   = 4
+)
