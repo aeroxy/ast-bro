@@ -723,3 +723,25 @@ fn mcp_no_fields_drops_properties_and_events_too() {
         );
     }
 }
+
+/// `rebuild` is not in the `callers` schema, and a client that still sends it
+/// gets the answer it gets without the key.
+#[test]
+fn mcp_callers_ignores_a_rebuild_key() {
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        tmp.path().join("lib.rs"),
+        "pub fn caller() { callee(); }\npub fn callee() {}\n",
+    )
+    .unwrap();
+    let plain = call_tool(tmp.path(), "callers", serde_json::json!({"target": "callee"}));
+    let with_key = call_tool(
+        tmp.path(),
+        "callers",
+        serde_json::json!({"target": "callee", "rebuild": true}),
+    );
+    let (_, is_error, text) = result_of(&with_key);
+    assert!(!is_error, "callers rejected `rebuild: true`: {with_key}");
+    assert!(text.contains("caller"), "callers lost its row: {text}");
+    assert_eq!(text, result_of(&plain).2, "callers with and without `rebuild`");
+}

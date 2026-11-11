@@ -911,3 +911,37 @@ fn no_fields_hides_markdown_code_blocks_in_every_renderer() {
         "--include-fields must restore the code block:\n{back}"
     );
 }
+
+#[test]
+fn no_fields_hides_a_python_property_in_every_renderer() {
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path().join("c.py");
+    std::fs::write(
+        &p,
+        "class C:\n    @property\n    def size(self): return 0\n    def run(self): pass\n",
+    )
+    .unwrap();
+    let p = p.to_str().unwrap();
+
+    for args in [
+        vec!["digest", p],
+        vec!["map", p, "--detail", "full", "--no-fields"],
+    ] {
+        let out = run(&args);
+        assert!(!out.contains("size"), "{args:?} must drop the @property:\n{out}");
+        assert!(out.contains("run"), "{args:?} must keep the method:\n{out}");
+    }
+
+    let json: serde_json::Value =
+        serde_json::from_str(run(&["digest", p, "--json", "--compact"]).trim()).unwrap();
+    let names: Vec<&str> = json["files"][0]["declarations"][0]["children"]
+        .as_array()
+        .expect("class children")
+        .iter()
+        .map(|c| c["name"].as_str().unwrap_or(""))
+        .collect();
+    assert_eq!(names, vec!["run"], "digest --json member names");
+
+    let back = run(&["digest", p, "--include-fields"]);
+    assert!(back.contains("size"), "--include-fields must restore the @property:\n{back}");
+}
