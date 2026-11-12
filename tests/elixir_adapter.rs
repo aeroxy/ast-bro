@@ -271,3 +271,49 @@ fn exs_script_parses() {
     assert!(s.contains("defmodule Script.Helper"), "{s}");
     assert!(s.contains("def greet(name)"), "{s}");
 }
+
+#[test]
+fn defimpl_for_a_list_defines_one_impl_per_type() {
+    // Elixir compiles `defimpl P, for: [A, B]` into `P.A` and `P.B`.
+    let f = map_json(FIXTURE);
+    for name in ["Billing.Printable.Integer", "Billing.Printable.Float"] {
+        let imp = module(&f, name);
+        assert_eq!(imp["native_kind"], "impl");
+        assert_eq!(imp["bases"], serde_json::json!(["Billing.Printable"]));
+        assert_eq!(find(&imp["children"], "print").len(), 1, "{name}");
+    }
+    // The protocol's own name is not reused for the impl.
+    let protos = find(&f["declarations"], "Billing.Printable");
+    assert_eq!(protos.len(), 1, "{protos:#?}");
+    assert_eq!(protos[0]["native_kind"], "protocol");
+
+    let s = run(&["implements", "Printable", DIR]);
+    assert!(s.contains("Billing.Printable.Integer"), "{s}");
+    assert!(s.contains("Billing.Printable.Float"), "{s}");
+    assert!(
+        !s.lines().any(|l| l.ends_with("class Billing.Printable")),
+        "protocol listed as its own implementor:\n{s}"
+    );
+
+    let s = run(&["show", FIXTURE, "Billing.Printable"]);
+    assert!(s.contains("defprotocol Billing.Printable"), "{s}");
+    assert!(
+        !s.contains("defimpl"),
+        "impl matched the protocol name:\n{s}"
+    );
+    let s = run(&["show", FIXTURE, "Billing.Printable.Float"]);
+    assert!(s.contains("for: [Integer, Float]"), "{s}");
+}
+
+#[test]
+fn defimpl_for_module_names_the_enclosing_module() {
+    let f = map_json(FIXTURE);
+    let invoice = module(&f, "Billing.Invoice");
+    let imp = find(&invoice["children"], "Billing.Printable.Billing.Invoice");
+    assert_eq!(imp.len(), 1, "{invoice:#}");
+    assert_eq!(imp[0]["bases"], serde_json::json!(["Billing.Printable"]));
+
+    let s = run(&["implements", "Printable", DIR]);
+    assert!(s.contains("Billing.Printable.Billing.Invoice"), "{s}");
+    assert!(!s.contains("__MODULE__"), "{s}");
+}
