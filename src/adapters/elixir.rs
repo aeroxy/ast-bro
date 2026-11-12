@@ -213,9 +213,8 @@ impl<'s> Walker<'s> {
                 "defmodule" | "defprotocol" | "defimpl" => {
                     last_fn = None;
                     pending = Pending::default();
-                    if let Some(decl) = self.module_decl(&child, &keyword, module_fqn) {
-                        out.decls.push(decl);
-                    }
+                    let decls = self.module_decl(&child, &keyword, module_fqn);
+                    out.decls.extend(decls);
                 }
                 k if DEF_MACROS.iter().any(|(kw, _, _)| *kw == k) => {
                     let p = std::mem::take(&mut pending);
@@ -243,29 +242,44 @@ impl<'s> Walker<'s> {
         node: &Node<'a, D>,
         keyword: &str,
         parent_fqn: &str,
-    ) -> Option<Declaration> {
+    ) -> Vec<Declaration> {
         let args = _named_args(node);
-        let first = args.first()?;
+        let Some(first) = args.first() else {
+            return Vec::new();
+        };
         let written = _text(first);
-        let for_type = _keyword_value(&args, "for").map(|v| _text(&v));
 
-        let (kind, name, signature, mut bases, native) = match keyword {
+        let (kind, names, signature, mut bases, native) = match keyword {
             "defprotocol" => (
                 DeclarationKind::Interface,
-                written.clone(),
+                vec![written.clone()],
                 format!("defprotocol {}", written),
                 Vec::new(),
                 "protocol",
             ),
             "defimpl" => {
-                // `defimpl P, for: T` defines `P.T`; without `for:` it
-                // implements the protocol for the enclosing module.
-                let target = for_type.clone().unwrap_or_else(|| parent_fqn.to_string());
-                let name = if target.is_empty() || target.starts_with('[') {
-                    written.clone()
-                } else {
-                    format!("{}.{}", written, target)
+                // `defimpl P, for: T` defines `P.T`, and `for: [A, B]` one
+                // module per type; without `for:` it implements the
+                // protocol for the enclosing module.
+                let targets = match _keyword_value(&args, "for") {
+                    Some(v) if v.kind() == "list" => v
+                        .children()
+                        .filter(|c| c.is_named() && c.kind() != "comment")
+                        .map(|c| _expand_module(&_text(&c), parent_fqn))
+                        .collect(),
+                    Some(v) => vec![_expand_module(&_text(&v), parent_fqn)],
+                    None => vec![parent_fqn.to_string()],
                 };
+                let names = targets
+                    .iter()
+                    .map(|t| {
+                        if t.is_empty() {
+                            written.clone()
+                        } else {
+                            format!("{}.{}", written, t)
+                        }
+                    })
+                    .collect();
                 let args_text = node
                     .children()
                     .find(|c| c.kind() == "arguments")
@@ -273,7 +287,7 @@ impl<'s> Walker<'s> {
                     .unwrap_or_else(|| written.clone());
                 (
                     DeclarationKind::Class,
-                    name,
+                    names,
                     format!("defimpl {}", args_text),
                     vec![written.clone()],
                     "impl",
@@ -281,7 +295,7 @@ impl<'s> Walker<'s> {
             }
             _ => (
                 DeclarationKind::Class,
-                written.clone(),
+                vec![written.clone()],
                 format!("defmodule {}", written),
                 Vec::new(),
                 "module",
@@ -309,9 +323,9 @@ impl<'s> Walker<'s> {
         }
 
         let range = node.range();
-        Some(Declaration {
+        let decl = Declaration {
             kind,
-            name,
+            name: String::new(),
             signature,
             bases,
             attrs: Vec::new(),
@@ -328,7 +342,14 @@ impl<'s> Walker<'s> {
             deprecated: false,
             children: body.decls,
             calls: Vec::new(),
-        })
+        };
+        names
+            .into_iter()
+            .map(|name| Declaration {
+                name,
+                ..decl.clone()
+            })
+            .collect()
     }
 
     /// One `def`-family clause: either a new declaration or, when it
@@ -669,6 +690,17 @@ fn _text<'a, D: Doc>(node: &Node<'a, D>) -> String {
     collapse_ws(&node.text())
 }
 
+/// `__MODULE__` or `__MODULE__.Sub` as the module it names inside
+/// `enclosing`; any other name, or one outside a module, as written.
+fn _expand_module(name: &str, enclosing: &str) -> String {
+    match name.strip_prefix("__MODULE__") {
+        Some(rest) if !enclosing.is_empty() && (rest.is_empty() || rest.starts_with('.')) => {
+            format!("{}{}", enclosing, rest)
+        }
+        _ => name.to_string(),
+    }
+}
+
 /// The macro name of a `call` whose target is a bare identifier
 /// (`def`, `defmodule`, `alias`, …). Remote calls (`Foo.bar`) have a `dot`
 /// target and are not declarations.
@@ -853,5 +885,21 @@ mod tests {
         let f = &r.declarations[0].children[0];
         assert!(f.docs.is_empty(), "{:?}", f.docs);
         assert_eq!(f.start_line, 4);
+    }
+
+    #[test]
+    fn defimpl_targets_expand_module_and_lists() {
+        let r = parse(
+            "defimpl P, for: [] do\nend\ndefmodule A do\n  defimpl P, for: [__MODULE__.B, C] do\n  end\n  defimpl P, for: __MODULE__ do\n  end\nend\ndefimpl P, for: __MODULE__ do\nend\n",
+        );
+        let top: Vec<&str> = r.declarations.iter().map(|d| d.name.as_str()).collect();
+        // `for: []` defines no module; outside a module `__MODULE__` stays as written.
+        assert_eq!(top, vec!["A", "P.__MODULE__"]);
+        let kids: Vec<&str> = r.declarations[0]
+            .children
+            .iter()
+            .map(|d| d.name.as_str())
+            .collect();
+        assert_eq!(kids, vec!["P.A.B", "P.C", "P.A"]);
     }
 }

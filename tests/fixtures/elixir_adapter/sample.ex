@@ -90,3 +90,13 @@ end
 defmodule Billing.Error do
   defexception [:message]
 end
+
+defimpl Billing.Printable, for: [Integer, Float] do
+  def print(n), do: to_string(n)
+end
+
+defmodule Billing.Invoice do
+  defimpl Billing.Printable, for: __MODULE__ do
+    def print(invoice), do: "Invoice #{invoice.id}"
+  end
+end
