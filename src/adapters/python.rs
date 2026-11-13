@@ -83,9 +83,7 @@ fn _node_to_decl<'a, D: Doc>(
 
         if inside_class
             && decl.kind == DeclarationKind::Method
-            && decorators.iter().any(|d| {
-                d == "@property" || d.starts_with("@property ") || d.starts_with("@property\n")
-            })
+            && decorators.iter().any(|d| _is_property_decorator(d))
         {
             decl.kind = DeclarationKind::Property;
         }
@@ -114,6 +112,29 @@ fn _node_to_decl<'a, D: Doc>(
     }
 
     None
+}
+
+/// Whether a decorator makes the method it decorates part of a property.
+///
+/// That is `@property` itself, and the `@<name>.setter`, `@<name>.deleter`,
+/// and `@<name>.getter` accessors that the resulting property object exposes,
+/// so the setter of a property is a property member exactly as its getter is.
+/// Only the decorator's name is read: the collected text carries a comment on
+/// the same line, as in `@size.setter  # validates` or `@size.setter#validates`.
+fn _is_property_decorator(decorator: &str) -> bool {
+    let code = decorator.split('#').next().unwrap_or_default();
+    let Some(name) = code.split_whitespace().next() else {
+        return false;
+    };
+    if name == "@property" {
+        return true;
+    }
+    name.strip_prefix('@').is_some_and(|d| {
+        [".setter", ".deleter", ".getter"].iter().any(|accessor| {
+            d.strip_suffix(accessor)
+                .is_some_and(|prefix| !prefix.is_empty())
+        })
+    })
 }
 
 fn _class_to_decl<'a, D: Doc>(node: &Node<'a, D>, src: &[u8]) -> Declaration {
@@ -475,6 +496,30 @@ fn _handle_import_from<'a, D: Doc>(
             }
             "wildcard_import" => { /* `from X import *` — no specific local */ }
             _ => {}
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::_is_property_decorator;
+
+    #[test]
+    fn property_accessor_decorators_are_recognized_by_their_name() {
+        for (decorator, expected) in [
+            ("@property", true),
+            ("@size.setter", true),
+            ("@size.deleter", true),
+            ("@size.getter", true),
+            ("@Base.size.getter", true),
+            ("@size.setter  # validates", true),
+            ("@size.setter#validates", true),
+            ("@.setter", false),
+            ("@size.setterish", false),
+            ("@app.route(\"/a#b.setter\")", false),
+            ("@staticmethod", false),
+        ] {
+            assert_eq!(_is_property_decorator(decorator), expected, "{decorator}");
         }
     }
 }

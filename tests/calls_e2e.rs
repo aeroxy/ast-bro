@@ -116,6 +116,94 @@ fn python_callers_finds_cross_file_caller() {
     );
 }
 
+/// A class whose getter calls `load` and whose setter calls `validate`, beside
+/// a plain method that calls `validate` too.
+fn python_property_project() -> tempfile::TempDir {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(&root.join("pyproject.toml"), "[project]\nname=\"x\"\nversion=\"0\"\n");
+    write(
+        &root.join("m.py"),
+        r#"def load():
+    pass
+
+def validate(v):
+    pass
+
+class C:
+    @property
+    def size(self):
+        return load()
+
+    @size.setter
+    def size(self, v):
+        validate(v)
+
+    def run(self):
+        validate(1)
+"#,
+    );
+    tmp
+}
+
+/// The `(source, line)` pairs `callers <target>` reports, sorted.
+fn caller_sites(root: &std::path::Path, target: &str) -> Vec<(String, u64)> {
+    let (out, code) = run_in(root, &["callers", target, ".", "--rebuild", "--json", "--compact"]);
+    assert_eq!(code, 0, "{out}");
+    let doc: serde_json::Value = serde_json::from_str(out.trim()).expect("valid json");
+    let mut sites: Vec<(String, u64)> = doc["matches"]
+        .as_array()
+        .expect("matches")
+        .iter()
+        .map(|m| (m["source"].as_str().unwrap().to_string(), m["line"].as_u64().unwrap()))
+        .collect();
+    sites.sort();
+    sites
+}
+
+#[test]
+fn python_property_setter_is_reported_as_a_caller() {
+    let tmp = python_property_project();
+    assert_eq!(
+        caller_sites(tmp.path(), "validate"),
+        vec![("m.py::C::run".to_string(), 17), ("m.py::C::size".to_string(), 14)],
+        "callers of validate"
+    );
+}
+
+#[test]
+fn python_property_getter_is_reported_as_a_caller() {
+    let tmp = python_property_project();
+    assert_eq!(
+        caller_sites(tmp.path(), "load"),
+        vec![("m.py::C::size".to_string(), 10)],
+        "callers of load"
+    );
+}
+
+#[test]
+fn python_property_that_calls_nothing_resolves_as_a_callee_target() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(&root.join("pyproject.toml"), "[project]\nname=\"x\"\nversion=\"0\"\n");
+    write(
+        &root.join("m.py"),
+        r#"class C:
+    @property
+    def size(self):
+        return self._s
+
+    @size.setter
+    def size(self, v):
+        self._s = v
+"#,
+    );
+    let (out, code) = run_in(root, &["callees", "C.size", ".", "--rebuild", "--json", "--compact"]);
+    assert_eq!(code, 0, "callees C.size must find the property: {out}");
+    let doc: serde_json::Value = serde_json::from_str(out.trim()).expect("valid json");
+    assert_eq!(doc["total"], 0, "{out}");
+}
+
 #[test]
 fn typescript_callers_finds_cross_file_caller() {
     let tmp = tempfile::tempdir().unwrap();
