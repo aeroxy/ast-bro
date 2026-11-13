@@ -159,9 +159,10 @@ fn _is_false(b: &bool) -> bool {
 ///
 /// Go's `const ( … )`, `var ( … )` and `type ( … )` blocks take a comment
 /// of their own, which `go doc` renders as the documentation of the whole
-/// block — for a block of one name as much as for a block of six. It is
-/// reported here rather than in any member's `docs`: a sentence written
-/// about six constants is not the doc comment of the first one, and a
+/// block — for a block of one name as much as for a block of six — and,
+/// in a `type` block, also shows for a member with no comment of its own.
+/// It is reported here rather than in any member's `docs`: a sentence
+/// written about six constants is not the doc comment of the first one, and a
 /// consumer that cannot tell the two apart reviews, rewrites, or diffs the
 /// wrong symbol (issue #46). Every member of the block carries the same
 /// group; a block with no comment of its own reports none.

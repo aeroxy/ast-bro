@@ -610,7 +610,8 @@ fn mcp_map_description_explains_the_group_marker() {
     ] {
         for needle in [
             "A `[group]` line is a comment on the enclosing block, not on the symbol below it",
-            "never as that member's",
+            "not as that member's own",
+            "the exception is a type in a `type ( … )` block",
             "`group`",
             "start_line",
             "end_line",

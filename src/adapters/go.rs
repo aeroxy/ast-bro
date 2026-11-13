@@ -229,7 +229,9 @@ fn _type_declaration_to_decls<'a, D: Doc>(node: &Node<'a, D>, src: &[u8]) -> Vec
 /// to the declaration for its own doc comment. That is the returned anchor.
 ///
 /// Above a group, the same comment documents the block rather than any
-/// member of it, which is how `go doc` renders it. There is no anchor then,
+/// member of it, which is how `go doc` renders a `const` or `var` block;
+/// for a `type` block, `go doc` also shows it for a member that has no
+/// comment of its own. There is no anchor then,
 /// and the comment travels as a `group` on every member instead of being
 /// handed to whichever member happens to come first (issue #46).
 ///
