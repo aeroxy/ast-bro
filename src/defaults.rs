@@ -601,6 +601,25 @@ mod tests {
         assert!(!is_exempt("    // the defaults are ok as they stand"));
     }
 
+    #[test]
+    fn a_bare_word_default_is_caught_when_it_is_the_value_clap_prints() {
+        let by_constant = "        #[arg(long, default_value = crate::defaults::IMPACT_MODE)]";
+        let by_literal = "        #[arg(long, default_value = \"all\")]";
+        for (doc, attr, restated) in [
+            ("/// Section to show (default: all).", by_constant, true),
+            ("/// Section to show, default `all`.", by_constant, true),
+            ("/// Section to show (default: all).", by_literal, true),
+            // The same words are prose when the value does not end the
+            // phrase, or when the phrase names some other value.
+            ("/// By default all sections are shown.", by_constant, false),
+            ("/// Section to show (default: deps).", by_constant, false),
+            ("/// Section to show (default).", by_constant, false),
+        ] {
+            let found = docs_restating_a_default(&[doc, attr, "        mode: String,"]);
+            assert_eq!(!found.is_empty(), restated, "{doc} above {}", attr.trim());
+        }
+    }
+
     /// The doc-block reader survives a multi-line `#[arg(…)]`.
     ///
     /// `default_value` is often not the first argument, and the continuation
@@ -1040,8 +1059,11 @@ mod tests {
                 a.contains("default_value") && names_clap_attribute(a)
             });
             if clap_default {
+                let value = clap_default_value(&attrs);
                 for (n, doc) in &docs {
-                    if let Some(text) = states_a_default_value(doc) {
+                    let restated = states_a_default_value(doc)
+                        .or_else(|| value.as_deref().and_then(|v| names_the_value(doc, v)));
+                    if let Some(text) = restated {
                         hits.push((*n, text));
                     }
                 }
@@ -1050,6 +1072,68 @@ mod tests {
             attrs.clear();
         }
         hits
+    }
+
+    /// The value clap prints for the `default_value` in `attrs`, when the
+    /// source spells it out.
+    ///
+    /// A string literal is its own value. A path into this module, such as
+    /// `crate::defaults::IMPACT_MODE`, is looked up among the `pub const`
+    /// items above, so the comparison uses the value clap actually prints
+    /// rather than the name of the constant. Any other expression yields
+    /// `None`, and only the shape rules of `states_a_default_value` apply.
+    fn clap_default_value(attrs: &str) -> Option<String> {
+        let masked = strip_string_literals(attrs);
+        let at = masked.find("default_value")?;
+        let expr = attrs[at..].split_once('=')?.1.trim_start();
+        if let Some(literal) = expr.strip_prefix('"') {
+            return literal.split_once('"').map(|(v, _)| v.to_string());
+        }
+        let name: String = expr
+            .split_once("defaults::")?
+            .1
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+            .collect();
+        let this = include_str!("defaults.rs");
+        production_lines(this).iter().find_map(|line| {
+            let decl = line.strip_prefix("pub const ")?;
+            let (const_name, rest) = decl.split_once(':')?;
+            if const_name != name {
+                return None;
+            }
+            let value = rest.split_once('=')?.1.trim().trim_end_matches(';').trim();
+            Some(value.trim_matches('"').to_string())
+        })
+    }
+
+    /// The doc-comment text, when the word `default` is followed by `value`.
+    ///
+    /// This catches the bare word the shape rules let through: `(default:
+    /// all)` above a `default_value` of `"all"`. The value has to stand on its
+    /// own, so "by default all files are read" is prose and passes. A value
+    /// that is punctuation, such as the `"."` of [`super::ROOT`], is left to
+    /// the quoted-value rule, since "by default." ends on a period too.
+    fn names_the_value(line: &str, value: &str) -> Option<String> {
+        let value = value.to_ascii_lowercase();
+        if !value.starts_with(|c: char| c.is_ascii_alphanumeric()) {
+            return None;
+        }
+        let lowered = line.to_ascii_lowercase();
+        for rest in lowered.split("default").skip(1) {
+            let rest = rest
+                .trim_start_matches([':', '=', ' '])
+                .trim_start_matches("s to ")
+                .trim_start_matches([':', '=', ' ', '"', '`']);
+            let Some(after) = rest.strip_prefix(value.as_str()) else {
+                continue;
+            };
+            let after = after.trim_start_matches(['"', '`']).chars().next();
+            if after.is_none_or(|c| matches!(c, ')' | '.' | ',' | ';')) {
+                return Some(line.to_string());
+            }
+        }
+        None
     }
 
     /// The doc-comment text, when it names a concrete default value.
