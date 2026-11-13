@@ -58,20 +58,25 @@ enum Commands {
     ///
     /// Grammar is `show <target>... <symbol>...`: leading arguments that name a
     /// parseable file, a directory, or a matching glob are targets, and the rest
-    /// are symbols. That makes `show src/ Widget` and `show 'src/*.cs' Widget`
-    /// work, and it recovers the unquoted spelling — the shell expands
-    /// `show src/*.cs Widget` before we see it, which used to search only the
-    /// first file and silently drop the symbol's other definitions.
+    /// are symbols. The last argument is a symbol unless every argument is a
+    /// parseable file; then there is no symbol and `show` exits 2. That makes
+    /// `show src/ Widget` and `show 'src/*.cs' Widget` work, and it recovers
+    /// the unquoted spelling — the shell expands `show src/*.cs Widget` before
+    /// we see it, which used to search only the first file and silently drop
+    /// the symbol's other definitions.
     Show {
         /// File, directory, or quoted glob to search.
         path: PathBuf,
         /// Symbol to extract, or a further target when it names a file, a
-        /// directory, or a glob (see OTHERS). Suffix matching: `TakeDamage`,
-        /// or `Player.TakeDamage` when the bare name is ambiguous.
+        /// directory, or a glob and is not the last argument (see OTHERS).
+        /// Suffix matching: `TakeDamage`, or `Player.TakeDamage` when the bare
+        /// name is ambiguous.
         symbol: String,
-        /// Further targets and symbols. Which is which is decided by asking
-        /// the filesystem, not by position, so an unquoted glob the shell
-        /// already expanded still names targets.
+        /// Further targets and symbols. Leading arguments that name a file, a
+        /// directory, or a glob are targets, and the rest are symbols, so an
+        /// unquoted glob the shell already expanded still names targets. The
+        /// last argument is a symbol: `show src tests` searches `src`
+        /// for `tests`.
         #[arg(num_args = 0..)]
         others: Vec<String>,
         /// Cap on rendered bodies when more than one file is searched.
