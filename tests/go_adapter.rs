@@ -10,8 +10,11 @@
 //!   3. Struct fields and interface methods report their doc comments
 //!      (issue #47), so an empty `docs` there means the declaration
 //!      carries no comment rather than that none was read.
-//!   4. A trailing comment belongs to the declaration it sits beside, not
-//!      to the one on the next line.
+//!   4. A declaration's doc comment is the comment group `go/parser` gives
+//!      it: the group ending on the line directly above, without the
+//!      comments that continue the line of the token before it. The cases
+//!      where several comments share a line are in
+//!      `tests/fixtures/go_comment_runs/runs.go`.
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -33,7 +36,11 @@ fn run(args: &[&str]) -> String {
 }
 
 fn json() -> serde_json::Value {
-    serde_json::from_str(&run(&["map", FIXTURE, "--json"])).expect("json")
+    json_of(FIXTURE)
+}
+
+fn json_of(path: &str) -> serde_json::Value {
+    serde_json::from_str(&run(&["map", path, "--json"])).expect("json")
 }
 
 /// Every declaration in the file, flattened, keyed by name. Where two
@@ -194,6 +201,69 @@ fn a_trailing_comment_stays_with_the_line_it_is_on() {
         "a field's own trailing comment is not a doc comment:\n{:#?}",
         d["Size"]
     );
+}
+
+/// The own `docs` of each named declaration in
+/// `tests/fixtures/go_comment_runs/runs.go`, for one `assert_eq!` that
+/// prints every mismatch at once.
+fn run_docs(names: &[&str]) -> std::collections::BTreeMap<String, Vec<String>> {
+    let d = decls(&json_of("tests/fixtures/go_comment_runs/runs.go"));
+    names
+        .iter()
+        .map(|n| (n.to_string(), docs(&d[*n], "docs")))
+        .collect()
+}
+
+fn expected(rows: &[(&str, &[&str])]) -> std::collections::BTreeMap<String, Vec<String>> {
+    rows.iter()
+        .map(|(n, docs)| (n.to_string(), docs.iter().map(|s| s.to_string()).collect()))
+        .collect()
+}
+
+#[test]
+fn comments_sharing_a_line_join_one_doc_comment() {
+    let rows: &[(&str, &[&str])] = &[
+        ("SameLine", &["/* block */", "// and line"]),
+        ("ThreeOnTwoLines", &["// one", "/* two */", "/* three */"]),
+        ("AfterMultiline", &["/* first\n   spans */", "// then"]),
+        ("TwoOnOneLine", &["/* c */", "/* d */"]),
+        ("Lead", &["/* lead */"]),
+    ];
+    let names: Vec<&str> = rows.iter().map(|(n, _)| *n).collect();
+    assert_eq!(run_docs(&names), expected(rows));
+}
+
+#[test]
+fn a_comment_group_ending_on_the_declarations_own_line_is_not_its_doc() {
+    let rows: &[(&str, &[&str])] = &[("Inline", &[]), ("Lead", &["/* lead */"])];
+    let names: Vec<&str> = rows.iter().map(|(n, _)| *n).collect();
+    assert_eq!(run_docs(&names), expected(rows));
+}
+
+#[test]
+fn comments_continuing_the_previous_tokens_line_document_nothing_below() {
+    let rows: &[(&str, &[&str])] = &[
+        ("AfterBrace", &[]),
+        ("AfterAnnotated", &[]),
+        ("AfterParen", &[]),
+        ("BelowTrailed", &["// y"]),
+        ("V", &[]),
+        ("B", &[]),
+        ("AfterKeyword", &[]),
+    ];
+    let names: Vec<&str> = rows.iter().map(|(n, _)| *n).collect();
+    assert_eq!(run_docs(&names), expected(rows));
+}
+
+#[test]
+fn a_comment_spanning_lines_after_a_declaration_ends_its_line_comment() {
+    let rows: &[(&str, &[&str])] = &[
+        ("Y", &["// c"]),
+        ("W", &["/* z2 */"]),
+        ("BelowTrailed", &["// y"]),
+    ];
+    let names: Vec<&str> = rows.iter().map(|(n, _)| *n).collect();
+    assert_eq!(run_docs(&names), expected(rows));
 }
 
 #[test]

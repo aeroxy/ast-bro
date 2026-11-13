@@ -730,35 +730,55 @@ fn _go_visibility(name: &str) -> String {
     }
 }
 
-/// The comment group Go reads as `node`'s doc comment: the unbroken run of
-/// comments on the lines directly above it, in source order.
+/// The comment group `go/parser` reads as `node`'s doc comment, in source
+/// order.
 ///
-/// A comment that starts on the line its previous sibling ends on is a
-/// trailing comment on *that* sibling, not documentation for this one.
-/// Struct fields are where the distinction earns its keep — `Alpha int //
-/// in bytes` sits on the line directly above `Beta`, and without the check
-/// every field in a densely annotated struct would inherit the comment of
-/// the field before it.
+/// The group is the run of comments above `node` with no blank line between
+/// them, and it documents `node` only when it ends on the line directly
+/// above it. The comments at the head of the run that continue the line of
+/// the token before it form that token's line comment instead: in `Alpha
+/// int /* a */ // b`, both comments belong to `Alpha`, not to the field on
+/// the next line. Where that token ends a declaration, a `/* */` comment
+/// spanning several lines ends the line comment, because Go's scanner
+/// inserts the semicolon right after it; the comments that follow it on its
+/// last line start the next group.
 fn _leading_comments<'a, D: Doc>(node: &Node<'a, D>) -> Vec<Node<'a, D>> {
-    let mut out = Vec::new();
+    let node_line = node.start_pos().line();
+    let mut run = Vec::new();
+    let mut next_start_line = node_line;
     let mut sib = node.prev();
-    let mut last_start_line = node.start_pos().line();
-
-    while let Some(s) = sib {
-        if s.kind() != "comment" || s.end_pos().line() + 1 < last_start_line {
+    while let Some(s) = sib.clone() {
+        if s.kind() != "comment" || s.end_pos().line() + 1 < next_start_line {
             break;
         }
-        if let Some(p) = s.prev() {
-            if p.end_pos().line() == s.start_pos().line() {
-                break;
-            }
-        }
-        last_start_line = s.start_pos().line();
+        next_start_line = s.start_pos().line();
         sib = s.prev();
-        out.push(s);
+        run.push(s);
     }
-    out.reverse();
-    out
+    run.reverse();
+
+    if run.last().is_some_and(|c| c.end_pos().line() == node_line) {
+        return Vec::new();
+    }
+    if let Some(before) = sib {
+        // A named sibling is a whole declaration, whose last token makes the
+        // scanner insert a semicolon at the next newline. An anonymous one
+        // is a keyword or punctuation (`const`, `{`, `(`, `;`), after which
+        // the scanner inserts none.
+        let ends_declaration = before.is_named();
+        let mut line = Some(before.end_pos().line());
+        let line_comment = run
+            .iter()
+            .take_while(|c| {
+                let continues = line == Some(c.start_pos().line());
+                let spans_lines = c.end_pos().line() > c.start_pos().line();
+                line = (!(ends_declaration && spans_lines)).then(|| c.end_pos().line());
+                continues
+            })
+            .count();
+        run.drain(..line_comment);
+    }
+    run
 }
 
 fn _go_docs<'a, D: Doc>(node: &Node<'a, D>) -> Vec<String> {
