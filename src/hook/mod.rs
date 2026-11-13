@@ -1,8 +1,9 @@
-pub mod event;
-pub mod decide;
-pub mod io;
 pub mod claude_code;
+pub mod config;
+pub mod decide;
+pub mod event;
 pub mod gemini;
+pub mod io;
 
 use decide::DecideOpts;
 

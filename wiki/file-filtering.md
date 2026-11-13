@@ -53,6 +53,14 @@ benches/data/
 
 `tests/fixtures/large_corpus/` stays git-tracked but doesn't get walked when you map or search the repo.
 
+**Not to be confused with `keep_source`.** The hook's `[hook] keep_source` key
+(in `~/.config/ast-bro/config.toml` or a project's `.ast-bro.toml`) uses the same
+gitignore syntax and the same matcher, and means the opposite thing: a listed
+path is one the `Read` hook must hand over *in full* rather than substituting a
+map for. `.ast-bro-ignore` decides what gets looked at; `keep_source` decides how
+much of a looked-at file gets delivered. See the README's "Keeping a document out
+of the outline".
+
 ### 4. Extension allowlist (chunker)
 
 For `search` / `find-related` / `index` only, an additional check: the file must have an extension that ast-bro can chunk structurally. The single source of truth is `chunker::is_indexable`:

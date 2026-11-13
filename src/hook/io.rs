@@ -346,8 +346,17 @@ mod tests {
         // legitimate edit, and `every_notice_keeps_its_command_on_one_line` is
         // the guard that a wrap must not break.
         let flowed = AUGMENT_NOTICE.replace("\n# ", " ");
-        assert!(flowed.contains("because the Read did not return the file"), "{flowed}");
-        for invented in ["nothing failed", "same way", "will fail", "too large", "exceeds"] {
+        assert!(
+            flowed.contains("because the Read did not return the file"),
+            "{flowed}"
+        );
+        for invented in [
+            "nothing failed",
+            "same way",
+            "will fail",
+            "too large",
+            "exceeds",
+        ] {
             assert!(
                 !flowed.contains(invented),
                 "notice must not claim '{invented}':\n{flowed}"
