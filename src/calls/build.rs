@@ -205,12 +205,22 @@ fn walk(
     }
 }
 
+/// Whether `d` is a node of the call graph.
+///
+/// A property counts when it is declared as a function: a Python `@property`
+/// and its `@x.setter` are `def`s, and `--no-fields` needs them to be
+/// properties, but `callees` and `callers` still look them up as functions.
+/// A C# or Kotlin property is not one, and its accessors carry no call sites.
 fn is_callable(d: &Declaration) -> bool {
     use DeclarationKind::*;
-    matches!(
-        d.kind,
-        Function | Method | Constructor | Destructor | Operator
-    )
+    match d.kind {
+        Function | Method | Constructor | Destructor | Operator => true,
+        Property => {
+            let sig = d.signature.trim_start();
+            sig.starts_with("def ") || sig.starts_with("async def ")
+        }
+        _ => false,
+    }
 }
 
 fn is_type(d: &Declaration) -> bool {

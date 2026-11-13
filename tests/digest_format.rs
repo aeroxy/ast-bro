@@ -918,7 +918,7 @@ fn no_fields_hides_a_python_property_in_every_renderer() {
     let p = dir.path().join("c.py");
     std::fs::write(
         &p,
-        "class C:\n    @property\n    def size(self): return 0\n    def run(self): pass\n",
+        "class C:\n    @property\n    def size(self): return 0\n    @size.setter  # validates\n    def size(self, v): pass\n    @size.deleter#removes\n    def size(self): pass\n    def run(self): pass\n",
     )
     .unwrap();
     let p = p.to_str().unwrap();
