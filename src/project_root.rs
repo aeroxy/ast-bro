@@ -216,6 +216,18 @@ fn canonicalize_lenient(p: &Path) -> PathBuf {
     }
 }
 
+/// `path` as a string with `/` between its components on every platform.
+///
+/// Only the platform's own separator is rewritten, so on Unix a `\` that is
+/// part of a file name stays as it is.
+pub fn posix_display(path: &Path) -> String {
+    with_posix_separators(&path.to_string_lossy(), std::path::MAIN_SEPARATOR)
+}
+
+fn with_posix_separators(path: &str, separator: char) -> String {
+    path.replace(separator, "/")
+}
+
 /// Express `path` relative to `home` as a POSIX-normalised string. Returns
 /// `""` when `path == home`. Returns `None` when `path` is not under `home`.
 pub fn relative_posix(path: &Path, home: &Path) -> Option<String> {
@@ -482,6 +494,24 @@ mod tests {
         assert_eq!(
             home.canonicalize().unwrap(),
             outer.path().join("a").canonicalize().unwrap()
+        );
+    }
+
+    #[test]
+    fn a_backslash_separator_becomes_a_slash() {
+        assert_eq!(
+            with_posix_separators(r"..\proj\api\Middle.java", '\\'),
+            "../proj/api/Middle.java",
+            "Windows spelling of a relative path"
+        );
+    }
+
+    #[test]
+    fn a_backslash_in_a_unix_file_name_stays() {
+        assert_eq!(
+            with_posix_separators(r"api/odd\name.java", '/'),
+            r"api/odd\name.java",
+            "a backslash is not a separator on Unix"
         );
     }
 
