@@ -249,54 +249,51 @@ impl<'s> Walker<'s> {
         };
         let written = _text(first);
 
-        let (kind, names, signature, mut bases, native) = match keyword {
+        let (kind, names, mut bases, native) = match keyword {
             "defprotocol" => (
                 DeclarationKind::Interface,
-                vec![written.clone()],
-                format!("defprotocol {}", written),
+                vec![(written.clone(), format!("defprotocol {}", written))],
                 Vec::new(),
                 "protocol",
             ),
             "defimpl" => {
-                // `defimpl P, for: T` defines `P.T`, and `for: [A, B]` one
-                // module per type; without `for:` it implements the
-                // protocol for the enclosing module.
-                let targets = match _keyword_value(&args, "for") {
-                    Some(v) if v.kind() == "list" => v
-                        .children()
-                        .filter(|c| c.is_named() && c.kind() != "comment")
-                        .map(|c| _expand_module(&_text(&c), parent_fqn))
-                        .collect(),
-                    Some(v) => vec![_expand_module(&_text(&v), parent_fqn)],
-                    None => vec![parent_fqn.to_string()],
-                };
-                let names = targets
-                    .iter()
-                    .map(|t| {
-                        if t.is_empty() {
-                            written.clone()
-                        } else {
-                            format!("{}.{}", written, t)
-                        }
-                    })
-                    .collect();
                 let args_text = node
                     .children()
                     .find(|c| c.kind() == "arguments")
                     .map(|a| _text(&a))
                     .unwrap_or_else(|| written.clone());
-                (
-                    DeclarationKind::Class,
-                    names,
-                    format!("defimpl {}", args_text),
-                    vec![written.clone()],
-                    "impl",
-                )
+                let signature = format!("defimpl {}", args_text);
+                // `defimpl P, for: T` defines `P.T`, and `for: [A, B]` one
+                // module per type, each signed with its own `for:`; without
+                // `for:` it implements the protocol for the enclosing module.
+                let targets = match _keyword_value(&args, "for") {
+                    Some(v) if v.kind() == "list" => v
+                        .children()
+                        .filter(|c| c.is_named() && c.kind() != "comment")
+                        .map(|c| {
+                            let t = _text(&c);
+                            let sig = format!("defimpl {}, for: {}", written, t);
+                            (_expand_module(&t, parent_fqn), sig)
+                        })
+                        .collect(),
+                    Some(v) => vec![(_expand_module(&_text(&v), parent_fqn), signature)],
+                    None => vec![(parent_fqn.to_string(), signature)],
+                };
+                let names = targets
+                    .into_iter()
+                    .map(|(t, sig)| {
+                        if t.is_empty() {
+                            (written.clone(), sig)
+                        } else {
+                            (format!("{}.{}", written, t), sig)
+                        }
+                    })
+                    .collect();
+                (DeclarationKind::Class, names, vec![written.clone()], "impl")
             }
             _ => (
                 DeclarationKind::Class,
-                vec![written.clone()],
-                format!("defmodule {}", written),
+                vec![(written.clone(), format!("defmodule {}", written))],
                 Vec::new(),
                 "module",
             ),
@@ -326,7 +323,7 @@ impl<'s> Walker<'s> {
         let decl = Declaration {
             kind,
             name: String::new(),
-            signature,
+            signature: String::new(),
             bases,
             attrs: Vec::new(),
             docs: body.moduledoc,
@@ -346,8 +343,9 @@ impl<'s> Walker<'s> {
         };
         names
             .into_iter()
-            .map(|name| Declaration {
+            .map(|(name, signature)| Declaration {
                 name,
+                signature,
                 ..decl.clone()
             })
             .collect()

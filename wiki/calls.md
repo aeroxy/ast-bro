@@ -236,7 +236,7 @@ Every adapter that emits `Declaration`s now also emits `Declaration::calls`. Eac
 | SQL        | n/a — no-op by design | — | — |
 | Markdown   | n/a — no-op by design | — | — |
 
-Languages still emitting empty `Declaration::calls`: **none.** JavaScript is served by the TypeScript adapter.
+Languages still emitting empty `Declaration::calls`: **Elixir** (call extraction not yet implemented). JavaScript is served by the TypeScript adapter.
 
 ### Known per-language limitations
 
