@@ -276,9 +276,14 @@ fn exs_script_parses() {
 fn defimpl_for_a_list_defines_one_impl_per_type() {
     // Elixir compiles `defimpl P, for: [A, B]` into `P.A` and `P.B`.
     let f = map_json(FIXTURE);
-    for name in ["Billing.Printable.Integer", "Billing.Printable.Float"] {
+    for ty in ["Integer", "Float"] {
+        let name = &format!("Billing.Printable.{ty}");
         let imp = module(&f, name);
         assert_eq!(imp["native_kind"], "impl");
+        assert_eq!(
+            imp["signature"],
+            format!("defimpl Billing.Printable, for: {ty}")
+        );
         assert_eq!(imp["bases"], serde_json::json!(["Billing.Printable"]));
         assert_eq!(find(&imp["children"], "print").len(), 1, "{name}");
     }
