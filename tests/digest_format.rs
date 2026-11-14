@@ -943,5 +943,66 @@ fn no_fields_hides_a_python_property_in_every_renderer() {
     assert_eq!(names, vec!["run"], "digest --json member names");
 
     let back = run(&["digest", p, "--include-fields"]);
-    assert!(back.contains("size"), "--include-fields must restore the @property:\n{back}");
+    let members = back.lines().find(|l| l.contains("run()")).unwrap_or("");
+    assert_eq!(
+        members.trim(),
+        "[property] size [property]  run()",
+        "--include-fields must restore the @property, once for its getter, setter, and deleter:\n{back}"
+    );
+}
+
+/// Writes `src` to `file` in a fresh directory and returns the digest line
+/// that lists `last`, the final member of the type.
+fn digest_members(file: &str, src: &str, last: &str, extra: &[&str]) -> String {
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path().join(file);
+    std::fs::write(&p, src).unwrap();
+    let mut args = vec!["digest", p.to_str().unwrap()];
+    args.extend_from_slice(extra);
+    let out = run(&args);
+    out.lines()
+        .find(|l| l.contains(last))
+        .unwrap_or_else(|| panic!("no member line with {last:?}:\n{out}"))
+        .trim()
+        .to_string()
+}
+
+#[test]
+fn digest_keeps_same_name_delegates_apart() {
+    assert_eq!(
+        digest_members(
+            "W.cs",
+            "public class W {\n    public delegate void H();\n    public delegate void H<T>(T x);\n    public void M() {}\n}\n",
+            "M()",
+            &[],
+        ),
+        "H [delegate]  H [delegate]  M()"
+    );
+}
+
+#[test]
+fn digest_keeps_a_property_apart_from_its_explicit_interface_implementation() {
+    assert_eq!(
+        digest_members(
+            "W.cs",
+            "public class W : IFoo {\n    public int Size => 1;\n    int IFoo.Size => 2;\n    public void M() {}\n}\n",
+            "M()",
+            // The explicit implementation has no `public`, so digest hides it otherwise.
+            &["--include-fields", "--include-private"],
+        ),
+        "Size [property]  Size [property]  M()"
+    );
+}
+
+#[test]
+fn digest_marks_a_python_property_deprecated_when_its_setter_is() {
+    assert_eq!(
+        digest_members(
+            "c.py",
+            "from warnings import deprecated\nclass C:\n    @property\n    def size(self): return 0\n    @size.setter\n    @deprecated(\"use resize\")\n    def size(self, v): pass\n    def run(self): pass\n",
+            "run()",
+            &["--include-fields"],
+        ),
+        "[property] size [property] [deprecated]  run()"
+    );
 }

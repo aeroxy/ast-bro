@@ -1260,6 +1260,13 @@ fn _format_member_token(m: &Declaration) -> String {
 /// suffix. Saves a noisy line on overload-heavy languages (Java/C# in
 /// particular). Operates on owned `Declaration`s so the renderer can
 /// rewrite the `name`.
+///
+/// A Python property's `@size.setter`, `@size.deleter`, or `@size.getter`
+/// right after the `size` property folds into it with no count, carrying
+/// `[deprecated]` over if the accessor has it: the accessors belong to one
+/// property. Other same-name members that are not callable, such as C#
+/// delegates `H` and `H<T>` or a property beside its explicit interface
+/// implementation, stay separate.
 fn _collapse_overloads(members: Vec<Declaration>) -> Vec<Declaration> {
     let mut out: Vec<Declaration> = Vec::with_capacity(members.len());
     for m in members {
@@ -1271,7 +1278,18 @@ fn _collapse_overloads(members: Vec<Declaration>) -> Vec<Declaration> {
                 | DeclarationKind::Destructor
                 | DeclarationKind::Operator
         );
-        if is_callable {
+        let is_accessor = m.kind == DeclarationKind::Property
+            && m.attrs
+                .iter()
+                .any(|a| crate::adapters::python::accessor_target(a) == Some(m.name.as_str()));
+        if is_accessor {
+            if let Some(prev) = out.last_mut() {
+                if prev.kind == m.kind && prev.name == m.name {
+                    prev.deprecated |= m.deprecated;
+                    continue;
+                }
+            }
+        } else if is_callable {
             if let Some(prev) = out.last_mut() {
                 if prev.kind == m.kind {
                     let prev_base = prev

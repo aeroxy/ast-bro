@@ -119,22 +119,30 @@ fn _node_to_decl<'a, D: Doc>(
 /// That is `@property` itself, and the `@<name>.setter`, `@<name>.deleter`,
 /// and `@<name>.getter` accessors that the resulting property object exposes,
 /// so the setter of a property is a property member exactly as its getter is.
-/// Only the decorator's name is read: the collected text carries a comment on
-/// the same line, as in `@size.setter  # validates` or `@size.setter#validates`.
 fn _is_property_decorator(decorator: &str) -> bool {
-    let code = decorator.split('#').next().unwrap_or_default();
-    let Some(name) = code.split_whitespace().next() else {
-        return false;
-    };
-    if name == "@property" {
-        return true;
-    }
-    name.strip_prefix('@').is_some_and(|d| {
-        [".setter", ".deleter", ".getter"].iter().any(|accessor| {
-            d.strip_suffix(accessor)
-                .is_some_and(|prefix| !prefix.is_empty())
-        })
-    })
+    _decorator_name(decorator) == Some("@property") || accessor_target(decorator).is_some()
+}
+
+/// Returns the property a decorator adds an accessor to: `size` for
+/// `@size.setter`, `@size.deleter`, and `@size.getter`, and `None` for any
+/// other decorator.
+pub(crate) fn accessor_target(decorator: &str) -> Option<&str> {
+    let name = _decorator_name(decorator)?.strip_prefix('@')?;
+    [".setter", ".deleter", ".getter"]
+        .iter()
+        .find_map(|accessor| name.strip_suffix(accessor))
+        .filter(|prefix| !prefix.is_empty())
+}
+
+/// Returns the first word of a decorator, ignoring a comment on the same line,
+/// as in `@size.setter  # validates` or `@size.setter#validates`.
+fn _decorator_name(decorator: &str) -> Option<&str> {
+    decorator
+        .split('#')
+        .next()
+        .unwrap_or_default()
+        .split_whitespace()
+        .next()
 }
 
 fn _class_to_decl<'a, D: Doc>(node: &Node<'a, D>, src: &[u8]) -> Declaration {
