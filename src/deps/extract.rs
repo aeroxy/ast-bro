@@ -10,6 +10,7 @@ use ast_grep_core::{Doc, Node};
 use ast_grep_language::{LanguageExt, SupportLang};
 use std::path::Path;
 
+use crate::adapters::base::collapse_ws;
 use crate::deps::graph::ImportKind;
 use crate::deps::resolver::build::Lang;
 use crate::surface::imports as surface_imports;
@@ -532,16 +533,39 @@ fn _walk_kotlin<'a, D: Doc>(node: &Node<'a, D>, out: &mut Vec<RawImport>) {
                 _walk_kotlin(&c, out);
                 continue;
             }
+            // Read the children rather than slicing the node's text: the
+            // grammar swallows a comment that follows the statement into
+            // the `import_header`, so `import a.b.C` written above a KDoc
+            // block used to yield the path `a.b.C\n\n/** … */` and resolve
+            // to nothing.
             let line = (c.start_pos().line() + 1) as u32;
-            let stmt = c.text().into_owned();
-            let body = stmt.trim_start_matches("import").trim();
-            // Optional `as Quux` rename.
-            let (path, alias) = match body.split_once(" as ") {
-                Some((p, a)) => (p.trim().to_string(), Some(a.trim().to_string())),
-                None => (body.to_string(), None),
+            let mut dotted = String::new();
+            let mut alias = None;
+            let mut is_glob = false;
+            for part in c.children() {
+                match part.kind().as_ref() {
+                    "identifier" => dotted = collapse_ws(&part.text()),
+                    "wildcard_import" => is_glob = true,
+                    "import_alias" => {
+                        alias = part
+                            .children()
+                            .find(|a| a.kind() == "type_identifier")
+                            .map(|a| collapse_ws(&a.text()))
+                    }
+                    _ => {}
+                }
+            }
+            if dotted.is_empty() {
+                continue;
+            }
+            let statement = if is_glob {
+                format!("import {}.*", dotted)
+            } else {
+                match &alias {
+                    Some(a) => format!("import {} as {}", dotted, a),
+                    None => format!("import {}", dotted),
+                }
             };
-            let is_glob = path.ends_with(".*");
-            let dotted = path.trim_end_matches(".*").to_string();
             out.push(RawImport {
                 spec: dotted.replace('.', "/"),
                 kind: if alias.is_some() {
@@ -552,7 +576,7 @@ fn _walk_kotlin<'a, D: Doc>(node: &Node<'a, D>, out: &mut Vec<RawImport>) {
                     ImportKind::Bare
                 },
                 line,
-                statement: stmt,
+                statement,
                 local_name: alias,
                 raw_path: Some(dotted),
             });
@@ -614,8 +638,16 @@ fn _walk_csharp<'a, D: Doc>(node: &Node<'a, D>, out: &mut Vec<RawImport>) {
                 local_name: None,
                 raw_path: Some(dotted),
             });
-        } else if matches!(kind, "namespace_declaration" | "file_scoped_namespace_declaration") {
-            // Recurse into namespace bodies; usings can live inside.
+        } else if matches!(
+            kind,
+            "namespace_declaration" | "file_scoped_namespace_declaration" | "declaration_list"
+        ) {
+            // Recurse into namespace bodies; usings can live inside. A braced
+            // namespace holds them one level further down than it looks: its
+            // own children are the name and a `declaration_list`, so stopping
+            // at the namespace node found nothing and every alias written
+            // inside a namespace body was invisible — which cost the type its
+            // edge, or handed it to whatever else carried the alias's name.
             _walk_csharp(&c, out);
         }
     }

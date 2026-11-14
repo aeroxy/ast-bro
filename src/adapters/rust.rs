@@ -73,11 +73,19 @@ fn _walk_mod<'a, D: Doc>(node: &Node<'a, D>, src: &[u8], out: &mut Vec<Declarati
             }
         }
         // `_impl_to_decl` synthesises a name like `impl_Foo`; the real
-        // target is the suffix.
+        // target is the suffix, without the generic arguments the impl
+        // spells out. `impl<T> Root for Hard<T>` names the type `Hard`, and
+        // comparing `Hard<T>` against it found nothing — so every generic
+        // impl kept its synthetic declaration and its traits never reached
+        // the type they belong to.
         let target_name = impl_decl
             .name
             .strip_prefix("impl_")
-            .unwrap_or(&impl_decl.name)
+            .unwrap_or(&impl_decl.name);
+        let target_name = target_name
+            .split_once('<')
+            .map_or(target_name, |(head, _)| head)
+            .trim()
             .to_string();
 
         if let Some(target) = out

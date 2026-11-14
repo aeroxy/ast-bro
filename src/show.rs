@@ -74,8 +74,8 @@ pub fn looks_like_glob(p: &Path) -> bool {
 }
 
 /// True if `arg` reads as a path the caller meant to name, whether or not it
-/// exists: it carries a directory separator, or its extension is one an
-/// adapter handles.
+/// exists: it carries this platform's directory separator, or its extension
+/// is one an adapter handles.
 ///
 /// Needed because a non-existent path and a symbol are both "not a target",
 /// and collapsing them means `show a.rs missing.rs greet` searches for a
@@ -83,9 +83,13 @@ pub fn looks_like_glob(p: &Path) -> bool {
 /// wrong thing about the wrong argument. A symbol never contains a separator,
 /// and `Type.method` (the suffix form) has no source extension, so the two
 /// cases separate cleanly.
+///
+/// A backslash is a separator on Windows only. Elsewhere it is PHP's
+/// namespace separator, and reading `App\Base` as a path rejected the very
+/// name `map` prints for a PHP namespace.
 pub fn looks_like_path(arg: &Path) -> bool {
     let s = arg.to_string_lossy();
-    if s.contains('/') || s.contains('\\') {
+    if s.contains(std::path::is_separator) {
         return true;
     }
     // `can_parse_for_hook` on a non-existent path answers the extension

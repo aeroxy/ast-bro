@@ -93,7 +93,7 @@ pub fn build_call_graph(root: &Path, deps: &DepGraph) -> CallGraph {
     graph
 }
 
-/// Mirror of `core::_normalize_type_name` — strip generics, brackets,
+/// Mirror of `implements::_normalize_type_name` — strip generics, brackets,
 /// dotted/`::`-prefixed scope so `crate::base::LanguageAdapter`,
 /// `LanguageAdapter<T>`, and `LanguageAdapter` all hash to the same key.
 fn normalise_type_name(name: &str) -> String {

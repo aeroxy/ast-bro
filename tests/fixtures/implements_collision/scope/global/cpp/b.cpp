@@ -1,0 +1,1 @@
+namespace M { struct Global {}; }

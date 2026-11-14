@@ -453,3 +453,70 @@ fn unparseable_single_target_still_says_unsupported() {
         "stderr:\n{stderr}"
     );
 }
+
+/// A qualified name another command prints is a name `show` takes back.
+///
+/// The trail `show` matches against held each declaration's name whole, while
+/// the target it compares against is split on the dot — so a name that is
+/// itself qualified, which is every C# `namespace Foo.Bar` and both of PHP's
+/// and C++'s multi-segment forms, could never match the segments the caller
+/// typed. `surface` printed `Example.Api.Codec` and `show` rejected it.
+#[test]
+fn a_qualified_name_surface_prints_resolves_in_show() {
+    let file = "tests/fixtures/implements_collision/csharp/Api.cs";
+    let (code, listed, stderr) = run(&["surface", file]);
+    assert_eq!(code, Some(0), "{stderr}");
+    let qualified = listed
+        .lines()
+        .next()
+        .and_then(|l| l.split_whitespace().next())
+        .expect("surface listed nothing")
+        .to_string();
+    assert_eq!(qualified, "Example.Api.Codec", "fixture changed shape");
+
+    let (code, stdout, stderr) = run(&["show", file, &qualified]);
+    assert_eq!(code, Some(0), "{qualified}: {stderr}");
+    assert!(
+        stdout.contains("interface Codec"),
+        "the qualified name did not resolve back:\n{stdout}"
+    );
+
+    // The segments still match on a suffix, so the short forms keep working.
+    for target in ["Codec", "Api.Codec"] {
+        let (code, stdout, _) = run(&["show", file, target]);
+        assert_eq!(code, Some(0), "{target}");
+        assert!(stdout.contains("interface Codec"), "{target}:\n{stdout}");
+    }
+}
+
+/// The name `map` prints for a namespace is a name `show` takes back, in the
+/// language's own spelling as well as in dots.
+#[test]
+fn a_namespace_resolves_in_its_own_spelling() {
+    let file = "tests/fixtures/implements_collision/namespace_separators/cpp/a.cpp";
+    let (code, stdout, stderr) = run(&["show", file, "A::B"]);
+    assert_eq!(code, Some(0), "show {file} A::B: {stderr}");
+    assert!(
+        stdout.contains(" A.B (namespace)"),
+        "the match is not reported under the dotted name `surface` prints:\n{stdout}"
+    );
+    for target in ["A::B::Root", "A.B.Root"] {
+        let (code, stdout, stderr) = run(&["show", file, target]);
+        assert_eq!(code, Some(0), "show {file} {target}: {stderr}");
+        assert!(
+            stdout.contains("struct Root {}"),
+            "show {file} {target}:\n{stdout}"
+        );
+    }
+}
+
+/// A backslash is PHP's namespace separator, and outside Windows no path
+/// carries one, so `App\Base` is a symbol rather than a missing file.
+#[cfg(not(windows))]
+#[test]
+fn a_php_namespace_with_a_backslash_is_a_symbol() {
+    let file = "tests/fixtures/implements_collision/namespace_separators/php/base.php";
+    let (code, stdout, stderr) = run(&["show", file, "App\\Base\\Root"]);
+    assert_eq!(code, Some(0), "{stderr}");
+    assert!(stdout.contains("class Root"), "{stdout}");
+}
