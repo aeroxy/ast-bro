@@ -453,3 +453,20 @@ fn unparseable_single_target_still_says_unsupported() {
         "stderr:\n{stderr}"
     );
 }
+
+/// A dotted declaration name — C# `namespace A.B`, Elixir `defmodule A.B` —
+/// matches the query one segment per dot, the way the query itself is split.
+/// Before, `A.B.C` and `B.C.M` named nothing although both are spelled in the
+/// file.
+#[test]
+fn a_dotted_declaration_name_matches_segment_by_segment() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("x.cs");
+    std::fs::write(&file, "namespace A.B {\n  class C { void M() {} }\n}\n").unwrap();
+    let file = file.to_str().unwrap();
+    for query in ["A.B.C", "B.C.M", "A.B"] {
+        let (code, out, err) = run(&["show", file, query]);
+        assert_eq!(code, Some(0), "{query}: {err}");
+        assert!(out.contains("A.B"), "{query}:\n{out}");
+    }
+}
