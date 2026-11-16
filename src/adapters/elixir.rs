@@ -38,6 +38,9 @@
 //! A def-like user macro (Nx's `defn`) with a function head and a body is a
 //! function, its macro name the native kind.
 //!
+//! Definitions in a module-level `if` / `for` block belong to the module; a
+//! `quote`'s do not.
+//!
 //! Each function carries the calls in its body, receivers expanded to full
 //! module names.
 
@@ -375,7 +378,17 @@ impl<'s> Walker<'s> {
                     // An `alias` inside a `def` ends with it.
                     let scope = self.scopes.last().cloned().unwrap_or_default();
                     self.scopes.push(scope);
-                    self.references_in(&child, module_fqn);
+                    // The blocks of `if … do def … end` are walked as part of
+                    // the module body below; only the condition is left.
+                    if _call_keyword(&child).as_deref() != Some("quote")
+                        && !wrapped_bodies(&child).is_empty()
+                    {
+                        for arg in _named_args(&child) {
+                            self.references_in(&arg, module_fqn);
+                        }
+                    } else {
+                        self.references_in(&child, module_fqn);
+                    }
                     self.scopes.pop();
                 }
             }
@@ -495,6 +508,21 @@ impl<'s> Walker<'s> {
                         &mut out.decls,
                         &mut last_fn,
                     );
+                }
+                // `if … do def … end` defines into this module.
+                k if k != "quote" && !wrapped_bodies(&child).is_empty() => {
+                    last_fn = None;
+                    pending = Pending::default();
+                    for block in wrapped_bodies(&child) {
+                        let inner = self.walk_body(&block, module_fqn);
+                        out.decls.extend(inner.decls);
+                        out.defines_struct |= inner.defines_struct;
+                        for b in inner.behaviours {
+                            if !out.behaviours.contains(&b) {
+                                out.behaviours.push(b);
+                            }
+                        }
+                    }
                 }
                 // Any other macro call (`test`, `plug`, `defoverridable`, …)
                 // is not a definition; a dangling `@doc` must not leak past
@@ -1627,6 +1655,45 @@ fn _push_children<'a, D: Doc>(stack: &mut Vec<Node<'a, D>>, node: &Node<'a, D>) 
     stack[start..].reverse();
 }
 
+/// Whether `node` is a definition form: a module, or a `def`-family or
+/// def-like clause.
+fn _is_definition<'a, D: Doc>(node: &Node<'a, D>) -> bool {
+    if node.kind() != "call" {
+        return false;
+    }
+    let Some(keyword) = _call_keyword(node) else {
+        return false;
+    };
+    match keyword.as_str() {
+        "defmodule" | "defprotocol" | "defimpl" => true,
+        k => DEF_MACROS.iter().any(|(kw, _, _)| *kw == k) || _is_def_like(node, k),
+    }
+}
+
+/// The `do` and `else` blocks of a call that wraps definitions (`if … do def
+/// …`); empty when it wraps none.
+fn wrapped_bodies<'a, D: Doc>(node: &Node<'a, D>) -> Vec<Node<'a, D>> {
+    if node.kind() != "call" || _is_definition(node) {
+        return Vec::new();
+    }
+    let Some(block) = node.children().find(|c| c.kind() == "do_block") else {
+        return Vec::new();
+    };
+    let elses: Vec<_> = block
+        .children()
+        .filter(|c| c.kind() == "else_block")
+        .collect();
+    let bodies: Vec<_> = std::iter::once(block).chain(elses).collect();
+    if bodies
+        .iter()
+        .any(|b| b.children().any(|c| _is_definition(&c)))
+    {
+        bodies
+    } else {
+        Vec::new()
+    }
+}
+
 /// Visibility and modifier for `keyword`. A def-like macro is its own modifier,
 /// private as the `p` of a one-letter macro (`defnp`).
 fn _def_traits(keyword: &str) -> (bool, Option<String>) {
@@ -1948,6 +2015,26 @@ mod tests {
         // alias that shadows the stdlib name is the project's module.
         assert_eq!(bases[0], ["GenServer", "Mix.Task"]);
         assert!(bases[1].is_empty(), "{:?}", bases[1]);
+    }
+
+    #[test]
+    fn definitions_in_a_module_level_block_belong_to_the_module() {
+        let r = parse(
+            "defmodule A do\n  @doc \"not theirs\"\n  if c() do\n    def f(x), do: x\n  else\n    def f(_), do: nil\n  end\n  unless c(), do: (defp g, do: 1)\n  for n <- [:a] do\n    def unquote(n)(), do: 1\n  end\n  quote do\n    def injected, do: 1\n  end\n  if c() do\n    :no_definitions\n  end\nend\n",
+        );
+        let a = &r.declarations[0];
+        let got: Vec<(&str, usize)> = a
+            .children
+            .iter()
+            .map(|d| (d.signature.as_str(), d.start_line))
+            .collect();
+        // Both branches, each its own entry; not the keyword-form `unless`
+        // (no `do` block), nor the `quote`.
+        assert_eq!(
+            got,
+            vec![("def f(x)", 4), ("def f(_)", 6), ("def unquote(n)()", 10)]
+        );
+        assert!(a.children[0].docs.is_empty(), "{:?}", a.children[0].docs);
     }
 
     #[test]
