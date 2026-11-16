@@ -46,6 +46,12 @@
 //! belongs to the module, so the block is walked as part of the module body,
 //! `else` included. A `quote` block is not: its definitions belong to the
 //! module the macro expands in.
+//!
+//! ExUnit's `test`, `setup` and `setup_all` are functions too, and a
+//! `describe` is a `Namespace` holding its tests. A test is named the way
+//! ExUnit compiles it — `test "inner"` inside `describe "group"` is
+//! `test group inner` — so the name in a failure report finds it, and its
+//! `@tag`s ride as `attrs` like `@spec`.
 
 use super::base::{collapse_ws, count_parse_errors, LanguageAdapter};
 use crate::core::{Declaration, DeclarationKind, ImportBinding, ParseResult};
@@ -196,7 +202,7 @@ const USE_BEHAVIOURS: &[&str] = &[
 
 /// Attributes that annotate the *next* definition rather than declaring a
 /// module attribute of their own.
-const ANNOTATION_ATTRS: &[&str] = &["spec", "impl", "deprecated"];
+const ANNOTATION_ATTRS: &[&str] = &["spec", "impl", "deprecated", "tag"];
 
 /// Longest attribute value / type body kept verbatim in a signature; longer
 /// ones are elided so a multi-line map literal cannot flood a `map` line.
@@ -214,6 +220,9 @@ struct Walker<'s> {
     /// Also record the modules a form uses without a directive. Only the
     /// dependency graph wants them; `map` skips the walk.
     scan_references: bool,
+    /// The label of the `describe` block being walked, which ExUnit puts
+    /// in the name of every test inside it.
+    describe: Option<String>,
 }
 
 /// What a module body yields besides its child declarations.
@@ -265,6 +274,7 @@ impl<'s> Walker<'s> {
             defined: Vec::new(),
             scopes: Vec::new(),
             scan_references: false,
+            describe: None,
         }
     }
 
@@ -414,6 +424,13 @@ impl<'s> Walker<'s> {
                 k if _is_def_like(&child, k) => {
                     let p = std::mem::take(&mut pending);
                     self.function_clause(&child, &keyword, p, &mut out.decls, &mut last_fn);
+                }
+                k @ ("test" | "describe" | "setup" | "setup_all")
+                    if _is_exunit_block(&child, k) =>
+                {
+                    last_fn = None;
+                    let p = std::mem::take(&mut pending);
+                    self.exunit_decl(&child, k, p, module_fqn, &mut out);
                 }
                 // A block holding definitions (`if … do def …`) adds them
                 // to this module. Its clauses do not fold with the ones
@@ -644,6 +661,97 @@ impl<'s> Walker<'s> {
             modifiers,
             deprecated: pending.deprecated,
             children: Vec::new(),
+            calls: Vec::new(),
+        });
+    }
+
+    /// ExUnit's `test` / `setup` / `setup_all` as a function, `describe` as
+    /// a namespace holding what its block defines. A test takes the name
+    /// ExUnit compiles it to (`test group inner`); the others keep the macro
+    /// name.
+    fn exunit_decl<'a, D: Doc>(
+        &mut self,
+        node: &Node<'a, D>,
+        keyword: &str,
+        pending: Pending,
+        module_fqn: &str,
+        out: &mut Body,
+    ) {
+        let args = _named_args(node);
+        let label = args
+            .first()
+            .filter(|a| a.kind() == "string")
+            .map(|a| _string_content(&_text(a)));
+        let shown: Vec<String> = args
+            .iter()
+            .filter(|a| a.kind() != "keywords")
+            .map(|a| _text(a))
+            .collect();
+        let signature = if shown.is_empty() {
+            keyword.to_string()
+        } else {
+            format!("{} {}", keyword, shown.join(", "))
+        };
+        let label = label.unwrap_or_default();
+        let (kind, name, children) = match keyword {
+            "describe" => {
+                let mut children = Vec::new();
+                if let Some(block) = node.children().find(|c| c.kind() == "do_block") {
+                    let outer = self.describe.replace(label.clone());
+                    let inner = self.walk_body(&block, module_fqn);
+                    self.describe = outer;
+                    children = inner.decls;
+                    out.defines_struct |= inner.defines_struct;
+                    for b in inner.behaviours {
+                        if !out.behaviours.contains(&b) {
+                            out.behaviours.push(b);
+                        }
+                    }
+                }
+                (
+                    DeclarationKind::Namespace,
+                    format!("describe {}", label),
+                    children,
+                )
+            }
+            "test" => {
+                let name = match &self.describe {
+                    Some(group) => format!("test {} {}", group, label),
+                    None => format!("test {}", label),
+                };
+                (DeclarationKind::Function, name, Vec::new())
+            }
+            _ => (DeclarationKind::Function, keyword.to_string(), Vec::new()),
+        };
+        // A `@tag` belongs to the test below it, not to a `describe`.
+        let pending = if keyword == "test" {
+            pending
+        } else {
+            Pending::default()
+        };
+        let range = node.range();
+        let (start_byte, start_line) = pending
+            .start
+            .unwrap_or((range.start, node.start_pos().line() + 1));
+        out.decls.push(Declaration {
+            kind,
+            name,
+            signature,
+            bases: Vec::new(),
+            attrs: pending.attrs,
+            docs: Vec::new(),
+            docs_inside: false,
+            group: None,
+            visibility: String::new(),
+            start_line,
+            end_line: node.end_pos().line() + 1,
+            start_byte,
+            end_byte: range.end,
+            doc_start_byte: start_byte,
+            native_kind: Some(keyword.to_string()),
+            modifiers: Vec::new(),
+            deprecated: false,
+            children,
             calls: Vec::new(),
         });
     }
@@ -1045,6 +1153,31 @@ pub(crate) fn definition<'a, D: Doc>(node: &Node<'a, D>) -> Option<Definition> {
     }
 }
 
+/// ExUnit's `test "…"` / `describe "…"` (label first) or `setup` /
+/// `setup_all`, each with a body. A `test` without one, or `setup
+/// :named_fun`, defines nothing here.
+fn _is_exunit_block<'a, D: Doc>(node: &Node<'a, D>, keyword: &str) -> bool {
+    let args = _named_args(node);
+    let has_body =
+        node.children().any(|c| c.kind() == "do_block") || _keyword_value(&args, "do").is_some();
+    has_body
+        && match keyword {
+            "test" | "describe" => args.first().is_some_and(|a| a.kind() == "string"),
+            _ => true,
+        }
+}
+
+/// A string literal's text without its delimiters, interpolation kept as
+/// written: `"adds #{x}"` → `adds #{x}`.
+fn _string_content(literal: &str) -> String {
+    let inner = literal
+        .strip_prefix("\"\"\"")
+        .and_then(|s| s.strip_suffix("\"\"\""))
+        .or_else(|| literal.strip_prefix('"').and_then(|s| s.strip_suffix('"')))
+        .unwrap_or(literal);
+    inner.trim().to_string()
+}
+
 /// The bodies of a macro call whose `do` or `else` block holds a definition
 /// directly (`if … do def … else def … end`), in source order; empty when
 /// none does. Such a call wraps definitions rather than being one.
@@ -1378,6 +1511,37 @@ mod tests {
             vec![("def f(x)", 4), ("def f(_)", 6), ("def unquote(n)()", 10)]
         );
         assert!(a.children[0].docs.is_empty(), "{:?}", a.children[0].docs);
+    }
+
+    #[test]
+    fn exunit_blocks_are_named_as_exunit_compiles_them() {
+        let r = parse(
+            "defmodule T do\n  setup do\n    :ok\n  end\n  setup :named\n  @tag :slow\n  test \"plain\", %{n: n} do\n    n\n  end\n  test \"kw\", do: :ok\n  test \"pending\"\n  describe \"group\" do\n    @tag :x\n    test \"inner\" do\n      :ok\n    end\n    defp helper, do: 1\n  end\nend\n",
+        );
+        let t = &r.declarations[0];
+        let got: Vec<(&str, &str, DeclarationKind)> = t
+            .children
+            .iter()
+            .map(|d| (d.name.as_str(), d.signature.as_str(), d.kind))
+            .collect();
+        use DeclarationKind::*;
+        assert_eq!(
+            got,
+            vec![
+                ("setup", "setup", Function),
+                ("test plain", "test \"plain\", %{n: n}", Function),
+                ("test kw", "test \"kw\"", Function),
+                ("describe group", "describe \"group\"", Namespace),
+            ]
+        );
+        assert_eq!(t.children[1].attrs, ["@tag :slow"]);
+        assert_eq!(t.children[1].start_line, 6, "range widens to its @tag");
+        let inner: Vec<&str> = t.children[3]
+            .children
+            .iter()
+            .map(|d| d.name.as_str())
+            .collect();
+        assert_eq!(inner, ["test group inner", "helper"]);
     }
 
     #[test]
