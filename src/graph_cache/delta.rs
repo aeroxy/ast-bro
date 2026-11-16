@@ -200,7 +200,7 @@ pub fn apply_delta_to_calls(
             calls.types.insert(qn.clone(), meta.clone());
             calls
                 .type_by_name
-                .entry(qn.name().to_string())
+                .entry(normalise_type_name(qn.name()))
                 .or_default()
                 .push(qn.clone());
             for base in &meta.bases {

@@ -382,7 +382,9 @@ pub struct ImplHit {
 }
 
 pub(crate) fn collect_type_callers(calls: &CallGraph, type_qn: &Qn) -> TypeCallersGroup {
-    let bare = type_qn.name().to_string();
+    // Normalised like the bases implementors are keyed by: a dotted type
+    // (`Billing.Printable`) is `Printable` there.
+    let bare = normalise_type_name(type_qn.name());
     let kind = calls
         .types
         .get(type_qn)

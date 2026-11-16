@@ -124,7 +124,23 @@ fn qn_matches(qn: &Qn, raw: &str, parts: &[&str]) -> bool {
     if qn.0 == raw {
         return true;
     }
-    let segments: Vec<&str> = qn.0.split("::").collect();
+    // A dotted name (Elixir `defmodule Shop.Pricing`, C# `namespace
+    // Shop.Billing`) is one qn segment but one query part per dot, the way
+    // `show` reads it — otherwise `Pricing.sum` can never match it. The file
+    // stays whole, and so does a name that is nothing but dots.
+    let mut split = qn.0.split("::");
+    let file = split.next();
+    let segments: Vec<&str> = file
+        .into_iter()
+        .chain(split.flat_map(|s| {
+            let pieces: Vec<&str> = s.split('.').filter(|p| !p.is_empty()).collect();
+            if pieces.is_empty() {
+                vec![s]
+            } else {
+                pieces
+            }
+        }))
+        .collect();
     if parts.len() > segments.len() {
         return false;
     }

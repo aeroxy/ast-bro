@@ -752,6 +752,61 @@ public class Greeter {
 }
 
 #[test]
+fn csharp_dotted_namespace_matches_segment_by_segment() {
+    // `namespace Shop.Billing` is two scopes, the way the query is split:
+    // `Billing.Pricing.Tax` must find the method like `Pricing.Tax` does.
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(
+        &root.join("src/Pricing.cs"),
+        r#"
+namespace Shop.Billing
+{
+    public class Pricing
+    {
+        public int Sum(int x) { return Tax(x); }
+        public int Tax(int x) { return x; }
+    }
+}
+"#,
+    );
+    let (out, code) = run_in(root, &["callers", "Billing.Pricing.Tax", ".", "--rebuild"]);
+    assert_eq!(code, 0, "callers exited non-zero: {}", out);
+    assert!(out.contains("Sum"), "expected `Sum` in callers, got:\n{}", out);
+}
+
+#[test]
+fn elixir_dotted_protocol_lists_its_implementations() {
+    // Implementations are keyed by a base's last dotted part, `Printable`;
+    // the protocol `Billing.Printable` is looked up the same way.
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(
+        &root.join("lib/printable.ex"),
+        r#"
+defprotocol Billing.Printable do
+  def print(value)
+end
+
+defimpl Billing.Printable, for: Integer do
+  def print(n), do: n
+end
+"#,
+    );
+    let (out, code) = run_in(root, &["callers", "Billing.Printable", ".", "--rebuild"]);
+    assert_eq!(code, 0, "callers exited non-zero: {}", out);
+    assert!(
+        out.contains("1 implementation"),
+        "expected the Integer impl in callers, got:\n{}",
+        out
+    );
+    // And the impl finds the protocol as its ancestor.
+    let (out, code) = run_in(root, &["callees", "Billing.Printable.Integer", "."]);
+    assert_eq!(code, 0, "callees exited non-zero: {}", out);
+    assert!(out.contains("protocol Billing.Printable"), "ancestor not found:\n{}", out);
+}
+
+#[test]
 fn kotlin_callers_finds_intra_file_caller() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path();
