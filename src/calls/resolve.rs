@@ -18,9 +18,9 @@
 //! Single survivor → `Inferred`; otherwise → `Ambiguous` with all
 //! candidates kept under `CallEdge::candidates`.
 
-use crate::calls::graph::{CallEdge, CallTarget, Confidence, Qn};
+use crate::calls::graph::{CallEdge, CallTarget, CallableMeta, Confidence, Qn};
 use crate::calls::pass::{file_rel, raw_to_edge, FilePass, RawEdge};
-use crate::core::ReceiverScope;
+use crate::core::{ImportOnly, ReceiverScope};
 use crate::deps::manifest::detect_aliases;
 use crate::deps::resolver::{build_suffix_index, resolve as resolve_spec, Lang, ResolveCtx};
 use crate::deps::traverse;
@@ -53,7 +53,13 @@ pub fn build_symbol_table(passes: &[FilePass]) -> HashMap<String, Vec<Qn>> {
     symbol_table
 }
 
-pub fn run(root: &Path, deps: &DepGraph, passes: Vec<FilePass>) -> Resolved {
+pub fn run(
+    root: &Path,
+    deps: &DepGraph,
+    passes: Vec<FilePass>,
+    type_by_name: &HashMap<String, Vec<Qn>>,
+    callable_meta: &HashMap<Qn, CallableMeta>,
+) -> Resolved {
     let symbol_table = build_symbol_table(&passes);
     let scopes = scope_paths(
         passes.iter().flat_map(|fp| &fp.defined),
@@ -61,7 +67,15 @@ pub fn run(root: &Path, deps: &DepGraph, passes: Vec<FilePass>) -> Resolved {
             .iter()
             .flat_map(|fp| fp.types.iter().map(|(qn, _)| qn).chain(&fp.namespaces)),
     );
-    run_with_table(root, deps, passes, symbol_table, &scopes)
+    run_with_table(
+        root,
+        deps,
+        passes,
+        symbol_table,
+        &scopes,
+        type_by_name,
+        callable_meta,
+    )
 }
 
 /// Resolve `passes`'s raw edges against a *prebuilt* symbol_table (which
@@ -69,12 +83,16 @@ pub fn run(root: &Path, deps: &DepGraph, passes: Vec<FilePass>) -> Resolved {
 /// incremental path passes the full project's symbol_table here while
 /// only handing in raw edges from changed files — so new edges in changed
 /// files still resolve to qns defined elsewhere in the project.
+/// `type_by_name` and `callable_meta` are the project's, which an Elixir
+/// struct literal and an Elixir call's arity are resolved against.
 pub fn run_with_table(
     root: &Path,
     deps: &DepGraph,
     passes: Vec<FilePass>,
     symbol_table: HashMap<String, Vec<Qn>>,
     scopes: &Scopes,
+    type_by_name: &HashMap<String, Vec<Qn>>,
+    callable_meta: &HashMap<Qn, CallableMeta>,
 ) -> Resolved {
     // ---------- Suffix index for import resolution (reused from deps). ----------
     let aliases = detect_aliases(root);
@@ -113,7 +131,9 @@ pub fn run_with_table(
                     receiver,
                     raw.receiver_scope,
                     &raw.bare_name,
+                    raw.arity,
                     &symbol_table,
+                    callable_meta,
                     scopes,
                 ) {
                     Scoped::Done(target, confidence) => {
@@ -130,6 +150,15 @@ pub fn run_with_table(
                         ambiguous_buffer.push((raw, fp.file.clone(), cands));
                     }
                 }
+                continue;
+            }
+
+            // Elixir names its call targets statically; see `calls::elixir`.
+            if lang == Some(Lang::Elixir) {
+                let tables = (&symbol_table, type_by_name, callable_meta);
+                let (target, confidence, candidates) = crate::calls::elixir::resolve(&raw, tables);
+                let edge = raw_to_edge(raw, target, confidence, rel_path(root, &fp.file), candidates);
+                forward.entry(edge.source.clone()).or_default().push(edge);
                 continue;
             }
 
@@ -532,7 +561,7 @@ fn dotted_path<'a>(parts: &[&'a str]) -> Vec<&'a str> {
 }
 
 /// The language of the file a qn is declared in.
-fn qn_lang(qn: &Qn) -> Option<Lang> {
+pub(crate) fn qn_lang(qn: &Qn) -> Option<Lang> {
     Lang::from_path(Path::new(qn.file()))
 }
 
@@ -558,13 +587,17 @@ pub(crate) enum Scoped {
 /// of that name in it is the target. A scope that does not define the name
 /// (an inherited or generated method) leaves the call bare; no such scope at
 /// all makes it external, unless a lexical receiver may name a scope found
-/// through ancestors.
+/// through ancestors. Where the language tells functions apart by `arity`
+/// (Elixir), a callable must take it and be public.
+#[allow(clippy::too_many_arguments)] // resolution context is genuinely wide
 pub(crate) fn resolve_scoped(
     caller: &Qn,
     receiver: &str,
     lookup: ReceiverScope,
     name: &str,
+    arity: Option<usize>,
     symbol_table: &HashMap<String, Vec<Qn>>,
+    callable_meta: &HashMap<Qn, CallableMeta>,
     scopes: &Scopes,
 ) -> Scoped {
     let lang = qn_lang(caller);
@@ -600,6 +633,11 @@ pub(crate) fn resolve_scoped(
         .into_iter()
         .flatten()
         .filter(|qn| qn_lang(qn) == lang && dotted_path(&enclosing_parts(qn)) == scope)
+        .filter(|qn| {
+            callable_meta
+                .get(*qn)
+                .is_none_or(|m| m.accepts(arity, Some(ImportOnly::Any)))
+        })
         .cloned()
         .collect();
     match cands.len() {

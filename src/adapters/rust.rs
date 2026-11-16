@@ -564,6 +564,8 @@ fn _call_site_from_call<'a, D: Doc>(node: &Node<'a, D>, src: &[u8]) -> Option<Ca
         line: node.start_pos().line() as u32 + 1,
         kind,
         receiver_scope: ReceiverScope::None,
+        imports: Vec::new(),
+        arity: None,
     })
 }
 
@@ -576,6 +578,8 @@ fn _call_site_from_struct<'a, D: Doc>(node: &Node<'a, D>, src: &[u8]) -> Option<
         line: node.start_pos().line() as u32 + 1,
         kind: CallKind::Construct,
         receiver_scope: ReceiverScope::None,
+        imports: Vec::new(),
+        arity: None,
     })
 }
 
@@ -588,6 +592,8 @@ fn _call_site_from_macro<'a, D: Doc>(node: &Node<'a, D>, src: &[u8]) -> Option<C
         line: node.start_pos().line() as u32 + 1,
         kind: CallKind::Macro,
         receiver_scope: ReceiverScope::None,
+        imports: Vec::new(),
+        arity: None,
     })
 }
 

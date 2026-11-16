@@ -637,15 +637,6 @@ fn other_languages_do_not_import_elixir_files_by_path() {
     }
 }
 
-#[test]
-fn elixir_files_stay_out_of_the_call_graph() {
-    // The adapter records no call sites, so `items` has no known callers;
-    // the call graph must not answer for it.
-    let (code, stdout, stderr) = run(&["callers", "items", SHOP, "--rebuild"]);
-    assert_eq!(code, 2, "stdout: {stdout}\nstderr: {stderr}");
-    assert!(stdout.is_empty(), "{stdout}");
-}
-
 // ---- Idempotency ----
 
 #[test]

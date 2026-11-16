@@ -33,9 +33,15 @@
 //! spanning every clause. `@doc` / `@moduledoc` become docs, `@spec`,
 //! `@impl` and `@deprecated` ride as `attrs` on the next definition, and
 //! `@behaviour` lands in the module's `bases` so `implements` can follow it.
+//!
+//! Each function carries the calls in its body, receivers expanded to full
+//! module names.
 
 use super::base::{collapse_ws, count_parse_errors, LanguageAdapter};
-use crate::core::{Declaration, DeclarationKind, ImportBinding, ParseResult};
+use crate::core::{
+    CallKind, CallSite, Declaration, DeclarationKind, ImportBinding, ImportOnly, Imported,
+    ParseResult, ReceiverScope,
+};
 use ast_grep_core::{Doc, Node};
 use std::path::Path;
 
@@ -96,6 +102,32 @@ pub(crate) fn scan_modules(source: &str) -> ModuleScan {
     scan(source)
 }
 
+/// The argument counts a definition accepts, `(min, max)`, read from its
+/// signature: `def f(a, b \\ 1)` accepts one or two. `None` without a head.
+pub(crate) fn arity_range(signature: &str) -> Option<(usize, usize)> {
+    use ast_grep_language::{LanguageExt, SupportLang};
+    let grep = SupportLang::Elixir.ast_grep(signature);
+    let def = grep.root().children().find(|c| c.kind() == "call")?;
+    let mut head = _named_args(&def).into_iter().next()?;
+    let (_, arity) = _head_name_arity(&head);
+    if head.kind() == "binary_operator"
+        && head.field("operator").is_some_and(|o| o.text() == "when")
+    {
+        head = head.field("left")?;
+    }
+    let defaults = match head.kind().as_ref() {
+        "call" => _named_args(&head)
+            .iter()
+            .filter(|p| {
+                p.kind() == "binary_operator"
+                    && p.field("operator").is_some_and(|o| o.text() == "\\\\")
+            })
+            .count(),
+        _ => 0,
+    };
+    Some((arity - defaults, arity))
+}
+
 /// The modules one file defines. A module defined in a function body or an
 /// `if` block is reached only by the walk for references.
 pub(crate) fn defined_modules(source: &str) -> Vec<String> {
@@ -152,6 +184,39 @@ const TYPESPEC_ATTRS: &[&str] = &[
 /// module attribute of their own.
 const ANNOTATION_ATTRS: &[&str] = &["spec", "impl", "deprecated"];
 
+/// Macros that are syntax, not call sites; the code inside them is walked.
+const NOT_CALLS: &[&str] = &[
+    "if",
+    "unless",
+    "case",
+    "cond",
+    "with",
+    "for",
+    "try",
+    "receive",
+    "fn",
+    "super",
+    "unquote",
+    "unquote_splicing",
+    "import",
+    "require",
+    "use",
+    "def",
+    "defp",
+    "defmacro",
+    "defmacrop",
+    "defguard",
+    "defguardp",
+    "defdelegate",
+    "defmodule",
+    "defprotocol",
+    "defimpl",
+    "defstruct",
+    "defexception",
+    "defoverridable",
+    "__block__",
+];
+
 /// Longest attribute value / type body kept verbatim in a signature; longer
 /// ones are elided so a multi-line map literal cannot flood a `map` line.
 const MAX_INLINE_VALUE: usize = 60;
@@ -162,10 +227,38 @@ struct Walker<'s> {
     directives: Vec<Directive>,
     /// Every module defined, by its full name.
     defined: Vec<String>,
-    /// Aliases in effect, innermost scope last.
-    scopes: Vec<std::collections::HashMap<String, String>>,
+    /// Aliases and imports in effect, innermost scope last.
+    scopes: Vec<Scope>,
     /// Also record modules named without a directive (deps only).
     scan_references: bool,
+}
+
+/// A lexical scope: a module body, a function, or a block.
+#[derive(Clone, Default)]
+struct Scope {
+    aliases: std::collections::HashMap<String, String>,
+    imports: Vec<Import>,
+}
+
+/// An `import`, with its `only:` and `except:` selectors.
+#[derive(Clone)]
+struct Import {
+    module: String,
+    /// `None` imports every name.
+    only: Option<Vec<(String, usize)>>,
+    except: Vec<(String, usize)>,
+    /// `only: :functions` or `only: :macros`, which the resolver applies.
+    kinds: ImportOnly,
+}
+
+impl Import {
+    fn admits(&self, name: &str, arity: Option<usize>) -> bool {
+        let listed = |list: &[(String, usize)]| {
+            list.iter()
+                .any(|(n, a)| n == name && arity.is_none_or(|x| x == *a))
+        };
+        self.only.as_deref().is_none_or(listed) && !listed(&self.except)
+    }
 }
 
 /// What a module body yields besides its child declarations.
@@ -284,7 +377,7 @@ impl<'s> Walker<'s> {
                     }
                     "behaviour" | "behavior" => {
                         if let Some(v) = &value {
-                            out.behaviours.push(_text(v));
+                            out.behaviours.push(self.expand(&_text(v), module_fqn));
                         }
                     }
                     a if ANNOTATION_ATTRS.contains(&a) => {
@@ -328,7 +421,14 @@ impl<'s> Walker<'s> {
                 }
                 k if DEF_MACROS.iter().any(|(kw, _, _)| *kw == k) => {
                     let p = std::mem::take(&mut pending);
-                    self.function_clause(&child, &keyword, p, &mut out.decls, &mut last_fn);
+                    self.function_clause(
+                        &child,
+                        &keyword,
+                        p,
+                        module_fqn,
+                        &mut out.decls,
+                        &mut last_fn,
+                    );
                 }
                 "defstruct" | "defexception" => {
                     last_fn = None;
@@ -417,7 +517,7 @@ impl<'s> Walker<'s> {
                         }
                     })
                     .collect();
-                (DeclarationKind::Class, names, vec![written.clone()], "impl")
+                (DeclarationKind::Class, names, vec![protocol], "impl")
             }
             _ => (
                 DeclarationKind::Class,
@@ -500,6 +600,7 @@ impl<'s> Walker<'s> {
         node: &Node<'a, D>,
         keyword: &str,
         pending: Pending,
+        module_fqn: &str,
         out: &mut Vec<Declaration>,
         last_fn: &mut Option<LastFn>,
     ) {
@@ -510,6 +611,7 @@ impl<'s> Walker<'s> {
         let (name, arity) = _head_name_arity(head);
         let range = node.range();
         let end_line = node.end_pos().line() + 1;
+        let calls = self.clause_calls(node, keyword, &args, module_fqn);
 
         let continues = last_fn
             .as_ref()
@@ -527,6 +629,7 @@ impl<'s> Walker<'s> {
                     prev.docs = pending.docs;
                 }
                 prev.deprecated |= pending.deprecated;
+                prev.calls.extend(calls);
                 return;
             }
         }
@@ -542,11 +645,11 @@ impl<'s> Walker<'s> {
             let args_text = node
                 .children()
                 .find(|c| c.kind() == "arguments")
-                .map(|a| _text(&a))
+                .map(|a| _code_text(&a))
                 .unwrap_or_default();
             format!("{} {}", keyword, args_text)
         } else {
-            format!("{} {}", keyword, _text(head))
+            format!("{} {}", keyword, _code_text(head))
         };
         let mut modifiers = Vec::new();
         if let Some(m) = modifier {
@@ -590,8 +693,379 @@ impl<'s> Walker<'s> {
             modifiers,
             deprecated: pending.deprecated,
             children: Vec::new(),
-            calls: Vec::new(),
+            calls,
         });
+    }
+
+    /// The calls in a clause's guard and body; a `defdelegate` calls `to:`.
+    fn clause_calls<'a, D: Doc>(
+        &mut self,
+        node: &Node<'a, D>,
+        keyword: &str,
+        args: &[Node<'a, D>],
+        module_fqn: &str,
+    ) -> Vec<CallSite> {
+        let mut out = Vec::new();
+        if self.scan_references {
+            return out;
+        }
+        if keyword == "defdelegate" {
+            if let Some(head) = args.first() {
+                self.default_calls(head, module_fqn, &mut out);
+            }
+            if let (Some(head), Some(to)) = (args.first(), _keyword_value(args, "to")) {
+                let name = match _keyword_value(args, "as") {
+                    Some(a) => _text(&a).trim_start_matches(':').to_string(),
+                    None => _head_name_arity(head).0,
+                };
+                out.push(CallSite {
+                    name,
+                    receiver: Some(self.module_name(&to, module_fqn)),
+                    line: node.start_pos().line() as u32 + 1,
+                    kind: CallKind::Call,
+                    receiver_scope: ReceiverScope::Absolute,
+                    imports: Vec::new(),
+                    arity: None,
+                });
+            }
+            return out;
+        }
+        let scope = self.scopes.last().cloned().unwrap_or_default();
+        self.scopes.push(scope);
+        if let Some(head) = args.first() {
+            let mut call = head.clone();
+            if head.kind() == "binary_operator"
+                && head.field("operator").is_some_and(|o| o.text() == "when")
+            {
+                if let Some(guard) = head.field("right") {
+                    self.calls_in(&guard, module_fqn, &mut out);
+                }
+                call = head.field("left").unwrap_or(call);
+            }
+            self.default_calls(&call, module_fqn, &mut out);
+        }
+        for arg in args.iter().skip(1) {
+            self.calls_in(arg, module_fqn, &mut out);
+        }
+        if let Some(block) = node.children().find(|c| c.kind() == "do_block") {
+            self.calls_in(&block, module_fqn, &mut out);
+        }
+        self.scopes.pop();
+        out
+    }
+
+    /// The calls in a head's default arguments (`x \\ compute()`), which
+    /// are evaluated at the call.
+    fn default_calls<'a, D: Doc>(
+        &mut self,
+        head: &Node<'a, D>,
+        module_fqn: &str,
+        out: &mut Vec<CallSite>,
+    ) {
+        for param in _named_args(head) {
+            if param.kind() == "binary_operator"
+                && param.field("operator").is_some_and(|o| o.text() == "\\\\")
+            {
+                if let Some(default) = param.field("right") {
+                    self.calls_in(&default, module_fqn, out);
+                }
+            }
+        }
+    }
+
+    /// Record the call sites in `node`. The caller scopes a body's aliases
+    /// and imports; a block inside it scopes its own.
+    /// The walk keeps its own stack: a long operator chain (`a <> b <> …`)
+    /// nests as deep as it is long.
+    fn calls_in<'a, D: Doc>(
+        &mut self,
+        node: &Node<'a, D>,
+        module_fqn: &str,
+        out: &mut Vec<CallSite>,
+    ) {
+        enum Step<N> {
+            /// A node, and the arguments a `|>` passes to it.
+            Visit(N, usize),
+            /// A `|>` whose left side is walked: its target is next.
+            Pipe(N),
+            /// The end of a block's scope.
+            Leave,
+        }
+        let mut stack = vec![Step::Visit(node.clone(), 0)];
+        while let Some(step) = stack.pop() {
+            let (node, piped) = match step {
+                Step::Visit(node, piped) => (node, piped),
+                Step::Pipe(node) => {
+                    if let Some(right) = node.field("right") {
+                        let line = right.start_pos().line() as u32 + 1;
+                        out.push(self.site(_text(&right), None, line, CallKind::Call, Some(1)));
+                    }
+                    continue;
+                }
+                Step::Leave => {
+                    self.scopes.pop();
+                    continue;
+                }
+            };
+            let line = node.start_pos().line() as u32 + 1;
+            match node.kind().as_ref() {
+                "call" => match node.field("target") {
+                    Some(t) if t.kind() == "identifier" => match _text(&t).as_str() {
+                        "quote" => {
+                            // `bind_quoted:` values are evaluated where the quote is.
+                            let options = _named_args(&node);
+                            if let Some(bound) = _keyword_value(&options, "bind_quoted") {
+                                self.calls_in(&bound, module_fqn, out);
+                            }
+                            self.unquoted_calls(&node, module_fqn, out);
+                            continue;
+                        }
+                        keyword @ ("alias" | "import" | "require") => {
+                            // Scoped here, but not one of the module's imports.
+                            let recorded = self.directives.len();
+                            self.import(&node, keyword, module_fqn);
+                            self.directives.truncate(recorded);
+                            continue;
+                        }
+                        name if NOT_CALLS.contains(&name)
+                            && !self.kernel_excludes(name, _call_arity(&node, piped)) => {}
+                        name => {
+                            let arity = _call_arity(&node, piped);
+                            out.push(self.site(
+                                name.to_string(),
+                                None,
+                                line,
+                                CallKind::Call,
+                                Some(arity),
+                            ));
+                        }
+                    },
+                    // `fun.(x)` has no `right`; `map.key` reads a field.
+                    Some(t) if t.kind() == "dot" => {
+                        if let (Some(left), Some(right)) = (t.field("left"), t.field("right")) {
+                            let receiver = self.module_name(&left, module_fqn);
+                            let parenthesised =
+                                node.children().any(|c| c.kind() == "arguments");
+                            let module =
+                                receiver.starts_with(|c: char| c.is_ascii_uppercase() || c == ':');
+                            // `&Mod.fun/2` writes its arity after the `/`.
+                            let captured = node
+                                .parent()
+                                .filter(|p| p.field("operator").is_some_and(|o| o.text() == "/"))
+                                .filter(|p| {
+                                    p.parent()
+                                        .and_then(|c| c.field("operator"))
+                                        .is_some_and(|o| o.text() == "&")
+                                })
+                                .and_then(|p| p.field("right"))
+                                .and_then(|r| r.text().parse().ok());
+                            let arity = match parenthesised {
+                                true => Some(_call_arity(&node, piped)),
+                                false => captured,
+                            };
+                            if parenthesised || module {
+                                let site = self.site(
+                                    _text(&right),
+                                    Some(receiver),
+                                    line,
+                                    CallKind::Call,
+                                    arity,
+                                );
+                                out.push(site);
+                            }
+                        }
+                    }
+                    _ => {}
+                },
+                // `x |> helper` calls `helper` without parentheses, and
+                // `x |> helper(y)` passes `helper` one more argument.
+                "binary_operator" if node.field("operator").is_some_and(|o| o.text() == "|>") => {
+                    match node.field("right") {
+                        Some(r) if r.kind() == "identifier" => {
+                            let left = node.field("left");
+                            stack.push(Step::Pipe(node));
+                            if let Some(left) = left {
+                                stack.push(Step::Visit(left, 0));
+                            }
+                            continue;
+                        }
+                        Some(r) if r.kind() == "call" => {
+                            let left = node.field("left");
+                            stack.push(Step::Visit(r, 1));
+                            if let Some(left) = left {
+                                stack.push(Step::Visit(left, 0));
+                            }
+                            continue;
+                        }
+                        _ => {}
+                    }
+                }
+                // A pattern (`%Mod{} = x`, `{:ok, x} <- f()`) calls nothing; its
+                // guard (`{:ok, x} when ok(x) <- f()`) does.
+                "binary_operator"
+                    if node
+                        .field("operator")
+                        .is_some_and(|o| matches!(o.text().as_ref(), "=" | "<-")) =>
+                {
+                    let guard = node
+                        .field("left")
+                        .filter(|l| l.field("operator").is_some_and(|o| o.text() == "when"))
+                        .and_then(|l| l.field("right"));
+                    if let Some(guard) = guard {
+                        stack.push(Step::Visit(guard, 0));
+                    }
+                    if let Some(right) = node.field("right") {
+                        stack.push(Step::Visit(right, 0));
+                    }
+                    continue;
+                }
+                // `&helper/1`; `&Mod.fun/2` is a call node and handled above.
+                "unary_operator" if node.field("operator").is_some_and(|o| o.text() == "&") => {
+                    let capture = node
+                        .field("operand")
+                        .filter(|o| o.kind() == "binary_operator");
+                    let local = capture
+                        .as_ref()
+                        .and_then(|o| o.field("left"))
+                        .filter(|l| l.kind() == "identifier");
+                    if let Some(name) = local {
+                        let arity = capture
+                            .and_then(|o| o.field("right"))
+                            .and_then(|r| r.text().parse().ok());
+                        out.push(self.site(_text(&name), None, line, CallKind::Call, arity));
+                        continue;
+                    }
+                }
+                // `%Mod{…}` builds the struct `Mod` defines.
+                "map" => {
+                    if let Some(s) = node.children().find(|c| c.kind() == "struct") {
+                        if let Some(m) = s.children().find(|c| c.is_named()) {
+                            let module = self.module_name(&m, module_fqn);
+                            out.push(self.site(module, None, line, CallKind::Construct, None));
+                        }
+                    }
+                }
+                // An `alias` or `import` in a block ends with it.
+                "do_block" | "else_block" | "after_block" | "rescue_block" | "catch_block"
+                | "stab_clause" => {
+                    let scope = self.scopes.last().cloned().unwrap_or_default();
+                    self.scopes.push(scope);
+                    stack.push(Step::Leave);
+                    // A clause's left side is patterns and a guard, except
+                    // in `cond`, where it is a condition, and in a `receive`
+                    // timeout (`after timeout() -> …`), where it is a value.
+                    let block = node.parent();
+                    let in_cond = block
+                        .as_ref()
+                        .and_then(|block| block.parent())
+                        .is_some_and(|call| _call_keyword(&call).as_deref() == Some("cond"));
+                    let timeout = block.is_some_and(|block| block.kind() == "after_block");
+                    if node.kind() == "stab_clause" && !in_cond && !timeout {
+                        if let Some(body) = node.field("right") {
+                            stack.push(Step::Visit(body, 0));
+                        }
+                        let guard = node
+                            .field("left")
+                            .filter(|l| l.kind() == "binary_operator")
+                            .and_then(|l| l.field("right"));
+                        if let Some(guard) = guard {
+                            stack.push(Step::Visit(guard, 0));
+                        }
+                        continue;
+                    }
+                }
+                _ => {}
+            }
+            let start = stack.len();
+            stack.extend(
+                node.children()
+                    .filter(|c| c.is_named())
+                    .map(|c| Step::Visit(c, 0)),
+            );
+            stack[start..].reverse();
+        }
+    }
+
+    /// A call site. An expanded alias or an Erlang module names a module in
+    /// full; a bare call may name a function of a module imported here.
+    fn site(
+        &self,
+        name: String,
+        receiver: Option<String>,
+        line: u32,
+        kind: CallKind,
+        arity: Option<usize>,
+    ) -> CallSite {
+        let receiver_scope = match receiver.as_deref() {
+            Some(r) if r.starts_with(|c: char| c.is_ascii_uppercase() || c == ':') => {
+                ReceiverScope::Absolute
+            }
+            _ => ReceiverScope::None,
+        };
+        let imports = match (&receiver, kind) {
+            (None, CallKind::Call) => self
+                .scopes
+                .last()
+                .into_iter()
+                .flat_map(|s| &s.imports)
+                .filter(|i| i.admits(&name, arity))
+                .map(|i| Imported {
+                    module: i.module.clone(),
+                    only: i.kinds,
+                })
+                .collect(),
+            _ => Vec::new(),
+        };
+        CallSite {
+            name,
+            receiver,
+            line,
+            kind,
+            receiver_scope,
+            imports,
+            arity,
+        }
+    }
+
+    /// Whether `import Kernel, except: [if: 2]` is in effect here, which
+    /// leaves `if/2` to another import, as Elixir allows no two.
+    fn kernel_excludes(&self, name: &str, arity: usize) -> bool {
+        self.scopes.last().is_some_and(|s| {
+            s.imports
+                .iter()
+                .any(|i| i.module == "Kernel" && !i.admits(name, Some(arity)))
+        })
+    }
+
+    /// The calls inside a `quote`'s `unquote(…)`s.
+    fn unquoted_calls<'a, D: Doc>(
+        &mut self,
+        node: &Node<'a, D>,
+        module_fqn: &str,
+        out: &mut Vec<CallSite>,
+    ) {
+        let mut stack = Vec::new();
+        _push_children(&mut stack, node);
+        while let Some(child) = stack.pop() {
+            let kw = _call_keyword(&child);
+            if matches!(kw.as_deref(), Some("unquote" | "unquote_splicing")) {
+                for arg in _named_args(&child) {
+                    self.calls_in(&arg, module_fqn, out);
+                }
+            } else {
+                _push_children(&mut stack, &child);
+            }
+        }
+    }
+
+    /// A call's receiver, expanded when it is an alias or `__MODULE__`.
+    fn module_name<'a, D: Doc>(&self, node: &Node<'a, D>, module_fqn: &str) -> String {
+        let text = _text(node);
+        if node.kind() == "alias" || text == "__MODULE__" || text.starts_with("__MODULE__.") {
+            self.expand(&text, module_fqn)
+        } else {
+            text
+        }
     }
 
     /// `@callback name(args) :: ret` — a behaviour's abstract function.
@@ -808,6 +1282,57 @@ impl<'s> Walker<'s> {
             if keyword == "alias" {
                 self.alias(local.clone(), module.clone());
             }
+            if keyword == "import" {
+                let only_arg = _keyword_value(&args, "only");
+                let (only, kinds) = match &only_arg {
+                    Some(v) => _selector(v),
+                    None => (None, ImportOnly::Any),
+                };
+                let except = _keyword_value(&args, "except")
+                    .and_then(|v| _selector(&v).0)
+                    .unwrap_or_default();
+                if let Some(scope) = self.scopes.last_mut() {
+                    // A module imported again replaces its earlier import,
+                    // except that `except:` alone filters it, per kind: a
+                    // kind it did not import comes in minus `except:`.
+                    let (earlier, rest): (Vec<Import>, Vec<Import>) =
+                        std::mem::take(&mut scope.imports)
+                            .into_iter()
+                            .partition(|i| i.module == module);
+                    scope.imports = rest;
+                    if only_arg.is_none() && !except.is_empty() && !earlier.is_empty() {
+                        let has = |k| {
+                            earlier
+                                .iter()
+                                .any(|i| i.kinds == ImportOnly::Any || i.kinds == k)
+                        };
+                        let missing = match (has(ImportOnly::Functions), has(ImportOnly::Macros)) {
+                            (true, false) => Some(ImportOnly::Macros),
+                            (false, true) => Some(ImportOnly::Functions),
+                            _ => None,
+                        };
+                        for mut i in earlier {
+                            i.except.extend(except.iter().cloned());
+                            scope.imports.push(i);
+                        }
+                        if let Some(kinds) = missing {
+                            scope.imports.push(Import {
+                                module: module.clone(),
+                                only: None,
+                                except,
+                                kinds,
+                            });
+                        }
+                    } else {
+                        scope.imports.push(Import {
+                            module: module.clone(),
+                            only,
+                            except,
+                            kinds,
+                        });
+                    }
+                }
+            }
             // `require Foo, as: F` aliases `F` as well.
             if keyword == "require" {
                 if let Some(name) = &as_name {
@@ -985,7 +1510,7 @@ impl<'s> Walker<'s> {
     /// Bind `local` to `module` for the rest of the current module body.
     fn alias(&mut self, local: String, module: String) {
         if let Some(scope) = self.scopes.last_mut() {
-            scope.insert(local, module);
+            scope.aliases.insert(local, module);
         }
     }
 
@@ -1004,7 +1529,7 @@ impl<'s> Walker<'s> {
                 return r.to_string();
             }
         }
-        let head = match self.scopes.last().and_then(|s| s.get(first)) {
+        let head = match self.scopes.last().and_then(|s| s.aliases.get(first)) {
             Some(full) => full.clone(),
             None => return module.to_string(),
         };
@@ -1059,6 +1584,31 @@ fn _text<'a, D: Doc>(node: &Node<'a, D>) -> String {
     collapse_ws(&node.text())
 }
 
+/// `_text` without the `#` comments in `node`: once the lines are joined, a
+/// comment would hide the rest of the head (`opts \\ []`).
+fn _code_text<'a, D: Doc>(node: &Node<'a, D>) -> String {
+    let start = node.range().start;
+    let text = node.text();
+    let mut comments = Vec::new();
+    let mut stack = vec![node.clone()];
+    while let Some(n) = stack.pop() {
+        if n.kind() == "comment" {
+            comments.push(n.range());
+        } else {
+            stack.extend(n.children());
+        }
+    }
+    comments.sort_by_key(|r| r.start);
+    let mut code = String::new();
+    let mut at = 0;
+    for r in comments {
+        code.push_str(&text[at..r.start - start]);
+        at = r.end - start;
+    }
+    code.push_str(&text[at..]);
+    collapse_ws(&code)
+}
+
 /// `__MODULE__` or `__MODULE__.Sub` as the module it names inside
 /// `enclosing`; any other name, or one outside a module, as written.
 fn _expand_module(name: &str, enclosing: &str) -> String {
@@ -1079,6 +1629,13 @@ fn _call_keyword<'a, D: Doc>(node: &Node<'a, D>) -> Option<String> {
         return None;
     }
     Some(target.text().into_owned())
+}
+
+/// The argument count of a call: its arguments, a `do` block, and the
+/// value a `|>` passes it.
+fn _call_arity<'a, D: Doc>(node: &Node<'a, D>, piped: usize) -> usize {
+    let block = node.children().any(|c| c.kind() == "do_block");
+    _named_args(node).len() + usize::from(block) + piped
 }
 
 /// Named, non-comment children of a call's `arguments` node.
@@ -1103,6 +1660,45 @@ fn _keyword_value<'a, D: Doc>(args: &[Node<'a, D>], key: &str) -> Option<Node<'a
         }
     }
     None
+}
+
+/// The names an `import` selector lists, `[fmt: 1]` or `[{:fmt, 1}]`, and
+/// the kinds it selects. `:functions` and `:macros` select every name of
+/// one kind, which the resolver tells apart; `:sigils` selects no name a
+/// call uses.
+fn _selector<'a, D: Doc>(value: &Node<'a, D>) -> (Option<Vec<(String, usize)>>, ImportOnly) {
+    match value.text().as_ref() {
+        ":functions" => return (None, ImportOnly::Functions),
+        ":macros" => return (None, ImportOnly::Macros),
+        _ if value.kind() == "atom" => return (Some(Vec::new()), ImportOnly::Any),
+        _ => {}
+    }
+    let pairs = value
+        .children()
+        .filter(|c| c.kind() == "keywords")
+        .flat_map(|k| {
+            k.children()
+                .filter(|c| c.kind() == "pair")
+                .collect::<Vec<_>>()
+        })
+        .filter_map(|pair| {
+            let name = pair
+                .field("key")?
+                .text()
+                .trim()
+                .trim_end_matches(':')
+                .to_string();
+            Some((name, pair.field("value")?.text().parse().ok()?))
+        });
+    let tuples = value
+        .children()
+        .filter(|c| c.kind() == "tuple")
+        .filter_map(|t| {
+            let mut parts = t.children().filter(|c| c.is_named());
+            let name = parts.next()?.text().trim_start_matches(':').to_string();
+            Some((name, parts.next()?.text().parse().ok()?))
+        });
+    (Some(pairs.chain(tuples).collect()), ImportOnly::Any)
 }
 
 /// `@name value` → `(name, Some(value))`; a bare `@name` → `(name, None)`.

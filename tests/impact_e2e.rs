@@ -270,6 +270,43 @@ pub fn top() { mid(); }
 }
 
 #[test]
+fn impact_on_a_type_reports_the_frontier_past_its_constructors() {
+    // At --depth 1 the constructors are the whole answer, so whoever calls
+    // them is past the cap. A constructor calling another constructor is
+    // not: both are already listed.
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(&root.join("Cargo.toml"), "[package]\nname=\"smoke\"\nversion=\"0.0.0\"\nedition=\"2021\"\n");
+    let frontier = |lib: &str, target: &str, depth: &str| {
+        write(&root.join("src/lib.rs"), lib);
+        let (out, code) = run_in(
+            root,
+            &["impact", target, "--depth", depth, "--json", "--compact", "--rebuild"],
+        );
+        assert_eq!(code, 0, "{out}");
+        let v: serde_json::Value = serde_json::from_str(out.trim()).expect("valid json");
+        v["impacts"][0]["frontier_truncated"].clone()
+    };
+
+    let widget = "pub struct Widget { pub on: bool }\npub fn build() -> Widget { Widget { on: true } }\n";
+    assert_eq!(frontier(&format!("{widget}pub fn run() {{ build(); }}\n"), "Widget", "1"), true);
+    assert_eq!(frontier(widget, "Widget", "1"), false);
+    let both = "pub fn rebuild() -> Widget { build(); Widget { on: false } }\n";
+    assert_eq!(frontier(&format!("{widget}{both}"), "Widget", "1"), false);
+
+    // A constructor of an implementor sits at depth 2, its callers past it.
+    let service = r#"
+pub trait Service { fn run(&self); }
+pub struct MyService;
+impl Service for MyService { fn run(&self) {} }
+pub fn make_service() -> MyService { MyService {} }
+"#;
+    let main = "pub fn main() { make_service(); }\n";
+    assert_eq!(frontier(&format!("{service}{main}"), "Service", "2"), true);
+    assert_eq!(frontier(service, "Service", "2"), false);
+}
+
+#[test]
 fn impact_mode_deps_does_not_claim_a_frontier_it_never_shows() {
     // `--mode deps` answers out of depth-1 sections only. The reverse walk
     // still runs internally, but flagging its cutoff would point the reader

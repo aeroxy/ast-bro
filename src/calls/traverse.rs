@@ -187,7 +187,9 @@ pub fn callers_multi<F: Fn(&CallEdge) -> bool>(
     }
     // Same rule as the single-source BFS: only an edge into a node the walk
     // never visited is "more to see" (#32). Predicate-rejected edges count,
-    // since a filtered node can still lead to a qualifying one deeper.
+    // since a filtered node can still lead to a qualifying one deeper. A
+    // seed at the cap was never walked but is already in the answer.
+    seen.extend(seeds.iter().map(|(qn, _)| qn.clone()));
     let frontier_truncated = at_cutoff.iter().any(|qn| {
         graph
             .reverse
@@ -267,6 +269,10 @@ pub fn unattributed_callers(graph: &CallGraph, targets: &[Qn]) -> Vec<CallEdge> 
     let target_set: HashSet<&Qn> = targets.iter().collect();
     let names: HashSet<&str> = targets.iter().map(|q| q.name()).collect();
     let scopes: HashSet<&str> = targets.iter().filter_map(enclosing_scope).collect();
+    let modules: HashSet<String> = targets
+        .iter()
+        .map(crate::calls::elixir::module_of)
+        .collect();
     let mut out: Vec<CallEdge> = Vec::new();
     for edges in graph.forward.values() {
         for e in edges {
@@ -276,7 +282,7 @@ pub fn unattributed_callers(graph: &CallGraph, targets: &[Qn]) -> Vec<CallEdge> 
             } else {
                 e.candidates.iter().any(|c| target_set.contains(c))
             };
-            if hit && receiver_admits(graph, e, &scopes) {
+            if hit && receiver_admits(graph, e, &scopes, &modules) {
                 out.push(e.clone());
             }
         }
@@ -309,14 +315,25 @@ pub fn unattributed_callers(graph: &CallGraph, targets: &[Qn]) -> Vec<CallEdge> 
 /// *names a project type* different from the target's scope is rejected,
 /// which is pass A's rule applied one layer later. Rejecting on any
 /// unmatched receiver name would drop the real `connection.close()` sites
-/// along with the noise.
-fn receiver_admits(graph: &CallGraph, e: &CallEdge, target_scopes: &HashSet<&str>) -> bool {
-    use crate::calls::resolve::receiver_is_self_like;
+/// along with the noise. An Elixir module receiver is compared whole, as
+/// Elixir types are keyed by their full module name.
+fn receiver_admits(
+    graph: &CallGraph,
+    e: &CallEdge,
+    target_scopes: &HashSet<&str>,
+    target_modules: &HashSet<String>,
+) -> bool {
+    use crate::calls::resolve::{qn_lang, receiver_is_self_like};
     let Some(recv) = e.receiver.as_deref() else {
         return true;
     };
     if receiver_is_self_like(Some(recv)) {
         return true;
+    }
+    if e.receiver_scope == crate::core::ReceiverScope::Absolute
+        && qn_lang(&e.source) == Some(crate::deps::resolver::Lang::Elixir)
+    {
+        return target_modules.contains(recv) || !graph.type_by_name.contains_key(recv);
     }
     let tail = receiver_tail(recv);
     target_scopes.contains(tail) || !graph.type_by_name.contains_key(tail)

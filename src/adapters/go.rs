@@ -906,6 +906,8 @@ fn _call_site_from_call_go<'a, D: Doc>(node: &Node<'a, D>, src: &[u8]) -> Option
         line,
         kind,
         receiver_scope: ReceiverScope::None,
+        imports: Vec::new(),
+        arity: None,
     })
 }
 

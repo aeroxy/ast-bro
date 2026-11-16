@@ -867,6 +867,8 @@ fn _call_site_from_call_kt<'a, D: Doc>(node: &Node<'a, D>, src: &[u8]) -> Option
         line,
         kind: CallKind::Call,
         receiver_scope: ReceiverScope::None,
+        imports: Vec::new(),
+        arity: None,
     })
 }
 
