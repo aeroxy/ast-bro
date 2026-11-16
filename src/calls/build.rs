@@ -46,8 +46,10 @@ pub fn build_call_graph(root: &Path, deps: &DepGraph) -> CallGraph {
         }
         for (qn, meta) in &fp.types {
             types.insert(qn.clone(), meta.clone());
+            // Keyed like a base below, so a dotted type name is found as
+            // the ancestor of what implements it.
             type_by_name
-                .entry(qn.name().to_string())
+                .entry(normalise_type_name(qn.name()))
                 .or_default()
                 .push(qn.clone());
             for base in &meta.bases {

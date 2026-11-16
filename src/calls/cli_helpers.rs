@@ -48,15 +48,22 @@ pub fn resolve_target_full(calls: &CallGraph, target: &str) -> Vec<ResolvedTarge
     let (file_filter, symbol) = split_file_filter(target);
     let parts: Vec<&str> = symbol.split('.').collect();
 
-    let mut out: Vec<ResolvedTarget> = Vec::new();
+    // Each match with whether it starts at a declaration's name rather than
+    // inside a dotted one: `Shop.Money` names `Shop.Money` in full, and only
+    // ends `Inspect.Shop.Money`.
+    let mut matches: Vec<(ResolvedTarget, bool)> = Vec::new();
     for qn in collect_callable_qns(calls) {
         if let Some(filter) = file_filter {
             if !file_matches(&qn, filter) {
                 continue;
             }
         }
-        if qn_matches(&qn, symbol, &parts) {
-            out.push(ResolvedTarget { qn, kind: SymbolKind::Callable });
+        if let Some(whole) = qn_matches(&qn, symbol, &parts) {
+            let target = ResolvedTarget {
+                qn,
+                kind: SymbolKind::Callable,
+            };
+            matches.push((target, whole));
         }
     }
     for qn in calls.types.keys() {
@@ -65,13 +72,20 @@ pub fn resolve_target_full(calls: &CallGraph, target: &str) -> Vec<ResolvedTarge
                 continue;
             }
         }
-        if qn_matches(qn, symbol, &parts) {
-            out.push(ResolvedTarget {
+        if let Some(whole) = qn_matches(qn, symbol, &parts) {
+            let target = ResolvedTarget {
                 qn: qn.clone(),
                 kind: SymbolKind::Type,
-            });
+            };
+            matches.push((target, whole));
         }
     }
+    let any_whole = matches.iter().any(|(_, whole)| *whole);
+    let mut out: Vec<ResolvedTarget> = matches
+        .into_iter()
+        .filter(|(_, whole)| *whole || !any_whole)
+        .map(|(target, _)| target)
+        .collect();
     out.sort_by(|a, b| a.qn.0.cmp(&b.qn.0));
     out.dedup_by(|a, b| a.qn == b.qn && a.kind == b.kind);
     out
@@ -120,16 +134,42 @@ fn collect_callable_qns(calls: &CallGraph) -> Vec<Qn> {
     s.into_iter().collect()
 }
 
-fn qn_matches(qn: &Qn, raw: &str, parts: &[&str]) -> bool {
+/// `None` when `qn` does not end with the query, else whether the query
+/// starts at the start of a qn segment.
+fn qn_matches(qn: &Qn, raw: &str, parts: &[&str]) -> Option<bool> {
     if qn.0 == raw {
-        return true;
+        return Some(true);
     }
-    let segments: Vec<&str> = qn.0.split("::").collect();
+    // A dotted name (`namespace Shop.Billing`) is one qn segment but one
+    // query part per dot, as `show` reads it. The file stays whole, and so
+    // does a name that is nothing but dots.
+    let mut split = qn.0.split("::");
+    let file = split.next();
+    let segments: Vec<(&str, bool)> = file
+        .into_iter()
+        .map(|f| (f, true))
+        .chain(split.flat_map(|s| {
+            let pieces: Vec<&str> = s.split('.').filter(|p| !p.is_empty()).collect();
+            if pieces.is_empty() {
+                vec![(s, true)]
+            } else {
+                pieces
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, p)| (p, i == 0))
+                    .collect()
+            }
+        }))
+        .collect();
     if parts.len() > segments.len() {
-        return false;
+        return None;
     }
     let start = segments.len() - parts.len();
-    parts.iter().enumerate().all(|(i, p)| segments[start + i] == *p)
+    parts
+        .iter()
+        .enumerate()
+        .all(|(i, p)| segments[start + i].0 == *p)
+        .then_some(segments[start].1)
 }
 
 #[cfg(test)]
