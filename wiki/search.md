@@ -96,7 +96,8 @@ are all a `call` with a `do_block`, told apart only by the macro their target
 names. It gets its own walk (`chunker/elixir.rs`) that recognises definitions
 the way the `map` adapter does — modules are opened, `def`-family clauses are
 callable members, and any other `do`-block macro in a module body (`test`,
-`describe`, `schema`) is a callable member unless its block holds definitions.
+`describe`, `schema`) is a callable member unless its `do` or `else` block
+holds definitions; then it is opened like a module, without a level of its own.
 Adjacent clauses of one name/arity are one outline entry but stay separate
 split points, so a many-clause function still packs into embeddable chunks.
 On the defk project the 6,475-line `compiler.ex` went from one 234 KB chunk to

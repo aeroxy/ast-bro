@@ -40,6 +40,12 @@
 //! with the macro name as its native kind and modifier. That rule runs after
 //! every macro the walk knows, so `defstruct`, `defdelegate` and
 //! `defoverridable` keep their own meaning.
+//!
+//! A definition inside another macro's block at module level (`if
+//! Code.ensure_loaded?(Jason) do def encode… end`, `for … do def … end`)
+//! belongs to the module, so the block is walked as part of the module body,
+//! `else` included. A `quote` block is not: its definitions belong to the
+//! module the macro expands in.
 
 use super::base::{collapse_ws, count_parse_errors, LanguageAdapter};
 use crate::core::{Declaration, DeclarationKind, ImportBinding, ParseResult};
@@ -408,6 +414,23 @@ impl<'s> Walker<'s> {
                 k if _is_def_like(&child, k) => {
                     let p = std::mem::take(&mut pending);
                     self.function_clause(&child, &keyword, p, &mut out.decls, &mut last_fn);
+                }
+                // A block holding definitions (`if … do def …`) adds them
+                // to this module. Its clauses do not fold with the ones
+                // around it, and a `@doc` above it is not theirs.
+                k if k != "quote" && !wrapped_bodies(&child).is_empty() => {
+                    last_fn = None;
+                    pending = Pending::default();
+                    for block in wrapped_bodies(&child) {
+                        let inner = self.walk_body(&block, module_fqn);
+                        out.decls.extend(inner.decls);
+                        out.defines_struct |= inner.defines_struct;
+                        for b in inner.behaviours {
+                            if !out.behaviours.contains(&b) {
+                                out.behaviours.push(b);
+                            }
+                        }
+                    }
                 }
                 // Any other macro call (`test`, `plug`, `defoverridable`, …)
                 // is not a definition; a dangling `@doc` must not leak past
@@ -1022,6 +1045,31 @@ pub(crate) fn definition<'a, D: Doc>(node: &Node<'a, D>) -> Option<Definition> {
     }
 }
 
+/// The bodies of a macro call whose `do` or `else` block holds a definition
+/// directly (`if … do def … else def … end`), in source order; empty when
+/// none does. Such a call wraps definitions rather than being one.
+pub(crate) fn wrapped_bodies<'a, D: Doc>(node: &Node<'a, D>) -> Vec<Node<'a, D>> {
+    if node.kind() != "call" || definition(node).is_some() {
+        return Vec::new();
+    }
+    let Some(block) = node.children().find(|c| c.kind() == "do_block") else {
+        return Vec::new();
+    };
+    let elses: Vec<_> = block
+        .children()
+        .filter(|c| c.kind() == "else_block")
+        .collect();
+    let bodies: Vec<_> = std::iter::once(block).chain(elses).collect();
+    if bodies
+        .iter()
+        .any(|b| b.children().any(|c| definition(&c).is_some()))
+    {
+        bodies
+    } else {
+        Vec::new()
+    }
+}
+
 /// Visibility and modifier of a definition made by `keyword`. A def-like user
 /// macro is its own modifier, so digest shows `[defk]`; it is private when it
 /// reads as the `p` variant of a one-letter macro (`defnp`, `defkp`) — a
@@ -1310,6 +1358,26 @@ mod tests {
         // alias that shadows the stdlib name is the project's module.
         assert_eq!(bases[0], ["GenServer", "Mix.Task"]);
         assert!(bases[1].is_empty(), "{:?}", bases[1]);
+    }
+
+    #[test]
+    fn definitions_in_a_module_level_block_belong_to_the_module() {
+        let r = parse(
+            "defmodule A do\n  @doc \"not theirs\"\n  if c() do\n    def f(x), do: x\n  else\n    def f(_), do: nil\n  end\n  unless c(), do: (defp g, do: 1)\n  for n <- [:a] do\n    def unquote(n)(), do: 1\n  end\n  quote do\n    def injected, do: 1\n  end\n  if c() do\n    :no_definitions\n  end\nend\n",
+        );
+        let a = &r.declarations[0];
+        let got: Vec<(&str, usize)> = a
+            .children
+            .iter()
+            .map(|d| (d.signature.as_str(), d.start_line))
+            .collect();
+        // Both branches, each its own entry; not the keyword-form `unless`
+        // (no `do` block), nor the `quote`.
+        assert_eq!(
+            got,
+            vec![("def f(x)", 4), ("def f(_)", 6), ("def unquote(n)()", 10)]
+        );
+        assert!(a.children[0].docs.is_empty(), "{:?}", a.children[0].docs);
     }
 
     #[test]

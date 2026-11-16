@@ -19,9 +19,10 @@
 //! - Any other macro call with a `do` block directly in a module body (`test`,
 //!   `describe`, `setup`, `schema`) is a callable member too, so a test module
 //!   splits per test. One whose block holds definitions (`if … do def …`,
-//!   `for … do def …`) is a wrapper instead, opened without a level of its own.
+//!   `for … do def …`, an `else` too) is a wrapper instead, opened without a
+//!   level of its own.
 use super::*;
-use crate::adapters::elixir::{definition, Definition};
+use crate::adapters::elixir::{definition, wrapped_bodies, Definition};
 use ast_grep_core::{Doc, Node};
 
 /// What one form in a body is to the member walk.
@@ -72,11 +73,11 @@ fn form_of<D: Doc>(node: &Node<'_, D>, source: &str) -> Form {
     {
         return Form::Other;
     }
-    let Some(block) = do_block(node) else {
-        return Form::Other;
-    };
-    if block.children().any(|c| definition(&c).is_some()) {
-        Form::Wrapper
+    if !wrapped_bodies(node).is_empty() {
+        return Form::Wrapper;
+    }
+    if do_block(node).is_none() {
+        Form::Other
     } else {
         Form::Block {
             signature: signature_of(node, source),
@@ -174,9 +175,11 @@ pub(super) fn collect_split_points<D: Doc>(
                 true
             }
             Form::Wrapper => {
-                if let Some(block) = do_block(&child).filter(|_| !d.exhausted()) {
+                if !d.exhausted() {
                     let next = d.into_child(range.end.saturating_sub(range.start));
-                    collect_split_points(&block, source, plan, trail, next);
+                    for block in wrapped_bodies(&child) {
+                        collect_split_points(&block, source, plan, trail, next);
+                    }
                 }
                 false
             }
@@ -270,8 +273,8 @@ mod tests {
 
     #[test]
     fn a_wrapper_holding_definitions_is_opened_not_listed() {
-        let src = "defmodule A do\n  if true do\n    def g, do: 1\n  end\n  test \"t\" do\n    if x do\n      :ok\n    end\n  end\nend\n";
+        let src = "defmodule A do\n  if true do\n    def g, do: 1\n  else\n    def h, do: 2\n  end\n  test \"t\" do\n    if x do\n      :ok\n    end\n  end\nend\n";
         let sigs: Vec<String> = members(src).into_iter().map(|(_, s)| s).collect();
-        assert_eq!(sigs, vec!["defmodule A", "def g", "test \"t\""]);
+        assert_eq!(sigs, vec!["defmodule A", "def g", "def h", "test \"t\""]);
     }
 }
