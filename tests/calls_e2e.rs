@@ -752,6 +752,56 @@ public class Greeter {
 }
 
 #[test]
+fn csharp_dotted_namespace_matches_segment_by_segment() {
+    // `namespace Shop.Billing` is two scopes, the way the query is split:
+    // `Billing.Pricing.Tax` must find the method like `Pricing.Tax` does.
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(
+        &root.join("src/Pricing.cs"),
+        r#"
+namespace Shop.Billing
+{
+    public class Pricing
+    {
+        public int Sum(int x) { return Tax(x); }
+        public int Tax(int x) { return x; }
+    }
+}
+"#,
+    );
+    let (out, code) = run_in(root, &["callers", "Billing.Pricing.Tax", ".", "--rebuild"]);
+    assert_eq!(code, 0, "callers exited non-zero: {}", out);
+    assert!(out.contains("Sum"), "expected `Sum` in callers, got:\n{}", out);
+}
+
+#[test]
+fn csharp_dotted_query_prefers_the_type_it_names_in_full() {
+    // `Billing.Pricing` names `namespace Billing`'s class; the classes in
+    // `Shop.Billing` and `Other.Billing` only end with those parts.
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(
+        &root.join("src/Pricing.cs"),
+        r#"
+namespace Shop.Billing { public class Pricing { } }
+namespace Other.Billing { public class Pricing { } }
+namespace Billing
+{
+    public class Pricing { }
+    public class Use { public object A() { return new Pricing(); } }
+}
+"#,
+    );
+    let (out, code) = run_in(root, &["callers", "Billing.Pricing", ".", "--rebuild"]);
+    assert_eq!(code, 0, "callers exited non-zero: {}", out);
+    assert_eq!(out.matches("construction(s) of").count(), 1, "one type expected:\n{}", out);
+    // The class in a dotted namespace is found by its full name.
+    let (out, _) = run_in(root, &["callers", "Shop.Billing.Pricing", "."]);
+    assert_eq!(out.matches("construction(s) of").count(), 1, "{}", out);
+}
+
+#[test]
 fn kotlin_callers_finds_intra_file_caller() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path();
