@@ -32,7 +32,8 @@
 //! name/arity that sit next to each other are folded into a single entry
 //! spanning every clause. `@doc` / `@moduledoc` become docs, `@spec`,
 //! `@impl` and `@deprecated` ride as `attrs` on the next definition, and
-//! `@behaviour` lands in the module's `bases` so `implements` can follow it.
+//! `@behaviour` lands in the module's `bases` so `implements` can follow it,
+//! as does the behaviour a stdlib `use` declares (`use GenServer`).
 //!
 //! A user macro named `def[a-z_]*` (defk's `defk`, Nx's `defn`) whose first
 //! argument is a function head and which has a body defines a function too,
@@ -174,6 +175,19 @@ const TYPESPEC_ATTRS: &[&str] = &[
     "macrocallback",
 ];
 
+/// Modules whose `use` declares the module itself as a behaviour of the
+/// user (`@behaviour GenServer`), checked against Elixir 1.20. `use Agent`
+/// and `use Task` declare none, and a project module's `__using__` cannot
+/// be seen from here.
+const USE_BEHAVIOURS: &[&str] = &[
+    "GenServer",
+    "Supervisor",
+    "DynamicSupervisor",
+    "Application",
+    "Mix.Task",
+    "Mix.Task.Compiler",
+];
+
 /// Attributes that annotate the *next* definition rather than declaring a
 /// module attribute of their own.
 const ANNOTATION_ATTRS: &[&str] = &["spec", "impl", "deprecated"];
@@ -313,7 +327,10 @@ impl<'s> Walker<'s> {
                     }
                     "behaviour" | "behavior" => {
                         if let Some(v) = &value {
-                            out.behaviours.push(_text(v));
+                            let b = _text(v);
+                            if !out.behaviours.contains(&b) {
+                                out.behaviours.push(b);
+                            }
                         }
                     }
                     a if ANNOTATION_ATTRS.contains(&a) => {
@@ -374,6 +391,16 @@ impl<'s> Walker<'s> {
                 }
                 "alias" | "import" | "require" | "use" => {
                     self.import(&child, &keyword, module_fqn);
+                    if keyword == "use" {
+                        let used = _named_args(&child)
+                            .first()
+                            .map(|m| self.expand(&_text(m), module_fqn));
+                        if let Some(b) = used.filter(|m| USE_BEHAVIOURS.contains(&m.as_str())) {
+                            if !out.behaviours.contains(&b) {
+                                out.behaviours.push(b);
+                            }
+                        }
+                    }
                 }
                 // A user macro that defines a function the way `def` does
                 // (`defk`, Nx's `defn`). Last, so it never shadows a macro
@@ -1271,6 +1298,18 @@ mod tests {
                 ("GenServer", "GenServer", 6),
             ]
         );
+    }
+
+    #[test]
+    fn stdlib_use_declares_a_behaviour() {
+        let r = parse(
+            "defmodule A do\n  use GenServer\n  @behaviour GenServer\n  use Agent\n  use Mix.Task\nend\ndefmodule B do\n  alias My.GenServer\n  use GenServer\nend\n",
+        );
+        let bases: Vec<&[String]> = r.declarations.iter().map(|d| d.bases.as_slice()).collect();
+        // Once, however often it is declared; `Agent` declares none; an
+        // alias that shadows the stdlib name is the project's module.
+        assert_eq!(bases[0], ["GenServer", "Mix.Task"]);
+        assert!(bases[1].is_empty(), "{:?}", bases[1]);
     }
 
     #[test]
