@@ -89,7 +89,7 @@ cargo install ast-bro
 - **File shape** — `map` / `digest` / `show` for signatures with line ranges (95% token savings vs reading full files)
 - **True public API** — `surface` resolves re-export graphs across Rust, Python, TypeScript, and more
 - **Dependency graph** — `deps` / `reverse-deps` / `cycles` / `graph` for import analysis
-- **Call graph** — `callers` / `callees` with AST accuracy across 14 languages
+- **Call graph** — `callers` / `callees` with AST accuracy across 14 languages (not Elixir yet)
 - **Semantic search** — hybrid BM25 + dense embeddings via `search` and `find-related`
 - **Structural rewrite** — `run` for AST-aware pattern matching with metavariables (find + replace)
 - **MCP server** — every command exposed as an MCP tool for LLM agents

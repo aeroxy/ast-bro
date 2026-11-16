@@ -28,7 +28,7 @@ Modern agentic coding tools explore codebases by reading files directly. That's 
 1. **Shape over bytes.** `map` / `digest` / `show` give you signatures and line ranges instead of method bodies — typically a **95% token saving** vs reading the file. `implements` finds subclasses with AST accuracy, no `grep` false positives.
 2. **Published API in one call.** `surface` resolves `pub use` re-exports (Rust), `__all__` (Python), barrel files (TypeScript), `export` clauses (Scala) so you see the surface a downstream user actually sees — not the union of every public item per file.
 3. **Dependency graph for free.** `deps` / `reverse-deps` / `cycles` / `graph` build a file-level import graph (Rust, Python, TS/JS, Java, C#, Kotlin, Scala, Go) cached at `.ast-bro/graph/`. Use `reverse-deps` before refactoring to know the blast radius. `cycles` exits non-zero — wire it into a CI gate. `graph` emits the full dependency graph (text by default, `--json` for JSON).
-4. **Symbol-level call graph.** `callers` / `callees` answer "who calls X" and "what does X call" with AST accuracy across all 14 languages — no `grep` false positives on overloaded names, comments, or string literals. Both are kind-aware: ask for a function and you get call-sites; ask for a type and you get implementors / constructions / ancestors. A three-pass resolver (same-file → global symbol table → dep-graph disambiguation) tags every edge `Exact` / `Inferred` / `Ambiguous` so you can filter by precision. `trace <FROM> <TO>` walks the shortest static call path between two symbols, inlining each hop's body — "how does X reach Y?" answered in one call instead of chaining `callees`. Same on-disk cache as the dep graph.
+4. **Symbol-level call graph.** `callers` / `callees` answer "who calls X" and "what does X call" with AST accuracy across 14 languages (every supported language but Elixir) — no `grep` false positives on overloaded names, comments, or string literals. Both are kind-aware: ask for a function and you get call-sites; ask for a type and you get implementors / constructions / ancestors. A three-pass resolver (same-file → global symbol table → dep-graph disambiguation) tags every edge `Exact` / `Inferred` / `Ambiguous` so you can filter by precision. `trace <FROM> <TO>` walks the shortest static call path between two symbols, inlining each hop's body — "how does X reach Y?" answered in one call instead of chaining `callees`. Same on-disk cache as the dep graph.
 5. **Hybrid semantic search.** `search` runs BM25 + dense embeddings via [`potion-code-16M`](https://huggingface.co/minishlab/potion-code-16M) (a static, no-inference model — ~64 MB, runs on CPU in microseconds). `find-related` returns chunks structurally similar to one you already have, with a dep-graph-aware boost when a graph cache exists.
 6. **Blast radius in one shot.** `impact <symbol>` combines callers, callees, file-level deps, file-level reverse-deps, transitive callers at `--depth N`, and test-file detection into one "what would break?" report — replaces a chain of four round-trips with a single call. Four `--mode` variants: `all` (default), `deps`, `dependents`, `tests`. `--tests` / `--exclude-tests` narrow the filter. Works for both callables and types.
 7. **Token-budgeted context.** `context <symbol> --budget N` packs "everything an LLM needs to understand this symbol" into a caller-supplied token budget: target body first, then direct callees (bodies while budget permits, signatures otherwise), direct callers (signatures), transitive callees/callers at depth 2 (signatures only). For types: type body, implementors, methods, callers-of-methods. Flags `truncated` when budget ran short and `target_omitted` when even the target body didn't fit. Same data as four or five `show`/`callers`/`callees` calls, one round-trip, budget-bounded.
@@ -221,7 +221,7 @@ ast-bro cycles                      # find import cycles via Tarjan SCC
 ast-bro graph .                     # full dependency graph (text)
 ast-bro graph . --json              # same, as JSON (ast-bro.graph.v1)
 
-# Call graph: who calls X, what does X call (AST-accurate, all 14 langs)
+# Call graph: who calls X, what does X call (AST-accurate, 14 langs, not Elixir yet)
 ast-bro callers TakeDamage              # function/method: in-edges
 ast-bro callers --tests TakeDamage      # same, only test files
 ast-bro callers --hide-ambiguous TakeDamage  # drop ambiguous call edges
@@ -685,7 +685,7 @@ The four commands are also exposed as MCP tools for agents. For internals (suffi
 
 ## Call graph
 
-`ast-bro callers` and `ast-bro callees` answer "who calls X" and "what does X call" with AST accuracy across all 14 languages. They replace `grep` for refactor blast-radius assessment — no false positives on overloaded names, comments, or string literals.
+`ast-bro callers` and `ast-bro callees` answer "who calls X" and "what does X call" with AST accuracy across 14 languages (every supported language but Elixir). They replace `grep` for refactor blast-radius assessment — no false positives on overloaded names, comments, or string literals.
 
 ```bash
 ast-bro callers TakeDamage              # function/method: in-edges
