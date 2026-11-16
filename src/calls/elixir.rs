@@ -174,12 +174,18 @@ fn external(name: &str) -> (CallTarget, Confidence, Vec<Qn>) {
     )
 }
 
-/// The module a qn sits in: its segments between the file and the name. A
-/// script's top-level function is in no module, `""`.
+/// The module a qn sits in: its segments between the file and the name,
+/// without an ExUnit `describe …` level. A script's top-level function is in
+/// no module, `""`.
 pub(crate) fn module_of(qn: &Qn) -> String {
     let segments: Vec<&str> = qn.0.split("::").collect();
     if segments.len() < 3 {
         return String::new();
     }
-    segments[1..segments.len() - 1].join(".")
+    segments[1..segments.len() - 1]
+        .iter()
+        .filter(|s| !s.contains(' '))
+        .copied()
+        .collect::<Vec<_>>()
+        .join(".")
 }
