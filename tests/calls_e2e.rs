@@ -857,6 +857,22 @@ defmodule Shop.Cart do
 end
 "#,
     );
+    write(
+        &root.join("test/cart_test.exs"),
+        r#"
+defmodule Shop.CartTest do
+  use ExUnit.Case
+
+  describe "Shop.Cart.total/1" do
+    test "sums the lines" do
+      assert Shop.Cart.total(cart()) == 3
+    end
+  end
+
+  defp cart, do: %{lines: [1, 2]}
+end
+"#,
+    );
     tmp
 }
 
@@ -977,6 +993,30 @@ fn elixir_trace_follows_an_alias_and_a_capture() {
     assert_eq!(code, 0, "trace exited non-zero: {}", out);
     assert!(out.contains("Shop.Pricing::sum"), "no path through `sum`:\n{}", out);
     assert!(out.contains("Shop.Pricing::add"), "capture not followed:\n{}", out);
+}
+
+#[test]
+fn elixir_test_callers_name_the_test() {
+    // A test inside `describe "Shop.Cart.total/1"` sits in `Shop.CartTest`:
+    // the dotted label is not split into modules.
+    let tmp = elixir_project();
+    let (out, code) = run_in(
+        tmp.path(),
+        &["callers", "Cart.total", ".", "--tests", "--rebuild"],
+    );
+    assert_eq!(code, 0, "callers exited non-zero: {}", out);
+    assert!(
+        out.contains("test Shop.Cart.total/1 sums the lines"),
+        "expected the test as a caller, got:\n{}",
+        out
+    );
+    // And its bare call to a helper of the test module binds there.
+    let (out, _) = run_in(tmp.path(), &["callers", "CartTest.cart", ".", "--tests"]);
+    assert!(
+        out.contains("sums the lines"),
+        "helper call not bound:\n{}",
+        out
+    );
 }
 
 #[test]
