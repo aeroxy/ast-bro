@@ -9,7 +9,7 @@
 //!      single entry spanning all of them while other arities stay apart.
 //!   3. `@doc` / `@moduledoc` become docs, `@doc false` marks `[hidden]`,
 //!      and `@spec` / `@impl` / `@deprecated` attach to the next definition.
-//!   4. `@behaviour` and `defimpl` feed `implements`.
+//!   4. `@behaviour`, a stdlib `use` and `defimpl` feed `implements`.
 //!   5. A `.exs` script with top-level code parses.
 //!   6. A user macro named `def…` (Nx's `defn`) with a
 //!      function head and a body is a function, its macro name the modifier;
@@ -261,6 +261,11 @@ fn behaviour_and_defimpl_feed_implements() {
     assert!(
         s.contains("Billing.Account"),
         "@behaviour not followed:\n{s}"
+    );
+    let s = run(&["implements", "GenServer", DIR]);
+    assert!(
+        s.contains("Billing.Account"),
+        "`use GenServer` not followed:\n{s}"
     );
     let s = run(&["implements", "Printable", DIR]);
     assert!(
