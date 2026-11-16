@@ -3,6 +3,8 @@
 //! while the symbol-resolution logic has one home.
 
 use crate::calls::graph::{CallGraph, Qn};
+use crate::calls::resolve::qn_lang;
+use crate::deps::resolver::Lang;
 use std::collections::BTreeSet;
 
 /// What a resolved target qn refers to. Lets the caller dispatch to either
@@ -52,7 +54,13 @@ pub fn resolve_target_full(calls: &CallGraph, target: &str) -> Vec<ResolvedTarge
     // inside a dotted one: `Shop.Money` names `Shop.Money` in full, and only
     // ends `Inspect.Shop.Money`.
     let mut matches: Vec<(ResolvedTarget, bool)> = Vec::new();
-    for qn in collect_callable_qns(calls) {
+    // An Elixir struct literal's edge targets its module, which is a type.
+    // Elsewhere a function and a type may share a qn (PHP `function Foo`
+    // beside `class Foo`), and both are matched.
+    for qn in collect_callable_qns(calls)
+        .into_iter()
+        .filter(|q| !(calls.types.contains_key(q) && qn_lang(q) == Some(Lang::Elixir)))
+    {
         if let Some(filter) = file_filter {
             if !file_matches(&qn, filter) {
                 continue;

@@ -1000,6 +1000,8 @@ fn _call_site_from_call_scala<'a, D: Doc>(
         line,
         kind,
         receiver_scope: ReceiverScope::None,
+        imports: Vec::new(),
+        arity: None,
     })
 }
 
@@ -1028,6 +1030,8 @@ fn _call_site_from_instance<'a, D: Doc>(
                     line,
                     kind: CallKind::Construct,
                     receiver_scope: ReceiverScope::None,
+                    imports: Vec::new(),
+                    arity: None,
                 });
             }
         }

@@ -15,7 +15,7 @@ Both directions are inverses on their respective graphs. Diamond inheritance is 
 
 That section is only as good as the name it keys on, so three things bound it (all in `traverse.rs` / `render.rs`):
 
-- **Receiver check** — a receiver naming a *project type* other than the target's own enclosing type drops the edge. This is pass A's rule applied one layer later; receivers that are locals, parameters, or external types are kept, because rejecting on an untypeable name would drop the real `connection.close()` sites along with the noise.
+- **Receiver check** — a receiver naming a *project type* other than the target's own enclosing type drops the edge. This is pass A's rule applied one layer later; receivers that are locals, parameters, or external types are kept, because rejecting on an untypeable name would drop the real `connection.close()` sites along with the noise. An Elixir module receiver is compared as the full module name (`MyApp.Repo`), since Elixir types are keyed by it; its last segment alone would match no type and keep the edge.
 - **Discrimination gate** — `name_declarers` counts how many project symbols declare the target's terminal name. Past `render::MAX_DECLARERS_TO_LIST` (3) the rows are withheld in favour of a one-line count that states the reason, because the sites are then evidence about every declarer equally: `callers CliError.new` in this repo would otherwise print a sample of the 1020 `Vec::new()` / `String::new()` call sites, and `callers PgConnection.close` on pgjdbc a sample of 1124 (39 symbols declare `close`). JSON carries `unattributed_declarers` and `unattributed_suppressed` so a consumer can't read the total as a caller count either.
 - **Own sample cap, strongest first** — the section takes `min(--limit, 25)` rows rather than whatever budget the resolved hits left over (a badly-resolved target would otherwise earn *more* screen), ordered by ambiguity breadth ascending, and each row shows the receiver as written (`recv=os`) — the one triage signal available without type inference.
 
@@ -125,6 +125,7 @@ src/calls/
 │                   build ↔ resolve cycle — `ast-bro cycles src/calls/`
 │                   was flagging it)
 ├── build.rs        per-file extraction + FilePass aggregation
+├── elixir.rs       Elixir calls without a module receiver, by module
 ├── resolve.rs      three-pass resolver:
 │                     run = build_symbol_table → run_with_table
 │                   + resolve_scoped for scope receivers
@@ -178,7 +179,7 @@ pub struct ImportBinding {
 
 ## Three-pass resolver
 
-The single biggest source of grep noise is homonyms — `helper`, `init`, `parse`, `validate` exist in dozens of files. The three passes attack the problem in increasing order of cost:
+The single biggest source of grep noise is homonyms — `helper`, `init`, `parse`, `validate` exist in dozens of files. The three passes attack the problem in increasing order of cost. (Elixir names its call targets statically, so its edges skip them: a module receiver is a [scope receiver](#scope-receivers), and `elixir.rs` looks the other calls up by module. Its types and their bases are indexed by full module name, since `Shop.Repo` and `Ecto.Repo` are two modules; other languages index them by last segment, #77. A one-segment Elixir module and another language's type can share that key, so an Elixir type pairs only with Elixir code as an implementor, ancestor or construction.)
 
 ### Pass A — same-file
 
@@ -212,7 +213,7 @@ This mirrors `code-review-graph`'s `resolve_bare_call_targets` but uses the rich
 
 ### Scope receivers
 
-An adapter sets `CallSite::receiver_scope` when its language makes clear that the receiver is a scope — a module, class or namespace — and not a value. Today that is Ruby's CamelCase constant paths; an all-caps constant may hold a value (`DEFAULT_PARSER.parse`), so it is left out. Passes B and C match by name and ignore the receiver, so they used to bind `File.join()` to whatever project `join` the caller's file can reach. A scope-receiver edge therefore takes this rule instead of passes A and B, whether its scope is in the caller's file or another; pass C only narrows candidates that are already in the scope.
+An adapter sets `CallSite::receiver_scope` when its language makes clear that the receiver is a scope — a module, class or namespace — and not a value. Today that is Ruby's CamelCase constant paths, and Elixir's module receivers, which the adapter expands to the full module; a Ruby all-caps constant may hold a value (`DEFAULT_PARSER.parse`), so it is left out. Passes B and C match by name and ignore the receiver, so they used to bind `File.join()` to whatever project `join` the caller's file can reach. A scope-receiver edge therefore takes this rule instead of passes A and B, whether its scope is in the caller's file or another; pass C only narrows candidates that are already in the scope.
 
 An `Absolute` receiver (`::File.join`) names its path from the top level. A `Lexical` one (`Shop::Pricing.price`) is looked up from the caller's scope outward, one `::` segment of the caller's qualified name at a time, as Ruby and C++ look up a name. Both kinds are matched against every scope that the caller's language declares (`resolve::scope_paths`): each type, each namespace (a Ruby `module`), and each declaration that encloses a callable. A Ruby `User` never binds to a TypeScript `User`. One dotted declaration is one scope: a declaration named `Shop.Cart` declares `Shop::Cart`, not `Shop`. Then:
 
@@ -222,7 +223,7 @@ An `Absolute` receiver (`::File.join`) names its path from the top level. A `Lex
 - The caller's language declares no such scope → `External("File.join")`. These are the only edges the resolver marks external.
 - Exception: a `Lexical` receiver whose scope is not found, while the caller's language declares a scope whose path ends with the receiver path (`Jekyll::Utils` for `Utils`) → `Bare`. Ruby also finds a constant through ancestors (`include Jekyll`), which this lookup does not walk, and the method may be inherited, so the scope need not define it.
 
-Every other adapter sets `None`, so its calls stay name-matched. That includes Java-style `File.join()`, where the grammar cannot tell a type from a value.
+Ruby and Elixir set a scope marker only on module receivers. Every other adapter sets `None`, so its calls stay name-matched. That includes Java-style `File.join()`, where the grammar cannot tell a type from a value.
 
 The incremental update applies the same `resolve::resolve_scoped` to every scope-receiver edge, resolved and external ones included, because a later delta can define the scope or a nearer one.
 
@@ -255,10 +256,11 @@ Every adapter that emits `Declaration`s now also emits `Declaration::calls`. Eac
 | Go         | `call_expression` | none (`new(T)` is just a regular call) | `selector_expression` for receivers |
 | PHP        | `function_call_expression`, `member_call_expression`, `nullsafe_member_call_expression`, `scoped_call_expression`, `object_creation_expression` | `new T()` (last `\` segment of qualified type) | `\Foo\bar()` namespace-prefixed free function drops the namespace and emits the bare name with `receiver: None` so pass B promotes it; `self::` / `static::` / `parent::` keywords drop receiver (case-folded by tree-sitter-php's `keyword()` helper); dynamic `$func()` and `new $cls()` return `None` |
 | Ruby       | `call` (with `method` / `receiver` fields) | `Foo.new` (constant receiver) | tree-sitter-ruby 0.23.1 unifies all call shapes — `obj.method()`, `obj.method "x"`, `puts "hello"`, `Greeter.shout` — under the single `call` kind. Walker deliberately does **not** bail on `block` / `do_block` (closures over the enclosing method's scope, not separate methods). A CamelCase constant receiver sets `receiver_scope` |
+| Elixir     | `call` (target `identifier` or `dot`), `\|>` into a bare `identifier`, `&name/arity` captures, `map` with a `struct` | `%Mod{}` (the expanded module, resolved by its full name) | receivers expanded to the full module (`Pricing.sum` → `Shop.Pricing`) and marked `Absolute`; a bare call records the modules imported where it is (an `import` or `alias` ends with its block, `only:`/`except:` select by name and arity, `only: :functions`/`:macros` by kind, a module imported again replaces its earlier import, and `except:` alone filters it per kind, bringing in minus `except:` a kind it did not import); a call from outside a module, through an import or a module receiver, takes only its public definitions, and a `defguard` counts as a macro; a call, bare or remote, takes only a definition that accepts its argument count, default arguments included; a Kernel macro (`if`) is a call where `import Kernel, except:` leaves it to another import; a pattern (`%Mod{} = x`, a clause head) is not a call site, but its guard and a `receive` timeout are; control flow, definitions and directives are not call sites, but their contents are walked; a `quote` contributes only its `unquote`s; `map.key` is a field read |
 | SQL        | n/a — no-op by design | — | — |
 | Markdown   | n/a — no-op by design | — | — |
 
-**Elixir** files are in the dep graph but kept out of the call graph (`extract_file` returns `None` for them): the adapter records no call sites yet, and an Elixir function with no known callers must not read as a real answer. JavaScript is served by the TypeScript adapter.
+Languages still emitting empty `Declaration::calls`: **none.** JavaScript is served by the TypeScript adapter.
 
 ### Known per-language limitations
 
@@ -270,11 +272,12 @@ Every adapter that emits `Declaration`s now also emits `Declaration::calls`. Eac
 - **Ruby**: the scope marker follows a naming convention, not syntax. A CamelCase constant can hold a value (`TimeoutMutex = Thread::Mutex.new`), and a call on it is then marked like a call on a module.
 - **Ruby**: all-caps modules (`JSON.parse`, `CSV.read`, `URI.join`) and `Foo.new` are not marked, so they stay name-matched.
 - **Python**: no Jedi-style receiver-type inference. `obj.method()` where `obj`'s type is inferred from runtime flow falls through to pass B/C; the bare-name + import-disambiguation pass gets most callers. Adding Jedi would mean a Python runtime dep — same trade-off doesn't fit a Rust binary.
+- **Elixir**: a paren-less zero-argument call (`helper`) is an `identifier`, as in Ruby. Calls injected by `use Foo` and `apply/3` are not seen, and module-level code belongs to no function. A nested `defmodule __MODULE__.Sub` or `defmodule Elixir.Top`, and a `defimpl` inside a module, sit under the enclosing module in their qns, so a call into one from outside stays external. After `import Foo, only: [name: 1]`, an `except:` re-import does not bring in the kind that the list did not name, because the adapter cannot tell a function from a macro by name. In `defimpl P, for: [A, B]`, the body is walked once as `P.A`, so a `__MODULE__.helper(x)` in it binds `P.B`'s call to `P.A.helper`.
 - **External-base ancestor walk** (`callees` on a type): capped at depth 1 when a base type doesn't resolve to a project file. Can't walk into types we can't see.
 
 ## Unified graph cache
 
-The call graph does **not** get its own cache file. It rides inside a unified `UnifiedGraph { deps, calls: Option<CallGraph> }` at `.ast-bro/deps/graph.bin`. The schema constant is `JSON_SCHEMA_GRAPH_INDEX = "ast-bro.graph-index.v3"`. (The directory keeps its `deps/` name even though it now holds the call graph too — renaming would force every existing user to rebuild from a new path for no benefit.)
+The call graph does **not** get its own cache file. It rides inside a unified `UnifiedGraph { deps, calls: Option<CallGraph> }` at `.ast-bro/deps/graph.bin`. The schema constant is `JSON_SCHEMA_GRAPH_INDEX = "ast-bro.graph-index.v4"`. (The directory keeps its `deps/` name even though it now holds the call graph too — renaming would force every existing user to rebuild from a new path for no benefit.)
 
 ### Disk layout
 
@@ -322,7 +325,7 @@ The legacy `deps-index.v1` cache (at `.ast-bro/deps/graph.bin`) was retired in t
 
 The schema bump from `ast-outline.graph-index.v1` to `v2` happened mid-development to fix a silent bincode round-trip bug — `#[serde(skip_serializing_if)]` on `DepEdge::local_name` / `raw_path` and `CallEdge::receiver` / `candidates` corrupts bincode's positional encoding (a skipped Option/Vec field shifts every byte that follows). The skip annotations were a JSON-output ergonomics holdover that never applied to the cache; binary positional formats *require* every field to be encoded. Removed the annotations, bumped the schema, and any v1 cache files (which were all corrupt and silently re-cold-built every invocation) get a clean rebuild.
 
-The `ast-bro.` name restarted at `graph-index.v1`. `ast-bro.graph-index.v2` adds `CallEdge::receiver_scope` and `CallGraph::namespaces`, and an older cache rebuilds once. `v3` adds Elixir files to the dep graph: a v2 cache already fingerprints `.ex` files, so without the bump nothing reads as changed and every Elixir file stays out until `--rebuild`.
+The `ast-bro.` name restarted at `graph-index.v1`. `ast-bro.graph-index.v2` adds `CallEdge::receiver_scope` and `CallGraph::namespaces`, and an older cache rebuilds once. `v3` adds Elixir files to the dep graph: a v2 cache already fingerprints `.ex` files, so without the bump nothing reads as changed and every Elixir file stays out until `--rebuild`. `v4` adds Elixir files to the call graph, for the same reason: a v3 cache holds them with no call sites.
 
 ### Per-file invalidation
 

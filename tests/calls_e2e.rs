@@ -776,6 +776,20 @@ namespace Shop.Billing
 }
 
 #[test]
+fn php_function_named_like_a_class_keeps_its_callers() {
+    // The function `Foo` and the class `Foo` share a qn; both are queried.
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(
+        &root.join("php/foo.php"),
+        "<?php\nfunction Foo() { return 1; }\nclass Foo { public function bar() {} }\nfunction g() { Foo(); }\nfunction h() { $x = new Foo(); }\n",
+    );
+    let (out, code) = run_in(root, &["callers", "php/foo.php:Foo", ".", "--rebuild"]);
+    assert_eq!(code, 0, "{}", out);
+    assert!(out.contains("php/foo.php::g  (Exact)"), "{}", out);
+}
+
+#[test]
 fn csharp_dotted_query_prefers_the_type_it_names_in_full() {
     // `Billing.Pricing` names `namespace Billing`'s class; the classes in
     // `Shop.Billing` and `Other.Billing` only end with those parts.
@@ -799,6 +813,1177 @@ namespace Billing
     // The class in a dotted namespace is found by its full name.
     let (out, _) = run_in(root, &["callers", "Shop.Billing.Pricing", "."]);
     assert_eq!(out.matches("construction(s) of").count(), 1, "{}", out);
+}
+
+/// An Elixir project: `Shop.Pricing` is reached through an alias, `Shop.Util`
+/// through an import, and `Shop.Other` defines homonyms of Kernel and local
+/// names that no call may bind to.
+fn elixir_project() -> tempfile::TempDir {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(&root.join("mix.exs"), "defmodule Shop.MixProject do\nend\n");
+    write(
+        &root.join("lib/shop/pricing.ex"),
+        r#"
+defmodule Shop.Pricing do
+  defstruct [:total]
+
+  def sum(lines), do: Enum.reduce(lines, 0, &add/2)
+  defp add(x, acc), do: x + acc
+end
+"#,
+    );
+    write(
+        &root.join("lib/shop/util.ex"),
+        "defmodule Shop.Util do\n  def fmt(x), do: x\nend\n",
+    );
+    write(
+        &root.join("lib/shop/other.ex"),
+        "defmodule Shop.Other do\n  def elem(_, _), do: :no\n  def total(_), do: :no\nend\n",
+    );
+    write(
+        &root.join("lib/shop/cart.ex"),
+        r#"
+defmodule Shop.Cart do
+  alias Shop.Pricing
+  import Shop.Util
+
+  def total(cart) do
+    sum = Pricing.sum(cart.lines)
+    fmt(elem({sum}, 0))
+  end
+
+  def checkout(cart), do: %Pricing{total: total(cart)}
+end
+"#,
+    );
+    tmp
+}
+
+#[test]
+fn elixir_callers_finds_intra_file_caller() {
+    let tmp = elixir_project();
+    let (out, code) = run_in(tmp.path(), &["callers", "Cart.total", ".", "--rebuild"]);
+    assert_eq!(code, 0, "callers exited non-zero: {}", out);
+    assert!(out.contains("Shop.Cart::checkout"), "expected `checkout`, got:\n{}", out);
+}
+
+#[test]
+fn elixir_callers_survives_a_long_operator_chain() {
+    let tmp = tempfile::tempdir().unwrap();
+    let chain = vec!["\"a\""; 20_000].join(" <> ");
+    write(
+        &tmp.path().join("lib/chain.ex"),
+        &format!("defmodule Chain do\n  def s, do: {chain} <> t()\n  def t, do: 1\nend\n"),
+    );
+    let (out, code) = run_in(tmp.path(), &["callers", "t", ".", "--rebuild"]);
+    assert_eq!(code, 0, "callers exited non-zero: {}", out);
+    assert!(out.contains("Chain::s"), "expected `s`, got:\n{}", out);
+}
+
+#[test]
+fn elixir_callees_lists_construct_and_remote_call() {
+    // The alias is expanded, the import followed, and a stdlib or Kernel
+    // call is external — never the project's homonym in `Shop.Other`.
+    let tmp = elixir_project();
+    let (out, code) = run_in(tmp.path(), &["callees", "Cart.total", ".", "--rebuild"]);
+    assert_eq!(code, 0, "callees exited non-zero: {}", out);
+    assert!(out.contains("Shop.Pricing::sum"), "alias not followed:\n{}", out);
+    assert!(out.contains("Shop.Util::fmt"), "import not followed:\n{}", out);
+    assert!(out.contains("[external] elem"), "Kernel call not external:\n{}", out);
+    assert!(!out.contains("Shop.Other::"), "bound to a homonym:\n{}", out);
+    // `cart.lines` reads a field; it is not a call.
+    assert!(!out.contains("lines"), "field access taken for a call:\n{}", out);
+
+    let (out, _) = run_in(tmp.path(), &["callees", "Pricing.sum", "."]);
+    assert!(out.contains("[external] Enum.reduce"), "{}", out);
+    assert!(out.contains("Shop.Pricing::add"), "capture not a call:\n{}", out);
+
+    let (out, _) = run_in(tmp.path(), &["callers", "Shop.Pricing", "."]);
+    assert!(out.contains("checkout"), "struct literal not a construction:\n{}", out);
+}
+
+#[test]
+fn elixir_callees_follow_pipes_delegates_and_relative_names() {
+    let tmp = tempfile::tempdir().unwrap();
+    write(
+        &tmp.path().join("lib/calc.ex"),
+        r#"
+defmodule Shop.Calc do
+  require Shop.Macros
+  defdelegate half(x), to: Shop.Calc.Sub
+  def piped(x), do: x |> double
+  def nested(x) do
+    alias Shop.Calc.Sub
+    Sub.f(x)
+  end
+  def relative(x), do: __MODULE__.Sub.f(x)
+  def quoted(x), do: quote(do: unquote(double(x)) + 1)
+  def required, do: bar()
+  defp double(x), do: x * 2
+end
+
+defmodule Shop.Calc.Sub do
+  def f(x), do: x
+  def half(x), do: x
+end
+
+defmodule Shop.Macros do
+  defmacro bar, do: 1
+end
+"#,
+    );
+    let callees = |sym: &str| {
+        let (out, code) = run_in(tmp.path(), &["callees", sym, "."]);
+        assert_eq!(code, 0, "callees {sym} exited non-zero: {out}");
+        out
+    };
+    let out = callees("Calc.half");
+    assert!(out.contains("Shop.Calc.Sub::half"), "delegate not followed:\n{out}");
+    let out = callees("Calc.piped");
+    assert!(out.contains("Shop.Calc::double"), "pipe target not a call:\n{out}");
+    let out = callees("Calc.nested");
+    assert!(out.contains("Shop.Calc.Sub::f"), "body alias not expanded:\n{out}");
+    let out = callees("Calc.relative");
+    assert!(out.contains("Shop.Calc.Sub::f"), "`__MODULE__.Sub` not expanded:\n{out}");
+    let out = callees("Calc.quoted");
+    assert!(out.contains("Shop.Calc::double"), "`unquote` not walked:\n{out}");
+    // `require` brings no functions into scope.
+    let out = callees("Calc.required");
+    assert!(out.contains("[external] bar"), "bound through `require`:\n{out}");
+}
+
+#[test]
+fn elixir_calls_stay_in_elixir() {
+    // `Shop::Util.fmt` in Ruby has the module path `Shop.Util` imports.
+    let tmp = tempfile::tempdir().unwrap();
+    write(
+        &tmp.path().join("lib/cart.ex"),
+        "defmodule Shop.Cart do\n  import Shop.Util\n  def total(c), do: fmt(c)\nend\n",
+    );
+    write(
+        &tmp.path().join("app/util.rb"),
+        "module Shop\n  module Util\n    def self.fmt(x); x; end\n  end\nend\n",
+    );
+    let (out, code) = run_in(tmp.path(), &["callees", "Cart.total", ".", "--rebuild"]);
+    assert_eq!(code, 0, "callees exited non-zero: {}", out);
+    assert!(out.contains("[external] fmt"), "bound into Ruby:\n{}", out);
+}
+
+#[test]
+fn elixir_trace_follows_an_alias_and_a_capture() {
+    let tmp = elixir_project();
+    let (out, code) = run_in(tmp.path(), &["trace", "Cart.total", "Pricing.add", ".", "--rebuild"]);
+    assert_eq!(code, 0, "trace exited non-zero: {}", out);
+    assert!(out.contains("Shop.Pricing::sum"), "no path through `sum`:\n{}", out);
+    assert!(out.contains("Shop.Pricing::add"), "capture not followed:\n{}", out);
+}
+
+#[test]
+fn elixir_partial_update_resolves_new_calls_the_same_way() {
+    let tmp = elixir_project();
+    let root = tmp.path();
+    run_in(root, &["callers", "Pricing.sum", ".", "--rebuild"]);
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    write(
+        &root.join("lib/shop/report.ex"),
+        "defmodule Shop.Report do\n  alias Shop.Pricing\n  def run(c), do: elem({Pricing.sum(c)}, 0)\nend\n",
+    );
+    let (out, code) = run_in(root, &["callees", "Report.run", "."]);
+    assert_eq!(code, 0, "{}", out);
+    assert!(out.contains("Shop.Pricing::sum"), "{}", out);
+    assert!(out.contains("[external] elem"), "{}", out);
+    assert!(!out.contains("Shop.Other::"), "{}", out);
+}
+
+#[test]
+fn elixir_partial_update_links_a_new_module_to_its_callers() {
+    // `Shop.Later.go()` is external until `later.ex` defines it; adding the
+    // file must link the unchanged caller, as a cold build would.
+    let tmp = elixir_project();
+    let root = tmp.path();
+    write(
+        &root.join("lib/shop/early.ex"),
+        "defmodule Shop.Early do\n  def run, do: Shop.Later.go()\nend\n",
+    );
+    let (out, _) = run_in(root, &["callees", "Early.run", ".", "--rebuild"]);
+    assert!(out.contains("[external] Shop.Later.go"), "{}", out);
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    write(
+        &root.join("lib/shop/later.ex"),
+        "defmodule Shop.Later do\n  def go, do: :ok\nend\n",
+    );
+    let (out, code) = run_in(root, &["callers", "Later.go", "."]);
+    assert_eq!(code, 0, "{}", out);
+    assert!(out.contains("Shop.Early::run"), "caller not linked:\n{}", out);
+}
+
+#[test]
+fn elixir_dotted_protocol_lists_its_implementations() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(
+        &root.join("lib/printable.ex"),
+        r#"
+defprotocol Billing.Printable do
+  def print(value)
+end
+
+defimpl Billing.Printable, for: Integer do
+  def print(n), do: n
+end
+
+defmodule Billing.Text do
+  alias Billing.Printable
+
+  defimpl Printable do
+    def print(t), do: t
+  end
+end
+"#,
+    );
+    let (out, code) = run_in(root, &["callers", "Billing.Printable", ".", "--rebuild"]);
+    assert_eq!(code, 0, "callers exited non-zero: {}", out);
+    // `defimpl Printable` implements `Billing.Printable` through the alias.
+    assert!(
+        out.contains("2 implementation"),
+        "expected the Integer and Text impls in callers, got:\n{}",
+        out
+    );
+    // And the impl finds the protocol as its ancestor.
+    let (out, code) = run_in(root, &["callees", "Billing.Printable.Integer", "."]);
+    assert_eq!(code, 0, "callees exited non-zero: {}", out);
+    assert!(out.contains("protocol Billing.Printable"), "ancestor not found:\n{}", out);
+}
+
+/// Modules whose last parts collide: `Shop.Pricing` and `Other.Pricing`,
+/// `Shop.Repo` and the dependency `Ecto.Repo`, and `Shop.Money` with its
+/// `Inspect` implementation `Inspect.Shop.Money`.
+fn elixir_types_project() -> tempfile::TempDir {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(&root.join("mix.exs"), "defmodule Shop.MixProject do\nend\n");
+    write(
+        &root.join("lib/money.ex"),
+        r#"
+defmodule Shop.Money do
+  defstruct [:amount]
+  def new(a), do: %Shop.Money{amount: a}
+end
+
+defimpl Inspect, for: Shop.Money do
+  def inspect(m, _opts), do: m.amount
+end
+"#,
+    );
+    write(
+        &root.join("lib/store.ex"),
+        "defmodule Shop.Store do\n  @callback get(term) :: term\nend\n",
+    );
+    write(
+        &root.join("lib/mem_store.ex"),
+        "defmodule Shop.MemStore do\n  alias Shop.Store\n  @behaviour Store\n  def get(k), do: k\nend\n",
+    );
+    write(
+        &root.join("lib/repo.ex"),
+        "defmodule Shop.Repo do\n  @behaviour Ecto.Repo\n  def all(q), do: [q]\nend\n",
+    );
+    write(
+        &root.join("lib/pricing.ex"),
+        r#"
+defmodule Shop.Pricing do
+  defstruct [:total]
+  def sum(xs), do: Enum.sum(xs)
+end
+
+defmodule Other.Pricing do
+  defstruct [:total]
+  def build, do: %Other.Pricing{total: 0}
+end
+"#,
+    );
+    write(
+        &root.join("lib/cart.ex"),
+        r#"
+defmodule Shop.Cart do
+  alias Shop.Pricing
+
+  def build(xs) do
+    total = Pricing.sum(xs)
+    %Pricing{total: total}
+  end
+end
+"#,
+    );
+    tmp
+}
+
+#[test]
+fn elixir_type_query_names_one_module() {
+    // `Inspect.Shop.Money` ends with `Shop.Money` but is another module.
+    let tmp = elixir_types_project();
+    let root = tmp.path();
+    let (out, code) = run_in(root, &["callers", "Shop.Money", ".", "--rebuild"]);
+    assert_eq!(code, 0, "{}", out);
+    assert!(!out.contains("Inspect"), "the impl matched too:\n{}", out);
+    assert_eq!(out.matches("Shop.Money::new").count(), 1, "{}", out);
+    let (out, code) = run_in(root, &["context", "lib/money.ex:Shop.Money", "."]);
+    assert_eq!(code, 0, "{}", out);
+    assert!(!out.contains("Inspect"), "the impl matched too:\n{}", out);
+}
+
+#[test]
+fn elixir_behaviour_implementors_agree_across_commands() {
+    // `@behaviour Store` names `Shop.Store` through the alias.
+    let tmp = elixir_types_project();
+    let root = tmp.path();
+    for cmd in ["callers", "impact", "context"] {
+        let (out, code) = run_in(root, &[cmd, "Shop.Store", ".", "--rebuild"]);
+        assert_eq!(code, 0, "{}: {}", cmd, out);
+        assert!(out.contains("Shop.MemStore"), "{} lists no implementor:\n{}", cmd, out);
+    }
+}
+
+#[test]
+fn elixir_types_are_keyed_by_full_module_name() {
+    let tmp = elixir_types_project();
+    let root = tmp.path();
+    // `Shop.Repo` implements `Ecto.Repo`, a dependency, not itself.
+    let (out, code) = run_in(root, &["callers", "Shop.Repo", ".", "--rebuild"]);
+    assert_eq!(code, 0, "{}", out);
+    assert!(!out.contains("implementation"), "implements itself:\n{}", out);
+    let (out, code) = run_in(root, &["callees", "Shop.Repo", "."]);
+    assert_eq!(code, 0, "{}", out);
+    assert!(out.contains("[external] Ecto.Repo"), "base not listed:\n{}", out);
+    // `%Pricing{}` builds `Shop.Pricing`, and `Pricing.sum` is called on it;
+    // `%Other.Pricing{}` builds another module.
+    let (out, code) = run_in(root, &["callers", "Shop.Pricing", "."]);
+    assert_eq!(code, 0, "{}", out);
+    // The file column uses the platform separator.
+    let out = out.replace('\\', "/");
+    assert!(out.contains("lib/cart.ex:7"), "struct literal missing:\n{}", out);
+    assert!(out.contains("lib/cart.ex:6"), "`Pricing.sum()` missing:\n{}", out);
+    assert!(!out.contains("Other.Pricing"), "another module's struct:\n{}", out);
+    let (out, code) = run_in(root, &["callees", "Shop.Cart.build", "."]);
+    assert_eq!(code, 0, "{}", out);
+    assert!(out.contains("lib/pricing.ex::Shop.Pricing  (Exact)"), "{}", out);
+}
+
+#[test]
+fn elixir_nested_modules_are_keyed_by_full_name() {
+    // A nested `defmodule Pricing` is `Shop.Pricing`, as a struct literal and
+    // a behaviour name it from outside.
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(&root.join("mix.exs"), "defmodule Shop.MixProject do\nend\n");
+    write(
+        &root.join("lib/shop.ex"),
+        r#"defmodule Shop do
+  defmodule Pricing do
+    defstruct [:total]
+
+    defimpl Inspect do
+      def inspect(p, _), do: p.total
+    end
+  end
+
+  defmodule Store do
+    @callback get(term) :: term
+  end
+
+  defmodule MemStore do
+    @behaviour Shop.Store
+    def get(k), do: k
+  end
+end
+"#,
+    );
+    write(
+        &root.join("lib/cart.ex"),
+        "defmodule Shop.Cart do\n  def build(), do: %Shop.Pricing{total: 0}\n  def show(p), do: Inspect.Shop.Pricing.inspect(p, [])\nend\n",
+    );
+    let (out, code) = run_in(root, &["callers", "Shop.Pricing", ".", "--rebuild"]);
+    assert_eq!(code, 0, "{}", out);
+    // The file column uses the platform separator.
+    let out = out.replace('\\', "/");
+    assert!(out.contains("lib/cart.ex:2"), "struct literal missing:\n{}", out);
+    let (out, _) = run_in(root, &["callees", "Shop.Cart.build", "."]);
+    assert!(out.contains("lib/shop.ex::Shop::Pricing  (Exact)"), "{}", out);
+    for cmd in ["callers", "impact", "context"] {
+        let (out, _) = run_in(root, &[cmd, "Shop.Store", "."]);
+        assert!(out.contains("MemStore"), "{} lists no implementor:\n{}", cmd, out);
+    }
+    let (out, _) = run_in(root, &["callees", "Shop.MemStore", "."]);
+    assert!(out.contains("module Store"), "ancestor not found:\n{}", out);
+    // A `defimpl` in the module is named in full, `Inspect.Shop.Pricing`.
+    let (out, _) = run_in(root, &["callers", "Inspect.Shop.Pricing", "."]);
+    let out = out.replace('\\', "/");
+    assert!(out.contains("lib/cart.ex:3"), "call on the impl missing:\n{}", out);
+    // An incremental update keys the module the same way.
+    let shop = std::fs::read_to_string(root.join("lib/shop.ex")).unwrap();
+    write(
+        &root.join("lib/shop.ex"),
+        &shop.replace(
+            "def get(k), do: k",
+            "def get(k), do: k\n    def put(k), do: k",
+        ),
+    );
+    // The update ran: the new function is in the graph.
+    let (out, code) = run_in(root, &["callees", "Shop.MemStore.put", "."]);
+    assert_eq!(code, 0, "update not applied:\n{}", out);
+    let (out, _) = run_in(root, &["callees", "Shop.Cart.build", "."]);
+    assert!(out.contains("lib/shop.ex::Shop::Pricing  (Exact)"), "{}", out);
+}
+
+#[test]
+fn elixir_incremental_update_keeps_full_type_keys() {
+    let tmp = elixir_types_project();
+    let root = tmp.path();
+    let (out, _) = run_in(root, &["callers", "Shop.Store", ".", "--rebuild"]);
+    assert!(out.contains("Shop.MemStore"), "{}", out);
+    write(
+        &root.join("lib/mem_store.ex"),
+        "defmodule Shop.MemStore do\n  alias Shop.Store\n  @behaviour Store\n  def get(k), do: k\n  def put(k), do: k\nend\n",
+    );
+    // The update ran: the new function is in the graph.
+    let (out, code) = run_in(root, &["callees", "Shop.MemStore.put", "."]);
+    assert_eq!(code, 0, "update not applied:\n{}", out);
+    let (out, code) = run_in(root, &["callers", "Shop.Store", "."]);
+    assert_eq!(code, 0, "{}", out);
+    assert!(out.contains("Shop.MemStore"), "implementor lost after the update:\n{}", out);
+    // A struct literal's target is a type, which the update re-resolves.
+    let (out, _) = run_in(root, &["callees", "Shop.Cart.build", "."]);
+    assert!(out.contains("lib/pricing.ex::Shop.Pricing  (Exact)"), "{}", out);
+}
+
+/// Imports scoped by module, function and block, with `only:` and `except:`.
+fn elixir_imports_project() -> tempfile::TempDir {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(&root.join("mix.exs"), "defmodule Shop.MixProject do\nend\n");
+    write(
+        &root.join("lib/util.ex"),
+        r#"defmodule Shop.Util do
+  def fmt(x), do: x
+  def fmt(x, y), do: {x, y}
+  def pad(x), do: x
+  def wrap(x, opts), do: {x, opts}
+end
+
+defmodule Shop do
+  def foo(), do: :ok
+end
+"#,
+    );
+    write(
+        &root.join("lib/a.ex"),
+        r#"defmodule Shop.A do
+  import Shop.Util, only: [fmt: 1, wrap: 2]
+  def one(x), do: fmt(x)
+  def two(x), do: fmt(x, x)
+  def three(x), do: pad(x)
+  def piped(x), do: x |> fmt(x)
+  def captured(), do: &fmt/2
+  def block(x) do
+    wrap x do
+      :ok
+    end
+  end
+end
+
+defmodule Shop.B do
+  def four(x), do: fmt(x)
+end
+
+defmodule Shop.C do
+  import Shop.Util, except: [pad: 1]
+  alias Shop
+  def five(x), do: pad(x)
+  def six(x), do: fmt(x)
+  def seven(), do: foo()
+end
+"#,
+    );
+    write(
+        &root.join("lib/d.ex"),
+        r#"defmodule Shop.D do
+  def eight(x) do
+    import Shop.Util
+    pad(x)
+  end
+
+  def nine(x), do: pad(x)
+
+  def ten(x) do
+    if x do
+      alias Shop.Util, as: U
+      U.pad(x)
+    end
+    U.pad(x)
+  end
+
+  def eleven(x) do
+    require Shop.Util, as: R
+    R.pad(x)
+  end
+end
+"#,
+    );
+    tmp
+}
+
+#[test]
+fn elixir_imports_are_lexical_and_honour_selectors() {
+    let tmp = elixir_imports_project();
+    let root = tmp.path();
+    run_in(root, &["callers", "fmt", ".", "--rebuild"]);
+    let callees = |sym: &str| {
+        let (out, code) = run_in(root, &["callees", sym, "."]);
+        assert_eq!(code, 0, "callees {sym} exited non-zero: {out}");
+        // The file column uses the platform separator.
+        out.replace('\\', "/")
+    };
+    let exact = |sym: &str, target: &str| {
+        let out = callees(sym);
+        assert!(out.contains(&format!("{target}  (Exact)")), "{sym}: {target} not Exact:\n{out}");
+    };
+    let external = |sym: &str, name: &str| {
+        let out = callees(sym);
+        assert!(out.contains(&format!("[external] {name}")), "{sym}: {name} not external:\n{out}");
+    };
+    exact("Shop.A.one", "Shop.Util::fmt");
+    // `only: [fmt: 1]` imports neither `fmt/2` nor `pad/1`.
+    external("Shop.A.two", "fmt");
+    external("Shop.A.three", "pad");
+    // A pipe and a `do` block each pass one more argument.
+    external("Shop.A.piped", "fmt");
+    external("Shop.A.captured", "fmt");
+    exact("Shop.A.block", "Shop.Util::wrap");
+    // A sibling module in the same file imports nothing.
+    external("Shop.B.four", "fmt");
+    external("Shop.C.five", "pad");
+    exact("Shop.C.six", "Shop.Util::fmt");
+    // `alias Shop` names `Shop`; it imports nothing.
+    external("Shop.C.seven", "foo");
+    // An `import` in a function ends with it.
+    exact("Shop.D.eight", "Shop.Util::pad");
+    external("Shop.D.nine", "pad");
+    // An `alias` in an `if` ends with the block.
+    let out = callees("Shop.D.ten");
+    assert!(out.contains("lib/d.ex:12    lib/util.ex::Shop.Util::pad  (Exact)"), "{out}");
+    assert!(!out.contains("lib/d.ex:14    lib/util.ex"), "alias leaked out of the `if`:\n{out}");
+    // `require … as:` aliases the module.
+    exact("Shop.D.eleven", "Shop.Util::pad");
+}
+
+#[test]
+fn elixir_callees_cover_defaults_bound_quotes_and_split_modules() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(&root.join("mix.exs"), "defmodule Shop.MixProject do\nend\n");
+    write(
+        &root.join("lib/a.ex"),
+        r#"defmodule Shop.A do
+  def compute(), do: 1
+  def f(x \\ compute()), do: x
+  def q() do
+    quote bind_quoted: [v: compute()] do
+      v
+    end
+  end
+end
+"#,
+    );
+    // `Shop.M` is defined in two files; each calls its own `b`.
+    write(&root.join("lib/m1.ex"), "defmodule Shop.M do\n  def a(), do: b()\n  def b(), do: 1\nend\n");
+    write(&root.join("lib/m2.ex"), "defmodule Shop.M do\n  def b(), do: 2\nend\n");
+    for sym in ["Shop.A.f", "Shop.A.q"] {
+        let (out, code) = run_in(root, &["callees", sym, ".", "--rebuild"]);
+        assert_eq!(code, 0, "{}", out);
+        assert!(out.contains("Shop.A::compute  (Exact)"), "{sym}:\n{out}");
+    }
+    let (out, _) = run_in(root, &["callees", "lib/m1.ex:Shop.M.a", "."]);
+    assert!(out.contains("lib/m1.ex::Shop.M::b  (Exact)"), "{}", out);
+}
+
+#[test]
+fn elixir_struct_patterns_are_not_constructions() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(&root.join("mix.exs"), "defmodule Shop.MixProject do\nend\n");
+    write(
+        &root.join("lib/pricing.ex"),
+        r#"defmodule Shop.Pricing do
+  defstruct [:total]
+  def build(), do: %Shop.Pricing{total: 0}
+  def total(%Shop.Pricing{total: t} = p), do: {t, p}
+  def match(p) do
+    %Shop.Pricing{total: t} = p
+    case p do
+      %Shop.Pricing{} -> t
+      x when is_cheap(x) -> x
+    end
+  end
+  defguard is_cheap(x) when x < 10
+  def anon(), do: fn %Shop.Pricing{} = p -> p end
+  def from(x) do
+    with %Shop.Pricing{} = p <- fetch(x), do: p
+  end
+  def fetch(x), do: x
+  def check(x) do
+    cond do
+      valid?(x) -> :ok
+      true -> :no
+    end
+  end
+  def valid?(_), do: true
+end
+"#,
+    );
+    let (out, code) = run_in(root, &["callers", "Shop.Pricing", ".", "--rebuild"]);
+    assert_eq!(code, 0, "{}", out);
+    assert!(out.contains("# 1 caller"), "a pattern counted as a construction:\n{}", out);
+    // The file column uses the platform separator.
+    let out = out.replace('\\', "/");
+    assert!(out.contains("lib/pricing.ex:3 "), "{}", out);
+    // A `with` clause calls its right side, and a `cond` clause its condition.
+    let (out, _) = run_in(root, &["callees", "Shop.Pricing.from", "."]);
+    assert!(out.contains("Shop.Pricing::fetch  (Exact)"), "{}", out);
+    let (out, _) = run_in(root, &["callees", "Shop.Pricing.check", "."]);
+    assert!(out.contains("Shop.Pricing::valid?  (Exact)"), "{}", out);
+    // A clause's guard is not a pattern.
+    let (out, _) = run_in(root, &["callees", "Shop.Pricing.match", "."]);
+    assert!(out.contains("Shop.Pricing::is_cheap  (Exact)"), "{}", out);
+}
+
+#[test]
+fn elixir_bare_calls_compare_arity() {
+    // A local `elem/3` or `length/2` does not take Kernel's `elem/2` or
+    // `length/1`; a default argument accepts one argument fewer.
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(&root.join("mix.exs"), "defmodule Shop.MixProject do\nend\n");
+    write(
+        &root.join("lib/util.ex"),
+        "defmodule Shop.Util do\n  def length(a, b), do: {a, b}\nend\n",
+    );
+    write(
+        &root.join("lib/t.ex"),
+        r#"defmodule Shop.T do
+  import Shop.Util
+  def elem(a, b, c), do: {a, b, c}
+  def opt(a, b \\ 1), do: {a, b}
+  def guarded(a, b \\ 1) when is_integer(a), do: {a, b}
+  def pair(a), do: a
+  def pair(a, b), do: {a, b}
+  def kernel(t), do: {elem(t, 0), length(t)}
+  def own(t), do: {elem(t, 1, 2), length(t, 1)}
+  def defaults(t), do: {opt(t), opt(t, 2), guarded(t), pair(t)}
+end
+"#,
+    );
+    let callees = |sym: &str| run_in(root, &["callees", sym, ".", "--rebuild"]).0;
+    let out = callees("Shop.T.kernel");
+    assert!(out.contains("[external] elem"), "{}", out);
+    assert!(out.contains("[external] length"), "{}", out);
+    assert!(!out.contains("(Exact)"), "{}", out);
+    let out = callees("Shop.T.own");
+    assert!(out.contains("Shop.T::elem  (Exact)"), "{}", out);
+    assert!(out.contains("Shop.Util::length  (Exact)"), "{}", out);
+    let out = callees("Shop.T.defaults");
+    assert_eq!(out.matches("Shop.T::opt  (Exact)").count(), 2, "{}", out);
+    assert!(out.contains("Shop.T::guarded  (Exact)"), "{}", out);
+    // `pair/1` and `pair/2` share a qn; each definition counts.
+    assert!(out.contains("Shop.T::pair  (Exact)"), "{}", out);
+}
+
+#[test]
+fn elixir_incremental_update_resolves_against_the_new_definitions() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(&root.join("mix.exs"), "defmodule Shop.MixProject do\nend\n");
+    write(
+        &root.join("lib/util.ex"),
+        "defmodule Shop.Util do\n  def pad(x), do: x\nend\n",
+    );
+    write(&root.join("lib/dup.ex"), "defmodule Shop.Dup do\n  def f(), do: 1\nend\n");
+    write(&root.join("lib/dup2.ex"), "defmodule Shop.Dup do\n  def f(), do: 2\nend\n");
+    write(
+        &root.join("lib/e.ex"),
+        "defmodule Shop.E do\n  import Shop.Util\n  import Shop.Dup\n  def go(x), do: extra(x)\n  def dup(), do: f()\n  def mk(), do: %Shop.Later{}\nend\n",
+    );
+    let (out, _) = run_in(root, &["callees", "Shop.E.go", ".", "--rebuild"]);
+    assert!(out.contains("[external] extra"), "{}", out);
+    let (out, _) = run_in(root, &["callees", "Shop.E.dup", "."]);
+    assert!(out.contains("Ambiguous"), "{}", out);
+    // A function added to an imported module, and a module left in one file.
+    write(
+        &root.join("lib/util.ex"),
+        "defmodule Shop.Util do\n  def pad(x), do: x\n  def extra(x), do: x\nend\n",
+    );
+    std::fs::remove_file(root.join("lib/dup2.ex")).unwrap();
+    write(&root.join("lib/later.ex"), "defmodule Shop.Later do\n  defstruct [:a]\nend\n");
+    let (out, code) = run_in(root, &["callees", "Shop.E.go", "."]);
+    assert_eq!(code, 0, "{}", out);
+    assert!(out.contains("Shop.Util::extra  (Exact)"), "added function not found:\n{}", out);
+    let (out, _) = run_in(root, &["callees", "Shop.E.dup", "."]);
+    assert!(out.contains("lib/dup.ex::Shop.Dup::f  (Exact)"), "deleted candidate kept:\n{}", out);
+    // A struct literal of a module added since resolves to it.
+    let (out, _) = run_in(root, &["callees", "Shop.E.mk", "."]);
+    assert!(out.contains("lib/later.ex::Shop.Later  (Exact)"), "{}", out);
+}
+
+#[test]
+fn elixir_callees_cover_less_common_forms() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(&root.join("mix.exs"), "defmodule Shop.MixProject do\nend\n");
+    write(
+        &root.join("lib/forms.ex"),
+        r#"defmodule Shop.Target do
+  def send(v), do: v
+end
+
+defmodule Shop.Forms do
+  def greet(name, # who
+            opts \\ []), do: {name, opts}
+  def run, do: greet("a")
+
+  def default_value, do: 1
+  defdelegate send(v \\ default_value()), to: Shop.Target
+
+  def permitted(_), do: true
+  def fetch, do: {:ok, 1}
+  def guarded do
+    with {:ok, v} when permitted(v) <- fetch() do
+      v
+    end
+  end
+
+  def timeout_ms, do: 10
+  def fallback, do: :none
+  def waits do
+    receive do
+      :ready -> :ok
+    after
+      timeout_ms() -> fallback()
+    end
+  end
+
+  def helper(x), do: x
+  def captures(offset), do: &(offset + helper(&1))
+end
+
+defmodule Shop.MyMacros do
+  defmacro if(c, v), do: {c, v}
+end
+
+defmodule Shop.OwnIf do
+  import Kernel, except: [if: 2]
+  import Shop.MyMacros, only: [if: 2]
+  def u, do: if(true, :ok)
+end
+
+defmodule Shop.AnyIf do
+  import Kernel, except: [if: 2]
+  import Shop.MyMacros
+  def u, do: if(true, :ok)
+end
+
+defmodule Shop.KernelIf do
+  import Shop.MyMacros, only: [if: 2]
+  import Kernel, except: [unless: 2]
+  def k(x), do: if(x, do: 1)
+end
+"#,
+    );
+    let callees = |sym: &str| run_in(root, &["callees", sym, ".", "--rebuild"]).0;
+    // A comment in a head does not hide its default argument.
+    let out = callees("Shop.Forms.run");
+    assert!(out.contains("Shop.Forms::greet  (Exact)"), "{}", out);
+    // A delegate evaluates its default arguments.
+    let out = callees("Shop.Forms.send");
+    assert!(
+        out.contains("Shop.Forms::default_value  (Exact)"),
+        "{}",
+        out
+    );
+    assert!(out.contains("Shop.Target::send  (Exact)"), "{}", out);
+    // A guard on the left of `<-` is code; the pattern is not.
+    let out = callees("Shop.Forms.guarded");
+    assert!(out.contains("Shop.Forms::permitted  (Exact)"), "{}", out);
+    assert!(out.contains("Shop.Forms::fetch  (Exact)"), "{}", out);
+    // A `receive` timeout is an expression.
+    let out = callees("Shop.Forms.waits");
+    assert!(out.contains("Shop.Forms::timeout_ms  (Exact)"), "{}", out);
+    assert!(out.contains("Shop.Forms::fallback  (Exact)"), "{}", out);
+    // A capture of an expression calls what the expression calls.
+    let out = callees("Shop.Forms.captures");
+    assert!(out.contains("Shop.Forms::helper  (Exact)"), "{}", out);
+    assert!(!out.contains("offset"), "{}", out);
+    // A Kernel macro excluded for an import that names it is a call.
+    let out = callees("Shop.OwnIf.u");
+    assert!(out.contains("Shop.MyMacros::if  (Exact)"), "{}", out);
+    let out = callees("Shop.AnyIf.u");
+    assert!(out.contains("Shop.MyMacros::if  (Exact)"), "{}", out);
+    // Kernel's own `if` is not.
+    let out = callees("Shop.KernelIf.k");
+    assert!(out.contains("# 0 callee"), "{}", out);
+}
+
+#[test]
+fn elixir_imports_select_as_elixir_does() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(&root.join("mix.exs"), "defmodule Shop.MixProject do\nend\n");
+    write(
+        &root.join("lib/imports.ex"),
+        r#"defmodule Shop.A do
+  def fmt(x), do: x
+  def pad(x), do: x
+  def other(x), do: x
+end
+
+defmodule Shop.B do
+  def fmt(x), do: x
+end
+
+defmodule Shop.Reimport do
+  import Shop.A, only: [fmt: 1, pad: 1]
+  def f(x) do
+    import Shop.A, except: [fmt: 1]
+    import Shop.B, only: [fmt: 1]
+    {fmt(x), pad(x), other(x)}
+  end
+  def g(x), do: fmt(x)
+end
+
+defmodule Shop.MacA do
+  defmacro mfmt(x), do: x
+end
+
+defmodule Shop.FunB do
+  def mfmt(x), do: x
+end
+
+defmodule Shop.Kinds do
+  import Shop.MacA, only: :functions
+  import Shop.FunB, only: [mfmt: 1]
+  def k(x), do: mfmt(x)
+end
+
+defmodule Shop.Macros do
+  import Shop.MacA, only: :macros
+  import Shop.FunB, only: :macros
+  def m(x), do: mfmt(x)
+end
+
+defmodule Shop.Guards do
+  defguard is_pos(x) when is_integer(x) and x > 0
+end
+
+defmodule Shop.GuardMacros do
+  import Shop.Guards, only: :macros
+  def ok(x) when is_pos(x), do: x
+end
+
+defmodule Shop.GuardFns do
+  import Shop.Guards, only: :functions
+  def ok(x) when is_pos(x), do: x
+end
+
+defmodule Shop.Tools do
+  def pad(x), do: x
+  def plain(x), do: x
+  defmacro twice(x), do: x
+end
+
+defmodule Shop.ExceptAfterFunctions do
+  import Shop.Tools, only: :functions
+  def e(x) do
+    import Shop.Tools, except: [pad: 1]
+    {twice(x), pad(x), plain(x)}
+  end
+end
+
+defmodule Shop.ExceptAfterMacros do
+  import Shop.Tools, only: :macros
+  def e(x) do
+    import Shop.Tools, except: [twice: 1]
+    {twice(x), plain(x)}
+  end
+end
+
+defmodule Shop.FunctionsExcept do
+  import Shop.Tools
+  def e(x) do
+    import Shop.Tools, only: :functions, except: [pad: 1]
+    {twice(x), pad(x), plain(x)}
+  end
+end
+
+defmodule Shop.Tuple do
+  import Shop.A, only: [{:fmt, 1}]
+  def t(x), do: fmt(x)
+end
+
+defmodule Shop.Hidden do
+  defp work(x), do: x
+  def own(x), do: work(x)
+end
+
+defmodule Shop.Public do
+  def work(x), do: x
+end
+
+defmodule Shop.Priv do
+  import Shop.Hidden
+  import Shop.Public
+  def p(x), do: work(x)
+end
+"#,
+    );
+    let callees = |sym: &str| run_in(root, &["callees", sym, ".", "--rebuild"]).0;
+    // `except:` filters the earlier import of the same module, and the
+    // module-level import is back once the function ends.
+    let out = callees("Shop.Reimport.f");
+    assert!(out.contains("Shop.B::fmt  (Exact)"), "{}", out);
+    assert!(out.contains("Shop.A::pad  (Exact)"), "{}", out);
+    assert!(out.contains("[external] other"), "{}", out);
+    let out = callees("Shop.Reimport.g");
+    assert!(out.contains("Shop.A::fmt  (Exact)"), "{}", out);
+    // `only: :functions` leaves out a macro, `only: :macros` a function.
+    let out = callees("Shop.Kinds.k");
+    assert!(out.contains("Shop.FunB::mfmt  (Exact)"), "{}", out);
+    let out = callees("Shop.Macros.m");
+    assert!(out.contains("Shop.MacA::mfmt  (Exact)"), "{}", out);
+    // A guard is a macro.
+    let out = callees("Shop.GuardMacros.ok");
+    assert!(out.contains("Shop.Guards::is_pos  (Exact)"), "{}", out);
+    let out = callees("Shop.GuardFns.ok");
+    assert!(out.contains("[external] is_pos"), "{}", out);
+    // `except:` alone applies per kind: it filters the kind imported
+    // before and brings in the kind that was not.
+    let out = callees("Shop.ExceptAfterFunctions.e");
+    assert!(out.contains("Shop.Tools::twice  (Exact)"), "{}", out);
+    assert!(out.contains("Shop.Tools::plain  (Exact)"), "{}", out);
+    assert!(out.contains("[external] pad"), "{}", out);
+    let out = callees("Shop.ExceptAfterMacros.e");
+    assert!(out.contains("Shop.Tools::plain  (Exact)"), "{}", out);
+    assert!(out.contains("[external] twice"), "{}", out);
+    // With `only:` it replaces the earlier import.
+    let out = callees("Shop.FunctionsExcept.e");
+    assert!(out.contains("Shop.Tools::plain  (Exact)"), "{}", out);
+    assert!(out.contains("[external] twice"), "{}", out);
+    assert!(out.contains("[external] pad"), "{}", out);
+    // `[{:fmt, 1}]` is `[fmt: 1]`.
+    let out = callees("Shop.Tuple.t");
+    assert!(out.contains("Shop.A::fmt  (Exact)"), "{}", out);
+    // An import brings only public functions; the module calls its own.
+    let out = callees("Shop.Priv.p");
+    assert!(out.contains("Shop.Public::work  (Exact)"), "{}", out);
+    let out = callees("Shop.Hidden.own");
+    assert!(out.contains("Shop.Hidden::work  (Exact)"), "{}", out);
+}
+
+#[test]
+fn elixir_unresolved_call_on_another_module_is_not_a_possible_caller() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(&root.join("mix.exs"), "defmodule MyApp.MixProject do\nend\n");
+    write(
+        &root.join("lib/repo.ex"),
+        r#"defmodule MyApp.Repo do
+  use Ecto.Repo, otp_app: :my_app
+end
+
+defmodule MyApp.Accounts do
+  def all(x), do: x
+end
+
+defmodule MyApp.Web do
+  alias MyApp.Repo
+  def list, do: MyApp.Repo.all(:users)
+  def short, do: Repo.all(:users)
+  def own, do: MyApp.Accounts.all(:a, :b)
+  def go(repo), do: repo.all(:users)
+end
+"#,
+    );
+    // `all` comes from `use Ecto.Repo`, so the call stays unresolved, but
+    // its receiver names a project module that is not the target's.
+    let (out, _) = run_in(root, &["callers", "MyApp.Accounts.all", ".", "--rebuild"]);
+    assert!(!out.contains("recv=MyApp.Repo"), "{}", out);
+    assert!(out.contains("MyApp.Web::own recv=MyApp.Accounts"), "{}", out);
+    assert!(out.contains("MyApp.Web::go recv=repo"), "{}", out);
+}
+
+#[test]
+fn elixir_remote_calls_compare_arity() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(&root.join("mix.exs"), "defmodule Shop.MixProject do\nend\n");
+    write(
+        &root.join("lib/remote.ex"),
+        r#"defmodule Shop.Tools do
+  def fmt(a, b), do: {a, b}
+end
+
+defmodule Shop.Hid do
+  defp secret, do: :s
+  def own, do: __MODULE__.secret()
+end
+
+defmodule Shop.Remote do
+  def private(), do: Shop.Hid.secret()
+  def wrong(x), do: Shop.Tools.fmt(x)
+  def right(x), do: Shop.Tools.fmt(x, x)
+  def piped(x), do: x |> Shop.Tools.fmt(1)
+  def captured, do: &Shop.Tools.fmt/2
+  def miscaptured, do: &Shop.Tools.fmt/1
+end
+"#,
+    );
+    let callees = |sym: &str| run_in(root, &["callees", sym, ".", "--rebuild"]).0;
+    let out = callees("Shop.Remote.wrong");
+    assert!(!out.contains("(Exact)"), "{}", out);
+    // A remote call, even into its own module, cannot reach a `defp`.
+    let out = callees("Shop.Remote.private");
+    assert!(!out.contains("(Exact)"), "{}", out);
+    let out = callees("Shop.Hid.own");
+    assert!(!out.contains("(Exact)"), "{}", out);
+    let out = callees("Shop.Remote.right");
+    assert!(out.contains("Shop.Tools::fmt  (Exact)"), "{}", out);
+    let out = callees("Shop.Remote.piped");
+    assert!(out.contains("Shop.Tools::fmt  (Exact)"), "{}", out);
+    let out = callees("Shop.Remote.captured");
+    assert!(out.contains("Shop.Tools::fmt  (Exact)"), "{}", out);
+    let out = callees("Shop.Remote.miscaptured");
+    assert!(!out.contains("(Exact)"), "{}", out);
+    // An incremental update compares arity too.
+    write(
+        &root.join("lib/remote.ex"),
+        &std::fs::read_to_string(root.join("lib/remote.ex"))
+            .unwrap()
+            .replace("fmt(a, b)", "fmt(a)"),
+    );
+    let (out, _) = run_in(root, &["callees", "Shop.Remote.wrong", "."]);
+    assert!(out.contains("Shop.Tools::fmt  (Exact)"), "{}", out);
+    let (out, _) = run_in(root, &["callees", "Shop.Remote.right", "."]);
+    assert!(!out.contains("(Exact)"), "{}", out);
+}
+
+#[test]
+fn elixir_and_rust_types_of_one_name_stay_apart() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(&root.join("mix.exs"), "defmodule Shop.MixProject do\nend\n");
+    write(
+        &root.join("lib/worker.ex"),
+        "defmodule Shop.Worker do\n  @behaviour Service\n  def call, do: :ok\nend\n",
+    );
+    write(
+        &root.join("src/lib.rs"),
+        "pub trait Service { fn call(&self); }\npub struct RustImpl;\nimpl Service for RustImpl { fn call(&self) {} }\n",
+    );
+    for cmd in ["callers", "impact", "context"] {
+        let (out, _) = run_in(root, &[cmd, "Service", ".", "--rebuild"]);
+        assert!(
+            out.contains("RustImpl"),
+            "{} lists no implementor:\n{}",
+            cmd,
+            out
+        );
+        assert!(
+            !out.contains("Worker"),
+            "{} lists an Elixir module:\n{}",
+            cmd,
+            out
+        );
+    }
+    let (out, _) = run_in(root, &["callees", "Shop.Worker", "."]);
+    assert!(!out.contains("trait Service"), "{}", out);
+    assert!(out.contains("[external] Service"), "{}", out);
+    let (out, _) = run_in(root, &["callees", "RustImpl", "."]);
+    assert!(out.contains("trait Service"), "{}", out);
+    // The incremental update keeps them apart too.
+    write(
+        &root.join("lib/worker.ex"),
+        "defmodule Shop.Worker do\n  @behaviour Service\n  def call, do: :ok\n  def stop, do: :ok\nend\n",
+    );
+    let (out, _) = run_in(root, &["callers", "Service", "."]);
+    assert!(!out.contains("Worker"), "{}", out);
+}
+
+#[test]
+fn elixir_and_ruby_types_of_one_name_keep_their_constructions() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(&root.join("mix.exs"), "defmodule Shop.MixProject do\nend\n");
+    write(
+        &root.join("lib/shop.ex"),
+        "defmodule Shop do\n  defstruct [:a]\n  def fmt(x), do: x\nend\n\ndefmodule Shop.Cart do\n  def build, do: %Shop{a: 1}\nend\n",
+    );
+    write(
+        &root.join("lib/shop.rb"),
+        "class Shop\n  def self.fmt(x)\n    x\n  end\nend\n\ndef go\n  Shop.fmt(1)\nend\n",
+    );
+    let (out, _) = run_in(root, &["callers", "lib/shop.ex:Shop", ".", "--rebuild"]);
+    assert!(out.contains("Shop.Cart::build"), "{}", out);
+    assert!(
+        !out.contains("shop.rb"),
+        "a Ruby call under an Elixir module:\n{}",
+        out
+    );
+    let (out, _) = run_in(root, &["callers", "lib/shop.rb:Shop", "."]);
+    assert!(out.contains("lib/shop.rb::go"), "{}", out);
+    assert!(
+        !out.contains("Shop.Cart"),
+        "an Elixir struct under a Ruby class:\n{}",
+        out
+    );
+}
+
+#[test]
+fn elixir_struct_impact_counts_each_construction_once() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(&root.join("mix.exs"), "defmodule Shop.MixProject do\nend\n");
+    write(
+        &root.join("lib/pricing.ex"),
+        "defmodule Shop.Pricing do\n  defstruct total: 0\nend\n",
+    );
+    write(
+        &root.join("lib/cart.ex"),
+        "defmodule Shop.Cart do\n  def build, do: %Shop.Pricing{total: 1}\nend\n",
+    );
+    write(
+        &root.join("test/cart_test.exs"),
+        "defmodule Shop.CartTest do\n  use ExUnit.Case\n  def both do\n    Shop.Cart.build()\n    %Shop.Pricing{total: 2}\n  end\nend\n",
+    );
+    let (out, code) = run_in(
+        root,
+        &["impact", "Shop.Pricing", ".", "--json", "--rebuild"],
+    );
+    assert_eq!(code, 0, "{}", out);
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    let report = &v["impacts"][0];
+    let sections = report["sections"].as_array().unwrap();
+    let called_by = sections
+        .iter()
+        .find(|s| s["title"].as_str().unwrap().contains("called by"))
+        .unwrap();
+    assert_eq!(called_by["total"], 2, "{}", out);
+    assert_eq!(report["test_count"], 1, "{}", out);
+    // A struct's location is where its module is defined.
+    let (out, _) = run_in(root, &["impact", "Shop.Cart.build", ".", "--json"]);
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    let calls = &v["impacts"][0]["sections"][0]["entries"][0];
+    assert_eq!(calls["qn"], "lib/pricing.ex::Shop.Pricing", "{}", out);
+    // The file uses the platform separator.
+    let file = calls["file"].as_str().unwrap().replace('\\', "/");
+    assert_eq!(file, "lib/pricing.ex", "{}", out);
+    assert_eq!(calls["line"], 1, "{}", out);
 }
 
 #[test]

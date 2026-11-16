@@ -519,6 +519,8 @@ fn _call_site_from_call_ruby<'a, D: Doc>(node: &Node<'a, D>, src: &[u8]) -> Opti
         line,
         kind,
         receiver_scope,
+        imports: Vec::new(),
+        arity: None,
     })
 }
 

@@ -4,7 +4,9 @@
 //! (`<repo-relative-path>::<NestedScope>::<name>`), not files. Edges carry
 //! confidence so consumers can filter out fuzzy matches in CI gates.
 
-use crate::core::{CallKind, ReceiverScope, JSON_SCHEMA_GRAPH_INDEX};
+use crate::calls::resolve::qn_lang;
+use crate::core::{CallKind, ImportOnly, Imported, ReceiverScope, JSON_SCHEMA_GRAPH_INDEX};
+use crate::deps::resolver::Lang;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -126,6 +128,13 @@ pub struct CallEdge {
     /// Same no-skip rule as `receiver`.
     #[serde(default)]
     pub receiver_scope: ReceiverScope,
+    /// `CallSite::imports`, so the incremental update re-resolves a bare
+    /// Elixir call as the cold build does. Same no-skip rule as `receiver`.
+    #[serde(default)]
+    pub imports: Vec<Imported>,
+    /// `CallSite::arity`. Same no-skip rule as `receiver`.
+    #[serde(default)]
+    pub arity: Option<usize>,
 }
 
 // `CallEdge::target.name_or_raw()` is the only consumer surface — kept on
@@ -189,6 +198,49 @@ pub struct CallableMeta {
     /// `function` / `method` / `constructor` / `destructor` / `operator`
     /// — lifted from `Declaration::kind.as_str()` at build time.
     pub kind: String,
+    /// The argument counts each definition accepts, where the language
+    /// tells functions apart by it (Elixir). Empty elsewhere.
+    #[serde(default)]
+    pub arities: Vec<Arity>,
+}
+
+/// The argument counts one definition accepts, `min..=max`, and whether an
+/// `import` brings it in: not if private, and per `only:` if a macro.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Arity {
+    pub min: usize,
+    pub max: usize,
+    pub is_private: bool,
+    pub is_macro: bool,
+}
+
+impl CallableMeta {
+    /// Whether a definition takes a call with `arity` arguments. `outside`
+    /// is a call from outside its module, through an `import` of those
+    /// kinds or a module receiver (`ImportOnly::Any`), which a private
+    /// definition does not take. A callable whose arities are unknown takes
+    /// any call.
+    pub(crate) fn accepts(&self, arity: Option<usize>, outside: Option<ImportOnly>) -> bool {
+        self.arities.is_empty()
+            || self.arities.iter().any(|a| {
+                arity.is_none_or(|n| (a.min..=a.max).contains(&n))
+                    && outside.is_none_or(|only| !a.is_private && only.admits(a.is_macro))
+            })
+    }
+}
+
+/// Record `meta` for `qn`. Elixir's `f/1` and `f/2` share a qn, so the
+/// arities of each definition add up.
+pub(crate) fn add_callable(
+    callable_meta: &mut HashMap<Qn, CallableMeta>,
+    qn: &Qn,
+    meta: &CallableMeta,
+) {
+    let mut meta = meta.clone();
+    if let Some(old) = callable_meta.get(qn) {
+        meta.arities.extend(&old.arities);
+    }
+    callable_meta.insert(qn.clone(), meta);
 }
 
 /// Per-type metadata captured during the build walk. Lets `callers <Type>`
@@ -270,6 +322,13 @@ impl CallGraph {
         }
     }
 
+    /// The types that name `type_qn` among their bases.
+    pub fn implementors_of<'a>(&'a self, type_qn: &'a Qn) -> Option<impl Iterator<Item = &'a Qn>> {
+        let kind = self.types.get(type_qn).map_or("", |m| m.kind.as_str());
+        let impls = self.implementors.get(&type_key_of(type_qn, kind))?;
+        Some(impls.iter().filter(|qn| same_type_space(qn, type_qn)))
+    }
+
     /// Single-pass invert of `forward` into `reverse`. Called once after the
     /// resolution passes complete.
     pub fn rebuild_reverse(&mut self) {
@@ -288,4 +347,50 @@ impl CallGraph {
     }
 
 
+}
+
+/// Whether a type of one qn may implement or extend the other's. Elixir
+/// keys a module by its full name and the other languages by the last
+/// segment, so a one-segment Elixir `Service` and a Rust `Service` share a
+/// key without naming each other.
+pub(crate) fn same_type_space(a: &Qn, b: &Qn) -> bool {
+    (qn_lang(a) == Some(Lang::Elixir)) == (qn_lang(b) == Some(Lang::Elixir))
+}
+
+/// The key the type `type_qn`, of kind `kind`, is indexed by. An Elixir
+/// module's is its full name, which a nested `defmodule` spreads over its qn
+/// segments (`shop.ex::Shop::Pricing` is `Shop.Pricing`); a `defimpl` names
+/// itself in full (`Inspect.Shop.Pricing`) wherever it is.
+pub(crate) fn type_key_of(type_qn: &Qn, kind: &str) -> String {
+    let lang = qn_lang(type_qn);
+    if lang == Some(Lang::Elixir) && kind != "impl" {
+        return type_qn.0.split("::").skip(1).collect::<Vec<_>>().join(".");
+    }
+    type_key(lang, type_qn.name())
+}
+
+/// The key a type and a base are indexed by in `type_by_name` and
+/// `implementors`. It mirrors `core::_normalize_type_name`: generics,
+/// brackets and the scope are dropped, so `crate::base::LanguageAdapter`,
+/// `LanguageAdapter<T>`, and `LanguageAdapter` share one. An Elixir module
+/// keeps its full name: its bases are written in full once aliases are
+/// expanded, and `Shop.Repo` is not `Ecto.Repo`.
+pub(crate) fn type_key(lang: Option<Lang>, name: &str) -> String {
+    let mut name = name.trim();
+    if lang == Some(Lang::Elixir) {
+        return name.to_string();
+    }
+    if let Some(i) = name.find('<') {
+        name = &name[..i];
+    }
+    if let Some(i) = name.find('[') {
+        name = &name[..i];
+    }
+    if let Some(i) = name.rfind('.') {
+        name = &name[i + 1..];
+    }
+    if let Some(i) = name.rfind("::") {
+        name = &name[i + 2..];
+    }
+    name.to_string()
 }

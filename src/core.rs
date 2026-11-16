@@ -30,8 +30,9 @@ pub const JSON_SCHEMA_RUN: &str = "ast-bro.run.v1";
 /// a clean rebuild rather than continuing to hit the silent fallback.
 /// The `ast-bro.` name restarted at v1; v2 adds `CallEdge::receiver_scope`
 /// and `CallGraph::namespaces`; v3 adds Elixir files, which a v2 cache
-/// already fingerprints without holding their edges.
-pub const JSON_SCHEMA_GRAPH_INDEX: &str = "ast-bro.graph-index.v3";
+/// already fingerprints without holding their edges; v4 adds their call
+/// sites, which a v3 cache holds empty.
+pub const JSON_SCHEMA_GRAPH_INDEX: &str = "ast-bro.graph-index.v4";
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Copy, Default)]
 pub enum DeclarationKind {
@@ -235,6 +236,42 @@ pub struct CallSite {
     /// Whether the receiver names a scope, and how to find it.
     #[serde(default, skip_serializing_if = "_receiver_scope_is_default")]
     pub receiver_scope: ReceiverScope,
+    /// The modules whose functions a bare call may name, where the language
+    /// scopes imports lexically (Elixir), with selectors such as `only:`
+    /// applied. Empty where the file's imports decide. Resolver input only.
+    #[serde(skip)]
+    pub imports: Vec<Imported>,
+    /// The argument count, where the language tells functions apart by it
+    /// (Elixir). Resolver input only.
+    #[serde(skip)]
+    pub arity: Option<usize>,
+}
+
+/// A module named by an `import` in scope at a call site (Elixir).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Imported {
+    pub module: String,
+    /// `only: :functions` or `only: :macros`.
+    pub only: ImportOnly,
+}
+
+/// The kinds of definition an `import` brings in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum ImportOnly {
+    #[default]
+    Any,
+    Functions,
+    Macros,
+}
+
+impl ImportOnly {
+    pub fn admits(self, is_macro: bool) -> bool {
+        match self {
+            ImportOnly::Any => true,
+            ImportOnly::Functions => !is_macro,
+            ImportOnly::Macros => is_macro,
+        }
+    }
 }
 
 /// Whether a call's receiver names a scope — a module, class or namespace —

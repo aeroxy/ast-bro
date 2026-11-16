@@ -485,6 +485,8 @@ fn _call_site_from_function_call_php<'a, D: Doc>(
         line,
         kind: CallKind::Call,
         receiver_scope: ReceiverScope::None,
+        imports: Vec::new(),
+        arity: None,
     })
 }
 
@@ -506,6 +508,8 @@ fn _call_site_from_member_call_php<'a, D: Doc>(
         line,
         kind: CallKind::Call,
         receiver_scope: ReceiverScope::None,
+        imports: Vec::new(),
+        arity: None,
     })
 }
 
@@ -547,6 +551,8 @@ fn _call_site_from_scoped_call_php<'a, D: Doc>(
         line,
         kind: CallKind::Call,
         receiver_scope: ReceiverScope::None,
+        imports: Vec::new(),
+        arity: None,
     })
 }
 
@@ -591,6 +597,8 @@ fn _call_site_from_object_creation_php<'a, D: Doc>(
         line,
         kind: CallKind::Construct,
         receiver_scope: ReceiverScope::None,
+        imports: Vec::new(),
+        arity: None,
     })
 }
 

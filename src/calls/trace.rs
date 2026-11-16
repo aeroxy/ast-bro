@@ -521,6 +521,8 @@ mod tests {
             receiver: None,
             candidates: Vec::new(),
             receiver_scope: crate::core::ReceiverScope::None,
+            imports: Vec::new(),
+            arity: None,
         }
     }
 

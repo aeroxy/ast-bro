@@ -41,6 +41,8 @@ pub struct RawEdge {
     pub kind: CallKindCompat,
     pub line: u32,
     pub receiver_scope: ReceiverScope,
+    pub imports: Vec<crate::core::Imported>,
+    pub arity: Option<usize>,
 }
 
 pub fn qn_from(rel_file: &str, parents: &[String]) -> Qn {
@@ -78,5 +80,7 @@ pub(crate) fn raw_to_edge(
         receiver: raw.receiver,
         candidates,
         receiver_scope: raw.receiver_scope,
+        imports: raw.imports,
+        arity: raw.arity,
     }
 }
