@@ -5,7 +5,7 @@
 1. **`src/adapters/` + `src/core.rs`** — language adapters parse files into a shared `Declaration` IR; renderers turn that into `map` / `digest` / `show` / `implements` output.
 2. **`src/surface/`** — resolves the *true public API* of a package (`pub use`, `__all__`, TypeScript barrels, Scala `export`) instead of just listing every public item per file.
 3. **`src/deps/`** — file-level dependency graph (`deps`, `reverse-deps`, `cycles`, `graph`) for nine languages. See [deps.md](deps.md).
-4. **`src/calls/`** — symbol-level call graph (`callers`, `callees`) for 14 languages (everything but Elixir), with a three-pass resolver (same-file → global symbol table → dep-graph disambiguation). See [calls.md](calls.md).
+4. **`src/calls/`** — symbol-level call graph (`callers`, `callees`) for all 15 languages, with a three-pass resolver (same-file → global symbol table → dep-graph disambiguation). See [calls.md](calls.md).
 5. **`src/impact.rs`** — cross-file impact analysis (`impact`): callers + callees + file reverse-deps + test detection bundled into one "blast radius" report, with `--mode {deps,dependents,tests,all}` and `--tests` / `--exclude-tests` filters. See [impact.md](impact.md).
 6. **`src/context.rs`** — token-budgeted context pack (`context`): greedy knapsack that assembles "everything the agent needs to understand symbol X" into a caller-supplied token budget. Works for both callable and type targets (type targets include implementors, methods, and method dependents). See [context.md](context.md).
 7. **`src/search/`** — hybrid BM25 + dense semantic search, plus `find-related`. Cached at `.ast-bro/index/`. See [search.md](search.md).

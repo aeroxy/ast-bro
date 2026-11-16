@@ -52,9 +52,18 @@
 //! ExUnit compiles it — `test "inner"` inside `describe "group"` is
 //! `test group inner` — so the name in a failure report finds it, and its
 //! `@tag`s ride as `attrs` like `@spec`.
+//!
+//! Each function, test and setup carries the calls in its body: local calls
+//! (`helper(x)`, `x |> helper`), remote calls whose receiver is the module
+//! with aliases and `__MODULE__` expanded (`Pricing.sum(x)` inside a module
+//! that aliases `Shop.Pricing` has receiver `Shop.Pricing`), captures
+//! (`&helper/1`, `&Mod.fun/2`), a `defdelegate`'s target, and struct
+//! literals (`%Mod{}`) as constructions. Control flow, definitions and
+//! directives are syntax, not calls, and a `quote` contributes only its
+//! `unquote`s, as in the dependency scan.
 
 use super::base::{collapse_ws, count_parse_errors, LanguageAdapter};
-use crate::core::{Declaration, DeclarationKind, ImportBinding, ParseResult};
+use crate::core::{CallKind, CallSite, Declaration, DeclarationKind, ImportBinding, ParseResult};
 use ast_grep_core::{Doc, Node};
 use std::path::Path;
 
@@ -203,6 +212,40 @@ const USE_BEHAVIOURS: &[&str] = &[
 /// Attributes that annotate the *next* definition rather than declaring a
 /// module attribute of their own.
 const ANNOTATION_ATTRS: &[&str] = &["spec", "impl", "deprecated", "tag"];
+
+/// Macros that are syntax rather than calls: control flow, definitions and
+/// directives. They are not call sites, but the code inside them is.
+const NOT_CALLS: &[&str] = &[
+    "if",
+    "unless",
+    "case",
+    "cond",
+    "with",
+    "for",
+    "try",
+    "receive",
+    "fn",
+    "super",
+    "unquote",
+    "unquote_splicing",
+    "import",
+    "require",
+    "use",
+    "def",
+    "defp",
+    "defmacro",
+    "defmacrop",
+    "defguard",
+    "defguardp",
+    "defdelegate",
+    "defmodule",
+    "defprotocol",
+    "defimpl",
+    "defstruct",
+    "defexception",
+    "defoverridable",
+    "__block__",
+];
 
 /// Longest attribute value / type body kept verbatim in a signature; longer
 /// ones are elided so a multi-line map literal cannot flood a `map` line.
@@ -398,7 +441,14 @@ impl<'s> Walker<'s> {
                 }
                 k if DEF_MACROS.iter().any(|(kw, _, _)| *kw == k) => {
                     let p = std::mem::take(&mut pending);
-                    self.function_clause(&child, &keyword, p, &mut out.decls, &mut last_fn);
+                    self.function_clause(
+                        &child,
+                        &keyword,
+                        p,
+                        module_fqn,
+                        &mut out.decls,
+                        &mut last_fn,
+                    );
                 }
                 "defstruct" | "defexception" => {
                     last_fn = None;
@@ -423,7 +473,14 @@ impl<'s> Walker<'s> {
                 // with handling of its own.
                 k if _is_def_like(&child, k) => {
                     let p = std::mem::take(&mut pending);
-                    self.function_clause(&child, &keyword, p, &mut out.decls, &mut last_fn);
+                    self.function_clause(
+                        &child,
+                        &keyword,
+                        p,
+                        module_fqn,
+                        &mut out.decls,
+                        &mut last_fn,
+                    );
                 }
                 k @ ("test" | "describe" | "setup" | "setup_all")
                     if _is_exunit_block(&child, k) =>
@@ -586,6 +643,7 @@ impl<'s> Walker<'s> {
         node: &Node<'a, D>,
         keyword: &str,
         pending: Pending,
+        module_fqn: &str,
         out: &mut Vec<Declaration>,
         last_fn: &mut Option<LastFn>,
     ) {
@@ -596,6 +654,7 @@ impl<'s> Walker<'s> {
         let (name, arity) = _head_name_arity(head);
         let range = node.range();
         let end_line = node.end_pos().line() + 1;
+        let calls = self.clause_calls(node, keyword, &args, module_fqn);
 
         let continues = last_fn
             .as_ref()
@@ -613,6 +672,7 @@ impl<'s> Walker<'s> {
                     prev.docs = pending.docs;
                 }
                 prev.deprecated |= pending.deprecated;
+                prev.calls.extend(calls);
                 return;
             }
         }
@@ -661,7 +721,7 @@ impl<'s> Walker<'s> {
             modifiers,
             deprecated: pending.deprecated,
             children: Vec::new(),
-            calls: Vec::new(),
+            calls,
         });
     }
 
@@ -693,6 +753,11 @@ impl<'s> Walker<'s> {
             format!("{} {}", keyword, shown.join(", "))
         };
         let label = label.unwrap_or_default();
+        let calls = if keyword == "describe" {
+            Vec::new()
+        } else {
+            self.body_calls(node, module_fqn)
+        };
         let (kind, name, children) = match keyword {
             "describe" => {
                 let mut children = Vec::new();
@@ -752,8 +817,199 @@ impl<'s> Walker<'s> {
             modifiers: Vec::new(),
             deprecated: false,
             children,
-            calls: Vec::new(),
+            calls,
         });
+    }
+
+    /// The calls one `def`-family clause makes: its guard and its body, not
+    /// its head. A `defdelegate` calls its `to:` module (under `as:` when
+    /// given).
+    fn clause_calls<'a, D: Doc>(
+        &mut self,
+        node: &Node<'a, D>,
+        keyword: &str,
+        args: &[Node<'a, D>],
+        module_fqn: &str,
+    ) -> Vec<CallSite> {
+        let mut out = Vec::new();
+        if self.scan_references {
+            return out;
+        }
+        if keyword == "defdelegate" {
+            if let (Some(head), Some(to)) = (args.first(), _keyword_value(args, "to")) {
+                let name = match _keyword_value(args, "as") {
+                    Some(a) => _text(&a).trim_start_matches(':').to_string(),
+                    None => _head_name_arity(head).0,
+                };
+                out.push(CallSite {
+                    name,
+                    receiver: Some(self.module_name(&to, module_fqn)),
+                    line: node.start_pos().line() as u32 + 1,
+                    kind: CallKind::Call,
+                });
+            }
+            return out;
+        }
+        let scope = self.scopes.last().cloned().unwrap_or_default();
+        self.scopes.push(scope);
+        if let Some(head) = args.first() {
+            if head.kind() == "binary_operator"
+                && head.field("operator").is_some_and(|o| o.text() == "when")
+            {
+                if let Some(guard) = head.field("right") {
+                    self.calls_in(&guard, module_fqn, &mut out);
+                }
+            }
+        }
+        for arg in args.iter().skip(1) {
+            self.calls_in(arg, module_fqn, &mut out);
+        }
+        if let Some(block) = node.children().find(|c| c.kind() == "do_block") {
+            self.calls_in(&block, module_fqn, &mut out);
+        }
+        self.scopes.pop();
+        out
+    }
+
+    /// The calls in a `test` / `setup` body (`do … end` or `do:`). Its
+    /// label and context pattern are not code that runs.
+    fn body_calls<'a, D: Doc>(&mut self, node: &Node<'a, D>, module_fqn: &str) -> Vec<CallSite> {
+        let mut out = Vec::new();
+        if self.scan_references {
+            return out;
+        }
+        let scope = self.scopes.last().cloned().unwrap_or_default();
+        self.scopes.push(scope);
+        if let Some(body) = _keyword_value(&_named_args(node), "do") {
+            self.calls_in(&body, module_fqn, &mut out);
+        }
+        if let Some(block) = node.children().find(|c| c.kind() == "do_block") {
+            self.calls_in(&block, module_fqn, &mut out);
+        }
+        self.scopes.pop();
+        out
+    }
+
+    /// Record the call sites in `node`, in source order. An `alias` in a
+    /// body binds for the rest of the body; the caller scopes it.
+    fn calls_in<'a, D: Doc>(
+        &mut self,
+        node: &Node<'a, D>,
+        module_fqn: &str,
+        out: &mut Vec<CallSite>,
+    ) {
+        let line = node.start_pos().line() as u32 + 1;
+        let site = |name: String, receiver: Option<String>, kind: CallKind| CallSite {
+            name,
+            receiver,
+            line,
+            kind,
+        };
+        match node.kind().as_ref() {
+            "call" => match node.field("target") {
+                Some(t) if t.kind() == "identifier" => match _text(&t).as_str() {
+                    "quote" => return self.unquoted_calls(node, module_fqn, out),
+                    "alias" => {
+                        // Bind it without recording a directive: the
+                        // module's imports are the module-level ones.
+                        let recorded = self.directives.len();
+                        self.import(node, "alias", module_fqn);
+                        self.directives.truncate(recorded);
+                        return;
+                    }
+                    name if NOT_CALLS.contains(&name) => {}
+                    name => out.push(site(name.to_string(), None, CallKind::Call)),
+                },
+                // `fun.(x)` has no `right`: an anonymous function, not a
+                // named one. `map.key` without parentheses reads a field;
+                // only a module's `Mod.fun` is a call without them.
+                Some(t) if t.kind() == "dot" => {
+                    if let (Some(left), Some(right)) = (t.field("left"), t.field("right")) {
+                        let receiver = self.module_name(&left, module_fqn);
+                        let parenthesised = node.children().any(|c| c.kind() == "arguments");
+                        let module =
+                            receiver.starts_with(|c: char| c.is_ascii_uppercase() || c == ':');
+                        if parenthesised || module {
+                            out.push(site(_text(&right), Some(receiver), CallKind::Call));
+                        }
+                    }
+                }
+                _ => {}
+            },
+            // `x |> helper` calls `helper` without parentheses.
+            "binary_operator" if node.field("operator").is_some_and(|o| o.text() == "|>") => {
+                if let Some(right) = node.field("right").filter(|r| r.kind() == "identifier") {
+                    if let Some(left) = node.field("left") {
+                        self.calls_in(&left, module_fqn, out);
+                    }
+                    out.push(CallSite {
+                        name: _text(&right),
+                        receiver: None,
+                        line: right.start_pos().line() as u32 + 1,
+                        kind: CallKind::Call,
+                    });
+                    return;
+                }
+            }
+            // `&helper/1`; `&Mod.fun/2` is a call node and handled above.
+            "unary_operator" if node.field("operator").is_some_and(|o| o.text() == "&") => {
+                let local = node
+                    .field("operand")
+                    .filter(|o| o.kind() == "binary_operator")
+                    .and_then(|o| o.field("left"))
+                    .filter(|l| l.kind() == "identifier");
+                if let Some(name) = local {
+                    out.push(site(_text(&name), None, CallKind::Call));
+                    return;
+                }
+            }
+            // `%Mod{…}` builds the struct `Mod` defines.
+            "map" => {
+                if let Some(s) = node.children().find(|c| c.kind() == "struct") {
+                    if let Some(m) = s.children().find(|c| c.is_named()) {
+                        let module = self.module_name(&m, module_fqn);
+                        let name = module.rsplit('.').next().unwrap_or(&module).to_string();
+                        out.push(site(name, None, CallKind::Construct));
+                    }
+                }
+            }
+            _ => {}
+        }
+        for child in node.children().filter(|c| c.is_named()) {
+            self.calls_in(&child, module_fqn, out);
+        }
+    }
+
+    /// The calls inside a `quote`'s `unquote(…)`s — the only part of it
+    /// that runs in this module.
+    fn unquoted_calls<'a, D: Doc>(
+        &mut self,
+        node: &Node<'a, D>,
+        module_fqn: &str,
+        out: &mut Vec<CallSite>,
+    ) {
+        for child in node.children().filter(|c| c.is_named()) {
+            let kw = _call_keyword(&child);
+            if matches!(kw.as_deref(), Some("unquote" | "unquote_splicing")) {
+                for arg in _named_args(&child) {
+                    self.calls_in(&arg, module_fqn, out);
+                }
+            } else {
+                self.unquoted_calls(&child, module_fqn, out);
+            }
+        }
+    }
+
+    /// A module as a call names it: an alias expanded (`Pricing` →
+    /// `Shop.Pricing`), `__MODULE__` as the enclosing module, anything else
+    /// (`:ets`, a variable) as written.
+    fn module_name<'a, D: Doc>(&self, node: &Node<'a, D>, module_fqn: &str) -> String {
+        let text = _text(node);
+        if node.kind() == "alias" || text == "__MODULE__" {
+            self.expand(&text, module_fqn)
+        } else {
+            text
+        }
     }
 
     /// `@callback name(args) :: ret` — a behaviour's abstract function.

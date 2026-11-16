@@ -775,6 +775,157 @@ namespace Shop.Billing
     assert!(out.contains("Sum"), "expected `Sum` in callers, got:\n{}", out);
 }
 
+/// An Elixir project: `Shop.Pricing` is reached through an alias, `Shop.Util`
+/// through an import, and `Shop.Other` defines homonyms of Kernel and local
+/// names that no call may bind to.
+fn elixir_project() -> tempfile::TempDir {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(&root.join("mix.exs"), "defmodule Shop.MixProject do\nend\n");
+    write(
+        &root.join("lib/shop/pricing.ex"),
+        r#"
+defmodule Shop.Pricing do
+  defstruct [:total]
+
+  def sum(lines), do: Enum.reduce(lines, 0, &add/2)
+  defp add(x, acc), do: x + acc
+end
+"#,
+    );
+    write(
+        &root.join("lib/shop/util.ex"),
+        "defmodule Shop.Util do\n  def fmt(x), do: x\nend\n",
+    );
+    write(
+        &root.join("lib/shop/other.ex"),
+        "defmodule Shop.Other do\n  def elem(_, _), do: :no\n  def total(_), do: :no\nend\n",
+    );
+    write(
+        &root.join("lib/shop/cart.ex"),
+        r#"
+defmodule Shop.Cart do
+  alias Shop.Pricing
+  import Shop.Util
+
+  def total(cart) do
+    sum = Pricing.sum(cart.lines)
+    fmt(elem({sum}, 0))
+  end
+
+  def checkout(cart), do: %Pricing{total: total(cart)}
+end
+"#,
+    );
+    write(
+        &root.join("test/cart_test.exs"),
+        r#"
+defmodule Shop.CartTest do
+  use ExUnit.Case
+
+  describe "Shop.Cart.total/1" do
+    test "sums the lines" do
+      assert Shop.Cart.total(%{lines: [1, 2]}) == 3
+    end
+  end
+end
+"#,
+    );
+    tmp
+}
+
+#[test]
+fn elixir_callers_finds_intra_file_caller() {
+    let tmp = elixir_project();
+    let (out, code) = run_in(tmp.path(), &["callers", "Cart.total", ".", "--rebuild"]);
+    assert_eq!(code, 0, "callers exited non-zero: {}", out);
+    assert!(out.contains("Shop.Cart::checkout"), "expected `checkout`, got:\n{}", out);
+}
+
+#[test]
+fn elixir_callees_lists_construct_and_remote_call() {
+    // The alias is expanded, the import followed, and a stdlib or Kernel
+    // call is external — never the project's homonym in `Shop.Other`.
+    let tmp = elixir_project();
+    let (out, code) = run_in(tmp.path(), &["callees", "Cart.total", ".", "--rebuild"]);
+    assert_eq!(code, 0, "callees exited non-zero: {}", out);
+    assert!(out.contains("Shop.Pricing::sum"), "alias not followed:\n{}", out);
+    assert!(out.contains("Shop.Util::fmt"), "import not followed:\n{}", out);
+    assert!(out.contains("[external] elem"), "Kernel call not external:\n{}", out);
+    assert!(!out.contains("Shop.Other::"), "bound to a homonym:\n{}", out);
+    // `cart.lines` reads a field; it is not a call.
+    assert!(!out.contains("lines"), "field access taken for a call:\n{}", out);
+
+    let (out, _) = run_in(tmp.path(), &["callees", "Pricing.sum", "."]);
+    assert!(out.contains("[external] Enum.reduce"), "{}", out);
+    assert!(out.contains("Shop.Pricing::add"), "capture not a call:\n{}", out);
+
+    let (out, _) = run_in(tmp.path(), &["callers", "Shop.Pricing", "."]);
+    assert!(out.contains("checkout"), "struct literal not a construction:\n{}", out);
+}
+
+#[test]
+fn elixir_trace_follows_an_alias_and_a_capture() {
+    let tmp = elixir_project();
+    let (out, code) = run_in(tmp.path(), &["trace", "Cart.total", "Pricing.add", ".", "--rebuild"]);
+    assert_eq!(code, 0, "trace exited non-zero: {}", out);
+    assert!(out.contains("Shop.Pricing::sum"), "no path through `sum`:\n{}", out);
+    assert!(out.contains("Shop.Pricing::add"), "capture not followed:\n{}", out);
+}
+
+#[test]
+fn elixir_test_callers_name_the_test() {
+    // A test inside `describe "Shop.Cart.total/1"` sits in `Shop.CartTest`:
+    // the dotted label is not split into modules.
+    let tmp = elixir_project();
+    let (out, code) = run_in(tmp.path(), &["callers", "Cart.total", ".", "--tests", "--rebuild"]);
+    assert_eq!(code, 0, "callers exited non-zero: {}", out);
+    assert!(
+        out.contains("test Shop.Cart.total/1 sums the lines"),
+        "expected the test as a caller, got:\n{}",
+        out
+    );
+}
+
+#[test]
+fn elixir_partial_update_resolves_new_calls_the_same_way() {
+    let tmp = elixir_project();
+    let root = tmp.path();
+    run_in(root, &["callers", "Pricing.sum", ".", "--rebuild"]);
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    write(
+        &root.join("lib/shop/report.ex"),
+        "defmodule Shop.Report do\n  alias Shop.Pricing\n  def run(c), do: elem({Pricing.sum(c)}, 0)\nend\n",
+    );
+    let (out, code) = run_in(root, &["callees", "Report.run", "."]);
+    assert_eq!(code, 0, "{}", out);
+    assert!(out.contains("Shop.Pricing::sum"), "{}", out);
+    assert!(out.contains("[external] elem"), "{}", out);
+    assert!(!out.contains("Shop.Other::"), "{}", out);
+}
+
+#[test]
+fn elixir_partial_update_links_a_new_module_to_its_callers() {
+    // `Shop.Later.go()` is external until `later.ex` defines it; adding the
+    // file must link the unchanged caller, as a cold build would.
+    let tmp = elixir_project();
+    let root = tmp.path();
+    write(
+        &root.join("lib/shop/early.ex"),
+        "defmodule Shop.Early do\n  def run, do: Shop.Later.go()\nend\n",
+    );
+    let (out, _) = run_in(root, &["callees", "Early.run", ".", "--rebuild"]);
+    assert!(out.contains("[external] Shop.Later.go"), "{}", out);
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    write(
+        &root.join("lib/shop/later.ex"),
+        "defmodule Shop.Later do\n  def go, do: :ok\nend\n",
+    );
+    let (out, code) = run_in(root, &["callers", "Later.go", "."]);
+    assert_eq!(code, 0, "{}", out);
+    assert!(out.contains("Shop.Early::run"), "caller not linked:\n{}", out);
+}
+
 #[test]
 fn elixir_dotted_protocol_lists_its_implementations() {
     // Implementations are keyed by a base's last dotted part, `Printable`;

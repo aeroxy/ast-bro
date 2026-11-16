@@ -12,8 +12,11 @@
 //! whose file appears in the source file's transitive forward-dep closure.
 //! Single survivor → `Inferred`; otherwise → `Ambiguous` with all
 //! candidates kept under `CallEdge::candidates`.
+//!
+//! Elixir skips all three: its calls name their target statically, so
+//! [`resolve_elixir`] looks it up by module instead of guessing by name.
 
-use crate::calls::graph::{CallEdge, CallTarget, Confidence, Qn};
+use crate::calls::graph::{CallEdge, CallKindCompat, CallTarget, Confidence, Qn};
 use crate::calls::pass::{file_rel, raw_to_edge, FilePass, RawEdge};
 use crate::deps::manifest::detect_aliases;
 use crate::deps::resolver::{build_suffix_index, resolve as resolve_spec, Lang, ResolveCtx};
@@ -87,8 +90,34 @@ pub fn run_with_table(
             .collect();
 
         let lang = Lang::from_path(&fp.file);
+        // The modules an Elixir file imports, for its bare calls. Only an
+        // `alias` binds a name other than the module's.
+        let elixir_imported: Vec<String> = fp
+            .imports
+            .iter()
+            .filter(|b| b.local == b.module)
+            .map(|b| b.module.clone())
+            .collect();
 
         for raw in fp.raw_edges {
+            if lang == Some(Lang::Elixir) && !matches!(raw.kind, CallKindCompat::Construct) {
+                let (target, confidence, candidates) = resolve_elixir(
+                    &raw.source,
+                    &raw.bare_name,
+                    raw.receiver.as_deref(),
+                    &elixir_imported,
+                    &symbol_table,
+                );
+                let edge = raw_to_edge(
+                    raw,
+                    target,
+                    confidence,
+                    rel_path(root, &fp.file),
+                    candidates,
+                );
+                forward.entry(edge.source.clone()).or_default().push(edge);
+                continue;
+            }
             // An explicit receiver disqualifies same-file binding: a local
             // homonym must not shadow `connection.getCtx()` — the receiver
             // says the target lives on another object (issue #31). Self-like
@@ -382,6 +411,103 @@ pub fn run_with_table(
         forward,
         symbol_table,
     }
+}
+
+/// Resolve one Elixir call. Elixir names a call's target statically, so the
+/// name-based guessing of passes A–C would only add wrong edges: a bare
+/// `elem(t, 0)` is `Kernel.elem/2`, never the one project function called
+/// `elem` that pass B would bind it to, and `Enum.map(…)` is never a
+/// project `map` that pass C finds in the dep closure.
+///
+/// - A module receiver (`Shop.Pricing`, already expanded from its alias by
+///   the adapter; `:ets`) names the module: the target is the function of
+///   that name defined in it. A module the project does not define (`Enum`,
+///   `Bitwise`, `:ets`) is external.
+/// - No receiver: the caller's own module, then the modules the file
+///   imports. Neither defining it means `Kernel` or a dependency's import,
+///   which is external as well.
+/// - A variable receiver (`mod.fun()`) is dispatch at run time: left bare,
+///   with no candidate guessed.
+///
+/// Arity is not compared, so `f/1` and `f/2` are one target, as they are one
+/// qn. `apply_delta_to_calls` re-resolves a demoted Elixir edge through this
+/// too, without the imports, which the cached graph does not keep.
+pub(crate) fn resolve_elixir(
+    source: &Qn,
+    name: &str,
+    receiver: Option<&str>,
+    imported: &[String],
+    symbol_table: &HashMap<String, Vec<Qn>>,
+) -> (CallTarget, Confidence, Vec<Qn>) {
+    let in_modules = |modules: &[&str]| -> Vec<Qn> {
+        symbol_table
+            .get(name)
+            .into_iter()
+            .flatten()
+            .filter(|q| modules.contains(&elixir_module_of(q).as_str()))
+            .cloned()
+            .collect()
+    };
+    let pick = |cands: Vec<Qn>| match cands.len() {
+        0 => None,
+        1 => Some((
+            CallTarget::Resolved(cands[0].clone()),
+            Confidence::Exact,
+            Vec::new(),
+        )),
+        _ => Some((
+            CallTarget::Bare(name.to_string()),
+            Confidence::Ambiguous,
+            cands,
+        )),
+    };
+    match receiver {
+        Some(module) if module.starts_with(|c: char| c.is_ascii_uppercase() || c == ':') => {
+            pick(in_modules(&[module])).unwrap_or_else(|| {
+                (
+                    CallTarget::External(format!("{}.{}", module, name)),
+                    Confidence::Exact,
+                    Vec::new(),
+                )
+            })
+        }
+        Some(_) => (
+            CallTarget::Bare(name.to_string()),
+            Confidence::Ambiguous,
+            Vec::new(),
+        ),
+        None => {
+            let own = elixir_module_of(source);
+            if let Some(hit) = pick(in_modules(&[own.as_str()])) {
+                return hit;
+            }
+            let imported: Vec<&str> = imported.iter().map(String::as_str).collect();
+            pick(in_modules(&imported)).unwrap_or_else(|| {
+                (
+                    CallTarget::External(name.to_string()),
+                    Confidence::Inferred,
+                    Vec::new(),
+                )
+            })
+        }
+    }
+}
+
+/// The Elixir module a qn sits in: its segments between the file and the
+/// name, without ExUnit's `describe …` level (`test/a_test.exs::ATest::
+/// describe x::test x y` is in `ATest`). A script's top-level function is
+/// in no module, `""`.
+pub(crate) fn elixir_module_of(qn: &Qn) -> String {
+    let segments: Vec<&str> = qn.0.split("::").collect();
+    if segments.len() < 3 {
+        return String::new();
+    }
+    segments[1..segments.len() - 1]
+        .iter()
+        .filter(|s| !s.contains(' '))
+        .copied()
+        .collect::<Vec<_>>()
+        .join(".")
 }
 
 /// Is this repo-relative file a Rust crate root — the module `crate::`

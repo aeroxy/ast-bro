@@ -257,6 +257,48 @@ pub fn apply_delta_to_calls(
     let mut closures = crate::calls::resolve::ClosureCache::default();
     for edges in calls.forward.values_mut() {
         for e in edges.iter_mut() {
+            // Elixir edges take the Elixir rule, as on a cold build, and an
+            // external one is looked at again too: the module or function it
+            // names may have been added since. A dynamic `mod.fun()` stays
+            // bare, and so does a bare call the cold build left ambiguous
+            // between imported modules, which this step cannot see.
+            if crate::deps::resolver::Lang::from_path(&e.file)
+                == Some(crate::deps::resolver::Lang::Elixir)
+                && !matches!(e.kind, crate::calls::graph::CallKindCompat::Construct)
+            {
+                let name = match &e.target {
+                    CallTarget::Bare(n) => n.clone(),
+                    CallTarget::External(s) => match e.receiver.as_deref() {
+                        Some(r) => s
+                            .strip_prefix(r)
+                            .and_then(|t| t.strip_prefix('.'))
+                            .unwrap_or(s)
+                            .to_string(),
+                        None => s.clone(),
+                    },
+                    CallTarget::Resolved(_) => continue,
+                };
+                let module_receiver = e
+                    .receiver
+                    .as_deref()
+                    .is_some_and(|r| r.starts_with(|c: char| c.is_ascii_uppercase() || c == ':'));
+                if (e.receiver.is_some() && !module_receiver)
+                    || (e.receiver.is_none() && !e.candidates.is_empty())
+                {
+                    continue;
+                }
+                let (target, confidence, candidates) = crate::calls::resolve::resolve_elixir(
+                    &e.source,
+                    &name,
+                    e.receiver.as_deref(),
+                    &[],
+                    &calls.symbol_table,
+                );
+                e.target = target;
+                e.confidence = confidence;
+                e.candidates = candidates;
+                continue;
+            }
             let CallTarget::Bare(name) = &e.target else { continue };
             let Some(cands) = calls.symbol_table.get(name) else { continue };
             // Same gate as pass B on a cold build: scope-shifting keyword

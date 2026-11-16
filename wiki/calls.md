@@ -204,6 +204,18 @@ For each ambiguous edge with N candidates, load the dep half of the unified grap
 
 This mirrors `code-review-graph`'s `resolve_bare_call_targets` but uses the richer ast-bro dep graph instead of just IMPORTS_FROM edges.
 
+### Elixir: by module, not by name
+
+Elixir edges skip passes A–C. An Elixir call names its target statically — `Shop.Pricing.sum(x)` is that module's `sum`, and a bare `sum(x)` can only be the caller's own module's, an imported module's, or `Kernel`'s — so guessing by name only adds wrong edges: on the defk project pass B bound every `elem(t, 0)` to the one project function called `elem`, and pass C bound `Enum.map` to a project `map` in the dep closure. `resolve_elixir` looks the target up by module instead:
+
+- **Module receiver** (`Shop.Pricing`, expanded from its alias by the adapter; `__MODULE__`; an Erlang `:ets`) — the function of that name in that module, `Exact`. A module the project does not define (`Enum`, `Bitwise`, `:ets`) is `External`.
+- **No receiver** — the caller's own module (a qn's segments between file and name, without ExUnit's `describe …` level), then the modules the file `import`s. Neither defining it means `Kernel` or a dependency: `External`, tagged `Inferred`.
+- **Variable receiver** (`mod.fun()`) — dispatch at run time, left `Bare` with no candidates.
+
+Arity is not compared: `f/1` and `f/2` are one qn. The imported modules are the file's `ImportBinding`s whose local name is the module itself, which `require` and `use` (and a one-segment `alias`) produce as well as `import`; a function must still exist in that module to bind, so the looser set costs little. A struct literal (`%Mod{}`) is a `Construct` edge and goes through the generic path, which matches it to the type by name. A remote call `Shop.Pricing.sum()` is not listed among `callers Shop.Pricing`'s constructions, as `Foo.bar()` is in Java or TypeScript: the receiver match compares the receiver's last `::` segment, and an Elixir receiver is dotted.
+
+`apply_delta_to_calls` re-resolves Elixir edges with the same function in step 9 — demoted ones, and external ones too, so a module or function added later links to the unchanged files that already call it. It has no imports there, which the cached graph does not keep: a bare call into an imported module that appears later stays external until the caller's file changes or `--rebuild`.
+
 ### Confidence
 
 Every `CallEdge` carries one of:
@@ -233,15 +245,17 @@ Every adapter that emits `Declaration`s now also emits `Declaration::calls`. Eac
 | Go         | `call_expression` | none (`new(T)` is just a regular call) | `selector_expression` for receivers |
 | PHP        | `function_call_expression`, `member_call_expression`, `nullsafe_member_call_expression`, `scoped_call_expression`, `object_creation_expression` | `new T()` (last `\` segment of qualified type) | `\Foo\bar()` namespace-prefixed free function drops the namespace and emits the bare name with `receiver: None` so pass B promotes it; `self::` / `static::` / `parent::` keywords drop receiver (case-folded by tree-sitter-php's `keyword()` helper); dynamic `$func()` and `new $cls()` return `None` |
 | Ruby       | `call` (with `method` / `receiver` fields) | `Foo.new` (constant receiver) | tree-sitter-ruby 0.23.1 unifies all call shapes — `obj.method()`, `obj.method "x"`, `puts "hello"`, `Greeter.shout` — under the single `call` kind. Walker deliberately does **not** bail on `block` / `do_block` (closures over the enclosing method's scope, not separate methods) |
+| Elixir     | `call` (target `identifier` or `dot`), `\|>` into a bare `identifier`, `&name/arity` captures, `map` with a `struct` | `%Mod{}` (last segment of the expanded module) | receivers are modules with aliases and `__MODULE__` expanded (`Pricing.sum` → `Shop.Pricing`); control flow, definitions and directives (`if`, `case`, `def`, `import`, …) are syntax, not call sites, but their contents are walked; a `quote` contributes only its `unquote`s; `map.key` without parentheses is field access; a `defdelegate` calls its `to:` module. Each `def` clause adds to its function, and ExUnit's `test` / `setup` own the calls in their bodies |
 | SQL        | n/a — no-op by design | — | — |
 | Markdown   | n/a — no-op by design | — | — |
 
-Languages still emitting empty `Declaration::calls`: **Elixir** (call extraction not yet implemented). JavaScript is served by the TypeScript adapter.
+Languages still emitting empty `Declaration::calls`: **none.** JavaScript is served by the TypeScript adapter.
 
 ### Known per-language limitations
 
 - **Ruby**: bare paren-less arg-less calls (`helper` with no parens, no args) parse as `identifier`, not `call`, so they aren't captured. Inherent to Ruby's grammar — can't disambiguate from a local variable reference at parse time.
 - **Python**: no Jedi-style receiver-type inference. `obj.method()` where `obj`'s type is inferred from runtime flow falls through to pass B/C; the bare-name + import-disambiguation pass gets most callers. Adding Jedi would mean a Python runtime dep — same trade-off doesn't fit a Rust binary.
+- **Elixir**: a local call with neither parentheses nor arguments (`helper`) is an `identifier`, as in Ruby, and cannot be told from a variable. Calls a macro injects (`use Foo`) and `apply(mod, fun, args)` are not seen. Code at module level (`@x compute()`, `plug :auth`) belongs to no function, so its calls are not attributed.
 - **External-base ancestor walk** (`callees` on a type): capped at depth 1 when a base type doesn't resolve to a project file. Can't walk into types we can't see.
 
 ## Unified graph cache
