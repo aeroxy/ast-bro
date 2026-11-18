@@ -32,7 +32,7 @@ dist build out .eggs target
 .ast-bro
 ```
 
-The list is in [`src/file_filter.rs`](../src/file_filter.rs) — `HARDCODED_IGNORE_DIRS`. New entries should be:
+The list is in [`src/file_filter.rs`](../src/file_filter.rs) — `HARDCODED_IGNORE_DIRS`. Beside it, `MIX_OUTPUT_DIRS` (`deps`, `_build`) is skipped only in a directory that holds a `mix.exs`: a Mix project without `.git` gets no help from its `.gitignore`, and `deps` alone is too common a name for source code (this repository has `src/deps/`). New entries should be:
 
 - virtually never containing searchable user code
 - huge enough to slow indexing meaningfully

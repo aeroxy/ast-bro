@@ -8,14 +8,43 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use crate::deps::graph::DepGraph;
+use crate::deps::graph::{DepGraph, ImportKind};
 
 #[derive(Debug, Clone)]
 pub struct Cycle {
     pub members: Vec<PathBuf>,
 }
 
-pub fn detect(graph: &DepGraph, min_size: usize) -> Vec<Cycle> {
+/// The cycles `cycles` reports, and how many there are with `ref` edges
+/// when leaving them out changed the answer.
+pub struct Report {
+    pub cycles: Vec<Cycle>,
+    pub with_refs: Option<usize>,
+}
+
+/// `detect` restricted to the cycles `keep` accepts, counted a second time
+/// with `ref` edges when they were left out.
+pub fn report(
+    graph: &DepGraph,
+    min_size: usize,
+    include_refs: bool,
+    keep: impl Fn(&Cycle) -> bool,
+) -> Report {
+    let mut cycles = detect(graph, min_size, include_refs);
+    cycles.retain(&keep);
+    let with_refs = if include_refs {
+        None
+    } else {
+        let mut all = detect(graph, min_size, true);
+        all.retain(&keep);
+        Some(all.len()).filter(|&n| n != cycles.len())
+    };
+    Report { cycles, with_refs }
+}
+
+/// `include_refs` counts `ref` edges too: modules named without a directive,
+/// mostly runtime calls, whose cycles are normal in Elixir.
+pub fn detect(graph: &DepGraph, min_size: usize, include_refs: bool) -> Vec<Cycle> {
     // Compact the file set into u32 indices for tight memory + fast loops.
     let nodes: Vec<PathBuf> = {
         let mut v: Vec<PathBuf> = graph.forward.keys().cloned().collect();
@@ -35,6 +64,9 @@ pub fn detect(graph: &DepGraph, min_size: usize) -> Vec<Cycle> {
         };
         let mut row = Vec::with_capacity(edges.len());
         for e in edges {
+            if !include_refs && e.kind == ImportKind::Reference {
+                continue;
+            }
             if let Some(&ti) = index_of.get(&e.target) {
                 row.push(ti);
             }

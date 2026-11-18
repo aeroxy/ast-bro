@@ -509,6 +509,143 @@ fn ruby_reverse_deps() {
     assert!(s.contains("lib.rb"), "expected lib.rb as importer:\n{s}");
 }
 
+// ---- Elixir ----
+
+const SHOP: &str = "tests/fixtures/deps/elixir_modules";
+
+#[test]
+fn elixir_directives_and_references_resolve_by_module_name() {
+    let s = run_ok(&[
+        "deps",
+        &format!("{SHOP}/lib/shop.ex"),
+        "--depth",
+        "1",
+        "--rebuild",
+    ]);
+    for (file, kind) in [
+        // `alias Shop.{Cart, Pricing}` is two edges.
+        ("shop/cart.ex", "(alias)"),
+        ("shop/pricing.ex", "(alias)"),
+        ("shop/inventory.ex", "(alias) [as Stock]"),
+        ("shop/format.ex", "(import)"),
+        ("shop/macros.ex", "(use)"),
+        // No directive: a remote call, a struct, an `unquote` in a macro.
+        ("shop/payment.ex", "(ref)"),
+        ("shop/receipt.ex", "(ref)"),
+        ("shop/unquoted.ex", "(ref)"),
+    ] {
+        assert!(
+            s.lines().any(|l| l.contains(file) && l.contains(kind)),
+            "expected {file} {kind} in deps:\n{s}"
+        );
+    }
+    // A typespec and the inside of a `quote` are not this file's deps.
+    assert!(!s.contains("typed.ex"), "{s}");
+    assert!(!s.contains("shop/quoted.ex"), "{s}");
+    assert!(s.contains("[external] Logger"), "{s}");
+}
+
+#[test]
+fn elixir_aliases_expand_and_nested_modules_resolve() {
+    let s = run_ok(&[
+        "deps",
+        &format!("{SHOP}/lib/shop/pricing.ex"),
+        "--depth",
+        "1",
+        "--rebuild",
+    ]);
+    // `alias Shop.Rules` then `Rules.Tax.rate/1` names `Shop.Rules.Tax`.
+    assert!(s.contains("shop/rules/tax.ex"), "{s}");
+    // `Shop.Cart.Line` is defined nested inside cart.ex.
+    assert!(s.contains("shop/cart.ex"), "{s}");
+    // An exact name only: `Shop.Rules` is defined nowhere, and must not
+    // fall back to the file defining `Shop`.
+    assert!(s.contains("[external] Shop.Rules"), "{s}");
+    assert!(!s.contains("lib/shop.ex"), "{s}");
+}
+
+#[test]
+fn elixir_reverse_deps() {
+    let s = run_ok(&[
+        "reverse-deps",
+        &format!("{SHOP}/lib/shop/cart.ex"),
+        "--depth",
+        "1",
+        "--rebuild",
+    ]);
+    assert!(s.contains("lib/shop.ex"), "{s}");
+    assert!(s.contains("shop/pricing.ex"), "{s}");
+}
+
+#[test]
+fn elixir_defimpl_depends_on_its_protocol_and_types() {
+    let s = run_ok(&[
+        "deps",
+        &format!("{SHOP}/lib/shop/impls.ex"),
+        "--depth",
+        "1",
+        "--rebuild",
+    ]);
+    // The protocol is an `impl` edge, so `cycles` counts it by default.
+    for (file, kind) in [
+        ("shop/proto.ex", "(impl)"),
+        ("shop/payment.ex", "(ref)"),
+        ("shop/receipt.ex", "(ref)"),
+    ] {
+        assert!(
+            s.lines().any(|l| l.contains(file) && l.contains(kind)),
+            "expected {file} {kind} in deps:\n{s}"
+        );
+    }
+}
+
+#[test]
+fn elixir_cycles_leave_out_ref_edges_by_default() {
+    let dir = "tests/fixtures/deps/elixir_cycles";
+    // Only the `import` cycle counts; the note names the runtime one.
+    let (code, stdout, stderr) = run(&["cycles", dir, "--rebuild"]);
+    assert_eq!(code, 3, "stdout: {stdout}\nstderr: {stderr}");
+    assert!(stdout.starts_with("1 cycle(s)"), "{stdout}");
+    assert!(
+        stdout.contains("c.ex") && !stdout.contains("a.ex"),
+        "{stdout}"
+    );
+    assert!(stderr.contains("2 cycle(s), not 1"), "{stderr}");
+
+    let (_, stdout, _) = run(&["cycles", dir, "--json", "--compact"]);
+    assert!(stdout.contains("\"cycles_with_refs\":2"), "{stdout}");
+
+    let (code, stdout, stderr) = run(&["cycles", dir, "--include-refs"]);
+    assert_eq!(code, 3, "stdout: {stdout}\nstderr: {stderr}");
+    assert!(stdout.starts_with("2 cycle(s)"), "{stdout}");
+    assert!(stderr.is_empty(), "{stderr}");
+}
+
+#[test]
+fn other_languages_do_not_import_elixir_files_by_path() {
+    let s = run_ok(&["graph", SHOP, "--rebuild"]);
+    // `import shop` / `import config` / `from "cart"` name no Elixir file.
+    for from in ["scripts/gen.py", "assets/app.js"] {
+        let block: String = s
+            .split("\n\n")
+            .filter(|b| b.lines().next().is_some_and(|l| l.ends_with(from)))
+            .collect();
+        assert!(
+            !block.contains(".ex"),
+            "{from} reached an Elixir file:\n{s}"
+        );
+    }
+}
+
+#[test]
+fn elixir_files_stay_out_of_the_call_graph() {
+    // The adapter records no call sites, so `items` has no known callers;
+    // the call graph must not answer for it.
+    let (code, stdout, stderr) = run(&["callers", "items", SHOP, "--rebuild"]);
+    assert_eq!(code, 2, "stdout: {stdout}\nstderr: {stderr}");
+    assert!(stdout.is_empty(), "{stdout}");
+}
+
 // ---- Idempotency ----
 
 #[test]

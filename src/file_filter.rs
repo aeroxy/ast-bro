@@ -41,6 +41,12 @@ pub const HARDCODED_IGNORE_DIRS: &[&str] = &[
     ".ast-bro", ".ast-outline",
 ];
 
+/// Directories a Mix project fills with fetched dependencies and build
+/// output. Skipped only beside a `mix.exs`: `deps` is a common name for
+/// source code elsewhere, and a Mix project without `.git` gets no help
+/// from its `.gitignore`.
+const MIX_OUTPUT_DIRS: &[&str] = &["deps", "_build"];
+
 /// Wire `.ast-bro-ignore` into a `WalkBuilder`.
 ///
 /// Call this on every walker that should observe ast-bro's per-repo
@@ -122,7 +128,8 @@ pub fn file_identity(path: &Path) -> PathBuf {
 }
 
 /// Return `true` if any component of `path` (relative to `repo_root`) matches
-/// the hardcoded denylist. Used as a post-filter — the `ignore` crate handles
+/// the hardcoded denylist, or is one of `MIX_OUTPUT_DIRS` beside a `mix.exs`.
+/// Used as a post-filter — the `ignore` crate handles
 /// `.gitignore` and `.ast-bro-ignore` for us, but the denylist is our
 /// belt-and-suspenders.
 ///
@@ -132,10 +139,18 @@ pub fn should_skip_path(path: &Path, repo_root: &Path) -> bool {
     let Ok(rel) = path.strip_prefix(repo_root) else {
         return false;
     };
-    rel.components().any(|c| {
+    let mut dir = repo_root.to_path_buf();
+    for c in rel.components() {
         let s = c.as_os_str().to_string_lossy();
-        HARDCODED_IGNORE_DIRS.iter().any(|d| *d == s)
-    })
+        if HARDCODED_IGNORE_DIRS.iter().any(|d| *d == s) {
+            return true;
+        }
+        if MIX_OUTPUT_DIRS.iter().any(|d| *d == s) && dir.join("mix.exs").is_file() {
+            return true;
+        }
+        dir.push(c);
+    }
+    false
 }
 
 /// Path components that denote a test directory (case-insensitive).
@@ -380,6 +395,20 @@ mod tests {
     fn skip_self_managed_index() {
         let root = PathBuf::from("/r");
         assert!(should_skip_path(&root.join(".ast-bro/index/meta.json"), &root));
+    }
+
+    #[test]
+    fn skip_mix_output_dirs_only_beside_mix_exs() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("mix.exs"), "").unwrap();
+        assert!(should_skip_path(
+            &root.join("deps/jason/lib/jason.ex"),
+            root
+        ));
+        assert!(should_skip_path(&root.join("_build/dev/lib/x.ex"), root));
+        // No `mix.exs` beside it: `src/deps` is source code.
+        assert!(!should_skip_path(&root.join("src/deps/graph.rs"), root));
     }
 
     #[test]

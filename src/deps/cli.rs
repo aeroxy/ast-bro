@@ -183,6 +183,7 @@ pub fn run_reverse_deps(
 pub fn run_cycles(
     path: &Path,
     min_size: usize,
+    include_refs: bool,
     json: bool,
     pretty: bool,
     rebuild: bool,
@@ -201,19 +202,21 @@ pub fn run_cycles(
     let graph = unified.deps.clone();
     // Detect cycles on the full cached graph, then keep only those whose
     // members are entirely within the user's requested scope.
-    let mut cycles = scc::detect(&graph, min_size);
-    if !scope.is_empty() {
-        cycles.retain(|c| c.members.iter().all(|m| graph.in_scope(m, &scope)));
+    let report = scc::report(&graph, min_size, include_refs, |c| {
+        scope.is_empty() || c.members.iter().all(|m| graph.in_scope(m, &scope))
+    });
+    if let Some(note) = render::ref_cycles_note(&report) {
+        eprintln!("{}", note);
     }
     if json {
         println!(
             "{}",
-            render::render_cycles_json(&graph, &cycles, pretty)
+            render::render_cycles_json(&graph, &report, pretty)
         );
     } else {
-        print!("{}", render::render_cycles_text(&graph, &cycles));
+        print!("{}", render::render_cycles_text(&graph, &report.cycles));
     }
-    if cycles.is_empty() {
+    if report.cycles.is_empty() {
         0
     } else {
         // Non-zero exit so this can be wired into CI gates.

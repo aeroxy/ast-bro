@@ -263,6 +263,15 @@ pub fn resolve(spec: &str, ctx: &ResolveCtx<'_>, idx: &SuffixIndex) -> Option<Pa
         return None;
     }
 
+    // Elixir: the file defining the module, by exact name — `Foo.Missing`
+    // must not fall back to `Foo`. Stdlib and dependency modules stay external.
+    if ctx.lang == Lang::Elixir {
+        return pick_closest(
+            idx.elixir_modules.get(spec).map(|v| v.as_slice()),
+            ctx.from_file,
+        );
+    }
+
     // Python `from a.b import c` arrives normalised to `a/b/c` already.
     let key = spec.replace('.', "/");
     pick_closest(idx.lookup(&key), ctx.from_file)

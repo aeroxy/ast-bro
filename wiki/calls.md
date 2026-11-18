@@ -258,7 +258,7 @@ Every adapter that emits `Declaration`s now also emits `Declaration::calls`. Eac
 | SQL        | n/a — no-op by design | — | — |
 | Markdown   | n/a — no-op by design | — | — |
 
-Languages still emitting empty `Declaration::calls`: **Elixir** (call extraction not yet implemented). JavaScript is served by the TypeScript adapter.
+**Elixir** files are in the dep graph but kept out of the call graph (`extract_file` returns `None` for them): the adapter records no call sites yet, and an Elixir function with no known callers must not read as a real answer. JavaScript is served by the TypeScript adapter.
 
 ### Known per-language limitations
 
@@ -274,7 +274,7 @@ Languages still emitting empty `Declaration::calls`: **Elixir** (call extraction
 
 ## Unified graph cache
 
-The call graph does **not** get its own cache file. It rides inside a unified `UnifiedGraph { deps, calls: Option<CallGraph> }` at `.ast-bro/deps/graph.bin`. The schema constant is `JSON_SCHEMA_GRAPH_INDEX = "ast-bro.graph-index.v2"`. (The directory keeps its `deps/` name even though it now holds the call graph too — renaming would force every existing user to rebuild from a new path for no benefit.)
+The call graph does **not** get its own cache file. It rides inside a unified `UnifiedGraph { deps, calls: Option<CallGraph> }` at `.ast-bro/deps/graph.bin`. The schema constant is `JSON_SCHEMA_GRAPH_INDEX = "ast-bro.graph-index.v3"`. (The directory keeps its `deps/` name even though it now holds the call graph too — renaming would force every existing user to rebuild from a new path for no benefit.)
 
 ### Disk layout
 
@@ -322,7 +322,7 @@ The legacy `deps-index.v1` cache (at `.ast-bro/deps/graph.bin`) was retired in t
 
 The schema bump from `ast-outline.graph-index.v1` to `v2` happened mid-development to fix a silent bincode round-trip bug — `#[serde(skip_serializing_if)]` on `DepEdge::local_name` / `raw_path` and `CallEdge::receiver` / `candidates` corrupts bincode's positional encoding (a skipped Option/Vec field shifts every byte that follows). The skip annotations were a JSON-output ergonomics holdover that never applied to the cache; binary positional formats *require* every field to be encoded. Removed the annotations, bumped the schema, and any v1 cache files (which were all corrupt and silently re-cold-built every invocation) get a clean rebuild.
 
-The `ast-bro.` name restarted at `graph-index.v1`. `ast-bro.graph-index.v2` adds `CallEdge::receiver_scope` and `CallGraph::namespaces`, and an older cache rebuilds once.
+The `ast-bro.` name restarted at `graph-index.v1`. `ast-bro.graph-index.v2` adds `CallEdge::receiver_scope` and `CallGraph::namespaces`, and an older cache rebuilds once. `v3` adds Elixir files to the dep graph: a v2 cache already fingerprints `.ex` files, so without the bump nothing reads as changed and every Elixir file stays out until `--rebuild`.
 
 ### Per-file invalidation
 
