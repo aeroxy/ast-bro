@@ -6,8 +6,12 @@
 //! Java/Kotlin/Scala/C# also index `<package>.<TypeName>` after a
 //! dot→slash conversion (the package is parsed from the file's
 //! `package` / `namespace` declaration).
+//!
+//! Elixir files are indexed by the modules they define, in a table of their
+//! own: a module name is not a path suffix.
 
 use ignore::WalkBuilder;
+use rayon::prelude::*;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -44,6 +48,7 @@ pub enum Lang {
     Cpp,
     Php,
     Ruby,
+    Elixir,
     Other,
 }
 
@@ -65,6 +70,7 @@ impl Lang {
             "cpp" | "cc" | "cxx" | "c++" | "hpp" | "hxx" | "hh" | "h++" | "h" => Self::Cpp,
             "php" => Self::Php,
             "rb" => Self::Ruby,
+            "ex" | "exs" => Self::Elixir,
             _ => return None,
         };
         // `Cargo.toml`/`go.mod` etc. don't go through here.
@@ -96,6 +102,8 @@ pub struct SuffixIndex {
     /// alone: the graph root is the repository, and a repository may hold
     /// its module in a subdirectory (or hold several modules).
     pub go_modules: Vec<(String, String)>,
+    /// Elixir module name (`Foo.Bar`) → the files that define it.
+    pub elixir_modules: HashMap<String, Vec<PathBuf>>,
     pub root: PathBuf,
 }
 
@@ -117,6 +125,7 @@ pub fn build_suffix_index(root: &Path) -> SuffixIndex {
     let mut builder = WalkBuilder::new(root);
     builder.hidden(false);
     add_filters(&mut builder, root);
+    let mut elixir_files: Vec<PathBuf> = Vec::new();
 
     for entry in builder.build().flatten() {
         let path = entry.path();
@@ -156,6 +165,13 @@ pub fn build_suffix_index(root: &Path) -> SuffixIndex {
             top_level_types: top_level_types.clone(),
         };
         idx.by_file.insert(path.to_path_buf(), info);
+
+        // An Elixir file is found by the modules it defines, never by its
+        // path: `import json` in Python must not reach `lib/app/json.ex`.
+        if lang == Lang::Elixir {
+            elixir_files.push(path.to_path_buf());
+            continue;
+        }
 
         // Index relative path suffixes (a/b/c, b/c, c) for the file.
         let rel = match path.strip_prefix(root) {
@@ -201,8 +217,26 @@ pub fn build_suffix_index(root: &Path) -> SuffixIndex {
         }
     }
 
+    // Finding a file's modules needs a parse, so it runs after the walk.
+    let defined: Vec<(PathBuf, Vec<String>)> = elixir_files
+        .into_par_iter()
+        .filter_map(|path| {
+            let src = std::fs::read_to_string(&path).ok()?;
+            Some((path, crate::adapters::elixir::defined_modules(&src)))
+        })
+        .collect();
+    for (path, modules) in defined {
+        for m in modules {
+            idx.elixir_modules.entry(m).or_default().push(path.clone());
+        }
+    }
+
     // Dedup + stable sort each candidate list.
-    for v in idx.by_suffix.values_mut() {
+    for v in idx
+        .by_suffix
+        .values_mut()
+        .chain(idx.elixir_modules.values_mut())
+    {
         v.sort();
         v.dedup();
     }

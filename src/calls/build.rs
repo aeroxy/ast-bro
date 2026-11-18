@@ -14,6 +14,7 @@ use crate::calls::graph::{CallGraph, CallKindCompat, CallTarget, CallableMeta, Q
 use crate::calls::pass::{file_rel, qn_from, FilePass, RawEdge};
 use crate::calls::resolve;
 use crate::core::{CallSite, Declaration, DeclarationKind};
+use crate::deps::resolver::Lang;
 use crate::deps::DepGraph;
 use crate::main_helpers::parse_file_for_hook;
 use rayon::prelude::*;
@@ -120,6 +121,11 @@ fn normalise_type_name(name: &str) -> String {
 /// Public so the incremental updater in `crate::graph_cache::delta` can
 /// re-extract individual files without re-walking the project.
 pub fn extract_file(root: &Path, file: &Path) -> Option<FilePass> {
+    // The dep graph holds Elixir files, but the adapter records no call
+    // sites yet: a symbol with no callers must not read as a real answer.
+    if Lang::from_path(file) == Some(Lang::Elixir) {
+        return None;
+    }
     let parse = parse_file_for_hook(file)?;
     let rel = file_rel(root, file);
 

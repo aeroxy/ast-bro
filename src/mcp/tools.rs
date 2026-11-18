@@ -150,6 +150,7 @@ pub fn list() -> Value {
                     "properties": {
                         "path":     { "type": "string",  "description": format!("Repo root (default \"{}\").", crate::defaults::ROOT) },
                         "min_size": { "type": "integer", "description": format!("Drop SCCs smaller than this (default {}).", crate::defaults::MIN_SIZE), "minimum": 1 },
+                        "include_refs": { "type": "boolean", "description": "Also count `ref` edges: modules named without a directive (Elixir), mostly runtime calls, whose cycles are normal. Default false." },
                         "rebuild":  { "type": "boolean", "description": "Drop the cached graph and rebuild." },
                         "json":     { "type": "boolean", "description": "Return JSON (schema `ast-bro.cycles.v1`) instead of text." }
                     }
@@ -1026,6 +1027,7 @@ struct ReverseDepsArgs {
 struct CyclesArgs {
     #[serde(default = "crate::defaults::root")] path: PathBuf,
     #[serde(default = "crate::defaults::min_size")] min_size: usize,
+    #[serde(default)] include_refs: bool,
     #[serde(default)] rebuild: bool,
     #[serde(default)] json: bool,
 }
@@ -1159,11 +1161,15 @@ fn run_cycles(args: Value) -> CallResult {
         Ok(g) => g,
         Err(e) => return CallResult::Error(e.to_string()),
     };
-    let cycles = crate::deps::scc::detect(&graph, a.min_size);
+    let report = crate::deps::scc::report(&graph, a.min_size, a.include_refs, |_| true);
     if a.json {
-        CallResult::Text(crate::deps::render::render_cycles_json(&graph, &cycles, true))
+        CallResult::Text(crate::deps::render::render_cycles_json(&graph, &report, true))
     } else {
-        CallResult::Text(crate::deps::render::render_cycles_text(&graph, &cycles))
+        let note = crate::deps::render::ref_cycles_note(&report);
+        with_note(
+            &note,
+            crate::deps::render::render_cycles_text(&graph, &report.cycles),
+        )
     }
 }
 

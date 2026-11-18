@@ -29,8 +29,9 @@ pub const JSON_SCHEMA_RUN: &str = "ast-bro.run.v1";
 /// every time, masking the bug). The v2 bump ensures upgrading users get
 /// a clean rebuild rather than continuing to hit the silent fallback.
 /// The `ast-bro.` name restarted at v1; v2 adds `CallEdge::receiver_scope`
-/// and `CallGraph::namespaces`.
-pub const JSON_SCHEMA_GRAPH_INDEX: &str = "ast-bro.graph-index.v2";
+/// and `CallGraph::namespaces`; v3 adds Elixir files, which a v2 cache
+/// already fingerprints without holding their edges.
+pub const JSON_SCHEMA_GRAPH_INDEX: &str = "ast-bro.graph-index.v3";
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Copy, Default)]
 pub enum DeclarationKind {

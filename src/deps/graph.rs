@@ -37,6 +37,10 @@ pub enum ImportKind {
     Alias,
     /// Globbed wildcard import where we don't expand members.
     Glob,
+    /// A module used without an import statement (`Foo.Bar.baz(…)`).
+    Reference,
+    /// The protocol an Elixir `defimpl` implements.
+    Impl,
 }
 
 impl ImportKind {
@@ -51,6 +55,8 @@ impl ImportKind {
             Self::Static => "static",
             Self::Alias => "alias",
             Self::Glob => "glob",
+            Self::Reference => "ref",
+            Self::Impl => "impl",
         }
     }
 }

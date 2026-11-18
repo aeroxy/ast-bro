@@ -15,7 +15,7 @@ use crate::core::{
     JSON_SCHEMA_CYCLES, JSON_SCHEMA_DEPS, JSON_SCHEMA_GRAPH, JSON_SCHEMA_REVERSE_DEPS,
 };
 use crate::deps::graph::{DepEdge, DepGraph, ImportKind};
-use crate::deps::scc::Cycle;
+use crate::deps::scc::{Cycle, Report};
 use crate::deps::traverse::DepHit;
 
 // ---- Text rendering ----
@@ -139,6 +139,18 @@ pub fn render_reverse_deps_text(
         let _ = writeln!(out, "{}{}", prefix, graph.rel(&h.file).yellow());
     }
     out
+}
+
+/// The note `cycles` adds when leaving out `ref` edges changed the answer,
+/// so a clean answer still says what it did not count.
+pub fn ref_cycles_note(report: &Report) -> Option<String> {
+    report.with_refs.map(|with_refs| {
+        format!(
+            "# note: `ref` edges (modules named without a directive) are left out; with them there are {} cycle(s), not {}: pass --include-refs",
+            with_refs,
+            report.cycles.len()
+        )
+    })
 }
 
 pub fn render_cycles_text(graph: &DepGraph, cycles: &[Cycle]) -> String {
@@ -319,11 +331,14 @@ pub fn render_reverse_deps_json(
     }
 }
 
-pub fn render_cycles_json(graph: &DepGraph, cycles: &[Cycle], pretty: bool) -> String {
+pub fn render_cycles_json(graph: &DepGraph, report: &Report, pretty: bool) -> String {
     #[derive(Serialize)]
     struct Doc {
         schema: &'static str,
         cycles: Vec<JsonCycle>,
+        /// Present only when leaving out `ref` edges changed the answer.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        cycles_with_refs: Option<usize>,
     }
     #[derive(Serialize)]
     struct JsonCycle {
@@ -332,13 +347,15 @@ pub fn render_cycles_json(graph: &DepGraph, cycles: &[Cycle], pretty: bool) -> S
     }
     let doc = Doc {
         schema: JSON_SCHEMA_CYCLES,
-        cycles: cycles
+        cycles: report
+            .cycles
             .iter()
             .map(|c| JsonCycle {
                 size: c.members.len(),
                 members: c.members.iter().map(|p| graph.rel(p)).collect(),
             })
             .collect(),
+        cycles_with_refs: report.with_refs,
     };
     if pretty {
         serde_json::to_string_pretty(&doc).unwrap_or_default()

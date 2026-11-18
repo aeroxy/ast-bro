@@ -361,6 +361,10 @@ enum Commands {
         /// self-imports.
         #[arg(long, default_value_t = crate::defaults::MIN_SIZE)]
         min_size: usize,
+        /// Also count `ref` edges: modules named without a directive
+        /// (Elixir), mostly runtime calls, whose cycles are normal.
+        #[arg(long)]
+        include_refs: bool,
         /// Force a fresh dep-graph build.
         #[arg(long)]
         rebuild: bool,
@@ -2111,11 +2115,19 @@ pub fn run() {
         Commands::Cycles {
             path,
             min_size,
+            include_refs,
             rebuild,
             json,
             compact,
         } => {
-            let exit = crate::deps::cli::run_cycles(path, *min_size, *json, !(*compact), *rebuild);
+            let exit = crate::deps::cli::run_cycles(
+                path,
+                *min_size,
+                *include_refs,
+                *json,
+                !(*compact),
+                *rebuild,
+            );
             std::process::exit(exit);
         }
         Commands::Graph {

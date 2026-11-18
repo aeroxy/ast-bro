@@ -117,6 +117,7 @@ pub fn find_root_for(file: &Path) -> Result<PathBuf, String> {
         "build.gradle.kts",
         "build.sbt",
         "pom.xml",
+        "mix.exs",
     ];
     let home = home_dir();
     let mut nearest_manifest: Option<PathBuf> = None;
@@ -318,6 +319,17 @@ mod tests {
         touch(&proj.join("src/lib.rs"));
 
         let root = find_root_for(&proj.join("src/lib.rs")).unwrap();
+        assert_eq!(root, proj.canonicalize().unwrap());
+    }
+
+    #[test]
+    fn find_root_takes_mix_exs_as_a_manifest() {
+        let tmp = tempdir().unwrap();
+        let proj = tmp.path().join("shop");
+        touch(&proj.join("mix.exs"));
+        touch(&proj.join("lib/shop/format.ex"));
+
+        let root = find_root_for(&proj.join("lib/shop/format.ex")).unwrap();
         assert_eq!(root, proj.canonicalize().unwrap());
     }
 
