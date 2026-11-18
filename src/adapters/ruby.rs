@@ -1,5 +1,5 @@
 use super::base::{collapse_ws, count_parse_errors, field_text, LanguageAdapter};
-use crate::core::{CallKind, CallSite, Declaration, DeclarationKind, ParseResult};
+use crate::core::{CallKind, CallSite, Declaration, DeclarationKind, ParseResult, ReceiverScope};
 use ast_grep_core::{Doc, Node};
 use std::path::Path;
 
@@ -455,9 +455,15 @@ fn _call_site_from_call_ruby<'a, D: Doc>(node: &Node<'a, D>, src: &[u8]) -> Opti
         return None;
     }
 
-    let receiver_text = receiver_node
-        .as_ref()
-        .map(|r| collapse_ws(&String::from_utf8_lossy(&src[r.range()])));
+    // A constant path may span lines (`Foo::\n  Bar`); its name has no spaces.
+    let receiver_text = receiver_node.as_ref().map(|r| {
+        let text = collapse_ws(&String::from_utf8_lossy(&src[r.range()]));
+        if _is_constant_path_ruby(r) {
+            text.split_whitespace().collect()
+        } else {
+            text
+        }
+    });
 
     // Ruby idiom: `Foo.new(...)` is a constructor call. Classify as Construct
     // so callers/callees renderers can distinguish it from regular invocations
@@ -490,13 +496,48 @@ fn _call_site_from_call_ruby<'a, D: Doc>(node: &Node<'a, D>, src: &[u8]) -> Opti
         (name, receiver_text)
     };
 
+    // A CamelCase constant path names a class or module. An all-caps one
+    // may hold a value (`ENV`, `DEFAULT_PARSER`), so it gets no such claim.
+    let receiver_scope = match (&receiver_node, final_receiver.as_deref()) {
+        (Some(node), Some(text))
+            if _is_constant_path_ruby(node)
+                && _last_const_segment_ruby(text).contains(|c: char| c.is_ascii_lowercase()) =>
+        {
+            if text.starts_with("::") {
+                ReceiverScope::Absolute
+            } else {
+                ReceiverScope::Lexical
+            }
+        }
+        _ => ReceiverScope::None,
+    };
+
     let line = node.start_pos().line() as u32 + 1;
     Some(CallSite {
         name: final_name,
         receiver: final_receiver,
         line,
         kind,
+        receiver_scope,
     })
+}
+
+/// `Foo`, `Foo::Bar` or `::Foo`: a constant path, as opposed to a method
+/// call such as `Foo::bar`.
+fn _is_constant_path_ruby<'a, D: Doc>(node: &Node<'a, D>) -> bool {
+    match node.kind().as_ref() {
+        "constant" => true,
+        "scope_resolution" => {
+            let name_is_constant = node
+                .field("name")
+                .is_some_and(|n| n.kind().as_ref() == "constant");
+            name_is_constant
+                && node
+                    .field("scope")
+                    .is_none_or(|s| _is_constant_path_ruby(&s))
+        }
+        _ => false,
+    }
 }
 
 fn _looks_like_constant_ruby(text: &str) -> bool {

@@ -45,6 +45,8 @@ build_call_graph(root, deps):
   symbol_table = build_symbol_table(passes) # name → Vec<Qn> (terminal segment)
 
   for each raw edge:
+    scope receiver:                         # `Foo::Bar.baz()`: only that
+                                            #   scope's `baz`, else external
     pass A — same-file:                     # bare name → qn via local
                                             #   defined_names + ImportBindings,
                                             #   resolved through suffix index
@@ -125,6 +127,7 @@ src/calls/
 ├── build.rs        per-file extraction + FilePass aggregation
 ├── resolve.rs      three-pass resolver:
 │                     run = build_symbol_table → run_with_table
+│                   + resolve_scoped for scope receivers
 │                   (the split lets the incremental updater resolve a
 │                   partial pass set against a precomputed global table)
 ├── graph.rs        Qn, CallEdge, CallTarget, Confidence, CallableMeta,
@@ -157,9 +160,12 @@ pub struct CallSite {
     pub receiver: Option<String>,       // `obj` for `obj.bar()`, `Foo` for `Foo::baz()`
     pub line: u32,
     pub kind: CallKind,
+    pub receiver_scope: ReceiverScope,  // receiver is a module/class, not a value
 }
 
 pub enum CallKind { Call, Construct, Macro, Super }
+
+pub enum ReceiverScope { None, Lexical, Absolute }
 
 pub struct ImportBinding {
     pub local: String,
@@ -204,13 +210,29 @@ For each ambiguous edge with N candidates, load the dep half of the unified grap
 
 This mirrors `code-review-graph`'s `resolve_bare_call_targets` but uses the richer ast-bro dep graph instead of just IMPORTS_FROM edges.
 
+### Scope receivers
+
+An adapter sets `CallSite::receiver_scope` when its language makes clear that the receiver is a scope — a module, class or namespace — and not a value. Today that is Ruby's CamelCase constant paths; an all-caps constant may hold a value (`DEFAULT_PARSER.parse`), so it is left out. Passes B and C match by name and ignore the receiver, so they used to bind `File.join()` to whatever project `join` the caller's file can reach. A scope-receiver edge therefore takes this rule instead of passes A and B, whether its scope is in the caller's file or another; pass C only narrows candidates that are already in the scope.
+
+An `Absolute` receiver (`::File.join`) names its path from the top level. A `Lexical` one (`Shop::Pricing.price`) is looked up from the caller's scope outward, one `::` segment of the caller's qualified name at a time, as Ruby and C++ look up a name. Both kinds are matched against every scope that the caller's language declares (`resolve::scope_paths`): each type, each namespace (a Ruby `module`), and each declaration that encloses a callable. A Ruby `User` never binds to a TypeScript `User`. One dotted declaration is one scope: a declaration named `Shop.Cart` declares `Shop::Cart`, not `Shop`. Then:
+
+- The scope defines one callable of that name → `Resolved`, `Exact`.
+- It defines several (a scope reopened in several files) → pass C.
+- It defines none (an inherited or generated method) → `Bare`.
+- The caller's language declares no such scope → `External("File.join")`. These are the only edges the resolver marks external.
+- Exception: a `Lexical` receiver whose scope is not found, while the caller's language declares a scope whose path ends with the receiver path (`Jekyll::Utils` for `Utils`) → `Bare`. Ruby also finds a constant through ancestors (`include Jekyll`), which this lookup does not walk, and the method may be inherited, so the scope need not define it.
+
+Every other adapter sets `None`, so its calls stay name-matched. That includes Java-style `File.join()`, where the grammar cannot tell a type from a value.
+
+The incremental update applies the same `resolve::resolve_scoped` to every scope-receiver edge, resolved and external ones included, because a later delta can define the scope or a nearer one.
+
 ### Confidence
 
 Every `CallEdge` carries one of:
 
 | Tag | Meaning |
 |---|---|
-| `Exact` | Pass A or single-candidate pass B promotion. |
+| `Exact` | Pass A, a scope receiver, or single-candidate pass B promotion. |
 | `Inferred` | Pass C narrowed multiple candidates to one via dep closure. |
 | `Ambiguous` | Pass C left more than one candidate. |
 
@@ -232,7 +254,7 @@ Every adapter that emits `Declaration`s now also emits `Declaration::calls`. Eac
 | C++        | `call_expression`, `new_expression` | `new T()` | `qualified_identifier` / `scoped_identifier` split on `::`; `template_function` recurses into `name`; destructor names handled |
 | Go         | `call_expression` | none (`new(T)` is just a regular call) | `selector_expression` for receivers |
 | PHP        | `function_call_expression`, `member_call_expression`, `nullsafe_member_call_expression`, `scoped_call_expression`, `object_creation_expression` | `new T()` (last `\` segment of qualified type) | `\Foo\bar()` namespace-prefixed free function drops the namespace and emits the bare name with `receiver: None` so pass B promotes it; `self::` / `static::` / `parent::` keywords drop receiver (case-folded by tree-sitter-php's `keyword()` helper); dynamic `$func()` and `new $cls()` return `None` |
-| Ruby       | `call` (with `method` / `receiver` fields) | `Foo.new` (constant receiver) | tree-sitter-ruby 0.23.1 unifies all call shapes — `obj.method()`, `obj.method "x"`, `puts "hello"`, `Greeter.shout` — under the single `call` kind. Walker deliberately does **not** bail on `block` / `do_block` (closures over the enclosing method's scope, not separate methods) |
+| Ruby       | `call` (with `method` / `receiver` fields) | `Foo.new` (constant receiver) | tree-sitter-ruby 0.23.1 unifies all call shapes — `obj.method()`, `obj.method "x"`, `puts "hello"`, `Greeter.shout` — under the single `call` kind. Walker deliberately does **not** bail on `block` / `do_block` (closures over the enclosing method's scope, not separate methods). A CamelCase constant receiver sets `receiver_scope` |
 | SQL        | n/a — no-op by design | — | — |
 | Markdown   | n/a — no-op by design | — | — |
 
@@ -241,12 +263,18 @@ Languages still emitting empty `Declaration::calls`: **Elixir** (call extraction
 ### Known per-language limitations
 
 - **Ruby**: bare paren-less arg-less calls (`helper` with no parens, no args) parse as `identifier`, not `call`, so they aren't captured. Inherent to Ruby's grammar — can't disambiguate from a local variable reference at parse time.
+- **Ruby**: a class method inherited from a superclass (`Child.create`, defined on `Base`) stays `Bare`: the scope-receiver rule does not walk ancestors.
+- **Ruby**: a compact definition (`module Shop::Compact`) is one lexical level in Ruby, but the lookup walks it as two. When both `Shop::Pricing` and a top-level `Pricing` define the method, `Pricing.price` inside it binds to `Shop::Pricing`; Ruby takes the top-level one.
+- **Ruby**: a receiver of several segments is looked up whole at each level. Ruby looks up the first segment and then stays under it: with `module Shop; module Tax; end; end`, `Tax::Rule` inside `Shop` is a `NameError` in Ruby, but binds to a top-level `Tax::Rule` here. Following Ruby needs to know which definitions are compact (above): otherwise `class RDoc::Comment` looks up `RDoc` inside `RDoc`, finds `RDoc::RDoc`, and 49 correct `Exact` edges in the Ruby 2.6 stdlib turn unresolved.
+- **Ruby**: a constant nested in a superclass is found only when the lexical lookup fails. When a top-level scope of the same name also defines the method, the call binds to the top-level one; Ruby takes the superclass's.
+- **Ruby**: the scope marker follows a naming convention, not syntax. A CamelCase constant can hold a value (`TimeoutMutex = Thread::Mutex.new`), and a call on it is then marked like a call on a module.
+- **Ruby**: all-caps modules (`JSON.parse`, `CSV.read`, `URI.join`) and `Foo.new` are not marked, so they stay name-matched.
 - **Python**: no Jedi-style receiver-type inference. `obj.method()` where `obj`'s type is inferred from runtime flow falls through to pass B/C; the bare-name + import-disambiguation pass gets most callers. Adding Jedi would mean a Python runtime dep — same trade-off doesn't fit a Rust binary.
 - **External-base ancestor walk** (`callees` on a type): capped at depth 1 when a base type doesn't resolve to a project file. Can't walk into types we can't see.
 
 ## Unified graph cache
 
-The call graph does **not** get its own cache file. It rides inside a unified `UnifiedGraph { deps, calls: Option<CallGraph> }` at `.ast-bro/deps/graph.bin`. The schema constant is `JSON_SCHEMA_GRAPH_INDEX = "ast-bro.graph-index.v1"`. (The directory keeps its `deps/` name even though it now holds the call graph too — renaming would force every existing user to rebuild from a new path for no benefit.)
+The call graph does **not** get its own cache file. It rides inside a unified `UnifiedGraph { deps, calls: Option<CallGraph> }` at `.ast-bro/deps/graph.bin`. The schema constant is `JSON_SCHEMA_GRAPH_INDEX = "ast-bro.graph-index.v2"`. (The directory keeps its `deps/` name even though it now holds the call graph too — renaming would force every existing user to rebuild from a new path for no benefit.)
 
 ### Disk layout
 
@@ -292,7 +320,9 @@ happens, the process exits.
 
 The legacy `deps-index.v1` cache (at `.ast-bro/deps/graph.bin`) was retired in the v2.1.0 cut. Users with an old cache hit the schema-mismatch branch in `cache::load_with_delta`, the loader returns `LoadOutcome::Missing`, and `load_or_build` rebuilds in place at `.ast-bro/deps/graph.bin` — the schema bumped (`deps-index.v1` → `graph-index.v1`), the path stayed. One-time, transparent.
 
-The schema bump from `graph-index.v1` to `v2` happened mid-development to fix a silent bincode round-trip bug — `#[serde(skip_serializing_if)]` on `DepEdge::local_name` / `raw_path` and `CallEdge::receiver` / `candidates` corrupts bincode's positional encoding (a skipped Option/Vec field shifts every byte that follows). The skip annotations were a JSON-output ergonomics holdover that never applied to the cache; binary positional formats *require* every field to be encoded. Removed the annotations, bumped the schema, and any v1 cache files (which were all corrupt and silently re-cold-built every invocation) get a clean rebuild.
+The schema bump from `ast-outline.graph-index.v1` to `v2` happened mid-development to fix a silent bincode round-trip bug — `#[serde(skip_serializing_if)]` on `DepEdge::local_name` / `raw_path` and `CallEdge::receiver` / `candidates` corrupts bincode's positional encoding (a skipped Option/Vec field shifts every byte that follows). The skip annotations were a JSON-output ergonomics holdover that never applied to the cache; binary positional formats *require* every field to be encoded. Removed the annotations, bumped the schema, and any v1 cache files (which were all corrupt and silently re-cold-built every invocation) get a clean rebuild.
+
+The `ast-bro.` name restarted at `graph-index.v1`. `ast-bro.graph-index.v2` adds `CallEdge::receiver_scope` and `CallGraph::namespaces`, and an older cache rebuilds once.
 
 ### Per-file invalidation
 
@@ -354,6 +384,7 @@ If you've already added a `Declaration`-emitting adapter (see [architecture.md](
 1. Add an `_extract_call_sites` (or `_walk_calls_in_body`) function in your `src/adapters/<lang>.rs` that walks the function body, bails on nested type/callable declarations, and emits one `CallSite` per recognised AST node kind.
 2. Call it from inside each `_function_to_decl` / `_method_to_decl` / `_class_to_decl` builder so the populated `calls` ride along on the returned `Declaration`.
 3. If the language has its own import syntax not already covered by `src/deps/extract.rs` and `src/surface/imports.rs`, populate `ParseResult::imports` so pass A can resolve same-file `use` / `import` / `using` bindings.
-4. Add an end-to-end test in `tests/calls_e2e.rs` mirroring the existing per-language pairs (`<lang>_callers_finds_intra_file_caller` + `<lang>_callees_lists_construct_and_invocation`). Intra-file scope keeps the failure modes narrow — it exercises pass A without depending on the per-language import resolver.
+4. Set `CallSite::receiver_scope` only where the syntax tells a scope receiver from an object, and only if the [scope-receiver rule](#scope-receivers) matches how the language looks up that name. Check the lookup first: C++ also finds names through `using` and namespace aliases, and PHP through `use` imports, and PHP does not search enclosing namespaces. A language whose lookup differs needs its own rule, or the marker produces wrong `Exact` edges.
+5. Add an end-to-end test in `tests/calls_e2e.rs` mirroring the existing per-language pairs (`<lang>_callers_finds_intra_file_caller` + `<lang>_callees_lists_construct_and_invocation`). Intra-file scope keeps the failure modes narrow — it exercises pass A without depending on the per-language import resolver.
 
 For languages where AST kind names are case-folded by tree-sitter (PHP's late-binding keywords, Ruby's command unification), pin the assumption with a regression test so future grammar drift surfaces as a test failure instead of silently dropping edges.

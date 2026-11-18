@@ -21,8 +21,6 @@ use std::sync::{Mutex, OnceLock};
 use std::path::{Path, PathBuf};
 
 pub const CACHE_SCHEMA: &str = JSON_SCHEMA_GRAPH_INDEX;
-/// Legacy schema from pre-rename installs — still readable.
-pub const CACHE_SCHEMA_LEGACY: &str = "ast-outline.graph-index.v2";
 
 /// On-disk wrapper combining the unified graph + the file fingerprints used
 /// for freshness detection.
@@ -104,7 +102,7 @@ pub fn load_with_delta(root: &Path) -> LoadOutcome {
         Ok((cf, _)) => cf,
         Err(_) => return LoadOutcome::Missing,
     };
-    if cf.schema != CACHE_SCHEMA && cf.schema != CACHE_SCHEMA_LEGACY {
+    if cf.schema != CACHE_SCHEMA {
         return LoadOutcome::Missing;
     }
     let delta = compute_delta(root, root, &cf.files);

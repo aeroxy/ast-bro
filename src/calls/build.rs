@@ -17,7 +17,7 @@ use crate::core::{CallSite, Declaration, DeclarationKind};
 use crate::deps::DepGraph;
 use crate::main_helpers::parse_file_for_hook;
 use rayon::prelude::*;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -37,7 +37,9 @@ pub fn build_call_graph(root: &Path, deps: &DepGraph) -> CallGraph {
     let mut types: HashMap<Qn, TypeMeta> = HashMap::new();
     let mut type_by_name: HashMap<String, Vec<Qn>> = HashMap::new();
     let mut implementors: HashMap<String, Vec<Qn>> = HashMap::new();
+    let mut namespaces: HashSet<Qn> = HashSet::new();
     for fp in &passes {
+        namespaces.extend(fp.namespaces.iter().cloned());
         for (qn, meta) in fp.defined.iter().zip(fp.callable_locations.iter()) {
             callable_meta.insert(qn.clone(), meta.clone());
         }
@@ -68,6 +70,7 @@ pub fn build_call_graph(root: &Path, deps: &DepGraph) -> CallGraph {
     graph.forward = resolved.forward;
     graph.callable_meta = callable_meta;
     graph.types = types;
+    graph.namespaces = namespaces;
     graph.type_by_name = type_by_name;
     graph.implementors = implementors;
     graph.rebuild_reverse();
@@ -124,6 +127,7 @@ pub fn extract_file(root: &Path, file: &Path) -> Option<FilePass> {
     let mut callable_locations = Vec::new();
     let mut raw_edges = Vec::new();
     let mut types = Vec::new();
+    let mut namespaces = Vec::new();
     walk(
         &parse.declarations,
         &rel,
@@ -132,6 +136,7 @@ pub fn extract_file(root: &Path, file: &Path) -> Option<FilePass> {
         &mut callable_locations,
         &mut raw_edges,
         &mut types,
+        &mut namespaces,
     );
 
      Some(FilePass {
@@ -141,6 +146,7 @@ pub fn extract_file(root: &Path, file: &Path) -> Option<FilePass> {
         imports: parse.imports,
         raw_edges,
         types,
+        namespaces,
     })
 }
 
@@ -157,6 +163,7 @@ fn walk(
     callable_locations: &mut Vec<CallableMeta>,
     raw_edges: &mut Vec<RawEdge>,
     types: &mut Vec<(Qn, TypeMeta)>,
+    namespaces: &mut Vec<Qn>,
 ) {
     for d in decls {
         let mut next_parents = parents.clone();
@@ -189,6 +196,8 @@ fn walk(
                     bases: d.bases.clone(),
                 },
             ));
+        } else if d.kind == DeclarationKind::Namespace && !d.name.is_empty() {
+            namespaces.push(qn_from(rel_file, &next_parents));
         }
 
         if !d.children.is_empty() {
@@ -200,6 +209,7 @@ fn walk(
                 callable_locations,
                 raw_edges,
                 types,
+                namespaces,
             );
         }
     }
@@ -235,5 +245,6 @@ fn call_to_raw(source: Qn, cs: &CallSite) -> RawEdge {
         receiver: cs.receiver.clone(),
         kind: CallKindCompat::from(cs.kind),
         line: cs.line,
+        receiver_scope: cs.receiver_scope,
     }
 }

@@ -298,6 +298,7 @@ fn compute_impact(
                         confidence,
                         receiver: None,
                         candidates: Vec::new(),
+                        receiver_scope: crate::core::ReceiverScope::None,
                     },
                 });
             }
@@ -412,6 +413,7 @@ fn compute_impact(
                             confidence: Confidence::Exact,
                             receiver: None,
                             candidates: Vec::new(),
+                            receiver_scope: crate::core::ReceiverScope::None,
                         },
                     });
                 }
@@ -688,6 +690,7 @@ fn build_callers_section(
                             confidence: Confidence::Exact,
                             receiver: None,
                             candidates: Vec::new(),
+                            receiver_scope: crate::core::ReceiverScope::None,
                         },
                     });
                 }
@@ -938,11 +941,14 @@ fn colorize_confidence(c: &str) -> String {
 }
 
 fn colorize_file_path(qn: &str, file: &str) -> String {
-    let display = if qn.contains("::") {
+    // A tagged pseudo-entry (`[external] Foo::Bar.call`) names no file. The
+    // edge's file keeps the native separator; a qn's file uses `/`.
+    let file = file.replace(std::path::MAIN_SEPARATOR, "/");
+    let display = if qn.contains("::") && !qn.starts_with('[') {
         let parts: Vec<&str> = qn.splitn(2, "::").collect();
-        if parts.len() == 2 { parts[0] } else { file }
+        if parts.len() == 2 { parts[0] } else { &file }
     } else {
-        file
+        &file
     };
     format!(" ({})", display).truecolor(100, 100, 100).to_string()
 }

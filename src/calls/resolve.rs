@@ -5,6 +5,11 @@
 //! file's `ImportBinding`s and the import's module spec resolves to a
 //! project file via the existing `src/deps/resolver` suffix index.
 //!
+//! A call on a scope receiver (`CallSite::receiver_scope`) skips the
+//! name-based passes: only a candidate inside that scope can be its target,
+//! and a scope that the caller's language does not declare makes it
+//! `External` (see `resolve_scoped`).
+//!
 //! Pass B — global symbol-table: any remaining bare name with exactly one
 //! global qn match promotes to `Resolved(qn)`. Multiple matches defer.
 //!
@@ -15,6 +20,7 @@
 
 use crate::calls::graph::{CallEdge, CallTarget, Confidence, Qn};
 use crate::calls::pass::{file_rel, raw_to_edge, FilePass, RawEdge};
+use crate::core::ReceiverScope;
 use crate::deps::manifest::detect_aliases;
 use crate::deps::resolver::{build_suffix_index, resolve as resolve_spec, Lang, ResolveCtx};
 use crate::deps::traverse;
@@ -49,7 +55,13 @@ pub fn build_symbol_table(passes: &[FilePass]) -> HashMap<String, Vec<Qn>> {
 
 pub fn run(root: &Path, deps: &DepGraph, passes: Vec<FilePass>) -> Resolved {
     let symbol_table = build_symbol_table(&passes);
-    run_with_table(root, deps, passes, symbol_table)
+    let scopes = scope_paths(
+        passes.iter().flat_map(|fp| &fp.defined),
+        passes
+            .iter()
+            .flat_map(|fp| fp.types.iter().map(|(qn, _)| qn).chain(&fp.namespaces)),
+    );
+    run_with_table(root, deps, passes, symbol_table, &scopes)
 }
 
 /// Resolve `passes`'s raw edges against a *prebuilt* symbol_table (which
@@ -62,6 +74,7 @@ pub fn run_with_table(
     deps: &DepGraph,
     passes: Vec<FilePass>,
     symbol_table: HashMap<String, Vec<Qn>>,
+    scopes: &Scopes,
 ) -> Resolved {
     // ---------- Suffix index for import resolution (reused from deps). ----------
     let aliases = detect_aliases(root);
@@ -89,6 +102,37 @@ pub fn run_with_table(
         let lang = Lang::from_path(&fp.file);
 
         for raw in fp.raw_edges {
+            // -------- Scope receiver -------- //
+            // The receiver says where the callee lives: the scope it names,
+            // in this file or another, decides the target. The name-based
+            // passes below would bind `File.join()` to a project `join`.
+            if raw.receiver_scope != ReceiverScope::None {
+                let receiver = raw.receiver.as_deref().unwrap_or_default();
+                match resolve_scoped(
+                    &raw.source,
+                    receiver,
+                    raw.receiver_scope,
+                    &raw.bare_name,
+                    &symbol_table,
+                    scopes,
+                ) {
+                    Scoped::Done(target, confidence) => {
+                        let edge = raw_to_edge(
+                            raw,
+                            target,
+                            confidence,
+                            rel_path(root, &fp.file),
+                            Vec::new(),
+                        );
+                        forward.entry(edge.source.clone()).or_default().push(edge);
+                    }
+                    Scoped::Ambiguous(cands) => {
+                        ambiguous_buffer.push((raw, fp.file.clone(), cands));
+                    }
+                }
+                continue;
+            }
+
             // An explicit receiver disqualifies same-file binding: a local
             // homonym must not shadow `connection.getCtx()` — the receiver
             // says the target lives on another object (issue #31). Self-like
@@ -436,6 +480,133 @@ pub(crate) fn receiver_is_self_like(recv: Option<&str>) -> bool {
 /// place, so both passes already treat them as receiver-bearing.
 pub(crate) fn receiver_is_scope_shifting(recv: Option<&str>) -> bool {
     matches!(recv, Some("crate") | Some("super"))
+}
+
+/// The scopes a scope receiver can name, keyed by the declaring language.
+#[derive(Default)]
+pub struct Scopes {
+    paths: HashSet<(Option<Lang>, String)>,
+    /// Each path without one or more leading segments (`Utils` for
+    /// `Jekyll::Utils`): what a receiver may name through ancestors.
+    tails: HashSet<(Option<Lang>, String)>,
+}
+
+/// Every scope path the project declares, with the language that declares
+/// it: each declaration enclosing a callable or a scope, and each scope
+/// itself, a type or a namespace (`module Shop; class Cart` declares `Shop`
+/// and `Shop::Cart`). One dotted declaration is one scope: a declaration
+/// named `Shop.Cart` does not declare `Shop`.
+pub(crate) fn scope_paths<'a>(
+    callables: impl Iterator<Item = &'a Qn>,
+    scopes: impl Iterator<Item = &'a Qn>,
+) -> Scopes {
+    let mut out = Scopes::default();
+    let mut add = |qn: &Qn, drop: usize| {
+        let lang = qn_lang(qn);
+        let parts: Vec<&str> = qn.0.split("::").skip(1).collect();
+        for end in 1..=parts.len().saturating_sub(drop) {
+            let path = dotted_path(&parts[..end]);
+            for start in 1..path.len() {
+                out.tails.insert((lang, path[start..].join("::")));
+            }
+            out.paths.insert((lang, path.join("::")));
+        }
+    };
+    for qn in callables {
+        add(qn, 1);
+    }
+    for qn in scopes {
+        add(qn, 0);
+    }
+    out
+}
+
+/// Qn parts as one path, with a dotted part split as pass A splits a
+/// receiver (`Shop.Cart` reads as `Shop::Cart`).
+fn dotted_path<'a>(parts: &[&'a str]) -> Vec<&'a str> {
+    parts
+        .iter()
+        .flat_map(|p| p.split('.'))
+        .filter(|p| !p.is_empty())
+        .collect()
+}
+
+/// The language of the file a qn is declared in.
+fn qn_lang(qn: &Qn) -> Option<Lang> {
+    Lang::from_path(Path::new(qn.file()))
+}
+
+/// The scope a callable sits in: its qn parts after the file, without its
+/// own name.
+fn enclosing_parts(qn: &Qn) -> Vec<&str> {
+    let parts: Vec<&str> = qn.0.split("::").skip(1).collect();
+    parts[..parts.len().saturating_sub(1)].to_vec()
+}
+
+/// The outcome of a call on a scope receiver.
+pub(crate) enum Scoped {
+    Done(CallTarget, Confidence),
+    /// Several callables in that scope share the name; pass C narrows them.
+    Ambiguous(Vec<Qn>),
+}
+
+/// Resolve `name` called by `caller` on a scope `receiver`, among the scopes
+/// and callables of the caller's language. An absolute receiver names that
+/// path from the top level. A lexical one names the innermost scope of that
+/// path the project defines, searched from the caller's own scope outward,
+/// one `::` segment at a time, as Ruby and C++ look a name up. A callable
+/// of that name in it is the target. A scope that does not define the name
+/// (an inherited or generated method) leaves the call bare; no such scope at
+/// all makes it external, unless a lexical receiver may name a scope found
+/// through ancestors.
+pub(crate) fn resolve_scoped(
+    caller: &Qn,
+    receiver: &str,
+    lookup: ReceiverScope,
+    name: &str,
+    symbol_table: &HashMap<String, Vec<Qn>>,
+    scopes: &Scopes,
+) -> Scoped {
+    let lang = qn_lang(caller);
+    let is_scope = |path: &[&str]| scopes.paths.contains(&(lang, path.join("::")));
+    let normalized = receiver.replace(['\\', '.'], "::");
+    let path: Vec<&str> = normalized.split("::").filter(|p| !p.is_empty()).collect();
+    let enclosing = match lookup {
+        ReceiverScope::Lexical => enclosing_parts(caller),
+        ReceiverScope::None | ReceiverScope::Absolute => Vec::new(),
+    };
+    let found = (0..=enclosing.len()).rev().find_map(|depth| {
+        let mut scope = dotted_path(&enclosing[..depth]);
+        scope.extend(&path);
+        is_scope(&scope).then_some(scope)
+    });
+    let Some(scope) = found else {
+        // Ruby also finds a constant through ancestors (`include Jekyll`
+        // makes `Utils` mean `Jekyll::Utils`), which this lookup does not
+        // walk. A scope of that name in the caller's language is then a likely
+        // target, so the call stays unresolved.
+        let a_scope_of_that_name = lookup == ReceiverScope::Lexical
+            && scopes.tails.contains(&(lang, path.join("::")));
+        if a_scope_of_that_name {
+            return Scoped::Done(CallTarget::Bare(name.to_string()), Confidence::Ambiguous);
+        }
+        return Scoped::Done(
+            CallTarget::External(format!("{}.{}", receiver, name)),
+            Confidence::Exact,
+        );
+    };
+    let mut cands: Vec<Qn> = symbol_table
+        .get(name)
+        .into_iter()
+        .flatten()
+        .filter(|qn| qn_lang(qn) == lang && dotted_path(&enclosing_parts(qn)) == scope)
+        .cloned()
+        .collect();
+    match cands.len() {
+        0 => Scoped::Done(CallTarget::Bare(name.to_string()), Confidence::Ambiguous),
+        1 => Scoped::Done(CallTarget::Resolved(cands.remove(0)), Confidence::Exact),
+        _ => Scoped::Ambiguous(cands),
+    }
 }
 
 /// Resolve `from <module> import <name>` (or equivalent) by mapping `module`
