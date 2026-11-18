@@ -6,7 +6,7 @@
 //! `build::FilePass`, forming an avoidable file-level cycle.
 
 use crate::calls::graph::{CallEdge, CallKindCompat, CallTarget, CallableMeta, Confidence, Qn, TypeMeta};
-use crate::core::ImportBinding;
+use crate::core::{ImportBinding, ReceiverScope};
 use std::path::{Path, PathBuf};
 
 /// Per-file output of phase 1: the file's qns, its imports, and its raw
@@ -28,6 +28,9 @@ pub struct FilePass {
     /// `bases` so the implementors-reverse index can be built without a
     /// second walk. Independent of the call-edge pipeline.
     pub types: Vec<(Qn, TypeMeta)>,
+    /// Namespace declarations (a Ruby `module`, a C++ `namespace`). With the
+    /// types, they are the scopes a scope receiver can name.
+    pub namespaces: Vec<Qn>,
 }
 
 #[derive(Debug, Clone)]
@@ -37,6 +40,7 @@ pub struct RawEdge {
     pub receiver: Option<String>,
     pub kind: CallKindCompat,
     pub line: u32,
+    pub receiver_scope: ReceiverScope,
 }
 
 pub fn qn_from(rel_file: &str, parents: &[String]) -> Qn {
@@ -73,5 +77,6 @@ pub(crate) fn raw_to_edge(
         confidence,
         receiver: raw.receiver,
         candidates,
+        receiver_scope: raw.receiver_scope,
     }
 }

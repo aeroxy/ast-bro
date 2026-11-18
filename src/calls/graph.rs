@@ -4,9 +4,9 @@
 //! (`<repo-relative-path>::<NestedScope>::<name>`), not files. Edges carry
 //! confidence so consumers can filter out fuzzy matches in CI gates.
 
-use crate::core::{CallKind, JSON_SCHEMA_GRAPH_INDEX};
+use crate::core::{CallKind, ReceiverScope, JSON_SCHEMA_GRAPH_INDEX};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::time::SystemTime;
 
@@ -121,6 +121,11 @@ pub struct CallEdge {
     /// otherwise. Same no-skip rule as `receiver`.
     #[serde(default)]
     pub candidates: Vec<Qn>,
+    /// Whether the receiver names a scope (`CallSite::receiver_scope`), so
+    /// the incremental update re-resolves the edge by the cold build's rule.
+    /// Same no-skip rule as `receiver`.
+    #[serde(default)]
+    pub receiver_scope: ReceiverScope,
 }
 
 // `CallEdge::target.name_or_raw()` is the only consumer surface — kept on
@@ -230,6 +235,10 @@ pub struct CallGraph {
     /// constructions come from `forward` edges with `kind == Construct`.
     #[serde(default)]
     pub types: HashMap<Qn, TypeMeta>,
+    /// Namespace declarations. With `types`, they are the scopes a scope
+    /// receiver can name (`resolve::scope_paths`).
+    #[serde(default)]
+    pub namespaces: HashSet<Qn>,
     /// Bare type-name → list of type qns. Lets `resolve_target_qns` find
     /// `LanguageAdapter` even though traits aren't in `symbol_table`.
     #[serde(default)]
@@ -252,6 +261,7 @@ impl CallGraph {
             symbol_table: HashMap::new(),
             callable_meta: HashMap::new(),
             types: HashMap::new(),
+            namespaces: HashSet::new(),
             type_by_name: HashMap::new(),
             implementors: HashMap::new(),
             root,

@@ -1,6 +1,6 @@
 use super::base::{collapse_ws, count_parse_errors, field_text, LanguageAdapter};
 use crate::core::{
-    CallKind, CallSite, Declaration, DeclarationGroup, DeclarationKind, ParseResult,
+    CallKind, CallSite, Declaration, DeclarationGroup, DeclarationKind, ParseResult, ReceiverScope,
 };
 use ast_grep_core::{Doc, Node};
 use std::path::Path;
@@ -905,6 +905,7 @@ fn _call_site_from_call_go<'a, D: Doc>(node: &Node<'a, D>, src: &[u8]) -> Option
         receiver,
         line,
         kind,
+        receiver_scope: ReceiverScope::None,
     })
 }
 

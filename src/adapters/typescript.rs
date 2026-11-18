@@ -1,5 +1,7 @@
 use super::base::{collapse_ws, count_parse_errors, field_text, LanguageAdapter};
-use crate::core::{CallKind, CallSite, Declaration, DeclarationKind, ImportBinding, ParseResult};
+use crate::core::{
+    CallKind, CallSite, Declaration, DeclarationKind, ImportBinding, ParseResult, ReceiverScope,
+};
 use ast_grep_core::{Doc, Node};
 use std::path::Path;
 
@@ -834,7 +836,7 @@ fn _call_site_from_call<'a, D: Doc>(node: &Node<'a, D>, src: &[u8], is_construct
     let (name, receiver) = _extract_callee_name_ts(&func, src)?;
     let line = node.start_pos().line() as u32 + 1;
     let kind = if is_construct { CallKind::Construct } else { CallKind::Call };
-    Some(CallSite { name, receiver, line, kind })
+    Some(CallSite { name, receiver, line, kind, receiver_scope: ReceiverScope::None })
 }
 
 fn _extract_callee_name_ts<'a, D: Doc>(node: &Node<'a, D>, src: &[u8]) -> Option<(String, Option<String>)> {

@@ -1,5 +1,7 @@
 use super::base::{collapse_ws, count_parse_errors, field_text, LanguageAdapter};
-use crate::core::{CallKind, CallSite, Declaration, DeclarationKind, ImportBinding, ParseResult};
+use crate::core::{
+    CallKind, CallSite, Declaration, DeclarationKind, ImportBinding, ParseResult, ReceiverScope,
+};
 use ast_grep_core::{Doc, Node};
 use std::path::Path;
 
@@ -561,6 +563,7 @@ fn _call_site_from_call<'a, D: Doc>(node: &Node<'a, D>, src: &[u8]) -> Option<Ca
         receiver,
         line: node.start_pos().line() as u32 + 1,
         kind,
+        receiver_scope: ReceiverScope::None,
     })
 }
 
@@ -572,6 +575,7 @@ fn _call_site_from_struct<'a, D: Doc>(node: &Node<'a, D>, src: &[u8]) -> Option<
         receiver,
         line: node.start_pos().line() as u32 + 1,
         kind: CallKind::Construct,
+        receiver_scope: ReceiverScope::None,
     })
 }
 
@@ -583,6 +587,7 @@ fn _call_site_from_macro<'a, D: Doc>(node: &Node<'a, D>, src: &[u8]) -> Option<C
         receiver,
         line: node.start_pos().line() as u32 + 1,
         kind: CallKind::Macro,
+        receiver_scope: ReceiverScope::None,
     })
 }
 

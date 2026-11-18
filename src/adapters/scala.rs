@@ -1,5 +1,5 @@
 use super::base::{collapse_ws, count_parse_errors, field_text, LanguageAdapter};
-use crate::core::{CallKind, CallSite, Declaration, DeclarationKind, ParseResult};
+use crate::core::{CallKind, CallSite, Declaration, DeclarationKind, ParseResult, ReceiverScope};
 use ast_grep_core::{Doc, Node};
 use std::path::Path;
 
@@ -999,6 +999,7 @@ fn _call_site_from_call_scala<'a, D: Doc>(
         receiver,
         line,
         kind,
+        receiver_scope: ReceiverScope::None,
     })
 }
 
@@ -1026,6 +1027,7 @@ fn _call_site_from_instance<'a, D: Doc>(
                     receiver: None,
                     line,
                     kind: CallKind::Construct,
+                    receiver_scope: ReceiverScope::None,
                 });
             }
         }

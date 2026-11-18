@@ -520,6 +520,7 @@ mod tests {
             confidence: Confidence::Exact,
             receiver: None,
             candidates: Vec::new(),
+            receiver_scope: crate::core::ReceiverScope::None,
         }
     }
 

@@ -158,6 +158,9 @@ pub fn apply_delta_to_calls(
     calls
         .types
         .retain(|qn, _| !changed.contains(qn.file()));
+    calls
+        .namespaces
+        .retain(|qn| !changed.contains(qn.file()));
 
     // 4. Drop changed-file entries from the inverted indices and prune
     //    empty buckets so subsequent callers don't see ghost keys.
@@ -188,6 +191,7 @@ pub fn apply_delta_to_calls(
     //    pass A/B looks up the global symbol_table for a new edge, the
     //    targets newly defined in this same delta are visible.
     for fp in &new_passes {
+        calls.namespaces.extend(fp.namespaces.iter().cloned());
         for (qn, meta) in fp.defined.iter().zip(fp.callable_locations.iter()) {
             calls.callable_meta.insert(qn.clone(), meta.clone());
             calls
@@ -221,7 +225,11 @@ pub fn apply_delta_to_calls(
     //    confidence — that's the whole point of skipping step 2's eager
     //    demote.
     let table = calls.symbol_table.clone();
-    let resolved = resolve::run_with_table(root, deps, new_passes, table);
+    let scopes = resolve::scope_paths(
+        calls.callable_meta.keys(),
+        calls.types.keys().chain(&calls.namespaces),
+    );
+    let resolved = resolve::run_with_table(root, deps, new_passes, table, &scopes);
     for (qn, edges) in resolved.forward {
         calls.forward.entry(qn).or_default().extend(edges);
     }
@@ -257,6 +265,36 @@ pub fn apply_delta_to_calls(
     let mut closures = crate::calls::resolve::ClosureCache::default();
     for edges in calls.forward.values_mut() {
         for e in edges.iter_mut() {
+            // A scope receiver resolves by the cold build's scope rule, on
+            // every edge: a delta can define its scope, or a nearer one.
+            if e.receiver_scope != crate::core::ReceiverScope::None {
+                let receiver = e.receiver.clone().unwrap_or_default();
+                let name = match &e.target {
+                    CallTarget::Resolved(qn) => qn.name().to_string(),
+                    CallTarget::Bare(name) => name.clone(),
+                    // `resolve_scoped` writes `External("{receiver}.{name}")`.
+                    CallTarget::External(raw) => raw
+                        .strip_prefix(receiver.as_str())
+                        .and_then(|rest| rest.strip_prefix('.'))
+                        .unwrap_or(raw)
+                        .to_string(),
+                };
+                let src_file = root.join(&e.file);
+                (e.target, e.confidence, e.candidates) = match resolve::resolve_scoped(
+                    &e.source,
+                    &receiver,
+                    e.receiver_scope,
+                    &name,
+                    &calls.symbol_table,
+                    &scopes,
+                ) {
+                    resolve::Scoped::Done(target, confidence) => (target, confidence, Vec::new()),
+                    resolve::Scoped::Ambiguous(cands) => {
+                        resolve::disambiguate(deps, root, &src_file, &name, &cands, &mut closures)
+                    }
+                };
+                continue;
+            }
             let CallTarget::Bare(name) = &e.target else { continue };
             let Some(cands) = calls.symbol_table.get(name) else { continue };
             // Same gate as pass B on a cold build: scope-shifting keyword

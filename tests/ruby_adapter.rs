@@ -9,6 +9,7 @@
 //!   3. `attr_reader` / `attr_accessor` and Rails-style association macros
 //!      are surfaced as `Field`-kind declarations.
 //!   4. Constants and singleton methods (`def self.find`) render.
+//!   5. A call on a CamelCase constant path is marked as a call on a scope.
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -75,4 +76,36 @@ fn class_inheritance_captured() {
     // `class User < Account` — both names must appear in the same outline.
     assert!(s.contains("class User"), "subclass missing:\n{s}");
     assert!(s.contains("Account"), "superclass missing in outline:\n{s}");
+}
+
+#[test]
+fn camel_case_constant_receiver_is_a_scope() {
+    let s = run(&["map", "tests/fixtures/ruby_adapter/receivers.rb", "--json"]);
+    let doc: serde_json::Value = serde_json::from_str(&s).expect("valid json");
+    let calls = doc["files"][0]["declarations"][0]["calls"]
+        .as_array()
+        .expect("calls array");
+    let scoped: Vec<(&str, &str)> = calls
+        .iter()
+        .map(|c| {
+            (
+                c["receiver"].as_str().unwrap_or_default(),
+                c["receiver_scope"].as_str().unwrap_or("none"),
+            )
+        })
+        .collect();
+    // `Cart::build` calls `build` on the scope `Cart`, but its result is a
+    // value, and `ENV` may hold one: neither is a scope.
+    assert_eq!(
+        scoped,
+        vec![
+            ("Shop::Pricing", "lexical"),
+            ("::File", "absolute"),
+            ("Cart", "lexical"),
+            ("Cart::build", "none"),
+            ("Cart", "lexical"),
+            ("ENV", "none"),
+            ("list", "none"),
+        ]
+    );
 }

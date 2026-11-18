@@ -1,5 +1,5 @@
 use colored::Colorize;
-use serde::{Serialize, Serializer};
+use serde::{Deserialize, Serialize, Serializer};
 use std::path::{Path, PathBuf};
 
 // Stable JSON schema identifiers — bump on breaking changes.
@@ -21,14 +21,16 @@ pub const JSON_SCHEMA_CALLEES: &str = "ast-bro.callees.v1";
 pub const JSON_SCHEMA_TRACE: &str = "ast-bro.trace.v1";
 pub const JSON_SCHEMA_RUN: &str = "ast-bro.run.v1";
 /// Unified on-disk cache holding both the file-level dep graph and (lazily)
-/// the symbol-level call graph. Bumped from `graph-index.v1` to `v2` after
-/// the per-file-invalidation work removed `skip_serializing_if` from
-/// `DepEdge` and `CallEdge` Option/Vec fields — bincode uses positional
+/// the symbol-level call graph. Bumped from `ast-outline.graph-index.v1`
+/// to `v2` after the per-file-invalidation work removed `skip_serializing_if`
+/// from `DepEdge` and `CallEdge` Option/Vec fields — bincode uses positional
 /// encoding so a skipped field corrupts everything that follows. v1 caches
 /// were silently un-decodable (the loader returned `None` and rebuilt
 /// every time, masking the bug). The v2 bump ensures upgrading users get
 /// a clean rebuild rather than continuing to hit the silent fallback.
-pub const JSON_SCHEMA_GRAPH_INDEX: &str = "ast-bro.graph-index.v1";
+/// The `ast-bro.` name restarted at v1; v2 adds `CallEdge::receiver_scope`
+/// and `CallGraph::namespaces`.
+pub const JSON_SCHEMA_GRAPH_INDEX: &str = "ast-bro.graph-index.v2";
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Copy, Default)]
 pub enum DeclarationKind {
@@ -229,6 +231,29 @@ pub struct CallSite {
     /// Call kind — distinguishes a regular call from `new T()`, macro, etc.
     #[serde(default, skip_serializing_if = "_call_kind_is_default")]
     pub kind: CallKind,
+    /// Whether the receiver names a scope, and how to find it.
+    #[serde(default, skip_serializing_if = "_receiver_scope_is_default")]
+    pub receiver_scope: ReceiverScope,
+}
+
+/// Whether a call's receiver names a scope — a module, class or namespace —
+/// that the language makes clear is not a value. The resolver then looks
+/// for the callee only in that scope.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ReceiverScope {
+    /// The receiver may be an object, or there is none.
+    #[default]
+    None,
+    /// A path looked up from the caller's scope outward: a Ruby CamelCase
+    /// constant (`Foo::Bar.baz()`).
+    Lexical,
+    /// A full path from the top level: Ruby's `::Foo.baz()`.
+    Absolute,
+}
+
+fn _receiver_scope_is_default(s: &ReceiverScope) -> bool {
+    matches!(s, ReceiverScope::None)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

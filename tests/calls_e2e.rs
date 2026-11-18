@@ -1407,6 +1407,451 @@ end
     );
 }
 
+/// A Ruby project where `Shop::Cart.total` calls `File.join` and
+/// `Pricing.price`, and two modules named `Pricing` define `price`.
+fn ruby_scope_receiver_project() -> tempfile::TempDir {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(&root.join("Gemfile"), "source 'https://rubygems.org'\n");
+    write(
+        &root.join("lib/shop/cart.rb"),
+        r#"
+module Shop
+  class Cart
+    def self.total(items)
+      File.join("a", "b")
+      Pricing.price(items)
+    end
+
+    def join(other); end
+  end
+end
+"#,
+    );
+    write(
+        &root.join("lib/shop/pricing.rb"),
+        "module Shop\n  module Pricing\n    def self.price(items); end\n  end\nend\n",
+    );
+    write(
+        &root.join("lib/other/pricing.rb"),
+        "module Other\n  module Pricing\n    def self.price(items); end\n  end\nend\n",
+    );
+    tmp
+}
+
+fn callee_targets(root: &std::path::Path, symbol: &str, rebuild: bool) -> Vec<(String, String)> {
+    let mut args = vec!["callees", symbol, ".", "--json", "--compact"];
+    if rebuild {
+        args.push("--rebuild");
+    }
+    let (out, code) = run_in(root, &args);
+    assert_eq!(code, 0, "{out}");
+    let doc: serde_json::Value = serde_json::from_str(out.trim()).expect("valid json");
+    let mut targets: Vec<(String, String)> = doc["matches"]
+        .as_array()
+        .expect("matches array")
+        .iter()
+        .map(|m| {
+            (
+                m["target"].as_str().unwrap_or_default().to_string(),
+                m["confidence"].as_str().unwrap_or_default().to_string(),
+            )
+        })
+        .collect();
+    targets.sort();
+    targets
+}
+
+#[test]
+fn ruby_constant_receiver_binds_only_in_that_scope() {
+    // `File.join` names Ruby's `File`, which the project does not define, so
+    // it is external — not the project's `Cart#join`, which the name-based
+    // passes used to pick. `Pricing` is looked up from the caller's scope
+    // outward, so it is `Shop::Pricing`, not `Other::Pricing`.
+    let tmp = ruby_scope_receiver_project();
+    let root = tmp.path();
+    assert_eq!(
+        callee_targets(root, "Shop.Cart.total", true),
+        vec![
+            ("[external] File.join".to_string(), "Exact".to_string()),
+            (
+                "lib/shop/pricing.rb::Shop::Pricing::price".to_string(),
+                "Exact".to_string()
+            ),
+        ]
+    );
+    let (out, code) = run_in(
+        root,
+        &["callers", "Shop.Cart.join", ".", "--json", "--compact"],
+    );
+    assert_eq!(code, 0, "{out}");
+    let doc: serde_json::Value = serde_json::from_str(out.trim()).expect("valid json");
+    assert_eq!(
+        doc["total"], 0,
+        "`File.join` is not a caller of `Cart#join`: {out}"
+    );
+}
+
+#[test]
+fn ruby_absolute_constant_receiver_skips_nearer_scopes() {
+    // `::Pricing` names the top-level `Pricing`, even inside `Shop`, where
+    // a plain `Pricing` would be `Shop::Pricing`.
+    let tmp = ruby_scope_receiver_project();
+    let root = tmp.path();
+    write(
+        &root.join("lib/pricing.rb"),
+        "module Pricing\n  def self.price(items); end\nend\n",
+    );
+    write(
+        &root.join("lib/shop/checkout.rb"),
+        "module Shop\n  class Checkout\n    def self.run(items)\n      ::Pricing.price(items)\n    end\n  end\nend\n",
+    );
+    assert_eq!(
+        callee_targets(root, "Shop.Checkout.run", true),
+        vec![(
+            "lib/pricing.rb::Pricing::price".to_string(),
+            "Exact".to_string()
+        )]
+    );
+}
+
+#[test]
+fn ruby_constant_receiver_found_through_an_include_is_not_external() {
+    // Ruby also finds a constant through ancestors: after `include Jekyll`,
+    // `Utils` is `Jekyll::Utils`. The lexical lookup misses it, but a scope
+    // of that name exists, so the calls stay unresolved instead of wrong
+    // externals, also for a method that `Utils` inherits.
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(&root.join("Gemfile"), "source 'https://rubygems.org'\n");
+    write(
+        &root.join("lib/jekyll/utils.rb"),
+        r#"
+module Jekyll
+  class Base
+    def self.slugify(s); end
+  end
+
+  class Utils < Base
+    def self.deep_merge_hashes(a, b); end
+  end
+end
+"#,
+    );
+    write(
+        &root.join("test/helper.rb"),
+        r#"
+include Jekyll
+def merged
+  Utils.deep_merge_hashes({}, {})
+  Utils.slugify("x")
+end
+"#,
+    );
+    assert_eq!(
+        callee_targets(root, "merged", true),
+        vec![
+            (
+                "[unresolved] deep_merge_hashes".to_string(),
+                "Ambiguous".to_string()
+            ),
+            ("[unresolved] slugify".to_string(), "Ambiguous".to_string()),
+        ]
+    );
+}
+
+#[test]
+fn ruby_module_with_no_extracted_methods_is_a_scope() {
+    // `class << self` methods are not extracted, so `Config` encloses no
+    // callable. It is still a project scope, so the call stays unresolved
+    // instead of a wrong external.
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(&root.join("Gemfile"), "source 'https://rubygems.org'\n");
+    write(
+        &root.join("lib/config.rb"),
+        r#"
+module Config
+  class << self
+    def load; end
+  end
+end
+def boot
+  Config.load
+end
+"#,
+    );
+    assert_eq!(
+        callee_targets(root, "boot", true),
+        vec![("[unresolved] load".to_string(), "Ambiguous".to_string())]
+    );
+}
+
+#[test]
+fn ruby_constant_path_split_across_lines_resolves() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(&root.join("Gemfile"), "source 'https://rubygems.org'\n");
+    write(
+        &root.join("lib/foo.rb"),
+        "module Foo\n  class Bar\n    def self.x(n); end\n  end\nend\ndef go\n  Foo::\n    Bar.x(1)\nend\n",
+    );
+    assert_eq!(
+        callee_targets(root, "go", true),
+        vec![("lib/foo.rb::Foo::Bar::x".to_string(), "Exact".to_string())]
+    );
+}
+
+#[test]
+fn impact_shows_the_callers_file_for_an_external_callee() {
+    // `[external] Missing::Thing.call` names no file; the text must not
+    // read `Missing` as one.
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(&root.join("Gemfile"), "source 'https://rubygems.org'\n");
+    write(
+        &root.join("lib/go.rb"),
+        "def go\n  Missing::Thing.call\nend\n",
+    );
+    let (out, code) = run_in(root, &["impact", "go", ".", "--rebuild"]);
+    assert_eq!(code, 0, "{out}");
+    let row = out
+        .lines()
+        .find(|l| l.contains("Missing::Thing.call"))
+        .unwrap_or_else(|| panic!("no external row: {out}"));
+    assert!(row.contains("(lib/go.rb)"), "{row}");
+}
+
+#[test]
+fn scope_receiver_binds_only_in_the_callers_language() {
+    // A Ruby `User` and a TypeScript `User` are different scopes: the Ruby
+    // call stays unresolved instead of binding to the TypeScript method, in
+    // a cold build and after an update that adds the TypeScript file.
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(&root.join("Gemfile"), "source 'https://rubygems.org'\n");
+    write(&root.join("package.json"), "{\"name\": \"app\"}\n");
+    write(&root.join("app/models/user.rb"), "class User\nend\n");
+    write(
+        &root.join("app/controllers/users_controller.rb"),
+        "class UsersController\n  def show\n    User.find(1)\n  end\nend\n",
+    );
+    let expected = vec![("[unresolved] find".to_string(), "Ambiguous".to_string())];
+    assert_eq!(callee_targets(root, "UsersController.show", true), expected);
+
+    write(
+        &root.join("app/javascript/models/user.ts"),
+        "export class User {\n  static find(id: number) {}\n}\n",
+    );
+    let incremental = callee_targets(root, "UsersController.show", false);
+    let cold = callee_targets(root, "UsersController.show", true);
+    assert_eq!(
+        incremental, cold,
+        "a partial update and a cold build diverged"
+    );
+    assert_eq!(cold, expected);
+}
+
+#[test]
+fn ruby_all_caps_constant_receiver_is_not_a_scope() {
+    // An all-caps constant may hold a value (`DEFAULT_PARSER = Parser.new`),
+    // so its calls keep the name-based resolution of any other receiver.
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(&root.join("Gemfile"), "source 'https://rubygems.org'\n");
+    write(
+        &root.join("lib/demo.rb"),
+        r#"
+class Parser
+  def parse(text); end
+end
+DEFAULT_PARSER = Parser.new
+def run
+  DEFAULT_PARSER.parse("x")
+end
+"#,
+    );
+    let targets = callee_targets(root, "run", true);
+    assert!(
+        targets
+            .iter()
+            .any(|(t, _)| t == "lib/demo.rb::Parser::parse"),
+        "expected `DEFAULT_PARSER.parse` to reach `Parser#parse`, got {targets:?}"
+    );
+}
+
+#[test]
+fn incremental_scope_receiver_matches_a_cold_build() {
+    // The scope a call names can appear in a later delta without the caller's
+    // file changing: the external edge must then resolve as a cold build
+    // resolves it.
+    let tmp = ruby_scope_receiver_project();
+    let root = tmp.path();
+    std::fs::remove_file(root.join("lib/shop/pricing.rb")).unwrap();
+    std::fs::remove_file(root.join("lib/other/pricing.rb")).unwrap();
+    let before = callee_targets(root, "Shop.Cart.total", true);
+    assert!(
+        before.contains(&("[external] Pricing.price".to_string(), "Exact".to_string())),
+        "premise: the project defines no `Pricing` yet: {before:?}"
+    );
+
+    write(
+        &root.join("lib/shop/pricing.rb"),
+        "module Shop\n  module Pricing\n    def self.price(items); end\n  end\nend\n",
+    );
+    let incremental = callee_targets(root, "Shop.Cart.total", false);
+    let cold = callee_targets(root, "Shop.Cart.total", true);
+    assert_eq!(
+        incremental, cold,
+        "a partial update and a cold build diverged"
+    );
+    assert!(
+        cold.contains(&(
+            "lib/shop/pricing.rb::Shop::Pricing::price".to_string(),
+            "Exact".to_string()
+        )),
+        "{cold:?}"
+    );
+}
+
+#[test]
+fn incremental_nearer_scope_matches_a_cold_build() {
+    // A resolved edge is retried too: a delta that defines a scope nearer to
+    // the caller changes what the receiver names.
+    let tmp = ruby_scope_receiver_project();
+    let root = tmp.path();
+    std::fs::remove_file(root.join("lib/shop/pricing.rb")).unwrap();
+    write(
+        &root.join("lib/pricing.rb"),
+        "module Pricing\n  def self.price(items); end\nend\n",
+    );
+    let before = callee_targets(root, "Shop.Cart.total", true);
+    assert!(
+        before.contains(&(
+            "lib/pricing.rb::Pricing::price".to_string(),
+            "Exact".to_string()
+        )),
+        "premise: only the top-level `Pricing` is in scope: {before:?}"
+    );
+
+    write(
+        &root.join("lib/shop/pricing.rb"),
+        "module Shop\n  module Pricing\n    def self.price(items); end\n  end\nend\n",
+    );
+    let incremental = callee_targets(root, "Shop.Cart.total", false);
+    let cold = callee_targets(root, "Shop.Cart.total", true);
+    assert_eq!(
+        incremental, cold,
+        "a partial update and a cold build diverged"
+    );
+    assert!(
+        cold.contains(&(
+            "lib/shop/pricing.rb::Shop::Pricing::price".to_string(),
+            "Exact".to_string()
+        )),
+        "{cold:?}"
+    );
+}
+
+#[test]
+fn incremental_removed_scope_matches_a_cold_build() {
+    // Deleting the file that declares the scope leaves the caller's file
+    // unchanged; its edge must still turn external, as a cold build does.
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(&root.join("Gemfile"), "source 'https://rubygems.org'\n");
+    write(
+        &root.join("lib/config.rb"),
+        "module Config\n  class << self\n    def load; end\n  end\nend\n",
+    );
+    write(&root.join("lib/boot.rb"), "def boot\n  Config.load\nend\n");
+    let before = callee_targets(root, "boot", true);
+    assert_eq!(
+        before,
+        vec![("[unresolved] load".to_string(), "Ambiguous".to_string())],
+        "premise: `Config` is a project scope"
+    );
+
+    std::fs::remove_file(root.join("lib/config.rb")).unwrap();
+    let incremental = callee_targets(root, "boot", false);
+    let cold = callee_targets(root, "boot", true);
+    assert_eq!(
+        incremental, cold,
+        "a partial update and a cold build diverged"
+    );
+    assert_eq!(
+        cold,
+        vec![("[external] Config.load".to_string(), "Exact".to_string())]
+    );
+}
+
+#[test]
+fn incremental_added_module_scope_matches_a_cold_build() {
+    // An update that adds a module with no extracted method still declares
+    // its scope, so the external edge must turn unresolved, as a cold build
+    // makes it.
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(&root.join("Gemfile"), "source 'https://rubygems.org'\n");
+    write(&root.join("lib/boot.rb"), "def boot\n  Config.load\nend\n");
+    let before = callee_targets(root, "boot", true);
+    assert_eq!(
+        before,
+        vec![("[external] Config.load".to_string(), "Exact".to_string())],
+        "premise: the project defines no `Config` yet"
+    );
+
+    write(
+        &root.join("lib/config.rb"),
+        "module Config\n  class << self\n    def load; end\n  end\nend\n",
+    );
+    let incremental = callee_targets(root, "boot", false);
+    let cold = callee_targets(root, "boot", true);
+    assert_eq!(
+        incremental, cold,
+        "a partial update and a cold build diverged"
+    );
+    assert_eq!(
+        cold,
+        vec![("[unresolved] load".to_string(), "Ambiguous".to_string())]
+    );
+}
+
+#[test]
+fn ruby_scope_reopened_in_two_files_goes_to_pass_c() {
+    // `Shop::Pricing` defines `price` in two files, so the scope rule hands
+    // both to pass C. Removing one leaves a single callable, which a
+    // partial update must bind as a cold build does.
+    let tmp = ruby_scope_receiver_project();
+    let root = tmp.path();
+    write(
+        &root.join("lib/shop/pricing_ext.rb"),
+        "module Shop\n  module Pricing\n    def self.price(items); end\n  end\nend\n",
+    );
+    let before = callee_targets(root, "Shop.Cart.total", true);
+    assert!(
+        !before
+            .iter()
+            .any(|(t, c)| t.contains("Pricing::price") && c == "Exact"),
+        "two candidates are not an exact binding: {before:?}"
+    );
+
+    std::fs::remove_file(root.join("lib/shop/pricing_ext.rb")).unwrap();
+    let incremental = callee_targets(root, "Shop.Cart.total", false);
+    let cold = callee_targets(root, "Shop.Cart.total", true);
+    assert_eq!(
+        incremental, cold,
+        "a partial update and a cold build diverged"
+    );
+    assert!(
+        cold.contains(&(
+            "lib/shop/pricing.rb::Shop::Pricing::price".to_string(),
+            "Exact".to_string()
+        )),
+        "{cold:?}"
+    );
+}
+
 #[test]
 fn ruby_block_calls_attributed_to_enclosing_method() {
     // Ruby blocks (`do ... end`, `{ ... }`) are closures, not separate
