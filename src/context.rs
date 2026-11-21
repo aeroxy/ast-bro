@@ -435,7 +435,7 @@ fn build_context(
         body_unavailable |= unavailable;
 
         // Implementors of this type (the "who implements it" dimension).
-        if let Some(impls) = calls.implementors.get(c.qn.name()) {
+        if let Some(impls) = calls.implementors_of(&c.qn) {
             for impl_qn in impls {
                 if used >= budget_tokens {
                     truncated = true;

@@ -22,7 +22,7 @@ use std::path::{Path, PathBuf};
 use rayon::prelude::*;
 
 use crate::calls::build::extract_file;
-use crate::calls::graph::{CallGraph, CallTarget};
+use crate::calls::graph::{add_callable, type_key, type_key_of, CallGraph, CallTarget};
 use crate::calls::pass::{file_rel, FilePass};
 use crate::calls::resolve;
 use crate::deps::extract::extract;
@@ -193,7 +193,7 @@ pub fn apply_delta_to_calls(
     for fp in &new_passes {
         calls.namespaces.extend(fp.namespaces.iter().cloned());
         for (qn, meta) in fp.defined.iter().zip(fp.callable_locations.iter()) {
-            calls.callable_meta.insert(qn.clone(), meta.clone());
+            add_callable(&mut calls.callable_meta, qn, meta);
             calls
                 .symbol_table
                 .entry(qn.name().to_string())
@@ -202,16 +202,16 @@ pub fn apply_delta_to_calls(
         }
         for (qn, meta) in &fp.types {
             calls.types.insert(qn.clone(), meta.clone());
+            let lang = resolve::qn_lang(qn);
             calls
                 .type_by_name
-                .entry(qn.name().to_string())
+                .entry(type_key_of(qn, &meta.kind))
                 .or_default()
                 .push(qn.clone());
             for base in &meta.bases {
-                let normalised = normalise_type_name(base);
                 calls
                     .implementors
-                    .entry(normalised)
+                    .entry(type_key(lang, base))
                     .or_default()
                     .push(qn.clone());
             }
@@ -229,7 +229,15 @@ pub fn apply_delta_to_calls(
         calls.callable_meta.keys(),
         calls.types.keys().chain(&calls.namespaces),
     );
-    let resolved = resolve::run_with_table(root, deps, new_passes, table, &scopes);
+    let resolved = resolve::run_with_table(
+        root,
+        deps,
+        new_passes,
+        table,
+        &scopes,
+        &calls.type_by_name,
+        &calls.callable_meta,
+    );
     for (qn, edges) in resolved.forward {
         calls.forward.entry(qn).or_default().extend(edges);
     }
@@ -242,6 +250,13 @@ pub fn apply_delta_to_calls(
         calls.callable_meta.keys().cloned().collect();
     for edges in calls.forward.values_mut() {
         for e in edges.iter_mut() {
+            // Step 9 re-resolves every Elixir edge from its whole target,
+            // which a struct literal's module needs.
+            if crate::deps::resolver::Lang::from_path(&e.file)
+                == Some(crate::deps::resolver::Lang::Elixir)
+            {
+                continue;
+            }
             let demote = matches!(&e.target, CallTarget::Resolved(qn) if !known_callable.contains(qn));
             if demote {
                 let bare = e.target.name_or_raw();
@@ -285,7 +300,9 @@ pub fn apply_delta_to_calls(
                     &receiver,
                     e.receiver_scope,
                     &name,
+                    e.arity,
                     &calls.symbol_table,
+                    &calls.callable_meta,
                     &scopes,
                 ) {
                     resolve::Scoped::Done(target, confidence) => (target, confidence, Vec::new()),
@@ -293,6 +310,15 @@ pub fn apply_delta_to_calls(
                         resolve::disambiguate(deps, root, &src_file, &name, &cands, &mut closures)
                     }
                 };
+                continue;
+            }
+            // Elixir's other edges re-resolve by module; see `calls::elixir`.
+            let tables = (
+                &calls.symbol_table,
+                &calls.type_by_name,
+                &calls.callable_meta,
+            );
+            if crate::calls::elixir::reresolve(e, tables) {
                 continue;
             }
             let CallTarget::Bare(name) = &e.target else { continue };
@@ -413,26 +439,6 @@ fn mtime_nanos(meta: &std::fs::Metadata) -> i128 {
         Ok(d) => d.as_nanos() as i128,
         Err(e) => -(e.duration().as_nanos() as i128),
     }
-}
-
-/// Mirror of `build::normalise_type_name` (kept private there). Strips
-/// generics, brackets, dotted/`::`-prefixed scope so different forms of
-/// the same base name hash to one bucket.
-fn normalise_type_name(name: &str) -> String {
-    let mut name = name.trim();
-    if let Some(i) = name.find('<') {
-        name = &name[..i];
-    }
-    if let Some(i) = name.find('[') {
-        name = &name[..i];
-    }
-    if let Some(i) = name.rfind('.') {
-        name = &name[i + 1..];
-    }
-    if let Some(i) = name.rfind("::") {
-        name = &name[i + 2..];
-    }
-    name.to_string()
 }
 
 fn sort_dedup(calls: &mut CallGraph) {

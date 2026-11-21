@@ -13,7 +13,11 @@
 use std::path::{Path, PathBuf};
 
 use crate::calls::cli_helpers::{resolve_target_full, SymbolKind};
-use crate::calls::graph::{CallEdge, CallGraph, CallKindCompat, CallTarget, Confidence, Qn};
+use crate::calls::graph::{
+    same_type_space, type_key, type_key_of, CallEdge, CallGraph, CallKindCompat, CallTarget,
+    Confidence, Qn,
+};
+use crate::calls::resolve::qn_lang;
 use crate::calls::{render, traverse};
 use crate::graph_cache;
 use crate::UNLIMITED;
@@ -382,18 +386,18 @@ pub struct ImplHit {
 }
 
 pub(crate) fn collect_type_callers(calls: &CallGraph, type_qn: &Qn) -> TypeCallersGroup {
-    let bare = type_qn.name().to_string();
     let kind = calls
         .types
         .get(type_qn)
         .map(|m| m.kind.clone())
         .unwrap_or_else(|| "type".to_string());
+    // Keyed like the bases implementors are keyed by.
+    let bare = type_key_of(type_qn, &kind);
 
     // Implementations — qns whose `bases` contained this type's normalized
     // name. Stable order: file path then line.
     let mut implementations: Vec<ImplHit> = calls
-        .implementors
-        .get(&bare)
+        .implementors_of(type_qn)
         .into_iter()
         .flatten()
         .filter_map(|qn| {
@@ -412,13 +416,20 @@ pub(crate) fn collect_type_callers(calls: &CallGraph, type_qn: &Qn) -> TypeCalle
     // name matches the type. Caller-side metadata (source qn, file, line)
     // already lives on the edge.
     let mut constructions: Vec<CallEdge> = Vec::new();
+    // A call from another language does not name an Elixir module, nor
+    // an Elixir struct another language's type (`same_type_space`).
     for edges in calls.forward.values() {
         for e in edges {
-            if !matches!(e.kind, CallKindCompat::Construct) {
+            if !matches!(e.kind, CallKindCompat::Construct) || !same_type_space(&e.source, type_qn)
+            {
                 continue;
             }
             let target_name = match &e.target {
-                CallTarget::Resolved(qn) => qn.name().to_string(),
+                // An Elixir struct literal resolves to its module.
+                CallTarget::Resolved(qn) => match calls.types.get(qn) {
+                    Some(meta) => type_key_of(qn, &meta.kind),
+                    None => qn.name().to_string(),
+                },
                 CallTarget::External(s) | CallTarget::Bare(s) => trailing_segment(s),
             };
             if target_name == bare {
@@ -437,6 +448,9 @@ pub(crate) fn collect_type_callers(calls: &CallGraph, type_qn: &Qn) -> TypeCalle
         for e in edges {
             if matches!(e.kind, CallKindCompat::Construct) {
                 continue; // already counted above
+            }
+            if !same_type_space(&e.source, type_qn) {
+                continue;
             }
             let recv_matches = e
                 .receiver
@@ -498,8 +512,16 @@ fn collect_type_callees(calls: &CallGraph, type_qn: &Qn, max_depth: usize) -> Ty
                 None => continue,
             };
             for base in &cur_meta.bases {
-                let normalised = normalise_type_name(base);
-                let resolved = calls.type_by_name.get(&normalised);
+                let normalised = type_key(qn_lang(cur_qn), base);
+                let resolved = calls
+                    .type_by_name
+                    .get(&normalised)
+                    .map(|qns| {
+                        qns.iter()
+                            .filter(|p| same_type_space(p, cur_qn))
+                            .collect::<Vec<_>>()
+                    })
+                    .filter(|qns| !qns.is_empty());
                 match resolved {
                     Some(qns) => {
                         for parent_qn in qns {
@@ -582,25 +604,6 @@ fn methods_of_type(calls: &CallGraph, type_qn: &Qn) -> Vec<MethodInfo> {
         .collect();
     out.sort_by(|a, b| a.qn.0.cmp(&b.qn.0));
     out
-}
-
-/// Strip generics / scope prefix so `crate::base::LanguageAdapter<T>` and
-/// `LanguageAdapter` hash to the same key — mirrors the build-side helper.
-fn normalise_type_name(name: &str) -> String {
-    let mut name = name.trim();
-    if let Some(i) = name.find('<') {
-        name = &name[..i];
-    }
-    if let Some(i) = name.find('[') {
-        name = &name[..i];
-    }
-    if let Some(i) = name.rfind('.') {
-        name = &name[i + 1..];
-    }
-    if let Some(i) = name.rfind("::") {
-        name = &name[i + 2..];
-    }
-    name.to_string()
 }
 
 /// `ast-bro trace <FROM> <TO>` — shortest static call path between two

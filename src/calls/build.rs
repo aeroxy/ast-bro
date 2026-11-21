@@ -10,11 +10,13 @@
 //! `rayon::par_iter` is fast (the parse-for-hook path is what `map`/`show`
 //! already use, and is sub-millisecond per file).
 
-use crate::calls::graph::{CallGraph, CallKindCompat, CallTarget, CallableMeta, Qn, TypeMeta};
+use crate::calls::graph::{
+    add_callable, type_key, type_key_of, CallGraph, CallKindCompat, CallTarget, CallableMeta, Qn,
+    TypeMeta,
+};
 use crate::calls::pass::{file_rel, qn_from, FilePass, RawEdge};
-use crate::calls::resolve;
+use crate::calls::resolve::{self, qn_lang};
 use crate::core::{CallSite, Declaration, DeclarationKind};
-use crate::deps::resolver::Lang;
 use crate::deps::DepGraph;
 use crate::main_helpers::parse_file_for_hook;
 use rayon::prelude::*;
@@ -42,17 +44,20 @@ pub fn build_call_graph(root: &Path, deps: &DepGraph) -> CallGraph {
     for fp in &passes {
         namespaces.extend(fp.namespaces.iter().cloned());
         for (qn, meta) in fp.defined.iter().zip(fp.callable_locations.iter()) {
-            callable_meta.insert(qn.clone(), meta.clone());
+            add_callable(&mut callable_meta, qn, meta);
         }
         for (qn, meta) in &fp.types {
             types.insert(qn.clone(), meta.clone());
+            let lang = qn_lang(qn);
             type_by_name
-                .entry(qn.name().to_string())
+                .entry(type_key_of(qn, &meta.kind))
                 .or_default()
                 .push(qn.clone());
             for base in &meta.bases {
-                let normalised = normalise_type_name(base);
-                implementors.entry(normalised).or_default().push(qn.clone());
+                implementors
+                    .entry(type_key(lang, base))
+                    .or_default()
+                    .push(qn.clone());
             }
         }
     }
@@ -65,7 +70,7 @@ pub fn build_call_graph(root: &Path, deps: &DepGraph) -> CallGraph {
         v.dedup();
     }
 
-    let resolved = resolve::run(root, deps, passes);
+    let resolved = resolve::run(root, deps, passes, &type_by_name, &callable_meta);
     let mut graph = CallGraph::empty(root.to_path_buf());
     graph.symbol_table = resolved.symbol_table;
     graph.forward = resolved.forward;
@@ -97,35 +102,10 @@ pub fn build_call_graph(root: &Path, deps: &DepGraph) -> CallGraph {
     graph
 }
 
-/// Mirror of `core::_normalize_type_name` — strip generics, brackets,
-/// dotted/`::`-prefixed scope so `crate::base::LanguageAdapter`,
-/// `LanguageAdapter<T>`, and `LanguageAdapter` all hash to the same key.
-fn normalise_type_name(name: &str) -> String {
-    let mut name = name.trim();
-    if let Some(i) = name.find('<') {
-        name = &name[..i];
-    }
-    if let Some(i) = name.find('[') {
-        name = &name[..i];
-    }
-    if let Some(i) = name.rfind('.') {
-        name = &name[i + 1..];
-    }
-    if let Some(i) = name.rfind("::") {
-        name = &name[i + 2..];
-    }
-    name.to_string()
-}
-
 /// Phase 1 per-file: parse, walk Declarations, emit qns + raw edges + types.
 /// Public so the incremental updater in `crate::graph_cache::delta` can
 /// re-extract individual files without re-walking the project.
 pub fn extract_file(root: &Path, file: &Path) -> Option<FilePass> {
-    // The dep graph holds Elixir files, but the adapter records no call
-    // sites yet: a symbol with no callers must not read as a real answer.
-    if Lang::from_path(file) == Some(Lang::Elixir) {
-        return None;
-    }
     let parse = parse_file_for_hook(file)?;
     let rel = file_rel(root, file);
 
@@ -184,6 +164,7 @@ fn walk(
                 file: PathBuf::from(rel_file),
                 line: d.start_line as u32,
                 kind: d.kind.to_string(),
+                arities: crate::calls::elixir::arities(rel_file, d),
             });
             for cs in &d.calls {
                 raw_edges.push(call_to_raw(qn.clone(), cs));
@@ -252,5 +233,7 @@ fn call_to_raw(source: Qn, cs: &CallSite) -> RawEdge {
         kind: CallKindCompat::from(cs.kind),
         line: cs.line,
         receiver_scope: cs.receiver_scope,
+        imports: cs.imports.clone(),
+        arity: cs.arity,
     }
 }

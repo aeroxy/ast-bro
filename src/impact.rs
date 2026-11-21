@@ -200,20 +200,32 @@ fn compute_impact(
     // --hide-ambiguous is set, matching the direct sections' retain.
     // Unbounded: `transitive_count` must be the true total; the transitive
     // section applies --limit at display time (issue #32).
-    let walk = traverse::callers_info(calls, &c.qn, opts.depth.max(1), UNLIMITED, |e| {
-        if !opts.include_ambiguous && matches!(e.confidence, Confidence::Ambiguous) {
-            return false;
+    //
+    // A type's dependents are gathered from its constructions below. The
+    // edges into a type qn (an Elixir struct literal, a Rust struct literal,
+    // an imported TS/JS class built with `new`) are among them, so walking
+    // from it would list them twice.
+    let walk = if c.kind == SymbolKind::Type {
+        traverse::TraversalInfo {
+            hits: Vec::new(),
+            frontier_truncated: false,
         }
-        if !opts.tests && !opts.exclude_tests {
-            return true;
-        }
-        let is_test = is_test_file(&root.join(&e.file), root);
-        if opts.exclude_tests {
-            !is_test
-        } else {
-            is_test
-        }
-    });
+    } else {
+        traverse::callers_info(calls, &c.qn, opts.depth.max(1), UNLIMITED, |e| {
+            if !opts.include_ambiguous && matches!(e.confidence, Confidence::Ambiguous) {
+                return false;
+            }
+            if !opts.tests && !opts.exclude_tests {
+                return true;
+            }
+            let is_test = is_test_file(&root.join(&e.file), root);
+            if opts.exclude_tests {
+                !is_test
+            } else {
+                is_test
+            }
+        })
+    };
     report.frontier_truncated |= walk.frontier_truncated;
     let all_callers = walk.hits;
     for h in &all_callers {
@@ -257,9 +269,8 @@ fn compute_impact(
     }
 
     if c.kind == SymbolKind::Type {
-        // Construct/receiver edges never resolve to a type qn, so the
-        // reverse index (and `traverse::callers` above) can't see them.
-        // Type dependents are gathered from construction edges instead:
+        // The walk above skips a type. Its dependents are gathered from
+        // construction edges instead:
         //   depth 1: implementors + callables constructing the type itself
         //   depth 2: callers of those constructors; callables constructing
         //            an implementor
@@ -299,6 +310,8 @@ fn compute_impact(
                         receiver: None,
                         candidates: Vec::new(),
                         receiver_scope: crate::core::ReceiverScope::None,
+                        imports: Vec::new(),
+                        arity: None,
                     },
                 });
             }
@@ -383,16 +396,17 @@ fn compute_impact(
                 });
             }
             // Callers of the constructors are depth-2+ dependents — seeded
-            // into the shared walk below. A construction hidden by
+            // into the shared walk below, which at --depth 1 only checks
+            // them for a frontier. A construction hidden by
             // --hide-ambiguous must not seed it either (same rule as the
             // implementor path): its depth-2+ dependents would be
             // consequences of an edge the caller asked to hide.
-            if opts.depth > 1 && !ambiguous_hidden {
+            if !ambiguous_hidden {
                 ctor_walk_seeds.push((e.source.clone(), 1));
             }
         }
 
-        if let Some(impls) = calls.implementors.get(c.qn.name()) {
+        if let Some(impls) = calls.implementors_of(&c.qn) {
             for qn in impls {
                 let meta = calls.types.get(qn);
                 let file = meta.map(|m| m.file.clone()).unwrap_or_else(|| PathBuf::from(qn.file()));
@@ -414,6 +428,8 @@ fn compute_impact(
                             receiver: None,
                             candidates: Vec::new(),
                             receiver_scope: crate::core::ReceiverScope::None,
+                            imports: Vec::new(),
+                            arity: None,
                         },
                     });
                 }
@@ -431,9 +447,7 @@ fn compute_impact(
                             continue;
                         }
                         consider(&mut cand, 2, &e.source, &e.file, e.line, e.confidence);
-                        if opts.depth > 2 {
-                            ctor_walk_seeds.push((e.source.clone(), 2));
-                        }
+                        ctor_walk_seeds.push((e.source.clone(), 2));
                     }
                 }
             }
@@ -622,11 +636,16 @@ fn build_callees_section(
         .filter_map(|e| {
                 let (qn, file, line) = match &e.target {
                     CallTarget::Resolved(q) => {
-                        let meta = calls.callable_meta.get(q);
+                        // A struct literal's target is a type.
+                        let meta = calls
+                            .callable_meta
+                            .get(q)
+                            .map(|m| (&m.file, m.line))
+                            .or_else(|| calls.types.get(q).map(|m| (&m.file, m.line)));
                         (
                             q.as_str().to_string(),
-                            meta.map(|m| m.file.clone()).unwrap_or_else(|| e.file.clone()),
-                            meta.map(|m| m.line).unwrap_or(e.line),
+                            meta.map(|m| m.0.clone()).unwrap_or_else(|| e.file.clone()),
+                            meta.map(|m| m.1).unwrap_or(e.line),
                         )
                     }
                     CallTarget::External(s) => {
@@ -665,6 +684,12 @@ fn build_callees_section(
     }
 }
 
+/// An edge into the type `c` itself: an Elixir struct literal, which the
+/// type's constructions (`collect_type_callers`) already count.
+fn constructs_type(c: &ResolvedTarget, e: &CallEdge) -> bool {
+    c.kind == SymbolKind::Type && matches!(&e.target, CallTarget::Resolved(q) if *q == c.qn)
+}
+
 fn build_callers_section(
     c: &ResolvedTarget,
     calls: &CallGraph,
@@ -676,7 +701,7 @@ fn build_callers_section(
     // BFS callers and survive the per-section cap below (the BFS tail yields).
     let mut hits: Vec<CallHit> = Vec::new();
     if c.kind == SymbolKind::Type {
-        if let Some(impls) = calls.implementors.get(c.qn.name()) {
+        if let Some(impls) = calls.implementors_of(&c.qn) {
             for qn in impls {
                 if let Some(meta) = calls.types.get(qn) {
                     hits.push(CallHit {
@@ -691,14 +716,15 @@ fn build_callers_section(
                             receiver: None,
                             candidates: Vec::new(),
                             receiver_scope: crate::core::ReceiverScope::None,
+                            imports: Vec::new(),
+                            arity: None,
                         },
                     });
                 }
             }
         }
-        // Construction sites (`Foo {}`, `Foo::new()`, `Foo.method()`) —
-        // these edges target a bare name, never the type qn, so the
-        // reverse-index lookup below can't return them.
+        // Construction sites (`Foo {}`, `Foo::new()`, `Foo.method()`). The
+        // lookup below skips the ones that resolve to the type qn.
         let group = collect_type_callers(calls, &c.qn);
         for e in group.constructions {
             hits.push(CallHit { depth: 1, edge: e });
@@ -708,6 +734,9 @@ fn build_callers_section(
     // trims the display below (issue #32). Filter inside the traversal so
     // dropped edges don't distort the count.
     hits.extend(traverse::callers(calls, &c.qn, 1, UNLIMITED, |e| {
+        if constructs_type(c, e) {
+            return false;
+        }
         if !opts.include_ambiguous && matches!(e.confidence, Confidence::Ambiguous) {
             return false;
         }

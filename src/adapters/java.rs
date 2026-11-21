@@ -616,6 +616,8 @@ fn _call_site_from_method_invocation<'a, D: Doc>(
         line,
         kind: CallKind::Call,
         receiver_scope: ReceiverScope::None,
+        imports: Vec::new(),
+        arity: None,
     })
 }
 
@@ -636,6 +638,8 @@ fn _call_site_from_object_creation<'a, D: Doc>(
         line,
         kind: CallKind::Construct,
         receiver_scope: ReceiverScope::None,
+        imports: Vec::new(),
+        arity: None,
     })
 }
 
