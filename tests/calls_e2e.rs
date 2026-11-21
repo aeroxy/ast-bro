@@ -1905,6 +1905,59 @@ end
 }
 
 #[test]
+fn elixir_callbacks_take_no_calls() {
+    // A `@callback` declares a function for other modules to define; no
+    // call reaches it, at any arity (Ecto.Association: `struct(s, d)` next
+    // to `@callback struct(module, field, opts)` calls `Kernel.struct/2`).
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(&root.join("mix.exs"), "defmodule Shop.MixProject do\nend\n");
+    write(
+        &root.join("lib/beh.ex"),
+        r#"defmodule Shop.Beh do
+  @callback struct(module, atom, keyword) :: term
+  @callback fetch(term) :: term
+  @macrocallback build(term) :: Macro.t()
+  @callback get(term) :: term
+  def get(k), do: k
+
+  def apply_defaults(s, d), do: struct(s, d)
+  def own(k), do: get(k)
+end
+
+defmodule Shop.User do
+  import Shop.Beh
+  def remote(x), do: Shop.Beh.fetch(x)
+  def macro(x), do: Shop.Beh.build(x)
+  def imported(x), do: fetch(x)
+end
+"#,
+    );
+    let callees = |sym: &str| run_in(root, &["callees", sym, ".", "--rebuild"]).0;
+    for (sym, name) in [
+        ("Shop.Beh.apply_defaults", "struct"),
+        ("Shop.User.remote", "fetch"),
+        ("Shop.User.macro", "build"),
+        ("Shop.User.imported", "fetch"),
+    ] {
+        let out = callees(sym);
+        assert!(!out.contains(&format!("Shop.Beh::{name}  (")), "{}: {}", sym, out);
+    }
+    // A `def` of the callback's name still takes its calls.
+    let out = callees("Shop.Beh.own");
+    assert!(out.contains("Shop.Beh::get  (Exact)"), "{}", out);
+    // An incremental update that defines the function binds the call.
+    write(
+        &root.join("lib/beh.ex"),
+        &std::fs::read_to_string(root.join("lib/beh.ex"))
+            .unwrap()
+            .replace("  def get(k), do: k\n", "  def get(k), do: k\n  def fetch(k), do: k\n"),
+    );
+    let (out, _) = run_in(root, &["callees", "Shop.User.remote", "."]);
+    assert!(out.contains("Shop.Beh::fetch  (Exact)"), "{}", out);
+}
+
+#[test]
 fn elixir_and_rust_types_of_one_name_stay_apart() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path();

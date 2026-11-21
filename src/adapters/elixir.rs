@@ -103,10 +103,17 @@ pub(crate) fn scan_modules(source: &str) -> ModuleScan {
 }
 
 /// The argument counts a definition accepts, `(min, max)`, read from its
-/// signature: `def f(a, b \\ 1)` accepts one or two. `None` without a head.
+/// signature: `def f(a, b \\ 1)` accepts one or two, and `@callback f(a)
+/// :: t` declares one. `None` without a head.
 pub(crate) fn arity_range(signature: &str) -> Option<(usize, usize)> {
     use ast_grep_language::{LanguageExt, SupportLang};
     let grep = SupportLang::Elixir.ast_grep(signature);
+    let top = grep.root().children().find(|c| c.is_named())?;
+    if top.kind() == "unary_operator" {
+        let spec = _named_args(&top.field("operand")?).into_iter().next()?;
+        let (_, arity) = _head_name_arity(&_spec_head(&spec));
+        return Some((arity, arity));
+    }
     let def = grep.root().children().find(|c| c.kind() == "call")?;
     let mut head = _named_args(&def).into_iter().next()?;
     let (_, arity) = _head_name_arity(&head);
