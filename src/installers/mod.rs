@@ -13,6 +13,7 @@ pub mod aider;
 pub mod codex;
 pub mod copilot;
 pub mod opencode;
+pub mod pi;
 
 use std::path::PathBuf;
 
@@ -96,5 +97,6 @@ pub fn registry() -> Vec<Box<dyn Installer>> {
         Box::new(codex::Codex),
         Box::new(copilot::Copilot),
         Box::new(opencode::OpenCode),
+        Box::new(pi::Pi),
     ]
 }
