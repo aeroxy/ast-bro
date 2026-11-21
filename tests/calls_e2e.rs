@@ -1827,6 +1827,8 @@ fn elixir_remote_calls_compare_arity() {
         &root.join("lib/remote.ex"),
         r#"defmodule Shop.Tools do
   def fmt(a, b), do: {a, b}
+  def zero, do: :z
+  def one(a), do: a
 end
 
 defmodule Shop.Hid do
@@ -1841,6 +1843,17 @@ defmodule Shop.Remote do
   def piped(x), do: x |> Shop.Tools.fmt(1)
   def captured, do: &Shop.Tools.fmt/2
   def miscaptured, do: &Shop.Tools.fmt/1
+  def bare, do: Shop.Tools.fmt
+  def bare_piped(x), do: x |> Shop.Tools.fmt
+  def bare_zero, do: Shop.Tools.zero
+  def bare_one(x), do: x |> Shop.Tools.one
+end
+
+defmodule Shop.Delegates do
+  defdelegate one(x, y), to: Shop.Tools
+  defdelegate fmt(x), to: Shop.Tools
+  defdelegate full(x, y), to: Shop.Tools, as: :fmt
+  defdelegate defaulted(x, y \\ 1), to: Shop.Tools, as: :fmt
 end
 "#,
     );
@@ -1860,6 +1873,24 @@ end
     assert!(out.contains("Shop.Tools::fmt  (Exact)"), "{}", out);
     let out = callees("Shop.Remote.miscaptured");
     assert!(!out.contains("(Exact)"), "{}", out);
+    // Without parentheses a remote call takes no arguments, or the piped one.
+    for sym in ["Shop.Remote.bare", "Shop.Remote.bare_piped"] {
+        let out = callees(sym);
+        assert!(!out.contains("(Exact)"), "{}: {}", sym, out);
+    }
+    let out = callees("Shop.Remote.bare_zero");
+    assert!(out.contains("Shop.Tools::zero  (Exact)"), "{}", out);
+    let out = callees("Shop.Remote.bare_one");
+    assert!(out.contains("Shop.Tools::one  (Exact)"), "{}", out);
+    // A delegate passes its target every argument of its head, defaults too.
+    for sym in ["Shop.Delegates.one", "Shop.Delegates.fmt"] {
+        let out = callees(sym);
+        assert!(!out.contains("(Exact)"), "{}: {}", sym, out);
+    }
+    for sym in ["Shop.Delegates.full", "Shop.Delegates.defaulted"] {
+        let out = callees(sym);
+        assert!(out.contains("Shop.Tools::fmt  (Exact)"), "{}: {}", sym, out);
+    }
     // An incremental update compares arity too.
     write(
         &root.join("lib/remote.ex"),

@@ -714,9 +714,11 @@ impl<'s> Walker<'s> {
                 self.default_calls(head, module_fqn, &mut out);
             }
             if let (Some(head), Some(to)) = (args.first(), _keyword_value(args, "to")) {
+                // The target gets every argument of the head, defaults too.
+                let (head_name, arity) = _head_name_arity(head);
                 let name = match _keyword_value(args, "as") {
                     Some(a) => _text(&a).trim_start_matches(':').to_string(),
-                    None => _head_name_arity(head).0,
+                    None => head_name,
                 };
                 out.push(CallSite {
                     name,
@@ -725,7 +727,7 @@ impl<'s> Walker<'s> {
                     kind: CallKind::Call,
                     receiver_scope: ReceiverScope::Absolute,
                     imports: Vec::new(),
-                    arity: None,
+                    arity: Some(arity),
                 });
             }
             return out;
@@ -856,12 +858,12 @@ impl<'s> Walker<'s> {
                                     p.parent()
                                         .and_then(|c| c.field("operator"))
                                         .is_some_and(|o| o.text() == "&")
-                                })
-                                .and_then(|p| p.field("right"))
-                                .and_then(|r| r.text().parse().ok());
-                            let arity = match parenthesised {
-                                true => Some(_call_arity(&node, piped)),
-                                false => captured,
+                                });
+                            let arity = match captured {
+                                Some(p) if !parenthesised => {
+                                    p.field("right").and_then(|r| r.text().parse().ok())
+                                }
+                                _ => Some(_call_arity(&node, piped)),
                             };
                             if parenthesised || module {
                                 let site = self.site(
