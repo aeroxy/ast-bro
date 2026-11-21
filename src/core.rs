@@ -33,8 +33,11 @@ pub const JSON_SCHEMA_RUN: &str = "ast-bro.run.v1";
 /// already fingerprints without holding their edges; v4 adds their call
 /// sites, which a v3 cache holds empty; v5 adds `Arity::is_callback`; v6
 /// keeps a bare call to its language family, and a v5 cache holds
-/// cross-language `Exact` edges that an incremental update never revisits.
-pub const JSON_SCHEMA_GRAPH_INDEX: &str = "ast-bro.graph-index.v6";
+/// cross-language `Exact` edges that an incremental update never revisits;
+/// v7 adds the definitions in module-level blocks, from user `def…` macros
+/// and in ExUnit tests, which a v6 cache leaves out of files that did not
+/// change.
+pub const JSON_SCHEMA_GRAPH_INDEX: &str = "ast-bro.graph-index.v7";
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Copy, Default)]
 pub enum DeclarationKind {
