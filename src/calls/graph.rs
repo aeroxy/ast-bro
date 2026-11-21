@@ -206,12 +206,15 @@ pub struct CallableMeta {
 
 /// The argument counts one definition accepts, `min..=max`, and whether an
 /// `import` brings it in: not if private, and per `only:` if a macro.
+/// A `@callback` only declares the function for other modules to define,
+/// so it takes no call.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Arity {
     pub min: usize,
     pub max: usize,
     pub is_private: bool,
     pub is_macro: bool,
+    pub is_callback: bool,
 }
 
 impl CallableMeta {
@@ -223,7 +226,8 @@ impl CallableMeta {
     pub(crate) fn accepts(&self, arity: Option<usize>, outside: Option<ImportOnly>) -> bool {
         self.arities.is_empty()
             || self.arities.iter().any(|a| {
-                arity.is_none_or(|n| (a.min..=a.max).contains(&n))
+                !a.is_callback
+                    && arity.is_none_or(|n| (a.min..=a.max).contains(&n))
                     && outside.is_none_or(|only| !a.is_private && only.admits(a.is_macro))
             })
     }

@@ -44,6 +44,7 @@ pub(crate) fn arities(rel_file: &str, d: &Declaration) -> Vec<Arity> {
             max,
             is_private: d.visibility == "private",
             is_macro: d.modifiers.iter().any(|m| m == "macro" || m == "guard"),
+            is_callback: d.modifiers.iter().any(|m| m == "callback"),
         })
         .collect()
 }
