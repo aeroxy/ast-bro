@@ -33,7 +33,7 @@ Modern agentic coding tools explore codebases by reading files directly. That's 
 6. **Blast radius in one shot.** `impact <symbol>` combines callers, callees, file-level deps, file-level reverse-deps, transitive callers at `--depth N`, and test-file detection into one "what would break?" report — replaces a chain of four round-trips with a single call. Four `--mode` variants: `all` (default), `deps`, `dependents`, `tests`. `--tests` / `--exclude-tests` narrow the filter. Works for both callables and types.
 7. **Token-budgeted context.** `context <symbol> --budget N` packs "everything an LLM needs to understand this symbol" into a caller-supplied token budget: target body first, then direct callees (bodies while budget permits, signatures otherwise), direct callers (signatures), transitive callees/callers at depth 2 (signatures only). For types: type body, implementors, methods, callers-of-methods. Flags `truncated` when budget ran short and `target_omitted` when even the target body didn't fit. Same data as four or five `show`/`callers`/`callees` calls, one round-trip, budget-bounded.
 8. **Squeeze logs, not just code.** `squeeze` compresses a repetitive log/text file into a smaller, reversible form (a legend plus short tags) so a noisy log costs far fewer tokens to hand to an agent — and falls back to the raw text when squeezing wouldn't help. This is for *logs/text*, not code (for code, `map` / `digest` / `show` are the token win).
-9. **Nineteen native MCP tools.** Every analysis command is also exposed as an MCP tool — `ast-bro install --target <agent> --mcp` wires it into Claude Code, Cursor, Gemini, Codex, OpenCode, or VS Code Copilot in one line.
+9. **Nineteen native MCP tools.** Every analysis command is also exposed as an MCP tool — `ast-bro install --target <agent> --mcp` wires it into Claude Code, Cursor, Gemini, Codex, OpenCode, Pi, or VS Code Copilot in one line.
 
 ### The workflow
 
@@ -293,6 +293,10 @@ ast-bro install --target gemini --min-lines 150
 ast-bro install --target opencode
 ast-bro install --target opencode --mcp --skills
 
+# Pi prompt and read-interceptor extension, then MCP server and skill.
+ast-bro install --target pi
+ast-bro install --target pi --mcp --skills
+
 # See exactly what would change before writing.
 ast-bro install --all --dry-run
 
@@ -307,10 +311,14 @@ ast-bro status
 ```
 
 Supported targets: `claude-code`, `gemini`, `tabnine`, `cursor`,
-`aider`, `codex`, `copilot`, `opencode`. Claude Code, Gemini, and Tabnine also get
+`aider`, `codex`, `copilot`, `opencode`, `pi`. Claude Code, Gemini, and Tabnine also get
 a tool-call hook that intercepts `Read` on supported source files above
 `--min-lines` (default 200) and substitutes the map output. On Claude
 Code it also covers a read the host refuses outright, at any line count.
+Pi has no hook configuration, so its hook is a Pi extension
+(`<agent-dir>/extensions/ast-bro.ts`, or `.pi/extensions/` with `--local`)
+that intercepts `read` the same way through `ast-bro hook --protocol claude-code`.
+Pi's agent directory is `$PI_CODING_AGENT_DIR`, else `~/.pi/agent`.
 The other targets do not install a read-interceptor hook.
 
 The substitution reaches the agent as a blocked tool call whose first
@@ -405,6 +413,7 @@ ast-bro prompt | pbcopy   # macOS clipboard
 - Claude Code (+ custom subagents like `Explore`, `codebase-scout`)
 - Cursor agent mode
 - OpenCode
+- Pi
 - Aider
 - Copilot Chat / Workspace
 - Any custom agent on the Claude / OpenAI / Gemini APIs
