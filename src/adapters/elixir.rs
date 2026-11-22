@@ -525,13 +525,16 @@ impl<'s> Walker<'s> {
                     let p = std::mem::take(&mut pending);
                     self.exunit_decl(&child, k, p, module_fqn, &mut out);
                 }
-                // `if … do def … end` defines into this module.
+                // `if … do def … end` defines into this module. A clause
+                // in the block joins the function's clauses around it, and
+                // a clause after it still folds into those before.
                 k if k != "quote" && !wrapped_bodies(&child).is_empty() => {
-                    last_fn = None;
                     pending = Pending::default();
                     for block in wrapped_bodies(&child) {
                         let inner = self.walk_body(&block, module_fqn);
-                        out.decls.extend(inner.decls);
+                        for d in inner.decls {
+                            _fold_clause(&mut out.decls, d);
+                        }
                         out.defines_struct |= inner.defines_struct;
                         for b in inner.behaviours {
                             if !out.behaviours.contains(&b) {
@@ -719,7 +722,13 @@ impl<'s> Walker<'s> {
             .as_ref()
             .is_some_and(|l| l.keyword == keyword && l.name == name && l.arity == arity);
         if continues {
-            if let Some(prev) = out.last_mut() {
+            // The entry need not be the last: a module-level block's
+            // definitions may sit between two clauses.
+            if let Some(prev) = out
+                .iter_mut()
+                .rev()
+                .find(|d| _same_function(d, keyword, &name, arity))
+            {
                 prev.end_line = end_line;
                 prev.end_byte = range.end;
                 for a in pending.attrs {
@@ -1844,6 +1853,49 @@ fn wrapped_bodies<'a, D: Doc>(node: &Node<'a, D>) -> Vec<Node<'a, D>> {
     }
 }
 
+/// Whether `d` is the entry for `keyword name/arity`.
+fn _same_function(d: &Declaration, keyword: &str, name: &str, arity: usize) -> bool {
+    d.kind == DeclarationKind::Function
+        && d.native_kind.as_deref() == Some(keyword)
+        && d.name == name
+        && arity_range(&d.signature).map(|(_, max)| max) == Some(arity)
+}
+
+/// Add `d` to `decls`, folded into the entry of the same function if one is
+/// there: one function is one entry, whichever block holds its clauses.
+fn _fold_clause(decls: &mut Vec<Declaration>, d: Declaration) {
+    let arity = arity_range(&d.signature).map(|(_, max)| max);
+    let keyword = d.native_kind.clone().unwrap_or_default();
+    let prev = arity.and_then(|a| {
+        decls
+            .iter_mut()
+            .find(|p| _same_function(p, &keyword, &d.name, a))
+    });
+    let Some(prev) = prev else {
+        decls.push(d);
+        return;
+    };
+    if d.start_byte < prev.start_byte {
+        prev.start_line = d.start_line;
+        prev.start_byte = d.start_byte;
+        prev.doc_start_byte = d.doc_start_byte;
+    }
+    if d.end_byte > prev.end_byte {
+        prev.end_line = d.end_line;
+        prev.end_byte = d.end_byte;
+    }
+    for a in d.attrs {
+        if !prev.attrs.contains(&a) {
+            prev.attrs.push(a);
+        }
+    }
+    if prev.docs.is_empty() {
+        prev.docs = d.docs;
+    }
+    prev.deprecated |= d.deprecated;
+    prev.calls.extend(d.calls);
+}
+
 /// Visibility and modifier for `keyword`. A def-like macro is its own modifier,
 /// private as the `p` of a one-letter macro (`defnp`).
 fn _def_traits(keyword: &str) -> (bool, Option<String>) {
@@ -2178,13 +2230,39 @@ mod tests {
             .iter()
             .map(|d| (d.signature.as_str(), d.start_line))
             .collect();
-        // Both branches, each its own entry; not the keyword-form `unless`
-        // (no `do` block), nor the `quote`.
+        // Both branches, one function so one entry; not the keyword-form
+        // `unless` (no `do` block), nor the `quote`.
+        assert_eq!(got, vec![("def f(x)", 4), ("def unquote(n)()", 10)]);
+        assert_eq!(a.children[0].end_line, 6);
+        assert!(a.children[0].docs.is_empty(), "{:?}", a.children[0].docs);
+    }
+
+    #[test]
+    fn clauses_around_a_module_level_block_fold_into_one_entry() {
+        // Plug.Conn.Status: `code/1` has clauses before, inside and after a
+        // `for`. One function is one entry, at its first clause, as on main.
+        let r = parse(
+            "defmodule S do\n  def code(i) when is_integer(i), do: i\n  for {c, a} <- [ok: 200] do\n    def code(unquote(a)), do: unquote(c)\n    def other(unquote(a)), do: 1\n  end\n  def code(x), do: raise(x)\n  def code(x, y), do: {x, y}\nend\n",
+        );
+        let got: Vec<(&str, usize, usize)> = r.declarations[0]
+            .children
+            .iter()
+            .map(|d| (d.signature.as_str(), d.start_line, d.end_line))
+            .collect();
         assert_eq!(
             got,
-            vec![("def f(x)", 4), ("def f(_)", 6), ("def unquote(n)()", 10)]
+            vec![
+                ("def code(i) when is_integer(i)", 2, 7),
+                ("def other(unquote(a))", 5, 5),
+                ("def code(x, y)", 8, 8),
+            ]
         );
-        assert!(a.children[0].docs.is_empty(), "{:?}", a.children[0].docs);
+        let calls: Vec<&str> = r.declarations[0].children[0]
+            .calls
+            .iter()
+            .map(|c| c.name.as_str())
+            .collect();
+        assert_eq!(calls, vec!["is_integer", "raise"]);
     }
 
     #[test]
