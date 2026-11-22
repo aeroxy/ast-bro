@@ -1206,6 +1206,42 @@ end
 }
 
 #[test]
+fn elixir_a_test_label_with_a_colon_is_a_name() {
+  // A target's single `:` separates a file from a symbol, but a label holds
+  // one too (`test "returns :ok"`), issue #106.
+  let tmp = tempfile::tempdir().unwrap();
+  let root = tmp.path();
+  write(&root.join("mix.exs"), "defmodule Shop.MixProject do\nend\n");
+  write(
+    &root.join("lib/shop.ex"),
+    "defmodule Shop do\n  def run, do: :ok\nend\n",
+  );
+  write(
+    &root.join("test/shop_test.exs"),
+    "defmodule ShopTest do\n  test \"returns :ok\" do\n    assert Shop.run() == :ok\n  end\nend\n",
+  );
+  run_in(root, &["callers", "Shop.run", ".", "--rebuild"]);
+  for target in [
+    "test/shop_test.exs::ShopTest::test returns :ok",
+    "ShopTest.test returns :ok",
+    "test returns :ok",
+    "test/shop_test.exs:ShopTest.test returns :ok",
+  ] {
+    let (out, code) = run_in(root, &["callees", target, "."]);
+    assert_eq!(code, 0, "{}: {}", target, out);
+    assert!(
+      out.contains("lib/shop.ex::Shop::run"),
+      "{}: {}",
+      target,
+      out
+    );
+  }
+  // A file filter that matches nothing still answers nothing.
+  let (out, code) = run_in(root, &["callees", "lib/other.ex:run", "."]);
+  assert_eq!(code, 2, "{}", out);
+}
+
+#[test]
 fn elixir_partial_update_resolves_new_calls_the_same_way() {
   let tmp = elixir_project();
   let root = tmp.path();
