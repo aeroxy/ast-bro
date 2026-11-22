@@ -36,8 +36,9 @@ pub const JSON_SCHEMA_RUN: &str = "ast-bro.run.v1";
 /// cross-language `Exact` edges that an incremental update never revisits;
 /// v7 adds the definitions in module-level blocks, from user `def…` macros
 /// and in ExUnit tests, which a v6 cache leaves out of files that did not
-/// change.
-pub const JSON_SCHEMA_GRAPH_INDEX: &str = "ast-bro.graph-index.v7";
+/// change; v8 keys a module defined in a `describe` under its module, where
+/// a v7 cache keeps it under the `describe`.
+pub const JSON_SCHEMA_GRAPH_INDEX: &str = "ast-bro.graph-index.v8";
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Copy, Default)]
 pub enum DeclarationKind {
