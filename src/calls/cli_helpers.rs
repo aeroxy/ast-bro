@@ -48,6 +48,16 @@ pub fn resolve_target_qns(calls: &CallGraph, target: &str) -> Vec<Qn> {
 /// it's a callable or a type. Both halves are searched and deduped together.
 pub fn resolve_target_full(calls: &CallGraph, target: &str) -> Vec<ResolvedTarget> {
   let (file_filter, symbol) = split_file_filter(target);
+  let out = resolve_in(calls, file_filter, symbol);
+  // A free-text name holds a `:` of its own (ExUnit's `test returns :ok`),
+  // so a split that finds nothing is tried again whole.
+  if out.is_empty() && file_filter.is_some() {
+    return resolve_in(calls, None, target);
+  }
+  out
+}
+
+fn resolve_in(calls: &CallGraph, file_filter: Option<&str>, symbol: &str) -> Vec<ResolvedTarget> {
   let parts: Vec<&str> = symbol.split('.').collect();
 
   // Each match with whether it starts at a declaration's name rather than
