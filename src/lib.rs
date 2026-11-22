@@ -41,604 +41,604 @@ pub(crate) const UNLIMITED: usize = usize::MAX;
 #[command(version)]
 #[command(about = "Fast, AST-based structural outline for source files", long_about = None)]
 struct Cli {
-    #[command(subcommand)]
-    command: Commands,
+  #[command(subcommand)]
+  command: Commands,
 }
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Map files or directories — signatures with line ranges, no method bodies.
-    ///
-    /// Three orthogonal axes (issue #37): detail (`--detail names|signatures|full`),
-    /// visibility (`--no-private`, `--no-fields`, …), and scope (`--glob`,
-    /// `--max-members`). `--preset digest` = `--detail names --no-private
-    /// --no-fields --max-members 50`; explicit flags override the preset.
-    Map(MapArgs),
-    /// Extract source of a symbol from a file, several files, a directory, or a glob.
-    ///
-    /// Grammar is `show <target>... <symbol>...`: leading arguments that name a
-    /// parseable file, a directory, or a matching glob are targets, and the rest
-    /// are symbols. The last argument is a symbol unless every argument is a
-    /// parseable file; then there is no symbol and `show` exits 2. That makes
-    /// `show src/ Widget` and `show 'src/*.cs' Widget` work, and it recovers
-    /// the unquoted spelling — the shell expands `show src/*.cs Widget` before
-    /// we see it, which used to search only the first file and silently drop
-    /// the symbol's other definitions.
-    Show {
-        /// File, directory, or quoted glob to search.
-        path: PathBuf,
-        /// Symbol to extract, or a further target when it names a file, a
-        /// directory, or a glob and is not the last argument (see OTHERS).
-        /// Suffix matching: `TakeDamage`, or `Player.TakeDamage` when the bare
-        /// name is ambiguous.
-        symbol: String,
-        /// Further targets and symbols. Leading arguments that name a file, a
-        /// directory, or a glob are targets, and the rest are symbols, so an
-        /// unquoted glob the shell already expanded still names targets. The
-        /// last argument is a symbol: `show src tests` searches `src`
-        /// for `tests`.
-        #[arg(num_args = 0..)]
-        others: Vec<String>,
-        /// Cap on rendered bodies when more than one file is searched.
-        /// Single-file `show` is never capped; the header always reports
-        /// the true total.
-        #[arg(long, default_value_t = crate::defaults::SHOW_LIMIT)]
-        limit: usize,
-        /// Emit output as JSON instead of text
-        #[arg(long)]
-        json: bool,
-        /// With --json: emit compact (single-line) JSON
-        #[arg(long)]
-        compact: bool,
-    },
-    /// Compress repetitive log/text into a smaller, reversible form with a legend.
-    ///
-    /// For **logs and text**, not code — for code use `map` / `digest` / `show`.
-    /// Shrinks repeated lines, tags, timestamps and token sequences; prints a legend
-    /// so the original is recoverable. Falls back to the raw input when squeezing
-    /// would make it larger.
-    Squeeze {
-        /// Path to the log/text file to read.
-        path: PathBuf,
-        /// Optional 1-indexed inclusive line range: `N`, `A:B`, `A:`, or `:B`.
-        #[arg(value_parser = parse_line_range)]
-        range: Option<LineRange>,
-        /// Skip compression — emit the raw text with a header (for diffing/inspecting).
-        #[arg(long)]
-        raw: bool,
-        /// Emit output as JSON instead of text
-        #[arg(long)]
-        json: bool,
-        /// With --json: emit compact (single-line) JSON
-        #[arg(long)]
-        compact: bool,
-    },
-    /// One-page module map — alias for `map --preset digest`.
-    Digest(MapArgs),
-    /// Find subclasses / implementations
-    Implements {
-        /// Base class, trait, or interface whose implementors to find.
-        target: String,
-        /// Files or directories to search. Required — `implements` walks
-        /// only what it is given, and an empty walk would answer "no
-        /// implementations" for a type that has them (issue #33). Declared
-        /// required so `--help` and the runtime agree, and so clap's own
-        /// message names the missing argument.
-        #[arg(required = true, num_args = 1..)]
-        paths: Vec<PathBuf>,
+  /// Map files or directories — signatures with line ranges, no method bodies.
+  ///
+  /// Three orthogonal axes (issue #37): detail (`--detail names|signatures|full`),
+  /// visibility (`--no-private`, `--no-fields`, …), and scope (`--glob`,
+  /// `--max-members`). `--preset digest` = `--detail names --no-private
+  /// --no-fields --max-members 50`; explicit flags override the preset.
+  Map(MapArgs),
+  /// Extract source of a symbol from a file, several files, a directory, or a glob.
+  ///
+  /// Grammar is `show <target>... <symbol>...`: leading arguments that name a
+  /// parseable file, a directory, or a matching glob are targets, and the rest
+  /// are symbols. The last argument is a symbol unless every argument is a
+  /// parseable file; then there is no symbol and `show` exits 2. That makes
+  /// `show src/ Widget` and `show 'src/*.cs' Widget` work, and it recovers
+  /// the unquoted spelling — the shell expands `show src/*.cs Widget` before
+  /// we see it, which used to search only the first file and silently drop
+  /// the symbol's other definitions.
+  Show {
+    /// File, directory, or quoted glob to search.
+    path: PathBuf,
+    /// Symbol to extract, or a further target when it names a file, a
+    /// directory, or a glob and is not the last argument (see OTHERS).
+    /// Suffix matching: `TakeDamage`, or `Player.TakeDamage` when the bare
+    /// name is ambiguous.
+    symbol: String,
+    /// Further targets and symbols. Leading arguments that name a file, a
+    /// directory, or a glob are targets, and the rest are symbols, so an
+    /// unquoted glob the shell already expanded still names targets. The
+    /// last argument is a symbol: `show src tests` searches `src`
+    /// for `tests`.
+    #[arg(num_args = 0..)]
+    others: Vec<String>,
+    /// Cap on rendered bodies when more than one file is searched.
+    /// Single-file `show` is never capped; the header always reports
+    /// the true total.
+    #[arg(long, default_value_t = crate::defaults::SHOW_LIMIT)]
+    limit: usize,
+    /// Emit output as JSON instead of text
+    #[arg(long)]
+    json: bool,
+    /// With --json: emit compact (single-line) JSON
+    #[arg(long)]
+    compact: bool,
+  },
+  /// Compress repetitive log/text into a smaller, reversible form with a legend.
+  ///
+  /// For **logs and text**, not code — for code use `map` / `digest` / `show`.
+  /// Shrinks repeated lines, tags, timestamps and token sequences; prints a legend
+  /// so the original is recoverable. Falls back to the raw input when squeezing
+  /// would make it larger.
+  Squeeze {
+    /// Path to the log/text file to read.
+    path: PathBuf,
+    /// Optional 1-indexed inclusive line range: `N`, `A:B`, `A:`, or `:B`.
+    #[arg(value_parser = parse_line_range)]
+    range: Option<LineRange>,
+    /// Skip compression — emit the raw text with a header (for diffing/inspecting).
+    #[arg(long)]
+    raw: bool,
+    /// Emit output as JSON instead of text
+    #[arg(long)]
+    json: bool,
+    /// With --json: emit compact (single-line) JSON
+    #[arg(long)]
+    compact: bool,
+  },
+  /// One-page module map — alias for `map --preset digest`.
+  Digest(MapArgs),
+  /// Find subclasses / implementations
+  Implements {
+    /// Base class, trait, or interface whose implementors to find.
+    target: String,
+    /// Files or directories to search. Required — `implements` walks
+    /// only what it is given, and an empty walk would answer "no
+    /// implementations" for a type that has them (issue #33). Declared
+    /// required so `--help` and the runtime agree, and so clap's own
+    /// message names the missing argument.
+    #[arg(required = true, num_args = 1..)]
+    paths: Vec<PathBuf>,
 
-        /// Direct implementors only. Transitive ones are included by default,
-        /// tagged `[via Parent]`.
-        #[arg(short, long)]
-        direct: bool,
-        /// Emit output as JSON instead of text
-        #[arg(long)]
-        json: bool,
-        /// With --json: emit compact (single-line) JSON
-        #[arg(long)]
-        compact: bool,
-    },
-    /// Print the agent prompt snippet
-    Prompt,
-    /// Install ast-bro into a coding-agent CLI
-    Install {
-        /// Which agent CLI to install into. `status` lists the names.
-        #[arg(long, conflicts_with = "all")]
-        target: Option<String>,
-        /// Install into every agent CLI detected on this machine.
-        #[arg(long, conflicts_with = "target")]
-        all: bool,
-        /// Install into the current directory instead of the user profile.
-        #[arg(long)]
-        local: bool,
-        /// Install into the user profile. The default; pass it to say so.
-        #[arg(long, conflicts_with = "local")]
-        global: bool,
-        /// Substitute a map for every Read the hook can parse, whatever the
-        /// file's length, instead of only past --min-lines.
-        #[arg(long)]
-        always: bool,
-        /// Shortest file the installed hook rewrites into a map. Files below
-        /// this are read as-is.
-        #[arg(long, default_value_t = crate::defaults::HOOK_MIN_LINES)]
-        min_lines: usize,
-        /// Report what would change without writing anything.
-        #[arg(long)]
-        dry_run: bool,
-        /// Overwrite hand-edited content: either inside the ast-bro block or
-        /// ast-bro content written outside it. Without this the file is left
-        /// alone and the install fails.
-        #[arg(long)]
-        force: bool,
-        /// Install ast-bro as an MCP server entry instead of the agent prompt.
-        /// Combine with `--skills` to install both.
-        #[arg(long)]
-        mcp: bool,
-        /// Install ast-bro as an agent skill instead of the agent prompt.
-        /// Combine with `--mcp` to install both.
-        #[arg(long)]
-        skills: bool,
-    },
-    /// Remove ast-bro from a coding-agent CLI
-    Uninstall {
-        /// Which agent CLI to remove ast-bro from. `status` lists the names.
-        #[arg(long, conflicts_with = "all")]
-        target: Option<String>,
-        /// Remove from every agent CLI detected on this machine.
-        #[arg(long, conflicts_with = "target")]
-        all: bool,
-        /// Act on the current directory instead of the user profile.
-        #[arg(long)]
-        local: bool,
-        /// Act on the user profile. The default; pass it to say so.
-        #[arg(long, conflicts_with = "local")]
-        global: bool,
-        /// Report what would change without writing anything.
-        #[arg(long)]
-        dry_run: bool,
-    },
-    /// Report what's installed where
-    Status {
-        /// Report on the current directory instead of the user profile.
-        #[arg(long)]
-        local: bool,
-        /// Report on the user profile. The default; pass it to say so.
-        #[arg(long, conflicts_with = "local")]
-        global: bool,
-    },
-    /// Internal: read a tool-call event from stdin and respond
-    Hook {
-        /// Event dialect on stdin, which decides how the response is framed.
-        #[arg(long)]
-        protocol: String,
-        /// Shortest file to rewrite into a map. Files below this are read
-        /// as-is.
-        #[arg(long, default_value_t = crate::defaults::HOOK_MIN_LINES)]
-        min_lines: usize,
-        /// Substitute a map for every Read this can parse, whatever the
-        /// file's length, instead of only past --min-lines.
-        #[arg(long)]
-        always: bool,
-    },
-    /// Run as an MCP (Model Context Protocol) server over stdio
-    Mcp,
-    /// Hybrid BM25 + dense semantic search over the repo
-    Search {
-        /// Search query (free-form text or symbol name)
-        query: String,
-        /// Repository root to search in
-        #[arg(default_value = crate::defaults::ROOT)]
-        path: PathBuf,
-        /// Number of results to return
-        #[arg(short = 'k', long = "top-k", default_value_t = crate::defaults::TOP_K)]
-        top_k: usize,
-        /// Override auto alpha (semantic vs. BM25 weight, 0.0–1.0)
-        #[arg(long)]
-        alpha: Option<f32>,
-        /// Filter by language (repeatable, e.g. `--lang rust --lang python`)
-        #[arg(long = "lang")]
-        languages: Vec<String>,
-        /// Force a full rebuild of the index before searching
-        #[arg(long)]
-        rebuild: bool,
-        /// Emit output as JSON instead of text
-        #[arg(long)]
-        json: bool,
-        /// With --json: emit compact (single-line) JSON
-        #[arg(long)]
-        compact: bool,
-    },
-    /// Find chunks semantically similar to a given file:line
-    ///
-    /// Pass the source location either as a positional `<FILE>:<LINE>`
-    /// (matches grep / search-result output you can paste back) or via
-    /// `--file <FILE> --line <LINE>` for scripting use.
-    FindRelated {
-        /// Source location as `<FILE>:<LINE>`. Optional when `--file` and
-        /// `--line` are passed together.
-        #[arg(required_unless_present_all = ["file", "line"], conflicts_with_all = ["file", "line"])]
-        target: Option<String>,
-        /// Repository root containing the index
-        #[arg(default_value = crate::defaults::ROOT)]
-        path: PathBuf,
-        /// Alternative to the positional `<FILE>:<LINE>` form
-        #[arg(long, requires = "line")]
-        file: Option<String>,
-        /// 1-indexed line number when using `--file`
-        #[arg(long, requires = "file")]
-        line: Option<u32>,
-        /// Number of results to return
-        #[arg(short = 'k', long = "top-k", default_value_t = crate::defaults::TOP_K)]
-        top_k: usize,
-        /// Emit output as JSON instead of text
-        #[arg(long)]
-        json: bool,
-        /// With --json: emit compact (single-line) JSON
-        #[arg(long)]
-        compact: bool,
-    },
-    /// True public API surface — resolves `pub use` / `__all__` re-exports.
-    Surface {
-        /// Crate root file, package init, or directory to auto-detect.
-        #[arg(default_value = crate::defaults::ROOT)]
-        path: PathBuf,
-        /// Render as a hierarchical tree grouped by module.
-        #[arg(long)]
-        tree: bool,
-        /// Append the via-chain on each entry (text mode only).
-        #[arg(long)]
-        include_chain: bool,
-        /// Recursion guard for re-export chains.
-        #[arg(long, default_value_t = crate::defaults::SURFACE_MAX_DEPTH)]
-        max_depth: usize,
-        /// Include private items (only meaningful for fallback languages).
-        #[arg(long)]
-        include_private: bool,
-        /// Force a specific resolver: `rust`, `python`, or `fallback`.
-        #[arg(long)]
-        lang: Option<String>,
-        /// Emit output as JSON instead of text.
-        #[arg(long)]
-        json: bool,
-        /// With --json: emit compact (single-line) JSON.
-        #[arg(long)]
-        compact: bool,
-    },
-    /// Forward import-graph traversal: what does this file import (transitively)?
-    Deps {
-        /// File whose imports to walk.
-        file: PathBuf,
-        /// How many import hops to follow.
-        #[arg(long, default_value_t = crate::defaults::FILE_DEPTH)]
-        depth: usize,
-        /// Hide unresolved external imports from the footer.
-        /// Shown by default (tagged `[external]`); set this flag to drop them.
-        #[arg(long)]
-        hide_external: bool,
-        /// Force a fresh dep-graph build.
-        #[arg(long)]
-        rebuild: bool,
-        /// Emit output as JSON instead of text
-        #[arg(long)]
-        json: bool,
-        /// With --json: emit compact (single-line) JSON
-        #[arg(long)]
-        compact: bool,
-    },
-    /// Reverse import-graph: who imports this file (transitively)?
-    ReverseDeps {
-        /// File whose importers to find.
-        file: PathBuf,
-        /// How many import hops to follow back.
-        #[arg(long, default_value_t = crate::defaults::FILE_DEPTH)]
-        depth: usize,
-        /// Cap how many importers are *displayed*. The walk is unbounded so
-        /// the reported total is exact.
-        #[arg(long, default_value_t = crate::defaults::LIMIT)]
-        limit: usize,
-        /// Show only importers from test files (path heuristic: tests/, __tests__/, *_test.*, *.spec.*, …).
-        #[arg(long)]
-        tests: bool,
-        /// Exclude importers from test files (same path heuristic as --tests).
-        #[arg(long, conflicts_with = "tests")]
-        exclude_tests: bool,
-        /// Force a fresh dep-graph build.
-        #[arg(long)]
-        rebuild: bool,
-        /// Emit output as JSON instead of text
-        #[arg(long)]
-        json: bool,
-        /// With --json: emit compact (single-line) JSON
-        #[arg(long)]
-        compact: bool,
-    },
-    /// Find import cycles via Tarjan SCC.
-    Cycles {
-        /// Repository root to scan.
-        #[arg(default_value = crate::defaults::ROOT)]
-        path: PathBuf,
-        /// Smallest cycle to report, in files. The default skips
-        /// self-imports.
-        #[arg(long, default_value_t = crate::defaults::MIN_SIZE)]
-        min_size: usize,
-        /// Also count `ref` edges: modules named without a directive
-        /// (Elixir), mostly runtime calls, whose cycles are normal.
-        #[arg(long)]
-        include_refs: bool,
-        /// Force a fresh dep-graph build.
-        #[arg(long)]
-        rebuild: bool,
-        /// Emit output as JSON instead of text
-        #[arg(long)]
-        json: bool,
-        /// With --json: emit compact (single-line) JSON
-        #[arg(long)]
-        compact: bool,
-    },
-    /// Emit the dep graph (text or JSON).
-    Graph {
-        /// Repository root to scan.
-        #[arg(default_value = crate::defaults::ROOT)]
-        path: PathBuf,
-        /// Emit output as JSON instead of text
-        #[arg(long)]
-        json: bool,
-        /// Hide unresolved external imports from the graph.
-        /// Shown by default (tagged `[external]`); set this flag to drop them.
-        #[arg(long)]
-        hide_external: bool,
-        /// (Deprecated — unresolved externals are shown by default now.)
-        #[arg(long, hide = true)]
-        include_external: bool,
-        /// Force a fresh dep-graph build.
-        #[arg(long)]
-        rebuild: bool,
-        /// With --json: emit compact (single-line) JSON
-        #[arg(long)]
-        compact: bool,
-    },
-    /// Token-budgeted context for a symbol — target body + relevant deps/callers in one call.
-    Context {
-        /// Symbol to build context for (same form as callers/callees).
-        #[arg(required_unless_present_all = ["file", "symbol"], conflicts_with_all = ["file", "symbol"])]
-        target: Option<String>,
-        /// Repository root.
-        #[arg(default_value = crate::defaults::ROOT)]
-        path: PathBuf,
-        /// Alternative to the positional target.
-        #[arg(long, requires = "symbol")]
-        file: Option<String>,
-        /// Symbol name when using `--file`.
-        #[arg(long, requires = "file")]
-        symbol: Option<String>,
-        /// Token budget. Rough estimate: 1 token ≈ 4 bytes.
-        #[arg(long, default_value_t = crate::defaults::BUDGET)]
-        budget: usize,
-        /// Force a fresh call-graph build.
-        #[arg(long)]
-        rebuild: bool,
-        /// Emit output as JSON instead of text
-        #[arg(long)]
-        json: bool,
-        /// With --json: emit compact (single-line) JSON
-        #[arg(long)]
-        compact: bool,
-    },
-    /// Find callers of a symbol — AST-accurate, no grep noise.
-    ///
-    /// Pass the symbol either as a positional `<TARGET>` (suffix-matched
-    /// like `show`/`implements`: `TakeDamage`, `Player.TakeDamage`, or
-    /// `src/Player.cs:TakeDamage` to scope to one file), or via
-    /// `--file <FILE> --symbol <NAME>` for scripting use.
-    Callers {
-        /// Symbol to look up. Optional when `--file` and `--symbol` are passed.
-        #[arg(required_unless_present_all = ["file", "symbol"], conflicts_with_all = ["file", "symbol"])]
-        target: Option<String>,
-        /// Repository root.
-        #[arg(default_value = crate::defaults::ROOT)]
-        path: PathBuf,
-        /// Alternative to the `<FILE>:<NAME>` positional form.
-        #[arg(long, requires = "symbol")]
-        file: Option<String>,
-        /// Symbol name when using `--file`.
-        #[arg(long, requires = "file")]
-        symbol: Option<String>,
-        /// Max BFS depth (1 = direct callers only).
-        #[arg(long, default_value_t = crate::defaults::CALL_DEPTH)]
-        depth: usize,
-        /// Cap how many callers are *displayed* (mirrors reverse-deps).
-        /// The walk itself is unbounded so the reported total is exact —
-        /// raising `--depth` costs work regardless of this cap.
-        #[arg(long, default_value_t = crate::defaults::LIMIT)]
-        limit: usize,
-        /// Hide callers whose target is `Ambiguous` (multiple candidates).
-        /// Shown by default (tagged red); set this flag to drop them.
-        #[arg(long)]
-        hide_ambiguous: bool,
-        /// (Deprecated — ambiguous matches are shown by default now.)
-        #[arg(long, hide = true)]
-        include_ambiguous: bool,
-        /// Show only callers in test files (path heuristic: tests/, __tests__/, *_test.*, *.spec.*, …).
-        #[arg(long)]
-        tests: bool,
-        /// Exclude callers from test files (same path heuristic as --tests).
-        #[arg(long, conflicts_with = "tests")]
-        exclude_tests: bool,
-        /// Force a fresh call-graph build.
-        #[arg(long)]
-        rebuild: bool,
-        /// Emit output as JSON instead of text
-        #[arg(long)]
-        json: bool,
-        /// With --json: emit compact (single-line) JSON
-        #[arg(long)]
-        compact: bool,
-    },
-    /// What does this symbol call? — AST-accurate forward call traversal.
-    ///
-    /// Same target-spec rules as `callers`: positional `<TARGET>` (with
-    /// optional `<FILE>:<NAME>` scoping) or `--file --symbol`.
-    Callees {
-        /// Symbol to look up. Optional when `--file` and `--symbol` are passed.
-        #[arg(required_unless_present_all = ["file", "symbol"], conflicts_with_all = ["file", "symbol"])]
-        target: Option<String>,
-        /// Repository root.
-        #[arg(default_value = crate::defaults::ROOT)]
-        path: PathBuf,
-        /// Alternative to the `<FILE>:<NAME>` positional form.
-        #[arg(long, requires = "symbol")]
-        file: Option<String>,
-        /// Symbol name when using `--file`.
-        #[arg(long, requires = "file")]
-        symbol: Option<String>,
-        /// Max BFS depth (1 = direct callees only).
-        #[arg(long, default_value_t = crate::defaults::CALL_DEPTH)]
-        depth: usize,
-        /// Cap how many callees are *displayed* (the header always reports
-        /// the true total).
-        #[arg(long, default_value_t = crate::defaults::LIMIT)]
-        limit: usize,
-        /// Hide unresolved callees (the `Bare`/`External` bucket).
-        /// Shown by default (tagged cyan/red); set this flag to drop them.
-        #[arg(long)]
-        hide_external: bool,
-        /// (Deprecated — unresolved/external callees are shown by default now.)
-        #[arg(long, hide = true)]
-        external: bool,
-        /// Force a fresh call-graph build.
-        #[arg(long)]
-        rebuild: bool,
-        /// Emit output as JSON instead of text
-        #[arg(long)]
-        json: bool,
-        /// With --json: emit compact (single-line) JSON
-        #[arg(long)]
-        compact: bool,
-    },
-    /// Trace the static call path between two symbols — "how does <FROM> reach <TO>?"
-    ///
-    /// Shortest-path BFS over the call graph, with each hop's source body
-    /// inlined so a flow question is answered in one call instead of chaining
-    /// `callees`. When no static path exists (the chain broke at dynamic
-    /// dispatch), both endpoints + the target file's siblings are shown.
-    /// Targets are suffix-matched like `callers` (`run`, `Type.method`, or
-    /// `src/f.rs:name`).
-    Trace {
-        /// Source symbol — where the call path starts.
-        from: String,
-        /// Destination symbol — where the call path should reach.
-        to: String,
-        /// Repository root.
-        #[arg(default_value = crate::defaults::ROOT)]
-        path: PathBuf,
-        /// Max path length in hops.
-        #[arg(long, default_value_t = crate::defaults::TRACE_DEPTH)]
-        depth: usize,
-        /// Force a fresh call-graph build.
-        #[arg(long)]
-        rebuild: bool,
-        /// Emit output as JSON instead of text
-        #[arg(long)]
-        json: bool,
-        /// With --json: emit compact (single-line) JSON
-        #[arg(long)]
-        compact: bool,
-    },
-    /// Cross-file impact analysis: callers + callees + file reverse-deps + test detection, one command.
-    Impact {
-        /// Symbol to analyse (same form as callers/callees: `TakeDamage`, `Player.TakeDamage`, `src/Player.cs:TakeDamage`).
-        #[arg(required_unless_present_all = ["file", "symbol"], conflicts_with_all = ["file", "symbol"])]
-        target: Option<String>,
-        /// Repository root.
-        #[arg(default_value = crate::defaults::ROOT)]
-        path: PathBuf,
-        /// Alternative to the positional target.
-        #[arg(long, requires = "symbol")]
-        file: Option<String>,
-        /// Symbol name when using `--file`.
-        #[arg(long, requires = "file")]
-        symbol: Option<String>,
-        /// Transitive depth.
-        #[arg(long, default_value_t = crate::defaults::IMPACT_DEPTH)]
-        depth: usize,
-        /// Cap how many results are *displayed* per section. Sections are
-        /// walked in full so their totals are exact.
-        #[arg(long, default_value_t = crate::defaults::LIMIT)]
-        limit: usize,
-        /// Section to show: `deps`, `dependents`, `tests`, or `all`.
-        #[arg(long, default_value = crate::defaults::IMPACT_MODE)]
-        mode: String,
-        /// Hide ambiguous call-edge matches from impact output.
-        /// Shown by default (tagged red); set this flag to drop them.
-        #[arg(long)]
-        hide_ambiguous: bool,
-        /// Show only test files (path heuristic: tests/, __tests__/, *_test.*, *.spec.*, …).
-        #[arg(long)]
-        tests: bool,
-        /// Exclude test files from the output (same path heuristic as --tests).
-        #[arg(long, conflicts_with = "tests")]
-        exclude_tests: bool,
-        /// Force a fresh call-graph build.
-        #[arg(long)]
-        rebuild: bool,
-        /// Emit output as JSON instead of text
-        #[arg(long)]
-        json: bool,
-        /// With --json: emit compact (single-line) JSON
-        #[arg(long)]
-        compact: bool,
-    },
-    /// Build, refresh, or inspect the per-repo search index
-    Index {
-        /// Repository root
-        #[arg(default_value = crate::defaults::ROOT)]
-        path: PathBuf,
-        /// Drop any existing cache and rebuild from scratch
-        #[arg(long)]
-        rebuild: bool,
-        /// Print index stats and exit
-        #[arg(long)]
-        stats: bool,
-        /// With --stats: emit output as JSON
-        #[arg(long)]
-        json: bool,
-        /// With --json: emit compact (single-line) JSON
-        #[arg(long)]
-        compact: bool,
-    },
-    /// AST-aware search and rewrite using pattern matching with metavariables
-    Run {
-        /// Pattern to match (e.g. '$FUNC($$$)', 'if ($COND) { $$$BODY }')
-        #[arg(short, long)]
-        pattern: String,
+    /// Direct implementors only. Transitive ones are included by default,
+    /// tagged `[via Parent]`.
+    #[arg(short, long)]
+    direct: bool,
+    /// Emit output as JSON instead of text
+    #[arg(long)]
+    json: bool,
+    /// With --json: emit compact (single-line) JSON
+    #[arg(long)]
+    compact: bool,
+  },
+  /// Print the agent prompt snippet
+  Prompt,
+  /// Install ast-bro into a coding-agent CLI
+  Install {
+    /// Which agent CLI to install into. `status` lists the names.
+    #[arg(long, conflicts_with = "all")]
+    target: Option<String>,
+    /// Install into every agent CLI detected on this machine.
+    #[arg(long, conflicts_with = "target")]
+    all: bool,
+    /// Install into the current directory instead of the user profile.
+    #[arg(long)]
+    local: bool,
+    /// Install into the user profile. The default; pass it to say so.
+    #[arg(long, conflicts_with = "local")]
+    global: bool,
+    /// Substitute a map for every Read the hook can parse, whatever the
+    /// file's length, instead of only past --min-lines.
+    #[arg(long)]
+    always: bool,
+    /// Shortest file the installed hook rewrites into a map. Files below
+    /// this are read as-is.
+    #[arg(long, default_value_t = crate::defaults::HOOK_MIN_LINES)]
+    min_lines: usize,
+    /// Report what would change without writing anything.
+    #[arg(long)]
+    dry_run: bool,
+    /// Overwrite hand-edited content: either inside the ast-bro block or
+    /// ast-bro content written outside it. Without this the file is left
+    /// alone and the install fails.
+    #[arg(long)]
+    force: bool,
+    /// Install ast-bro as an MCP server entry instead of the agent prompt.
+    /// Combine with `--skills` to install both.
+    #[arg(long)]
+    mcp: bool,
+    /// Install ast-bro as an agent skill instead of the agent prompt.
+    /// Combine with `--mcp` to install both.
+    #[arg(long)]
+    skills: bool,
+  },
+  /// Remove ast-bro from a coding-agent CLI
+  Uninstall {
+    /// Which agent CLI to remove ast-bro from. `status` lists the names.
+    #[arg(long, conflicts_with = "all")]
+    target: Option<String>,
+    /// Remove from every agent CLI detected on this machine.
+    #[arg(long, conflicts_with = "target")]
+    all: bool,
+    /// Act on the current directory instead of the user profile.
+    #[arg(long)]
+    local: bool,
+    /// Act on the user profile. The default; pass it to say so.
+    #[arg(long, conflicts_with = "local")]
+    global: bool,
+    /// Report what would change without writing anything.
+    #[arg(long)]
+    dry_run: bool,
+  },
+  /// Report what's installed where
+  Status {
+    /// Report on the current directory instead of the user profile.
+    #[arg(long)]
+    local: bool,
+    /// Report on the user profile. The default; pass it to say so.
+    #[arg(long, conflicts_with = "local")]
+    global: bool,
+  },
+  /// Internal: read a tool-call event from stdin and respond
+  Hook {
+    /// Event dialect on stdin, which decides how the response is framed.
+    #[arg(long)]
+    protocol: String,
+    /// Shortest file to rewrite into a map. Files below this are read
+    /// as-is.
+    #[arg(long, default_value_t = crate::defaults::HOOK_MIN_LINES)]
+    min_lines: usize,
+    /// Substitute a map for every Read this can parse, whatever the
+    /// file's length, instead of only past --min-lines.
+    #[arg(long)]
+    always: bool,
+  },
+  /// Run as an MCP (Model Context Protocol) server over stdio
+  Mcp,
+  /// Hybrid BM25 + dense semantic search over the repo
+  Search {
+    /// Search query (free-form text or symbol name)
+    query: String,
+    /// Repository root to search in
+    #[arg(default_value = crate::defaults::ROOT)]
+    path: PathBuf,
+    /// Number of results to return
+    #[arg(short = 'k', long = "top-k", default_value_t = crate::defaults::TOP_K)]
+    top_k: usize,
+    /// Override auto alpha (semantic vs. BM25 weight, 0.0–1.0)
+    #[arg(long)]
+    alpha: Option<f32>,
+    /// Filter by language (repeatable, e.g. `--lang rust --lang python`)
+    #[arg(long = "lang")]
+    languages: Vec<String>,
+    /// Force a full rebuild of the index before searching
+    #[arg(long)]
+    rebuild: bool,
+    /// Emit output as JSON instead of text
+    #[arg(long)]
+    json: bool,
+    /// With --json: emit compact (single-line) JSON
+    #[arg(long)]
+    compact: bool,
+  },
+  /// Find chunks semantically similar to a given file:line
+  ///
+  /// Pass the source location either as a positional `<FILE>:<LINE>`
+  /// (matches grep / search-result output you can paste back) or via
+  /// `--file <FILE> --line <LINE>` for scripting use.
+  FindRelated {
+    /// Source location as `<FILE>:<LINE>`. Optional when `--file` and
+    /// `--line` are passed together.
+    #[arg(required_unless_present_all = ["file", "line"], conflicts_with_all = ["file", "line"])]
+    target: Option<String>,
+    /// Repository root containing the index
+    #[arg(default_value = crate::defaults::ROOT)]
+    path: PathBuf,
+    /// Alternative to the positional `<FILE>:<LINE>` form
+    #[arg(long, requires = "line")]
+    file: Option<String>,
+    /// 1-indexed line number when using `--file`
+    #[arg(long, requires = "file")]
+    line: Option<u32>,
+    /// Number of results to return
+    #[arg(short = 'k', long = "top-k", default_value_t = crate::defaults::TOP_K)]
+    top_k: usize,
+    /// Emit output as JSON instead of text
+    #[arg(long)]
+    json: bool,
+    /// With --json: emit compact (single-line) JSON
+    #[arg(long)]
+    compact: bool,
+  },
+  /// True public API surface — resolves `pub use` / `__all__` re-exports.
+  Surface {
+    /// Crate root file, package init, or directory to auto-detect.
+    #[arg(default_value = crate::defaults::ROOT)]
+    path: PathBuf,
+    /// Render as a hierarchical tree grouped by module.
+    #[arg(long)]
+    tree: bool,
+    /// Append the via-chain on each entry (text mode only).
+    #[arg(long)]
+    include_chain: bool,
+    /// Recursion guard for re-export chains.
+    #[arg(long, default_value_t = crate::defaults::SURFACE_MAX_DEPTH)]
+    max_depth: usize,
+    /// Include private items (only meaningful for fallback languages).
+    #[arg(long)]
+    include_private: bool,
+    /// Force a specific resolver: `rust`, `python`, or `fallback`.
+    #[arg(long)]
+    lang: Option<String>,
+    /// Emit output as JSON instead of text.
+    #[arg(long)]
+    json: bool,
+    /// With --json: emit compact (single-line) JSON.
+    #[arg(long)]
+    compact: bool,
+  },
+  /// Forward import-graph traversal: what does this file import (transitively)?
+  Deps {
+    /// File whose imports to walk.
+    file: PathBuf,
+    /// How many import hops to follow.
+    #[arg(long, default_value_t = crate::defaults::FILE_DEPTH)]
+    depth: usize,
+    /// Hide unresolved external imports from the footer.
+    /// Shown by default (tagged `[external]`); set this flag to drop them.
+    #[arg(long)]
+    hide_external: bool,
+    /// Force a fresh dep-graph build.
+    #[arg(long)]
+    rebuild: bool,
+    /// Emit output as JSON instead of text
+    #[arg(long)]
+    json: bool,
+    /// With --json: emit compact (single-line) JSON
+    #[arg(long)]
+    compact: bool,
+  },
+  /// Reverse import-graph: who imports this file (transitively)?
+  ReverseDeps {
+    /// File whose importers to find.
+    file: PathBuf,
+    /// How many import hops to follow back.
+    #[arg(long, default_value_t = crate::defaults::FILE_DEPTH)]
+    depth: usize,
+    /// Cap how many importers are *displayed*. The walk is unbounded so
+    /// the reported total is exact.
+    #[arg(long, default_value_t = crate::defaults::LIMIT)]
+    limit: usize,
+    /// Show only importers from test files (path heuristic: tests/, __tests__/, *_test.*, *.spec.*, …).
+    #[arg(long)]
+    tests: bool,
+    /// Exclude importers from test files (same path heuristic as --tests).
+    #[arg(long, conflicts_with = "tests")]
+    exclude_tests: bool,
+    /// Force a fresh dep-graph build.
+    #[arg(long)]
+    rebuild: bool,
+    /// Emit output as JSON instead of text
+    #[arg(long)]
+    json: bool,
+    /// With --json: emit compact (single-line) JSON
+    #[arg(long)]
+    compact: bool,
+  },
+  /// Find import cycles via Tarjan SCC.
+  Cycles {
+    /// Repository root to scan.
+    #[arg(default_value = crate::defaults::ROOT)]
+    path: PathBuf,
+    /// Smallest cycle to report, in files. The default skips
+    /// self-imports.
+    #[arg(long, default_value_t = crate::defaults::MIN_SIZE)]
+    min_size: usize,
+    /// Also count `ref` edges: modules named without a directive
+    /// (Elixir), mostly runtime calls, whose cycles are normal.
+    #[arg(long)]
+    include_refs: bool,
+    /// Force a fresh dep-graph build.
+    #[arg(long)]
+    rebuild: bool,
+    /// Emit output as JSON instead of text
+    #[arg(long)]
+    json: bool,
+    /// With --json: emit compact (single-line) JSON
+    #[arg(long)]
+    compact: bool,
+  },
+  /// Emit the dep graph (text or JSON).
+  Graph {
+    /// Repository root to scan.
+    #[arg(default_value = crate::defaults::ROOT)]
+    path: PathBuf,
+    /// Emit output as JSON instead of text
+    #[arg(long)]
+    json: bool,
+    /// Hide unresolved external imports from the graph.
+    /// Shown by default (tagged `[external]`); set this flag to drop them.
+    #[arg(long)]
+    hide_external: bool,
+    /// (Deprecated — unresolved externals are shown by default now.)
+    #[arg(long, hide = true)]
+    include_external: bool,
+    /// Force a fresh dep-graph build.
+    #[arg(long)]
+    rebuild: bool,
+    /// With --json: emit compact (single-line) JSON
+    #[arg(long)]
+    compact: bool,
+  },
+  /// Token-budgeted context for a symbol — target body + relevant deps/callers in one call.
+  Context {
+    /// Symbol to build context for (same form as callers/callees).
+    #[arg(required_unless_present_all = ["file", "symbol"], conflicts_with_all = ["file", "symbol"])]
+    target: Option<String>,
+    /// Repository root.
+    #[arg(default_value = crate::defaults::ROOT)]
+    path: PathBuf,
+    /// Alternative to the positional target.
+    #[arg(long, requires = "symbol")]
+    file: Option<String>,
+    /// Symbol name when using `--file`.
+    #[arg(long, requires = "file")]
+    symbol: Option<String>,
+    /// Token budget. Rough estimate: 1 token ≈ 4 bytes.
+    #[arg(long, default_value_t = crate::defaults::BUDGET)]
+    budget: usize,
+    /// Force a fresh call-graph build.
+    #[arg(long)]
+    rebuild: bool,
+    /// Emit output as JSON instead of text
+    #[arg(long)]
+    json: bool,
+    /// With --json: emit compact (single-line) JSON
+    #[arg(long)]
+    compact: bool,
+  },
+  /// Find callers of a symbol — AST-accurate, no grep noise.
+  ///
+  /// Pass the symbol either as a positional `<TARGET>` (suffix-matched
+  /// like `show`/`implements`: `TakeDamage`, `Player.TakeDamage`, or
+  /// `src/Player.cs:TakeDamage` to scope to one file), or via
+  /// `--file <FILE> --symbol <NAME>` for scripting use.
+  Callers {
+    /// Symbol to look up. Optional when `--file` and `--symbol` are passed.
+    #[arg(required_unless_present_all = ["file", "symbol"], conflicts_with_all = ["file", "symbol"])]
+    target: Option<String>,
+    /// Repository root.
+    #[arg(default_value = crate::defaults::ROOT)]
+    path: PathBuf,
+    /// Alternative to the `<FILE>:<NAME>` positional form.
+    #[arg(long, requires = "symbol")]
+    file: Option<String>,
+    /// Symbol name when using `--file`.
+    #[arg(long, requires = "file")]
+    symbol: Option<String>,
+    /// Max BFS depth (1 = direct callers only).
+    #[arg(long, default_value_t = crate::defaults::CALL_DEPTH)]
+    depth: usize,
+    /// Cap how many callers are *displayed* (mirrors reverse-deps).
+    /// The walk itself is unbounded so the reported total is exact —
+    /// raising `--depth` costs work regardless of this cap.
+    #[arg(long, default_value_t = crate::defaults::LIMIT)]
+    limit: usize,
+    /// Hide callers whose target is `Ambiguous` (multiple candidates).
+    /// Shown by default (tagged red); set this flag to drop them.
+    #[arg(long)]
+    hide_ambiguous: bool,
+    /// (Deprecated — ambiguous matches are shown by default now.)
+    #[arg(long, hide = true)]
+    include_ambiguous: bool,
+    /// Show only callers in test files (path heuristic: tests/, __tests__/, *_test.*, *.spec.*, …).
+    #[arg(long)]
+    tests: bool,
+    /// Exclude callers from test files (same path heuristic as --tests).
+    #[arg(long, conflicts_with = "tests")]
+    exclude_tests: bool,
+    /// Force a fresh call-graph build.
+    #[arg(long)]
+    rebuild: bool,
+    /// Emit output as JSON instead of text
+    #[arg(long)]
+    json: bool,
+    /// With --json: emit compact (single-line) JSON
+    #[arg(long)]
+    compact: bool,
+  },
+  /// What does this symbol call? — AST-accurate forward call traversal.
+  ///
+  /// Same target-spec rules as `callers`: positional `<TARGET>` (with
+  /// optional `<FILE>:<NAME>` scoping) or `--file --symbol`.
+  Callees {
+    /// Symbol to look up. Optional when `--file` and `--symbol` are passed.
+    #[arg(required_unless_present_all = ["file", "symbol"], conflicts_with_all = ["file", "symbol"])]
+    target: Option<String>,
+    /// Repository root.
+    #[arg(default_value = crate::defaults::ROOT)]
+    path: PathBuf,
+    /// Alternative to the `<FILE>:<NAME>` positional form.
+    #[arg(long, requires = "symbol")]
+    file: Option<String>,
+    /// Symbol name when using `--file`.
+    #[arg(long, requires = "file")]
+    symbol: Option<String>,
+    /// Max BFS depth (1 = direct callees only).
+    #[arg(long, default_value_t = crate::defaults::CALL_DEPTH)]
+    depth: usize,
+    /// Cap how many callees are *displayed* (the header always reports
+    /// the true total).
+    #[arg(long, default_value_t = crate::defaults::LIMIT)]
+    limit: usize,
+    /// Hide unresolved callees (the `Bare`/`External` bucket).
+    /// Shown by default (tagged cyan/red); set this flag to drop them.
+    #[arg(long)]
+    hide_external: bool,
+    /// (Deprecated — unresolved/external callees are shown by default now.)
+    #[arg(long, hide = true)]
+    external: bool,
+    /// Force a fresh call-graph build.
+    #[arg(long)]
+    rebuild: bool,
+    /// Emit output as JSON instead of text
+    #[arg(long)]
+    json: bool,
+    /// With --json: emit compact (single-line) JSON
+    #[arg(long)]
+    compact: bool,
+  },
+  /// Trace the static call path between two symbols — "how does <FROM> reach <TO>?"
+  ///
+  /// Shortest-path BFS over the call graph, with each hop's source body
+  /// inlined so a flow question is answered in one call instead of chaining
+  /// `callees`. When no static path exists (the chain broke at dynamic
+  /// dispatch), both endpoints + the target file's siblings are shown.
+  /// Targets are suffix-matched like `callers` (`run`, `Type.method`, or
+  /// `src/f.rs:name`).
+  Trace {
+    /// Source symbol — where the call path starts.
+    from: String,
+    /// Destination symbol — where the call path should reach.
+    to: String,
+    /// Repository root.
+    #[arg(default_value = crate::defaults::ROOT)]
+    path: PathBuf,
+    /// Max path length in hops.
+    #[arg(long, default_value_t = crate::defaults::TRACE_DEPTH)]
+    depth: usize,
+    /// Force a fresh call-graph build.
+    #[arg(long)]
+    rebuild: bool,
+    /// Emit output as JSON instead of text
+    #[arg(long)]
+    json: bool,
+    /// With --json: emit compact (single-line) JSON
+    #[arg(long)]
+    compact: bool,
+  },
+  /// Cross-file impact analysis: callers + callees + file reverse-deps + test detection, one command.
+  Impact {
+    /// Symbol to analyse (same form as callers/callees: `TakeDamage`, `Player.TakeDamage`, `src/Player.cs:TakeDamage`).
+    #[arg(required_unless_present_all = ["file", "symbol"], conflicts_with_all = ["file", "symbol"])]
+    target: Option<String>,
+    /// Repository root.
+    #[arg(default_value = crate::defaults::ROOT)]
+    path: PathBuf,
+    /// Alternative to the positional target.
+    #[arg(long, requires = "symbol")]
+    file: Option<String>,
+    /// Symbol name when using `--file`.
+    #[arg(long, requires = "file")]
+    symbol: Option<String>,
+    /// Transitive depth.
+    #[arg(long, default_value_t = crate::defaults::IMPACT_DEPTH)]
+    depth: usize,
+    /// Cap how many results are *displayed* per section. Sections are
+    /// walked in full so their totals are exact.
+    #[arg(long, default_value_t = crate::defaults::LIMIT)]
+    limit: usize,
+    /// Section to show: `deps`, `dependents`, `tests`, or `all`.
+    #[arg(long, default_value = crate::defaults::IMPACT_MODE)]
+    mode: String,
+    /// Hide ambiguous call-edge matches from impact output.
+    /// Shown by default (tagged red); set this flag to drop them.
+    #[arg(long)]
+    hide_ambiguous: bool,
+    /// Show only test files (path heuristic: tests/, __tests__/, *_test.*, *.spec.*, …).
+    #[arg(long)]
+    tests: bool,
+    /// Exclude test files from the output (same path heuristic as --tests).
+    #[arg(long, conflicts_with = "tests")]
+    exclude_tests: bool,
+    /// Force a fresh call-graph build.
+    #[arg(long)]
+    rebuild: bool,
+    /// Emit output as JSON instead of text
+    #[arg(long)]
+    json: bool,
+    /// With --json: emit compact (single-line) JSON
+    #[arg(long)]
+    compact: bool,
+  },
+  /// Build, refresh, or inspect the per-repo search index
+  Index {
+    /// Repository root
+    #[arg(default_value = crate::defaults::ROOT)]
+    path: PathBuf,
+    /// Drop any existing cache and rebuild from scratch
+    #[arg(long)]
+    rebuild: bool,
+    /// Print index stats and exit
+    #[arg(long)]
+    stats: bool,
+    /// With --stats: emit output as JSON
+    #[arg(long)]
+    json: bool,
+    /// With --json: emit compact (single-line) JSON
+    #[arg(long)]
+    compact: bool,
+  },
+  /// AST-aware search and rewrite using pattern matching with metavariables
+  Run {
+    /// Pattern to match (e.g. '$FUNC($$$)', 'if ($COND) { $$$BODY }')
+    #[arg(short, long)]
+    pattern: String,
 
-        /// Replacement template (e.g. 'bar($A)'). Omit for search-only mode.
-        #[arg(short, long)]
-        rewrite: Option<String>,
+    /// Replacement template (e.g. 'bar($A)'). Omit for search-only mode.
+    #[arg(short, long)]
+    rewrite: Option<String>,
 
-        /// Language (auto-detected from file extension if omitted)
-        #[arg(short, long)]
-        lang: Option<String>,
+    /// Language (auto-detected from file extension if omitted)
+    #[arg(short, long)]
+    lang: Option<String>,
 
-        /// Paths to search (files or directories). Defaults to current directory.
-        paths: Vec<PathBuf>,
+    /// Paths to search (files or directories). Defaults to current directory.
+    paths: Vec<PathBuf>,
 
-        /// Filter files by glob pattern
-        #[arg(long)]
-        glob: Option<String>,
+    /// Filter files by glob pattern
+    #[arg(long)]
+    glob: Option<String>,
 
-        /// Actually write changes. Without this flag, only shows matches/dry-run.
-        #[arg(long)]
-        write: bool,
+    /// Actually write changes. Without this flag, only shows matches/dry-run.
+    #[arg(long)]
+    write: bool,
 
-        /// Emit output as JSON
-        #[arg(long)]
-        json: bool,
+    /// Emit output as JSON
+    #[arg(long)]
+    json: bool,
 
-        /// With --json: compact single-line JSON
-        #[arg(long)]
-        compact: bool,
-    },
+    /// With --json: compact single-line JSON
+    #[arg(long)]
+    compact: bool,
+  },
 }
 
 /// Shared argument set for `map` and its `digest` alias (issue #37). The
@@ -647,82 +647,82 @@ enum Commands {
 /// preset applies.
 #[derive(clap::Args)]
 struct MapArgs {
-    /// Files or directories to map. May be omitted at the clap layer: an
-    /// empty list is a *rejection*, not a usage error, so `require_paths`
-    /// turns it into the `no_input` envelope (#33) — "nothing was inspected"
-    /// rather than an empty result that reads as an empty codebase.
-    #[arg(num_args = 1..)]
-    paths: Vec<PathBuf>,
+  /// Files or directories to map. May be omitted at the clap layer: an
+  /// empty list is a *rejection*, not a usage error, so `require_paths`
+  /// turns it into the `no_input` envelope (#33) — "nothing was inspected"
+  /// rather than an empty result that reads as an empty codebase.
+  #[arg(num_args = 1..)]
+  paths: Vec<PathBuf>,
 
-    /// Detail level: `full` (signatures + docs), `signatures` (signatures,
-    /// no docs), `names` (bare member names — the digest renderer).
-    /// Defaults to `full` for `map`, `names` under `--preset digest` /
-    /// the `digest` alias.
-    #[arg(long, value_enum)]
-    detail: Option<DetailLevel>,
+  /// Detail level: `full` (signatures + docs), `signatures` (signatures,
+  /// no docs), `names` (bare member names — the digest renderer).
+  /// Defaults to `full` for `map`, `names` under `--preset digest` /
+  /// the `digest` alias.
+  #[arg(long, value_enum)]
+  detail: Option<DetailLevel>,
 
-    /// Named preset. `digest` = `--detail names --no-private --no-fields
-    /// --max-members 50`. Explicit flags override the preset.
-    #[arg(long, value_enum)]
-    preset: Option<MapPreset>,
+  /// Named preset. `digest` = `--detail names --no-private --no-fields
+  /// --max-members 50`. Explicit flags override the preset.
+  #[arg(long, value_enum)]
+  preset: Option<MapPreset>,
 
-    /// Hide private declarations.
-    #[arg(long)]
-    no_private: bool,
-    /// Hide fields, properties, events, indexers, and Markdown code blocks.
-    #[arg(long)]
-    no_fields: bool,
-    /// Drop doc comments — in JSON the `docs`, `docs_inside`, and
-    /// `doc_start_byte` keys, together routinely a third of the payload.
-    #[arg(long)]
-    no_docs: bool,
-    /// Hide attributes / decorators.
-    #[arg(long)]
-    no_attrs: bool,
-    /// Hide line ranges — in JSON the byte offsets too: `start_line`,
-    /// `end_line`, `start_byte`, `end_byte`, `doc_start_byte`.
-    #[arg(long)]
-    no_lines: bool,
+  /// Hide private declarations.
+  #[arg(long)]
+  no_private: bool,
+  /// Hide fields, properties, events, indexers, and Markdown code blocks.
+  #[arg(long)]
+  no_fields: bool,
+  /// Drop doc comments — in JSON the `docs`, `docs_inside`, and
+  /// `doc_start_byte` keys, together routinely a third of the payload.
+  #[arg(long)]
+  no_docs: bool,
+  /// Hide attributes / decorators.
+  #[arg(long)]
+  no_attrs: bool,
+  /// Hide line ranges — in JSON the byte offsets too: `start_line`,
+  /// `end_line`, `start_byte`, `end_byte`, `doc_start_byte`.
+  #[arg(long)]
+  no_lines: bool,
 
-    /// Include private members (overrides a preset that hides them).
-    #[arg(long, conflicts_with = "no_private")]
-    include_private: bool,
-    /// Include fields, properties, events, indexers, and Markdown code blocks
-    /// (overrides a preset that hides them).
-    #[arg(long, conflicts_with = "no_fields")]
-    include_fields: bool,
+  /// Include private members (overrides a preset that hides them).
+  #[arg(long, conflicts_with = "no_private")]
+  include_private: bool,
+  /// Include fields, properties, events, indexers, and Markdown code blocks
+  /// (overrides a preset that hides them).
+  #[arg(long, conflicts_with = "no_fields")]
+  include_fields: bool,
 
-    /// Cap members shown per type, at any detail level. A capped file says so:
-    /// `... +N more` in text, `truncated` and `dropped_members` in JSON.
-    #[arg(long)]
-    max_members: Option<usize>,
-    /// Only walk files matching this glob (e.g. '*.java').
-    #[arg(long)]
-    glob: Option<String>,
+  /// Cap members shown per type, at any detail level. A capped file says so:
+  /// `... +N more` in text, `truncated` and `dropped_members` in JSON.
+  #[arg(long)]
+  max_members: Option<usize>,
+  /// Only walk files matching this glob (e.g. '*.java').
+  #[arg(long)]
+  glob: Option<String>,
 
-    /// Emit output as JSON instead of text. A payload the projection flags
-    /// took keys out of carries a `projected` object naming which ones.
-    #[arg(long)]
-    json: bool,
-    /// With --json: emit compact (single-line) JSON instead of pretty-printed
-    #[arg(long)]
-    compact: bool,
+  /// Emit output as JSON instead of text. A payload the projection flags
+  /// took keys out of carries a `projected` object naming which ones.
+  #[arg(long)]
+  json: bool,
+  /// With --json: emit compact (single-line) JSON instead of pretty-printed
+  #[arg(long)]
+  compact: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 enum DetailLevel {
-    Names,
-    Signatures,
-    Full,
+  Names,
+  Signatures,
+  Full,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 enum MapPreset {
-    Digest,
+  Digest,
 }
 
 pub(crate) fn parse_file(path: &Path) -> Option<ParseResult> {
-    crate::main_helpers::parse_file_for_hook(path)
+  crate::main_helpers::parse_file_for_hook(path)
 }
 
 /// A 1-indexed, inclusive line range for `squeeze`. Either bound may be open:
@@ -730,27 +730,27 @@ pub(crate) fn parse_file(path: &Path) -> Option<ParseResult> {
 /// `Option<(usize, usize)>` the squeeze renderer expects via [`LineRange::resolve`].
 #[derive(Clone, Debug)]
 pub struct LineRange {
-    pub start: Option<usize>,
-    pub end: Option<usize>,
+  pub start: Option<usize>,
+  pub end: Option<usize>,
 }
 
 impl LineRange {
-    /// Collapse to the `(start, end)` pair the report uses, filling open bounds
-    /// with line 1 / EOF and clamping `end` to the real line count so JSON
-    /// consumers never see an out-of-range sentinel like `usize::MAX`.
-    fn resolve(&self, line_count: usize) -> (usize, usize) {
-        clamp_line_range(self.start.unwrap_or(1), self.end, line_count)
-    }
+  /// Collapse to the `(start, end)` pair the report uses, filling open bounds
+  /// with line 1 / EOF and clamping `end` to the real line count so JSON
+  /// consumers never see an out-of-range sentinel like `usize::MAX`.
+  fn resolve(&self, line_count: usize) -> (usize, usize) {
+    clamp_line_range(self.start.unwrap_or(1), self.end, line_count)
+  }
 }
 
 /// Clamp a 1-indexed inclusive line range to a file's real line count.
 pub(crate) fn clamp_line_range(
-    start: usize,
-    end: Option<usize>,
-    line_count: usize,
+  start: usize,
+  end: Option<usize>,
+  line_count: usize,
 ) -> (usize, usize) {
-    let end = end.unwrap_or(line_count).min(line_count).max(start);
-    (start, end)
+  let end = end.unwrap_or(line_count).min(line_count).max(start);
+  (start, end)
 }
 
 /// Clap value parser for `squeeze`'s optional range argument. Accepts:
@@ -758,122 +758,122 @@ pub(crate) fn clamp_line_range(
 /// All bounds are 1-indexed; `0` and `A > B` are rejected. Clamping to the
 /// file's real line count happens later in the slicer.
 fn parse_line_range(s: &str) -> Result<LineRange, String> {
-    let parse_bound = |part: &str| -> Result<Option<usize>, String> {
-        if part.is_empty() {
-            return Ok(None);
-        }
-        match part.parse::<usize>() {
-            Ok(0) => Err("line numbers are 1-indexed (got 0)".to_string()),
-            Ok(n) => Ok(Some(n)),
-            Err(_) => Err(format!("invalid line number: {part:?}")),
-        }
-    };
-
-    let range = match s.split_once(':') {
-        // `A:B`, `A:`, `:B`, or `:`
-        Some((a, b)) => LineRange {
-            start: parse_bound(a)?,
-            end: parse_bound(b)?,
-        },
-        // `N` — single line, both bounds equal
-        None => {
-            let n = parse_bound(s)?;
-            LineRange { start: n, end: n }
-        }
-    };
-
-    if let (Some(start), Some(end)) = (range.start, range.end) {
-        if start > end {
-            return Err(format!("range start {start} is after end {end}"));
-        }
+  let parse_bound = |part: &str| -> Result<Option<usize>, String> {
+    if part.is_empty() {
+      return Ok(None);
     }
+    match part.parse::<usize>() {
+      Ok(0) => Err("line numbers are 1-indexed (got 0)".to_string()),
+      Ok(n) => Ok(Some(n)),
+      Err(_) => Err(format!("invalid line number: {part:?}")),
+    }
+  };
 
-    Ok(range)
+  let range = match s.split_once(':') {
+    // `A:B`, `A:`, `:B`, or `:`
+    Some((a, b)) => LineRange {
+      start: parse_bound(a)?,
+      end: parse_bound(b)?,
+    },
+    // `N` — single line, both bounds equal
+    None => {
+      let n = parse_bound(s)?;
+      LineRange { start: n, end: n }
+    }
+  };
+
+  if let (Some(start), Some(end)) = (range.start, range.end) {
+    if start > end {
+      return Err(format!("range start {start} is after end {end}"));
+    }
+  }
+
+  Ok(range)
 }
 
 /// Parse `<FILE>:<LINE>` into the two parts. Returns `None` if there's no
 /// colon or the suffix doesn't parse as a u32. Used by `find-related`.
 fn parse_file_line(s: &str) -> Option<(String, u32)> {
-    let (file, line) = s.rsplit_once(':')?;
-    if file.is_empty() {
-        return None;
-    }
-    Some((file.to_string(), line.parse().ok()?))
+  let (file, line) = s.rsplit_once(':')?;
+  if file.is_empty() {
+    return None;
+  }
+  Some((file.to_string(), line.parse().ok()?))
 }
 
 /// Filter out non-existent paths, build a WalkBuilder with filters and glob overrides,
 /// and return (builder, existing_paths). Returns None if no paths exist.
 fn build_filtered_walker(
-    paths: &[PathBuf],
-    glob_str: Option<&str>,
+  paths: &[PathBuf],
+  glob_str: Option<&str>,
 ) -> Option<(WalkBuilder, Vec<PathBuf>)> {
-    if paths.is_empty() {
-        return None;
+  if paths.is_empty() {
+    return None;
+  }
+
+  let existing: Vec<PathBuf> = paths
+    .iter()
+    .flat_map(|p| {
+      let expanded = path_glob::expand_existing(p);
+      if expanded.is_empty() {
+        // Diagnostics never go to stdout (issue #36); callers that
+        // pre-validate via `require_paths` won't reach this.
+        eprintln!("# note: path not found: {}", p.display());
+      }
+      expanded
+    })
+    .collect();
+  if existing.is_empty() {
+    return None;
+  }
+
+  let mut builder = WalkBuilder::new(&existing[0]);
+  for p in existing.iter().skip(1) {
+    builder.add(p);
+  }
+
+  builder.hidden(false);
+  file_filter::add_filters(&mut builder, &existing[0]);
+
+  if let Some(g) = glob_str {
+    if let Ok(override_builder) = ignore::overrides::OverrideBuilder::new("").add(g) {
+      if let Ok(over) = override_builder.build() {
+        builder.overrides(over);
+      }
     }
+  }
 
-    let existing: Vec<PathBuf> = paths
-        .iter()
-        .flat_map(|p| {
-            let expanded = path_glob::expand_existing(p);
-            if expanded.is_empty() {
-                // Diagnostics never go to stdout (issue #36); callers that
-                // pre-validate via `require_paths` won't reach this.
-                eprintln!("# note: path not found: {}", p.display());
-            }
-            expanded
-        })
-        .collect();
-    if existing.is_empty() {
-        return None;
-    }
-
-    let mut builder = WalkBuilder::new(&existing[0]);
-    for p in existing.iter().skip(1) {
-        builder.add(p);
-    }
-
-    builder.hidden(false);
-    file_filter::add_filters(&mut builder, &existing[0]);
-
-    if let Some(g) = glob_str {
-        if let Ok(override_builder) = ignore::overrides::OverrideBuilder::new("").add(g) {
-            if let Ok(over) = override_builder.build() {
-                builder.overrides(over);
-            }
-        }
-    }
-
-    Some((builder, existing))
+  Some((builder, existing))
 }
 
 pub(crate) fn walk_paths(paths: &[PathBuf], glob_str: Option<&str>) -> Vec<PathBuf> {
-    let (tx, rx) = std::sync::mpsc::channel();
-    let Some((builder, existing)) = build_filtered_walker(paths, glob_str) else {
-        return Vec::new();
-    };
-    let walker = builder.build_parallel();
-    let root = existing[0].clone();
+  let (tx, rx) = std::sync::mpsc::channel();
+  let Some((builder, existing)) = build_filtered_walker(paths, glob_str) else {
+    return Vec::new();
+  };
+  let walker = builder.build_parallel();
+  let root = existing[0].clone();
 
-    walker.run(|| {
-        let tx = tx.clone();
-        let root = root.clone();
-        Box::new(move |result| {
-            if let Ok(entry) = result {
-                if entry.file_type().is_some_and(|ft| ft.is_file())
-                    && !file_filter::should_skip_path(entry.path(), &root)
-                {
-                    let _ = tx.send(entry.path().to_path_buf());
-                }
-            }
-            ignore::WalkState::Continue
-        })
-    });
+  walker.run(|| {
+    let tx = tx.clone();
+    let root = root.clone();
+    Box::new(move |result| {
+      if let Ok(entry) = result {
+        if entry.file_type().is_some_and(|ft| ft.is_file())
+          && !file_filter::should_skip_path(entry.path(), &root)
+        {
+          let _ = tx.send(entry.path().to_path_buf());
+        }
+      }
+      ignore::WalkState::Continue
+    })
+  });
 
-    drop(tx);
-    let mut results: Vec<_> = rx.into_iter().collect();
-    results.sort();
-    dedup_walk_results(&mut results, |p| p);
-    results
+  drop(tx);
+  let mut results: Vec<_> = rx.into_iter().collect();
+  results.sort();
+  dedup_walk_results(&mut results, |p| p);
+  results
 }
 
 /// Drop repeats of one on-disk file from a walk result, keeping the entry
@@ -901,65 +901,66 @@ pub(crate) fn walk_paths(paths: &[PathBuf], glob_str: Option<&str>) -> Vec<PathB
 /// results are already collected and sorted here, so filtering costs one
 /// [`file_filter::file_identity`] per file and nothing in contention.
 pub(crate) fn dedup_walk_results<T>(results: &mut Vec<T>, path_of: impl Fn(&T) -> &Path) {
-    // (identity -> winning index, its spelling length). Recording the length
-    // beside the index keeps the comparison from having to borrow `results`
-    // again while it is already being iterated.
-    let mut best: std::collections::HashMap<PathBuf, (usize, usize)> =
-        std::collections::HashMap::new();
-    for (i, item) in results.iter().enumerate() {
-        let path = path_of(item);
-        let len = path.as_os_str().len();
-        best.entry(file_filter::file_identity(path))
-            .and_modify(|slot| {
-                if len < slot.1 {
-                    *slot = (i, len);
-                }
-            })
-            .or_insert((i, len));
-    }
-    if best.len() == results.len() {
-        return; // nothing overlapped, which is the overwhelmingly common case
-    }
+  // (identity -> winning index, its spelling length). Recording the length
+  // beside the index keeps the comparison from having to borrow `results`
+  // again while it is already being iterated.
+  let mut best: std::collections::HashMap<PathBuf, (usize, usize)> =
+    std::collections::HashMap::new();
+  for (i, item) in results.iter().enumerate() {
+    let path = path_of(item);
+    let len = path.as_os_str().len();
+    best
+      .entry(file_filter::file_identity(path))
+      .and_modify(|slot| {
+        if len < slot.1 {
+          *slot = (i, len);
+        }
+      })
+      .or_insert((i, len));
+  }
+  if best.len() == results.len() {
+    return; // nothing overlapped, which is the overwhelmingly common case
+  }
 
-    let keep: std::collections::HashSet<usize> = best.into_values().map(|(i, _)| i).collect();
-    let mut i = 0;
-    results.retain(|_| {
-        let keep_this = keep.contains(&i);
-        i += 1;
-        keep_this
-    });
+  let keep: std::collections::HashSet<usize> = best.into_values().map(|(i, _)| i).collect();
+  let mut i = 0;
+  results.retain(|_| {
+    let keep_this = keep.contains(&i);
+    i += 1;
+    keep_this
+  });
 }
 
 pub(crate) fn walk_and_parse(paths: &[PathBuf], glob_str: Option<&str>) -> Vec<ParseResult> {
-    let (tx, rx) = std::sync::mpsc::channel();
-    let Some((builder, existing)) = build_filtered_walker(paths, glob_str) else {
-        return Vec::new();
-    };
-    let walker = builder.build_parallel();
-    let root = existing[0].clone();
+  let (tx, rx) = std::sync::mpsc::channel();
+  let Some((builder, existing)) = build_filtered_walker(paths, glob_str) else {
+    return Vec::new();
+  };
+  let walker = builder.build_parallel();
+  let root = existing[0].clone();
 
-    walker.run(|| {
-        let tx = tx.clone();
-        let root = root.clone();
-        Box::new(move |result| {
-            if let Ok(entry) = result {
-                if entry.file_type().is_some_and(|ft| ft.is_file())
-                    && !file_filter::should_skip_path(entry.path(), &root)
-                {
-                    if let Some(parsed) = parse_file(entry.path()) {
-                        let _ = tx.send(parsed);
-                    }
-                }
-            }
-            ignore::WalkState::Continue
-        })
-    });
+  walker.run(|| {
+    let tx = tx.clone();
+    let root = root.clone();
+    Box::new(move |result| {
+      if let Ok(entry) = result {
+        if entry.file_type().is_some_and(|ft| ft.is_file())
+          && !file_filter::should_skip_path(entry.path(), &root)
+        {
+          if let Some(parsed) = parse_file(entry.path()) {
+            let _ = tx.send(parsed);
+          }
+        }
+      }
+      ignore::WalkState::Continue
+    })
+  });
 
-    drop(tx);
-    let mut results: Vec<_> = rx.into_iter().collect();
-    results.sort_by(|a, b| a.path.cmp(&b.path));
-    dedup_walk_results(&mut results, |r| r.path.as_path());
-    results
+  drop(tx);
+  let mut results: Vec<_> = rx.into_iter().collect();
+  results.sort_by(|a, b| a.path.cmp(&b.path));
+  dedup_walk_results(&mut results, |r| r.path.as_path());
+  results
 }
 
 /// Rejected argument list → stderr + exit 2 (issue #36). Keeps clap's own
@@ -968,107 +969,108 @@ pub(crate) fn walk_and_parse(paths: &[PathBuf], glob_str: Option<&str>) -> Vec<P
 /// subcommand, and emits the `ast-bro.error.v1` envelope when `--json` was
 /// among the raw args.
 fn exit_with_parse_error(e: clap::Error) -> ! {
-    use clap::error::{ContextKind, ContextValue, ErrorKind};
-    use clap::CommandFactory;
+  use clap::error::{ContextKind, ContextValue, ErrorKind};
+  use clap::CommandFactory;
 
-    // The parse failed, so there is no `Cli` to read `--json` or the
-    // subcommand from, and clap's error context carries neither — hence the
-    // raw scan. It stops at `--`: everything past the separator is
-    // positional data (a pattern, a path), so a literal `--json` there was
-    // never a request for JSON output.
-    //
-    // args_os + lossy conversion: a non-UTF-8 argument must follow the
-    // exit-2 contract, not panic the rejection path itself.
-    let raw: Vec<String> = std::env::args_os()
-        .skip(1)
-        .map(|a| a.to_string_lossy().into_owned())
-        .take_while(|a| a != "--")
+  // The parse failed, so there is no `Cli` to read `--json` or the
+  // subcommand from, and clap's error context carries neither — hence the
+  // raw scan. It stops at `--`: everything past the separator is
+  // positional data (a pattern, a path), so a literal `--json` there was
+  // never a request for JSON output.
+  //
+  // args_os + lossy conversion: a non-UTF-8 argument must follow the
+  // exit-2 contract, not panic the rejection path itself.
+  let raw: Vec<String> = std::env::args_os()
+    .skip(1)
+    .map(|a| a.to_string_lossy().into_owned())
+    .take_while(|a| a != "--")
+    .collect();
+  // `--json=true` never parses (the flag takes no value), but the
+  // rejection it triggers should still carry the envelope the caller was
+  // plainly asking for — hence the prefix form beside the exact match.
+  let json_mode = raw
+    .iter()
+    .any(|a| a == "--json" || a.starts_with("--json="));
+  let cmd = Cli::command();
+  // Match the real subcommand list rather than "first token that isn't a
+  // flag": a flag *value* sits in the same position a subcommand would
+  // (`ast-bro map --glob '*.rs' --bogus`), and naming `*.rs` as the
+  // command in the error envelope would be worse than naming nothing.
+  let subcommand = raw
+    .iter()
+    .find(|a| cmd.get_subcommands().any(|sc| sc.get_name() == a.as_str()))
+    .cloned()
+    .unwrap_or_else(|| "ast-bro".to_string());
+
+  let invalid_arg = e.get(ContextKind::InvalidArg).and_then(|v| match v {
+    ContextValue::String(s) => Some(s.clone()),
+    _ => None,
+  });
+
+  // Cross-subcommand hint: `--glob` on `digest` should say it's a `map`
+  // flag, turning the failure into a fix.
+  let mut hint: Option<String> = None;
+  if e.kind() == ErrorKind::UnknownArgument {
+    if let Some(flag) = invalid_arg.as_deref().and_then(|f| f.strip_prefix("--")) {
+      let flag = flag.split('=').next().unwrap_or(flag);
+      let hosts: Vec<String> = cmd
+        .get_subcommands()
+        .filter(|sc| {
+          sc.get_name() != subcommand && sc.get_arguments().any(|a| a.get_long() == Some(flag))
+        })
+        .map(|sc| sc.get_name().to_string())
         .collect();
-    // `--json=true` never parses (the flag takes no value), but the
-    // rejection it triggers should still carry the envelope the caller was
-    // plainly asking for — hence the prefix form beside the exact match.
-    let json_mode = raw.iter().any(|a| a == "--json" || a.starts_with("--json="));
-    let cmd = Cli::command();
-    // Match the real subcommand list rather than "first token that isn't a
-    // flag": a flag *value* sits in the same position a subcommand would
-    // (`ast-bro map --glob '*.rs' --bogus`), and naming `*.rs` as the
-    // command in the error envelope would be worse than naming nothing.
-    let subcommand = raw
-        .iter()
-        .find(|a| cmd.get_subcommands().any(|sc| sc.get_name() == a.as_str()))
-        .cloned()
-        .unwrap_or_else(|| "ast-bro".to_string());
-
-    let invalid_arg = e.get(ContextKind::InvalidArg).and_then(|v| match v {
-        ContextValue::String(s) => Some(s.clone()),
-        _ => None,
-    });
-
-    // Cross-subcommand hint: `--glob` on `digest` should say it's a `map`
-    // flag, turning the failure into a fix.
-    let mut hint: Option<String> = None;
-    if e.kind() == ErrorKind::UnknownArgument {
-        if let Some(flag) = invalid_arg.as_deref().and_then(|f| f.strip_prefix("--")) {
-            let flag = flag.split('=').next().unwrap_or(flag);
-            let hosts: Vec<String> = cmd
-                .get_subcommands()
-                .filter(|sc| {
-                    sc.get_name() != subcommand
-                        && sc.get_arguments().any(|a| a.get_long() == Some(flag))
-                })
-                .map(|sc| sc.get_name().to_string())
-                .collect();
-            if !hosts.is_empty() {
-                hint = Some(format!("`--{}` is a `{}` flag", flag, hosts.join("` / `")));
-            }
-        }
+      if !hosts.is_empty() {
+        hint = Some(format!("`--{}` is a `{}` flag", flag, hosts.join("` / `")));
+      }
     }
+  }
 
-    // clap prints parse errors (message + usage + suggestion) to stderr.
-    let _ = e.print();
-    if let Some(h) = &hint {
-        eprintln!("  {}", h);
-    }
+  // clap prints parse errors (message + usage + suggestion) to stderr.
+  let _ = e.print();
+  if let Some(h) = &hint {
+    eprintln!("  {}", h);
+  }
 
-    let kind = match e.kind() {
-        ErrorKind::UnknownArgument => crate::cli_error::ErrorKind::UnknownFlag,
-        _ => crate::cli_error::ErrorKind::BadArgument,
-    };
-    // A missing required argument must say *which* one: clap's first line
-    // stops at "the following required arguments were not provided:" and the
-    // names live in the context, so the envelope would otherwise describe the
-    // shape of the error and not the error (PR #38 review).
-    let missing: Vec<String> = match e.get(ContextKind::InvalidArg) {
-        Some(ContextValue::Strings(v)) => v.clone(),
-        Some(ContextValue::String(s)) => vec![s.clone()],
-        _ => Vec::new(),
-    };
-    let detail = match (&invalid_arg, e.kind()) {
-        (Some(flag), ErrorKind::UnknownArgument) => {
-            format!("`{}` has no `{}` flag", subcommand, flag)
-        }
-        (_, ErrorKind::MissingRequiredArgument) if !missing.is_empty() => format!(
-            "`{}` is missing required argument(s): {}",
-            subcommand,
-            missing.join(", ")
-        ),
-        _ => e
-            .to_string()
-            .lines()
-            .next()
-            .unwrap_or("invalid arguments")
-            .trim_start_matches("error: ")
-            .to_string(),
-    };
-    if json_mode {
-        let mut err = crate::cli_error::CliError::new(subcommand, kind, detail);
-        if let Some(h) = hint {
-            err = err.hint(h);
-        }
-        // Human text already printed via clap above; emit only the envelope.
-        err.emit_json_only();
+  let kind = match e.kind() {
+    ErrorKind::UnknownArgument => crate::cli_error::ErrorKind::UnknownFlag,
+    _ => crate::cli_error::ErrorKind::BadArgument,
+  };
+  // A missing required argument must say *which* one: clap's first line
+  // stops at "the following required arguments were not provided:" and the
+  // names live in the context, so the envelope would otherwise describe the
+  // shape of the error and not the error (PR #38 review).
+  let missing: Vec<String> = match e.get(ContextKind::InvalidArg) {
+    Some(ContextValue::Strings(v)) => v.clone(),
+    Some(ContextValue::String(s)) => vec![s.clone()],
+    _ => Vec::new(),
+  };
+  let detail = match (&invalid_arg, e.kind()) {
+    (Some(flag), ErrorKind::UnknownArgument) => {
+      format!("`{}` has no `{}` flag", subcommand, flag)
     }
-    std::process::exit(kind.exit_code());
+    (_, ErrorKind::MissingRequiredArgument) if !missing.is_empty() => format!(
+      "`{}` is missing required argument(s): {}",
+      subcommand,
+      missing.join(", ")
+    ),
+    _ => e
+      .to_string()
+      .lines()
+      .next()
+      .unwrap_or("invalid arguments")
+      .trim_start_matches("error: ")
+      .to_string(),
+  };
+  if json_mode {
+    let mut err = crate::cli_error::CliError::new(subcommand, kind, detail);
+    if let Some(h) = hint {
+      err = err.hint(h);
+    }
+    // Human text already printed via clap above; emit only the envelope.
+    err.emit_json_only();
+  }
+  std::process::exit(kind.exit_code());
 }
 
 /// Validate path arguments before walking (issue #33). An empty argument
@@ -1081,65 +1083,65 @@ fn exit_with_parse_error(e: clap::Error) -> ! {
 /// expanded twice — once here to test existence, once in the walker — which
 /// is deliberate: correctness over one saved directory read.
 fn require_paths(command: &str, paths: &[PathBuf], json_mode: bool) -> Vec<PathBuf> {
-    use crate::cli_error::{CliError, ErrorKind};
-    if paths.is_empty() {
-        CliError::new(
-            command,
-            ErrorKind::NoInput,
-            format!(
-                "`{}` received no paths (0 arguments after the subcommand)",
-                command
-            ),
-        )
-        .hint(format!(
-            "An empty argument list is not an empty codebase: nothing was inspected.\n\
+  use crate::cli_error::{CliError, ErrorKind};
+  if paths.is_empty() {
+    CliError::new(
+      command,
+      ErrorKind::NoInput,
+      format!(
+        "`{}` received no paths (0 arguments after the subcommand)",
+        command
+      ),
+    )
+    .hint(format!(
+      "An empty argument list is not an empty codebase: nothing was inspected.\n\
              If the list came from a shell substitution such as `ast-bro {} $(...)`, the\n\
              substitution produced nothing. Resolve the files first, check the list is\n\
              non-empty, then pass the paths explicitly.",
-            command
-        ))
-        .exit(json_mode);
-    }
-    let (existing, missing) = split_existing(paths);
-    if existing.is_empty() {
-        let mut hint = format!(
+      command
+    ))
+    .exit(json_mode);
+  }
+  let (existing, missing) = split_existing(paths);
+  if existing.is_empty() {
+    let mut hint = format!(
             "missing: {}\n\
              An empty result here means the paths are wrong, not that the code has no declarations.",
             missing.join(", ")
         );
-        // A verifiable repair beats a blind retry or a detour through `find`.
-        if let Some(repair) = crate::path_repair::hints(&missing) {
-            hint.push('\n');
-            hint.push_str(&repair);
-        }
-        CliError::new(
-            command,
-            ErrorKind::PathNotFound,
-            format!(
-                "`{}` resolved 0 of {} path(s); nothing was inspected",
-                command,
-                paths.len()
-            ),
-        )
-        .hint(hint)
-        .extra("requested", serde_json::json!(paths.len()))
-        .extra("resolved", serde_json::json!(0))
-        .extra("missing", serde_json::json!(missing))
-        .exit(json_mode);
+    // A verifiable repair beats a blind retry or a detour through `find`.
+    if let Some(repair) = crate::path_repair::hints(&missing) {
+      hint.push('\n');
+      hint.push_str(&repair);
     }
-    // Each repair costs one bounded walk, so they are offered only for a
-    // short miss list. A long one is a wrong-list problem, not a wrong-path
-    // problem, and a wall of hints would bury the notes themselves.
-    const MAX_REPAIRS: usize = 3;
-    for m in &missing {
-        eprintln!("# note: path not found: {}", m);
-        if missing.len() <= MAX_REPAIRS {
-            if let Some(repair) = crate::path_repair::hint_for_one(m) {
-                eprintln!("# hint: {}", repair);
-            }
-        }
+    CliError::new(
+      command,
+      ErrorKind::PathNotFound,
+      format!(
+        "`{}` resolved 0 of {} path(s); nothing was inspected",
+        command,
+        paths.len()
+      ),
+    )
+    .hint(hint)
+    .extra("requested", serde_json::json!(paths.len()))
+    .extra("resolved", serde_json::json!(0))
+    .extra("missing", serde_json::json!(missing))
+    .exit(json_mode);
+  }
+  // Each repair costs one bounded walk, so they are offered only for a
+  // short miss list. A long one is a wrong-list problem, not a wrong-path
+  // problem, and a wall of hints would bury the notes themselves.
+  const MAX_REPAIRS: usize = 3;
+  for m in &missing {
+    eprintln!("# note: path not found: {}", m);
+    if missing.len() <= MAX_REPAIRS {
+      if let Some(repair) = crate::path_repair::hint_for_one(m) {
+        eprintln!("# hint: {}", repair);
+      }
     }
-    existing
+  }
+  existing
 }
 
 /// `require_paths` for subcommands whose path list is genuinely optional
@@ -1147,10 +1149,10 @@ fn require_paths(command: &str, paths: &[PathBuf], json_mode: bool) -> Vec<PathB
 /// real default here; a *wrong* list is still a rejection, so anything
 /// passed goes through the same existence check.
 fn resolve_optional_paths(command: &str, paths: &[PathBuf], json_mode: bool) -> Vec<PathBuf> {
-    if paths.is_empty() {
-        return vec![PathBuf::from(".")];
-    }
-    require_paths(command, paths, json_mode)
+  if paths.is_empty() {
+    return vec![PathBuf::from(".")];
+  }
+  require_paths(command, paths, json_mode)
 }
 
 /// The shared "this path does not exist" rejection for subcommands that take
@@ -1159,39 +1161,38 @@ fn resolve_optional_paths(command: &str, paths: &[PathBuf], json_mode: bool) -> 
 /// "nothing matched" and "you named a directory that isn't there" must not
 /// look the same (issue #33).
 fn require_path(command: &str, path: &Path, json_mode: bool) {
-    use crate::cli_error::{CliError, ErrorKind};
-    if !path.exists() {
-        let mut hint =
-            "An empty result here would mean the path is wrong, not that nothing matched."
-                .to_string();
-        if let Some(repair) = crate::path_repair::hints(&[path.to_string_lossy().into_owned()]) {
-            hint.push('\n');
-            hint.push_str(&repair);
-        }
-        CliError::new(
-            command,
-            ErrorKind::PathNotFound,
-            format!("path not found: {}", path.display()),
-        )
-        .hint(hint)
-        .exit(json_mode);
+  use crate::cli_error::{CliError, ErrorKind};
+  if !path.exists() {
+    let mut hint =
+      "An empty result here would mean the path is wrong, not that nothing matched.".to_string();
+    if let Some(repair) = crate::path_repair::hints(&[path.to_string_lossy().into_owned()]) {
+      hint.push('\n');
+      hint.push_str(&repair);
     }
+    CliError::new(
+      command,
+      ErrorKind::PathNotFound,
+      format!("path not found: {}", path.display()),
+    )
+    .hint(hint)
+    .exit(json_mode);
+  }
 }
 
 /// Partition path arguments into (resolvable originals, missing display
 /// strings) — the shared core of `require_paths` (CLI) and
 /// `resolve_paths_for_mcp` (MCP), which differ only in how they report.
 fn split_existing(paths: &[PathBuf]) -> (Vec<PathBuf>, Vec<String>) {
-    let mut existing: Vec<PathBuf> = Vec::new();
-    let mut missing: Vec<String> = Vec::new();
-    for p in paths {
-        if path_glob::expand_existing(p).is_empty() {
-            missing.push(p.display().to_string());
-        } else {
-            existing.push(p.clone());
-        }
+  let mut existing: Vec<PathBuf> = Vec::new();
+  let mut missing: Vec<String> = Vec::new();
+  for p in paths {
+    if path_glob::expand_existing(p).is_empty() {
+      missing.push(p.display().to_string());
+    } else {
+      existing.push(p.clone());
     }
-    (existing, missing)
+  }
+  (existing, missing)
 }
 
 /// MCP-side counterpart of `require_paths` (#33): the server has no stderr
@@ -1201,32 +1202,32 @@ fn split_existing(paths: &[PathBuf]) -> (Vec<PathBuf>, Vec<String>) {
 /// originals — text responses prepend a note line, JSON responses inject
 /// a `missing_paths` field, so partial resolution is never silent.
 pub(crate) fn resolve_paths_for_mcp(
-    command: &str,
-    paths: &[PathBuf],
+  command: &str,
+  paths: &[PathBuf],
 ) -> Result<(Vec<PathBuf>, Vec<String>), String> {
-    if paths.is_empty() {
-        return Err(format!(
+  if paths.is_empty() {
+    return Err(format!(
             "`{}` received no paths (empty argument list): an empty list is not an empty codebase — nothing was inspected",
             command
         ));
-    }
-    let (existing, missing) = split_existing(paths);
-    if existing.is_empty() {
-        let mut msg = format!(
+  }
+  let (existing, missing) = split_existing(paths);
+  if existing.is_empty() {
+    let mut msg = format!(
             "`{}` resolved 0 of {} path(s); nothing was inspected. missing: {}. An empty result here would mean the paths are wrong, not that the code has no declarations",
             command,
             paths.len(),
             missing.join(", ")
         );
-        // The server has no stderr channel to the client, so a repair that
-        // the CLI would print as a hint has to ride on the error itself.
-        if let Some(repair) = crate::path_repair::hints(&missing) {
-            msg.push_str(". ");
-            msg.push_str(&repair.replace('\n', "; "));
-        }
-        return Err(msg);
+    // The server has no stderr channel to the client, so a repair that
+    // the CLI would print as a hint has to ride on the error itself.
+    if let Some(repair) = crate::path_repair::hints(&missing) {
+      msg.push_str(". ");
+      msg.push_str(&repair.replace('\n', "; "));
     }
-    Ok((existing, missing))
+    return Err(msg);
+  }
+  Ok((existing, missing))
 }
 
 /// Size past which a directory-wide `map` is worth a pointer at the digest
@@ -1266,11 +1267,11 @@ pub(crate) const MAX_ECHOED_PATHS: usize = 4;
 /// Suggesting a shell command to a caller that speaks JSON-RPC would name an
 /// action it may have no way to take.
 pub(crate) fn map_hint_is_due(
-    files_inspected: usize,
-    already_digest: bool,
-    output_len: usize,
+  files_inspected: usize,
+  already_digest: bool,
+  output_len: usize,
 ) -> bool {
-    !already_digest && output_len > MAP_HINT_THRESHOLD_BYTES && files_inspected > 1
+  !already_digest && output_len > MAP_HINT_THRESHOLD_BYTES && files_inspected > 1
 }
 
 /// Quotes `s` for a POSIX shell, leaving a value that needs no quoting
@@ -1285,21 +1286,21 @@ pub(crate) fn map_hint_is_due(
 /// before the process starts; emitting it bare would hand the next shell a
 /// home directory instead.
 fn shell_quote(s: &str) -> String {
-    let safe = |c: char| c.is_ascii_alphanumeric() || "._/-+=:@,%".contains(c);
-    if !s.is_empty() && s.chars().all(safe) {
-        s.to_string()
-    } else {
-        format!("'{}'", s.replace('\'', r"'\''"))
-    }
+  let safe = |c: char| c.is_ascii_alphanumeric() || "._/-+=:@,%".contains(c);
+  if !s.is_empty() && s.chars().all(safe) {
+    s.to_string()
+  } else {
+    format!("'{}'", s.replace('\'', r"'\''"))
+  }
 }
 
 /// `the same N paths`, or `the same path` when there is only one.
 fn same_paths_phrase(count: usize) -> String {
-    if count == 1 {
-        "the same path".to_string()
-    } else {
-        format!("the same {} paths", count)
-    }
+  if count == 1 {
+    "the same path".to_string()
+  } else {
+    format!("the same {} paths", count)
+  }
 }
 
 /// Payload size in KB, rounded up.
@@ -1308,7 +1309,7 @@ fn same_paths_phrase(count: usize) -> String {
 /// rounding down would announce `24 KB` for the 25 001 bytes that just
 /// crossed a 25 KB bar.
 pub(crate) fn kb_ceil(bytes: usize) -> usize {
-    bytes.div_ceil(1024)
+  bytes.div_ceil(1024)
 }
 
 /// A resolved `map` call, reduced to what the suggestion has to reproduce.
@@ -1317,20 +1318,20 @@ pub(crate) fn kb_ceil(bytes: usize) -> usize {
 /// what keeps the suggestion and the [`MapHintCall::already_digest`] test it
 /// travels with from being computed off two different sources.
 struct MapHintCall<'a> {
-    /// The paths as the caller wrote them, including any that did not
-    /// resolve. The suggestion stands in for the whole call, and one that
-    /// quietly dropped a missing path would come back without the note
-    /// saying it was missing.
-    requested_paths: &'a [PathBuf],
-    glob: Option<&'a str>,
-    /// The cap in force, not the one the caller typed: `None` means no cap.
-    max_members: Option<usize>,
-    json: bool,
-    compact: bool,
-    no_attrs: bool,
-    no_lines: bool,
-    /// Whether the call already renders the digest answer.
-    already_digest: bool,
+  /// The paths as the caller wrote them, including any that did not
+  /// resolve. The suggestion stands in for the whole call, and one that
+  /// quietly dropped a missing path would come back without the note
+  /// saying it was missing.
+  requested_paths: &'a [PathBuf],
+  glob: Option<&'a str>,
+  /// The cap in force, not the one the caller typed: `None` means no cap.
+  max_members: Option<usize>,
+  json: bool,
+  compact: bool,
+  no_attrs: bool,
+  no_lines: bool,
+  /// Whether the call already renders the digest answer.
+  already_digest: bool,
 }
 
 /// Hint pointing an oversized multi-file `map` at the digest preset, or
@@ -1367,88 +1368,88 @@ struct MapHintCall<'a> {
 /// attached `--glob=…` form, and paths move behind a `--` separator when
 /// any of them starts with a dash.
 fn map_directory_hint(
-    call: &MapHintCall<'_>,
-    files_inspected: usize,
-    output_len: usize,
+  call: &MapHintCall<'_>,
+  files_inspected: usize,
+  output_len: usize,
 ) -> Option<String> {
-    if !map_hint_is_due(files_inspected, call.already_digest, output_len) {
-        return None;
-    }
-    let path_count = call.requested_paths.len();
+  if !map_hint_is_due(files_inspected, call.already_digest, output_len) {
+    return None;
+  }
+  let path_count = call.requested_paths.len();
 
-    // Everything the hint interpolates goes inside one backtick-delimited
-    // span, so every caller-controlled string in it has to survive being
-    // written on one line: a backtick closes the delimiter from inside the
-    // shell quotes that correctly protect it, and a control character — a
-    // newline above all — splits the hint, where every reader of it is
-    // line-oriented, this repository's own tests included.
-    let fits_on_one_line = |s: &str| !s.contains('`') && !s.chars().any(char::is_control);
+  // Everything the hint interpolates goes inside one backtick-delimited
+  // span, so every caller-controlled string in it has to survive being
+  // written on one line: a backtick closes the delimiter from inside the
+  // shell quotes that correctly protect it, and a control character — a
+  // newline above all — splits the hint, where every reader of it is
+  // line-oriented, this repository's own tests included.
+  let fits_on_one_line = |s: &str| !s.contains('`') && !s.chars().any(char::is_control);
 
-    // The glob is the second such string, and unlike a path it has no
-    // fallback: the counted form carries it too, and dropping it would
-    // prescribe a broader question than the one being qualified. An
-    // unspellable glob therefore withholds the hint outright.
-    if call.glob.is_some_and(|g| !fits_on_one_line(g)) {
-        return None;
-    }
+  // The glob is the second such string, and unlike a path it has no
+  // fallback: the counted form carries it too, and dropping it would
+  // prescribe a broader question than the one being qualified. An
+  // unspellable glob therefore withholds the hint outright.
+  if call.glob.is_some_and(|g| !fits_on_one_line(g)) {
+    return None;
+  }
 
-    let hint_cap = crate::defaults::HINT_MAX_MEMBERS;
-    let cap = call.max_members.map_or(hint_cap, |m| m.min(hint_cap));
-    let mut flags = format!("--preset digest --max-members {}", cap);
-    if let Some(glob) = call.glob {
-        flags.push_str(&format!(" --glob={}", shell_quote(glob)));
+  let hint_cap = crate::defaults::HINT_MAX_MEMBERS;
+  let cap = call.max_members.map_or(hint_cap, |m| m.min(hint_cap));
+  let mut flags = format!("--preset digest --max-members {}", cap);
+  if let Some(glob) = call.glob {
+    flags.push_str(&format!(" --glob={}", shell_quote(glob)));
+  }
+  // Display filters the caller turned off stay off: re-enabling them would
+  // render something other than what was asked for, and usually more of it.
+  if call.no_attrs {
+    flags.push_str(" --no-attrs");
+  }
+  if call.no_lines {
+    flags.push_str(" --no-lines");
+  }
+  if call.json {
+    flags.push_str(" --json");
+    if call.compact {
+      flags.push_str(" --compact");
     }
-    // Display filters the caller turned off stay off: re-enabling them would
-    // render something other than what was asked for, and usually more of it.
-    if call.no_attrs {
-        flags.push_str(" --no-attrs");
-    }
-    if call.no_lines {
-        flags.push_str(" --no-lines");
-    }
-    if call.json {
-        flags.push_str(" --json");
-        if call.compact {
-            flags.push_str(" --compact");
-        }
-    }
+  }
 
-    // The spelled-out form is a whole command: following it replaces the
-    // caller's flags, so it always lands on the digest answer. The counted
-    // form has to describe the same call rather than an addition to the one
-    // that was typed — `adding` loops forever against a caller who already
-    // set every axis the preset would change, since explicit flags beat the
-    // preset and there is nothing left for it to change.
-    let counted = || format!("running `{}` on {}", flags, same_paths_phrase(path_count));
+  // The spelled-out form is a whole command: following it replaces the
+  // caller's flags, so it always lands on the digest answer. The counted
+  // form has to describe the same call rather than an addition to the one
+  // that was typed — `adding` loops forever against a caller who already
+  // set every axis the preset would change, since explicit flags beat the
+  // preset and there is nothing left for it to change.
+  let counted = || format!("running `{}` on {}", flags, same_paths_phrase(path_count));
 
-    // A path fails the same test in one more way — `display()` is lossy for
-    // one that is not UTF-8, so there is no faithful spelling of it — but
-    // unlike the glob it has a fallback: the counted form names no paths, so
-    // each case falls back to it rather than losing the hint.
-    let spellable: Option<Vec<&str>> = call.requested_paths.iter().map(|p| p.to_str()).collect();
+  // A path fails the same test in one more way — `display()` is lossy for
+  // one that is not UTF-8, so there is no faithful spelling of it — but
+  // unlike the glob it has a fallback: the counted form names no paths, so
+  // each case falls back to it rather than losing the hint.
+  let spellable: Option<Vec<&str>> = call.requested_paths.iter().map(|p| p.to_str()).collect();
 
-    // Past a handful of paths the caller did not type them — a shell expanded
-    // a glob — so repeating all of them buys nothing and costs the one thing
-    // the hint exists to protect: a line cheaper to read than the answer it
-    // qualifies. 117 paths render a 2.5 KB hint.
-    let body = match spellable {
-        Some(rendered)
-            if path_count <= MAX_ECHOED_PATHS && rendered.iter().all(|p| fits_on_one_line(p)) =>
-        {
-            let quoted = rendered
-                .iter()
-                .map(|p| shell_quote(p))
-                .collect::<Vec<_>>()
-                .join(" ");
-            if rendered.iter().any(|p| p.starts_with('-')) {
-                format!("`ast-bro map {} -- {}`", flags, quoted)
-            } else {
-                format!("`ast-bro map {} {}`", quoted, flags)
-            }
-        }
-        _ => counted(),
-    };
-    Some(format!(
+  // Past a handful of paths the caller did not type them — a shell expanded
+  // a glob — so repeating all of them buys nothing and costs the one thing
+  // the hint exists to protect: a line cheaper to read than the answer it
+  // qualifies. 117 paths render a 2.5 KB hint.
+  let body = match spellable {
+    Some(rendered)
+      if path_count <= MAX_ECHOED_PATHS && rendered.iter().all(|p| fits_on_one_line(p)) =>
+    {
+      let quoted = rendered
+        .iter()
+        .map(|p| shell_quote(p))
+        .collect::<Vec<_>>()
+        .join(" ");
+      if rendered.iter().any(|p| p.starts_with('-')) {
+        format!("`ast-bro map {} -- {}`", flags, quoted)
+      } else {
+        format!("`ast-bro map {} {}`", quoted, flags)
+      }
+    }
+    _ => counted(),
+  };
+  Some(format!(
         "# hint: this was a multi-file answer ({} KB); {} answers the same question in a fraction of the size",
         kb_ceil(output_len),
         body,
@@ -1460,117 +1461,117 @@ fn map_directory_hint(
 /// `digest --include-private` and `map --preset digest --max-members 8`
 /// both mean what they say.
 fn run_map_digest(a: &MapArgs, digest_alias: bool) {
-    let command = if digest_alias { "digest" } else { "map" };
-    let paths = require_paths(command, &a.paths, a.json);
+  let command = if digest_alias { "digest" } else { "map" };
+  let paths = require_paths(command, &a.paths, a.json);
 
-    let preset_digest = digest_alias || matches!(a.preset, Some(MapPreset::Digest));
-    let detail = a.detail.unwrap_or(if preset_digest {
-        DetailLevel::Names
-    } else {
-        DetailLevel::Full
-    });
-    let include_private = if a.include_private {
-        true
-    } else if a.no_private {
-        false
-    } else {
-        !preset_digest
-    };
-    let include_fields = if a.include_fields {
-        true
-    } else if a.no_fields {
-        false
-    } else {
-        !preset_digest
-    };
-    let max_members = preset_max_members(a.max_members, preset_digest);
-    // Docs ride only on the `full` detail level (and can still be dropped
-    // there with --no-docs). This also governs the JSON payload, which is
-    // what makes `digest --json` shed its doc-comment weight.
-    let include_docs = matches!(detail, DetailLevel::Full) && !a.no_docs;
+  let preset_digest = digest_alias || matches!(a.preset, Some(MapPreset::Digest));
+  let detail = a.detail.unwrap_or(if preset_digest {
+    DetailLevel::Names
+  } else {
+    DetailLevel::Full
+  });
+  let include_private = if a.include_private {
+    true
+  } else if a.no_private {
+    false
+  } else {
+    !preset_digest
+  };
+  let include_fields = if a.include_fields {
+    true
+  } else if a.no_fields {
+    false
+  } else {
+    !preset_digest
+  };
+  let max_members = preset_max_members(a.max_members, preset_digest);
+  // Docs ride only on the `full` detail level (and can still be dropped
+  // there with --no-docs). This also governs the JSON payload, which is
+  // what makes `digest --json` shed its doc-comment weight.
+  let include_docs = matches!(detail, DetailLevel::Full) && !a.no_docs;
 
-    let results = walk_and_parse(&paths, a.glob.as_deref());
-    let pretty = !a.compact;
-    let map_opts = MapOptions {
-        include_private,
-        include_fields,
-        include_docs,
-        include_attributes: !a.no_attrs,
-        include_line_numbers: !a.no_lines,
-        max_doc_lines: crate::defaults::MAX_DOC_LINES,
-        max_members,
-    };
+  let results = walk_and_parse(&paths, a.glob.as_deref());
+  let pretty = !a.compact;
+  let map_opts = MapOptions {
+    include_private,
+    include_fields,
+    include_docs,
+    include_attributes: !a.no_attrs,
+    include_line_numbers: !a.no_lines,
+    max_doc_lines: crate::defaults::MAX_DOC_LINES,
+    max_members,
+  };
 
-    // The digest answer is the one call the hint has nothing smaller to
-    // offer. What makes a call one is the resolved axes, not the alias that
-    // was typed: explicit flags override the preset, so `digest <dir>
-    // --include-private --include-fields` renders byte for byte what `map
-    // <dir> --detail names` does, and both deserve the same answer here.
-    let already_digest = matches!(detail, DetailLevel::Names)
-        && !include_private
-        && !include_fields
-        && max_members.is_some_and(|m| m <= crate::defaults::MAX_MEMBERS);
-    // Every axis the suggestion reproduces is read from the same resolved
-    // value the test above used, so the two cannot answer for different
-    // calls if preset resolution is ever moved.
-    let hint_call = MapHintCall {
-        requested_paths: &a.paths,
-        glob: a.glob.as_deref(),
-        max_members,
-        json: a.json,
-        compact: a.compact,
-        no_attrs: a.no_attrs,
-        no_lines: a.no_lines,
-        already_digest,
-    };
+  // The digest answer is the one call the hint has nothing smaller to
+  // offer. What makes a call one is the resolved axes, not the alias that
+  // was typed: explicit flags override the preset, so `digest <dir>
+  // --include-private --include-fields` renders byte for byte what `map
+  // <dir> --detail names` does, and both deserve the same answer here.
+  let already_digest = matches!(detail, DetailLevel::Names)
+    && !include_private
+    && !include_fields
+    && max_members.is_some_and(|m| m <= crate::defaults::MAX_MEMBERS);
+  // Every axis the suggestion reproduces is read from the same resolved
+  // value the test above used, so the two cannot answer for different
+  // calls if preset resolution is ever moved.
+  let hint_call = MapHintCall {
+    requested_paths: &a.paths,
+    glob: a.glob.as_deref(),
+    max_members,
+    json: a.json,
+    compact: a.compact,
+    no_attrs: a.no_attrs,
+    no_lines: a.no_lines,
+    already_digest,
+  };
 
-    let rendered = if a.json {
-        crate::core::render_json_map(&results, &map_opts, pretty)
-    } else {
-        match detail {
-            DetailLevel::Names => {
-                let opts = DigestOptions {
-                    include_private,
-                    include_fields,
-                    include_attributes: !a.no_attrs,
-                    include_line_numbers: !a.no_lines,
-                    max_members_per_type: max_members.unwrap_or(usize::MAX),
-                    max_heading_depth: crate::defaults::MAX_HEADING_DEPTH,
-                };
-                let root = if paths.len() == 1 && paths[0].is_dir() {
-                    Some(paths[0].as_path())
-                } else {
-                    None
-                };
-                crate::core::render_digest(&results, &opts, root)
-            }
-            DetailLevel::Signatures | DetailLevel::Full => {
-                if results.is_empty() {
-                    // The paths exist but contain nothing parseable — that's
-                    // a real (empty) answer, and stdout must say so rather
-                    // than stay silent (issue #33).
-                    println!("# 0 parseable file(s) in the given path(s)");
-                    return;
-                }
-                let mut out = String::new();
-                for res in &results {
-                    out.push_str(&crate::core::render_map(res, &map_opts));
-                    out.push_str("\n\n");
-                }
-                out.trim_end().to_string()
-            }
+  let rendered = if a.json {
+    crate::core::render_json_map(&results, &map_opts, pretty)
+  } else {
+    match detail {
+      DetailLevel::Names => {
+        let opts = DigestOptions {
+          include_private,
+          include_fields,
+          include_attributes: !a.no_attrs,
+          include_line_numbers: !a.no_lines,
+          max_members_per_type: max_members.unwrap_or(usize::MAX),
+          max_heading_depth: crate::defaults::MAX_HEADING_DEPTH,
+        };
+        let root = if paths.len() == 1 && paths[0].is_dir() {
+          Some(paths[0].as_path())
+        } else {
+          None
+        };
+        crate::core::render_digest(&results, &opts, root)
+      }
+      DetailLevel::Signatures | DetailLevel::Full => {
+        if results.is_empty() {
+          // The paths exist but contain nothing parseable — that's
+          // a real (empty) answer, and stdout must say so rather
+          // than stay silent (issue #33).
+          println!("# 0 parseable file(s) in the given path(s)");
+          return;
         }
-    };
-    println!("{}", rendered);
-    // What the caller reads is what `println!` wrote, newline included. The
-    // bar is documented as the emitted payload, so measuring the string
-    // alone would miss by a byte at the boundary — and it is the boundary
-    // the negative tests sit on, asserting stdout against a number the
-    // predicate never saw.
-    let emitted_len = rendered.len() + 1;
-    if let Some(hint) = map_directory_hint(&hint_call, results.len(), emitted_len) {
-        eprintln!("{}", hint);
+        let mut out = String::new();
+        for res in &results {
+          out.push_str(&crate::core::render_map(res, &map_opts));
+          out.push_str("\n\n");
+        }
+        out.trim_end().to_string()
+      }
     }
+  };
+  println!("{}", rendered);
+  // What the caller reads is what `println!` wrote, newline included. The
+  // bar is documented as the emitted payload, so measuring the string
+  // alone would miss by a byte at the boundary — and it is the boundary
+  // the negative tests sit on, asserting stdout against a number the
+  // predicate never saw.
+  let emitted_len = rendered.len() + 1;
+  if let Some(hint) = map_directory_hint(&hint_call, results.len(), emitted_len) {
+    eprintln!("{}", hint);
+  }
 }
 
 /// Member cap for a `map` run: an explicit `--max-members`, else the digest
@@ -1582,143 +1583,142 @@ fn run_map_digest(a: &MapArgs, digest_alias: bool) {
 /// one of them — as it did, leaving the CLI capped at 50 while the MCP
 /// `digest` tool followed the constant.
 fn preset_max_members(explicit: Option<usize>, preset_digest: bool) -> Option<usize> {
-    explicit.or(if preset_digest {
-        Some(crate::defaults::MAX_MEMBERS)
-    } else {
-        None
-    })
+  explicit.or(if preset_digest {
+    Some(crate::defaults::MAX_MEMBERS)
+  } else {
+    None
+  })
 }
 
 pub fn run() {
-    use clap::error::ErrorKind;
-    use clap::CommandFactory;
+  use clap::error::ErrorKind;
+  use clap::CommandFactory;
 
-    // Error contract (issue #36): a rejected argument list is an error, not
-    // a result. `--help` / `--version` keep their exit-0 behaviour, and a
-    // bare `ast-bro` (no arguments at all) still prints help on stdout —
-    // that's a request for orientation, not a failed query. Everything
-    // else — unknown flag, unknown subcommand, bad value — goes to stderr
-    // with exit 2, plus an `ast-bro.error.v1` envelope when `--json` was
-    // among the raw args, so a mistyped flag is never mistaken for a
-    // large successful answer.
-    let cli = match Cli::try_parse() {
-        Ok(c) => c,
-        Err(e) => match e.kind() {
-            ErrorKind::DisplayHelp | ErrorKind::DisplayVersion => {
-                e.exit();
-            }
-            _ if std::env::args_os().len() <= 1 => {
-                let mut cmd = Cli::command();
-                let _ = cmd.print_help();
-                println!();
-                std::process::exit(0);
-            }
-            _ => {
-                exit_with_parse_error(e);
-            }
-        },
-    };
+  // Error contract (issue #36): a rejected argument list is an error, not
+  // a result. `--help` / `--version` keep their exit-0 behaviour, and a
+  // bare `ast-bro` (no arguments at all) still prints help on stdout —
+  // that's a request for orientation, not a failed query. Everything
+  // else — unknown flag, unknown subcommand, bad value — goes to stderr
+  // with exit 2, plus an `ast-bro.error.v1` envelope when `--json` was
+  // among the raw args, so a mistyped flag is never mistaken for a
+  // large successful answer.
+  let cli = match Cli::try_parse() {
+    Ok(c) => c,
+    Err(e) => match e.kind() {
+      ErrorKind::DisplayHelp | ErrorKind::DisplayVersion => {
+        e.exit();
+      }
+      _ if std::env::args_os().len() <= 1 => {
+        let mut cmd = Cli::command();
+        let _ = cmd.print_help();
+        println!();
+        std::process::exit(0);
+      }
+      _ => {
+        exit_with_parse_error(e);
+      }
+    },
+  };
 
-    match &cli.command {
-        Commands::Map(args) => {
-            run_map_digest(args, false);
+  match &cli.command {
+    Commands::Map(args) => {
+      run_map_digest(args, false);
+    }
+    Commands::Show {
+      path,
+      symbol,
+      others,
+      limit,
+      json,
+      compact,
+    } => {
+      use crate::cli_error::{CliError, ErrorKind as CliErrorKind};
+      // Re-flatten the positionals clap split for us: the target/symbol
+      // boundary depends on what is on disk, not on argument position,
+      // so it can only be decided here.
+      let raw: Vec<String> = std::iter::once(path.to_string_lossy().into_owned())
+        .chain(std::iter::once(symbol.clone()))
+        .chain(others.iter().cloned())
+        .collect();
+      let (targets, symbols) = crate::show::partition(&raw);
+
+      if targets.is_empty() {
+        // The first argument is neither a parseable file, a directory,
+        // nor a glob that matched: nothing can be searched.
+        let (kind, detail) = if path.exists() {
+          (
+            CliErrorKind::BadArgument,
+            format!("unsupported file type for `show`: {}", path.display()),
+          )
+        } else {
+          (
+            CliErrorKind::PathNotFound,
+            format!("path not found: {}", path.display()),
+          )
+        };
+        let mut err = CliError::new("show", kind, detail);
+        if let Some(h) = crate::path_repair::hints(&raw) {
+          err = err.hint(h);
         }
-        Commands::Show {
-            path,
-            symbol,
-            others,
-            limit,
-            json,
-            compact,
-        } => {
-            use crate::cli_error::{CliError, ErrorKind as CliErrorKind};
-            // Re-flatten the positionals clap split for us: the target/symbol
-            // boundary depends on what is on disk, not on argument position,
-            // so it can only be decided here.
-            let raw: Vec<String> = std::iter::once(path.to_string_lossy().into_owned())
-                .chain(std::iter::once(symbol.clone()))
-                .chain(others.iter().cloned())
-                .collect();
-            let (targets, symbols) = crate::show::partition(&raw);
-
-            if targets.is_empty() {
-                // The first argument is neither a parseable file, a directory,
-                // nor a glob that matched: nothing can be searched.
-                let (kind, detail) = if path.exists() {
-                    (
-                        CliErrorKind::BadArgument,
-                        format!("unsupported file type for `show`: {}", path.display()),
-                    )
-                } else {
-                    (
-                        CliErrorKind::PathNotFound,
-                        format!("path not found: {}", path.display()),
-                    )
-                };
-                let mut err = CliError::new("show", kind, detail);
-                if let Some(h) = crate::path_repair::hints(&raw) {
-                    err = err.hint(h);
-                }
-                err.exit(*json);
-            }
-            if symbols.is_empty() {
-                // Every argument named a file. Usually an unquoted glob whose
-                // last expansion collided with the symbol slot; guessing which
-                // one was meant to be the symbol would be a coin flip.
-                CliError::new(
-                    "show",
-                    CliErrorKind::BadArgument,
-                    format!(
-                        "`show` received {} file argument(s) and no symbol",
-                        targets.len()
-                    ),
-                )
-                .hint(
-                    "Grammar is `show <target>... <symbol>`. If the shell expanded an unquoted\n\
+        err.exit(*json);
+      }
+      if symbols.is_empty() {
+        // Every argument named a file. Usually an unquoted glob whose
+        // last expansion collided with the symbol slot; guessing which
+        // one was meant to be the symbol would be a coin flip.
+        CliError::new(
+          "show",
+          CliErrorKind::BadArgument,
+          format!(
+            "`show` received {} file argument(s) and no symbol",
+            targets.len()
+          ),
+        )
+        .hint(
+          "Grammar is `show <target>... <symbol>`. If the shell expanded an unquoted\n\
                      glob and swallowed the symbol, quote it: show 'src/*.cs' MyClass.\n\
                      If the symbol genuinely shares its name with a parseable file, qualify it\n\
                      (`Type.method`) so it cannot be read as a path.",
-                )
-                .extra("targets", serde_json::json!(targets.len()))
-                .exit(*json);
-            }
-            // A mistyped path in the symbol slot must be diagnosed as a path,
-            // not answered as an absent symbol.
-            if let Some(bad) = crate::show::misread_path(&symbols) {
-                let mut hint =
-                    "This argument reads as a path, not a symbol, so it was not searched for.\n\
+        )
+        .extra("targets", serde_json::json!(targets.len()))
+        .exit(*json);
+      }
+      // A mistyped path in the symbol slot must be diagnosed as a path,
+      // not answered as an absent symbol.
+      if let Some(bad) = crate::show::misread_path(&symbols) {
+        let mut hint = "This argument reads as a path, not a symbol, so it was not searched for.\n\
                      Fix the path, or drop it if you meant a symbol."
-                        .to_string();
-                if let Some(repair) = crate::path_repair::hints(&[bad.to_string()]) {
-                    hint.push('\n');
-                    hint.push_str(&repair);
-                }
-                CliError::new(
-                    "show",
-                    CliErrorKind::PathNotFound,
-                    format!("path not found: {}", bad),
-                )
-                .hint(hint)
-                .exit(*json);
-            }
+          .to_string();
+        if let Some(repair) = crate::path_repair::hints(&[bad.to_string()]) {
+          hint.push('\n');
+          hint.push_str(&repair);
+        }
+        CliError::new(
+          "show",
+          CliErrorKind::PathNotFound,
+          format!("path not found: {}", bad),
+        )
+        .hint(hint)
+        .exit(*json);
+      }
 
-            // Multi-target mode: anything other than one explicit file. Its
-            // answer carries a coverage header, because a caller who did not
-            // name the file cannot otherwise tell an absent symbol from a
-            // capped display.
-            let multi = targets.len() > 1 || targets.iter().any(|t| !t.is_file());
-            if targets.len() > 1 && targets.iter().all(|t| t.is_file()) {
-                eprintln!(
+      // Multi-target mode: anything other than one explicit file. Its
+      // answer carries a coverage header, because a caller who did not
+      // name the file cannot otherwise tell an absent symbol from a
+      // capped display.
+      let multi = targets.len() > 1 || targets.iter().any(|t| !t.is_file());
+      if targets.len() > 1 && targets.iter().all(|t| t.is_file()) {
+        eprintln!(
                     "# note: {} file argument(s) — searching '{}' across all of them. \
                      If the shell expanded an unquoted glob, quote it (e.g. 'src/*.java') to say so.",
                     targets.len(),
                     symbols.join(", ")
                 );
-            }
+      }
 
-            let results = crate::show::collect(&targets);
-            if results.is_empty() {
-                CliError::new(
+      let results = crate::show::collect(&targets);
+      if results.is_empty() {
+        CliError::new(
                     "show",
                     CliErrorKind::BadArgument,
                     format!(
@@ -1728,15 +1728,15 @@ pub fn run() {
                 )
                 .hint("An empty result here means the targets hold no file of a supported language, not that the symbol is absent.")
                 .exit(*json);
-            }
+      }
 
-            let outcome = crate::show::resolve(results, &symbols, *limit, multi);
-            if outcome.total == 0 {
-                // No requested symbol exists anywhere in scope: the query
-                // could not run as asked. An empty payload would read as
-                // "these files have no such declarations", which is a
-                // different claim (#36).
-                CliError::new(
+      let outcome = crate::show::resolve(results, &symbols, *limit, multi);
+      if outcome.total == 0 {
+        // No requested symbol exists anywhere in scope: the query
+        // could not run as asked. An empty payload would read as
+        // "these files have no such declarations", which is a
+        // different claim (#36).
+        CliError::new(
                     "show",
                     CliErrorKind::SymbolNotFound,
                     format!(
@@ -1748,828 +1748,815 @@ pub fn run() {
                 .hint("Suffix matching is supported: try 'Type.method' or check `ast-bro map <target>` for the declared names.")
                 .extra("files_scanned", serde_json::json!(outcome.files_scanned))
                 .exit(*json);
-            }
-            if !outcome.unmatched.is_empty() {
-                eprintln!(
-                    "# note: no symbol matching '{}' in {} file(s) searched (other symbol(s) shown)",
-                    outcome.unmatched.join(", "),
-                    outcome.files_scanned
-                );
-            }
-            if *json {
-                println!("{}", crate::show::render_json(&outcome, !(*compact)));
-            } else {
-                print!("{}", crate::show::render_text(&outcome));
-            }
+      }
+      if !outcome.unmatched.is_empty() {
+        eprintln!(
+          "# note: no symbol matching '{}' in {} file(s) searched (other symbol(s) shown)",
+          outcome.unmatched.join(", "),
+          outcome.files_scanned
+        );
+      }
+      if *json {
+        println!("{}", crate::show::render_json(&outcome, !(*compact)));
+      } else {
+        print!("{}", crate::show::render_text(&outcome));
+      }
+    }
+    Commands::Squeeze {
+      path,
+      range,
+      raw,
+      json,
+      compact,
+    } => {
+      use crate::cli_error::{CliError, ErrorKind as CliErrorKind};
+      if !path.exists() {
+        // `squeeze` names one explicit file, which is exactly where a
+        // mistyped or relocated path is worth repairing.
+        let mut err = CliError::new(
+          "squeeze",
+          CliErrorKind::PathNotFound,
+          format!("path not found: {}", path.display()),
+        );
+        if let Some(h) = crate::path_repair::hints(&[path.to_string_lossy().into_owned()]) {
+          err = err.hint(h);
         }
-        Commands::Squeeze {
-            path,
-            range,
-            raw,
-            json,
-            compact,
-        } => {
-            use crate::cli_error::{CliError, ErrorKind as CliErrorKind};
-            if !path.exists() {
-                // `squeeze` names one explicit file, which is exactly where a
-                // mistyped or relocated path is worth repairing.
-                let mut err = CliError::new(
-                    "squeeze",
-                    CliErrorKind::PathNotFound,
-                    format!("path not found: {}", path.display()),
-                );
-                if let Some(h) =
-                    crate::path_repair::hints(&[path.to_string_lossy().into_owned()])
-                {
-                    err = err.hint(h);
-                }
-                err.exit(*json);
-            }
-            let text = match std::fs::read_to_string(path) {
-                Ok(t) => t,
-                Err(e) => {
-                    // A directory is a wrong argument (exit 2); a read
-                    // failure on an existing file is an internal failure
-                    // (exit 1), matching the surface handler's Io mapping.
-                    let (kind, detail) = if path.is_dir() {
-                        (
-                            CliErrorKind::BadArgument,
-                            format!(
-                                "`squeeze` expects a file, got a directory: {}",
-                                path.display()
-                            ),
-                        )
-                    } else {
-                        (
-                            CliErrorKind::IndexError,
-                            format!("could not read {}: {}", path.display(), e),
-                        )
-                    };
-                    CliError::new("squeeze", kind, detail).exit(*json);
-                }
-            };
-            let line_count = text.lines().count();
-            let resolved: Option<(usize, usize)> = range.as_ref().map(|r| r.resolve(line_count));
-            let sliced = crate::squeeze::render::slice_lines(&text, resolved);
-            let path_str = path.display().to_string();
-            let report = crate::squeeze::render::SqueezeReport {
-                path: &path_str,
-                range: resolved,
-                raw: &sliced,
-                raw_requested: *raw,
-            };
-            if *json {
-                println!(
-                    "{}",
-                    crate::squeeze::render::render_json(&report, !(*compact))
-                );
-            } else {
-                println!("{}", crate::squeeze::render::render_text(&report));
-            }
+        err.exit(*json);
+      }
+      let text = match std::fs::read_to_string(path) {
+        Ok(t) => t,
+        Err(e) => {
+          // A directory is a wrong argument (exit 2); a read
+          // failure on an existing file is an internal failure
+          // (exit 1), matching the surface handler's Io mapping.
+          let (kind, detail) = if path.is_dir() {
+            (
+              CliErrorKind::BadArgument,
+              format!(
+                "`squeeze` expects a file, got a directory: {}",
+                path.display()
+              ),
+            )
+          } else {
+            (
+              CliErrorKind::IndexError,
+              format!("could not read {}: {}", path.display(), e),
+            )
+          };
+          CliError::new("squeeze", kind, detail).exit(*json);
         }
-        Commands::Digest(args) => {
-            run_map_digest(args, true);
-        }
-        Commands::Implements {
-            target,
-            paths,
-            direct,
-            json,
-            compact,
-        } => {
-            let paths = require_paths("implements", paths, *json);
-            let results = walk_and_parse(&paths, None);
-            let transitive = !direct;
-            let matches = crate::core::find_implementations(&results, target, transitive);
-            if matches.is_empty() {
-                // Distinguish "this type has no implementations" (a real,
-                // interesting answer: exit 0) from "no such type anywhere"
-                // (the query could not run as asked: exit 2) — issue #36.
-                if !crate::core::implements_target_exists(&results, target) {
-                    crate::cli_error::CliError::new(
+      };
+      let line_count = text.lines().count();
+      let resolved: Option<(usize, usize)> = range.as_ref().map(|r| r.resolve(line_count));
+      let sliced = crate::squeeze::render::slice_lines(&text, resolved);
+      let path_str = path.display().to_string();
+      let report = crate::squeeze::render::SqueezeReport {
+        path: &path_str,
+        range: resolved,
+        raw: &sliced,
+        raw_requested: *raw,
+      };
+      if *json {
+        println!(
+          "{}",
+          crate::squeeze::render::render_json(&report, !(*compact))
+        );
+      } else {
+        println!("{}", crate::squeeze::render::render_text(&report));
+      }
+    }
+    Commands::Digest(args) => {
+      run_map_digest(args, true);
+    }
+    Commands::Implements {
+      target,
+      paths,
+      direct,
+      json,
+      compact,
+    } => {
+      let paths = require_paths("implements", paths, *json);
+      let results = walk_and_parse(&paths, None);
+      let transitive = !direct;
+      let matches = crate::core::find_implementations(&results, target, transitive);
+      if matches.is_empty() {
+        // Distinguish "this type has no implementations" (a real,
+        // interesting answer: exit 0) from "no such type anywhere"
+        // (the query could not run as asked: exit 2) — issue #36.
+        if !crate::core::implements_target_exists(&results, target) {
+          crate::cli_error::CliError::new(
                         "implements",
                         crate::cli_error::ErrorKind::SymbolNotFound,
                         format!("no type named '{}' in the given path(s)", target),
                     )
                     .hint("A 0-match answer is only reported for types that exist. Check the spelling or widen the search path.")
                     .exit(*json);
-                }
-            }
-            if *json {
-                println!(
-                    "{}",
-                    crate::core::render_json_implements(target, &matches, transitive, !(*compact),)
-                );
-            } else {
-                println!(
-                    "# {} match(es) for '{}' (incl. transitive):",
-                    matches.len(),
-                    target
-                );
-                for m in matches {
-                    let via = if m.via.is_empty() {
-                        String::new()
-                    } else {
-                        format!(" [via {}]", m.via.last().unwrap())
-                    };
-                    println!("{}:{}  {} {}{}", m.path, m.start_line, m.kind, m.name, via);
-                }
-            }
         }
-        Commands::Prompt => {
-            println!("{}", crate::prompt::agent_prompt());
+      }
+      if *json {
+        println!(
+          "{}",
+          crate::core::render_json_implements(target, &matches, transitive, !(*compact),)
+        );
+      } else {
+        println!(
+          "# {} match(es) for '{}' (incl. transitive):",
+          matches.len(),
+          target
+        );
+        for m in matches {
+          let via = if m.via.is_empty() {
+            String::new()
+          } else {
+            format!(" [via {}]", m.via.last().unwrap())
+          };
+          println!("{}:{}  {} {}{}", m.path, m.start_line, m.kind, m.name, via);
         }
-        Commands::Install {
-            target,
-            all,
-            local,
-            global,
-            always,
-            min_lines,
-            dry_run,
-            force,
-            mcp,
-            skills,
-        } => {
-            let scope = resolve_scope(*local, *global);
-            let opts = installers::InstallOpts {
-                min_lines: *min_lines,
-                always: *always,
-                dry_run: *dry_run,
-                force: *force,
-            };
-            let exit = run_install(target.as_deref(), *all, *mcp, *skills, &scope, &opts);
-            std::process::exit(exit);
-        }
-        Commands::Uninstall {
-            target,
-            all,
-            local,
-            global,
-            dry_run,
-        } => {
-            let scope = resolve_scope(*local, *global);
-            let opts = installers::InstallOpts {
-                dry_run: *dry_run,
-                ..installers::InstallOpts::default()
-            };
-            let exit = run_uninstall(target.as_deref(), *all, &scope, &opts);
-            std::process::exit(exit);
-        }
-        Commands::Status { local, global } => {
-            let scope = resolve_scope(*local, *global);
-            run_status(&scope);
-        }
-        Commands::Hook {
-            protocol,
-            min_lines,
-            always,
-        } => {
-            let exit = hook::run(protocol, *min_lines, *always);
-            std::process::exit(exit);
-        }
-        Commands::Mcp => {
-            let exit = mcp::run();
-            std::process::exit(exit);
-        }
-        Commands::Search {
-            query,
-            path,
-            top_k,
-            alpha,
-            languages,
-            rebuild,
-            json,
-            compact,
-        } => {
-            require_path("search", path, *json);
-            if *rebuild {
-                let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-                if let Err(e) = crate::search::index::Index::build(path, &cwd) {
-                    eprintln!("ast-bro: rebuild failed: {e}");
-                    std::process::exit(1);
-                }
-            }
-            let exit = crate::search::cli::run_search(
-                query,
-                path,
-                *top_k,
-                *alpha,
-                languages.clone(),
-                *json,
-                !(*compact),
-            );
-            std::process::exit(exit);
-        }
-        Commands::FindRelated {
-            target,
-            path,
-            file,
-            line,
-            top_k,
-            json,
-            compact,
-        } => {
-            // Clap guarantees one of: (target alone) or (file + line).
-            let (file_path, line_num) = match (target, file, line) {
-                (Some(t), _, _) => match parse_file_line(t) {
-                    Some(parsed) => parsed,
-                    None => {
-                        crate::cli_error::CliError::new(
-                            "find-related",
-                            crate::cli_error::ErrorKind::BadArgument,
-                            format!("expected <FILE>:<LINE>, got {t:?}"),
-                        )
-                        .hint("Use `find-related src/file.rs:42`, or `--file FILE --line N`.")
-                        .exit(*json);
-                    }
-                },
-                (None, Some(f), Some(l)) => (f.clone(), *l),
-                _ => unreachable!("clap should have rejected this argument combination"),
-            };
-            require_path("find-related", path, *json);
-            let exit = crate::search::cli::run_find_related(
-                &file_path,
-                line_num,
-                path,
-                *top_k,
-                *json,
-                !(*compact),
-            );
-            std::process::exit(exit);
-        }
-        Commands::Surface {
-            path,
-            tree,
-            include_chain,
-            max_depth,
-            include_private,
-            lang,
-            json,
-            compact,
-        } => {
-            if !path.exists() {
-                crate::cli_error::CliError::new(
-                    "surface",
-                    crate::cli_error::ErrorKind::PathNotFound,
-                    format!("path not found: {}", path.display()),
-                )
-                .exit(*json);
-            }
-            let lang_override = match lang {
-                Some(s) => match crate::surface::LangOverride::parse(s) {
-                    Some(l) => Some(l),
-                    None => {
-                        crate::cli_error::CliError::new(
-                            "surface",
-                            crate::cli_error::ErrorKind::BadArgument,
-                            format!("unknown --lang value '{}'", s),
-                        )
-                        .hint("Expected rust|python|fallback.")
-                        .exit(*json);
-                    }
-                },
-                None => None,
-            };
-            let json_on = *json;
-            let pretty = !(*compact);
-            let output = if json_on {
-                crate::surface::OutputMode::Json { compact: !pretty }
-            } else if *tree {
-                crate::surface::OutputMode::Tree
-            } else {
-                crate::surface::OutputMode::Flat
-            };
-            let opts = crate::surface::SurfaceOptions {
-                output,
-                include_private: *include_private,
-                max_depth: *max_depth,
-                include_chain: *include_chain,
-                lang_override,
-            };
-            match crate::surface::resolve_surface(path, &opts) {
-                Ok(entries) => {
-                    let rendered =
-                        crate::surface::render::render(&entries, opts.output, opts.include_chain);
-                    print!("{}", rendered);
-                }
-                Err(e) => {
-                    use crate::surface::SurfaceError;
-                    let kind = match &e {
-                        SurfaceError::NoEntryPoint { .. } => {
-                            crate::cli_error::ErrorKind::PathNotFound
-                        }
-                        // The path was verified to exist above, so a
-                        // surviving Io error is a read/permission failure —
-                        // an internal failure (exit 1), not a wrong path an
-                        // agent should retry differently.
-                        SurfaceError::Io { .. } | SurfaceError::Parse { .. } => {
-                            crate::cli_error::ErrorKind::IndexError
-                        }
-                        SurfaceError::BadOverride(_) => crate::cli_error::ErrorKind::BadArgument,
-                    };
-                    crate::cli_error::CliError::new("surface", kind, e.to_string()).exit(json_on);
-                }
-            }
-        }
-        Commands::Deps {
-            file,
-            depth,
-            hide_external,
-            rebuild,
-            json,
-            compact,
-        } => {
-            let exit = crate::deps::cli::run_deps(
-                file,
-                *depth,
-                !(*hide_external),
-                *json,
-                !(*compact),
-                *rebuild,
-            );
-            std::process::exit(exit);
-        }
-        Commands::ReverseDeps {
-            file,
-            depth,
-            limit,
-            tests,
-            exclude_tests,
-            rebuild,
-            json,
-            compact,
-        } => {
-            let exit = crate::deps::cli::run_reverse_deps(
-                file,
-                *depth,
-                *limit,
-                *tests,
-                *exclude_tests,
-                *json,
-                !(*compact),
-                *rebuild,
-            );
-            std::process::exit(exit);
-        }
-        Commands::Cycles {
-            path,
-            min_size,
-            include_refs,
-            rebuild,
-            json,
-            compact,
-        } => {
-            let exit = crate::deps::cli::run_cycles(
-                path,
-                *min_size,
-                *include_refs,
-                *json,
-                !(*compact),
-                *rebuild,
-            );
-            std::process::exit(exit);
-        }
-        Commands::Graph {
-            path,
-            json,
-            hide_external,
-            include_external,
-            rebuild,
-            compact,
-        } => {
-            if *include_external {
-                eprintln!("# note: --include-external is deprecated; unresolved imports are shown by default now (use --hide-external to drop them)");
-            }
-            let exit =
-                crate::deps::cli::run_graph(path, *json, !(*hide_external), !(*compact), *rebuild);
-            std::process::exit(exit);
-        }
-        Commands::Index {
-            path,
-            rebuild,
-            stats,
-            json,
-            compact,
-        } => {
-            let exit = crate::search::cli::run_index(path, *rebuild, *stats, *json, !(*compact));
-            std::process::exit(exit);
-        }
-        Commands::Callers {
-            target,
-            path,
-            file,
-            symbol,
-            depth,
-            limit,
-            hide_ambiguous,
-            include_ambiguous,
-            tests,
-            exclude_tests,
-            rebuild,
-            json,
-            compact,
-        } => {
-            if *include_ambiguous {
-                eprintln!("# note: --include-ambiguous is deprecated; ambiguous callers are shown by default now (use --hide-ambiguous to drop them)");
-            }
-            let resolved = compose_target(target.as_deref(), file.as_deref(), symbol.as_deref());
-            let exit = crate::calls::cli::run_callers(
-                &resolved,
-                path,
-                *depth,
-                *limit,
-                !(*hide_ambiguous),
-                *tests,
-                *exclude_tests,
-                *rebuild,
-                *json,
-                !(*compact),
-            );
-            std::process::exit(exit);
-        }
-        Commands::Context {
-            target,
-            path,
-            file,
-            symbol,
-            budget,
-            rebuild,
-            json,
-            compact,
-        } => {
-            let resolved = compose_target(target.as_deref(), file.as_deref(), symbol.as_deref());
-            let exit = crate::context::run_context(
-                &resolved,
-                path,
-                &crate::context::ContextOptions {
-                    budget: *budget,
-                    json: *json,
-                    pretty: !(*compact),
-                },
-                *rebuild,
-            );
-            std::process::exit(exit);
-        }
-        Commands::Callees {
-            target,
-            path,
-            file,
-            symbol,
-            depth,
-            limit,
-            hide_external,
-            external,
-            rebuild,
-            json,
-            compact,
-        } => {
-            if *external {
-                eprintln!("# note: --external is deprecated; unresolved/external callees are shown by default now (use --hide-external to drop them)");
-            }
-            let resolved = compose_target(target.as_deref(), file.as_deref(), symbol.as_deref());
-            let exit = crate::calls::cli::run_callees(
-                &resolved,
-                path,
-                *depth,
-                *limit,
-                !(*hide_external),
-                *rebuild,
-                *json,
-                !(*compact),
-            );
-            std::process::exit(exit);
-        }
-        Commands::Trace {
-            from,
-            to,
-            path,
-            depth,
-            rebuild,
-            json,
-            compact,
-        } => {
-            let exit =
-                crate::calls::cli::run_trace(from, to, path, *depth, *rebuild, *json, !(*compact));
-            std::process::exit(exit);
-        }
-        Commands::Impact {
-            target,
-            path,
-            file,
-            symbol,
-            depth,
-            limit,
-            mode,
-            hide_ambiguous,
-            tests,
-            exclude_tests,
-            rebuild,
-            json,
-            compact,
-        } => {
-            let impact_mode = match crate::impact::ImpactMode::parse(mode) {
-                Some(m) => m,
-                // A rejected argument is a rejection, not a `# note:` beside
-                // a result: it owes the same envelope as every other one
-                // (#36), so `--json` consumers need no per-command table.
-                None => crate::cli_error::CliError::new(
-                    "impact",
-                    crate::cli_error::ErrorKind::BadArgument,
-                    format!("unknown --mode '{}'", mode),
-                )
-                .hint("Expected: deps, dependents, tests, all")
-                .exit(*json),
-            };
-            let resolved = compose_target(target.as_deref(), file.as_deref(), symbol.as_deref());
-            let opts = crate::impact::ImpactOptions {
-                depth: *depth,
-                limit: *limit,
-                mode: impact_mode,
-                include_ambiguous: !(*hide_ambiguous),
-                tests: *tests,
-                exclude_tests: *exclude_tests,
-                json: *json,
-                pretty: !(*compact),
-            };
-            let exit = crate::impact::run_impact(&resolved, path, &opts, *rebuild);
-            std::process::exit(exit);
-        }
-        Commands::Run {
-            pattern,
-            rewrite,
-            lang,
-            paths,
-            glob,
-            write,
-            json,
-            compact,
-        } => {
-            // Same rejection rule as every other path-taking subcommand: a
-            // path that doesn't resolve is a failed call (exit 2, empty
-            // stdout), not a run that matched nothing (issue #33). The MCP
-            // side already did this via `resolve_paths_for_mcp`.
-            let paths = resolve_optional_paths("run", paths, *json);
-            let exit = crate::run::cli::run(
-                pattern,
-                rewrite.as_deref(),
-                lang.as_deref(),
-                &paths,
-                glob.as_deref(),
-                *write,
-                *json,
-                !(*compact),
-            );
-            std::process::exit(exit);
-        }
+      }
     }
+    Commands::Prompt => {
+      println!("{}", crate::prompt::agent_prompt());
+    }
+    Commands::Install {
+      target,
+      all,
+      local,
+      global,
+      always,
+      min_lines,
+      dry_run,
+      force,
+      mcp,
+      skills,
+    } => {
+      let scope = resolve_scope(*local, *global);
+      let opts = installers::InstallOpts {
+        min_lines: *min_lines,
+        always: *always,
+        dry_run: *dry_run,
+        force: *force,
+      };
+      let exit = run_install(target.as_deref(), *all, *mcp, *skills, &scope, &opts);
+      std::process::exit(exit);
+    }
+    Commands::Uninstall {
+      target,
+      all,
+      local,
+      global,
+      dry_run,
+    } => {
+      let scope = resolve_scope(*local, *global);
+      let opts = installers::InstallOpts {
+        dry_run: *dry_run,
+        ..installers::InstallOpts::default()
+      };
+      let exit = run_uninstall(target.as_deref(), *all, &scope, &opts);
+      std::process::exit(exit);
+    }
+    Commands::Status { local, global } => {
+      let scope = resolve_scope(*local, *global);
+      run_status(&scope);
+    }
+    Commands::Hook {
+      protocol,
+      min_lines,
+      always,
+    } => {
+      let exit = hook::run(protocol, *min_lines, *always);
+      std::process::exit(exit);
+    }
+    Commands::Mcp => {
+      let exit = mcp::run();
+      std::process::exit(exit);
+    }
+    Commands::Search {
+      query,
+      path,
+      top_k,
+      alpha,
+      languages,
+      rebuild,
+      json,
+      compact,
+    } => {
+      require_path("search", path, *json);
+      if *rebuild {
+        let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        if let Err(e) = crate::search::index::Index::build(path, &cwd) {
+          eprintln!("ast-bro: rebuild failed: {e}");
+          std::process::exit(1);
+        }
+      }
+      let exit = crate::search::cli::run_search(
+        query,
+        path,
+        *top_k,
+        *alpha,
+        languages.clone(),
+        *json,
+        !(*compact),
+      );
+      std::process::exit(exit);
+    }
+    Commands::FindRelated {
+      target,
+      path,
+      file,
+      line,
+      top_k,
+      json,
+      compact,
+    } => {
+      // Clap guarantees one of: (target alone) or (file + line).
+      let (file_path, line_num) = match (target, file, line) {
+        (Some(t), _, _) => match parse_file_line(t) {
+          Some(parsed) => parsed,
+          None => {
+            crate::cli_error::CliError::new(
+              "find-related",
+              crate::cli_error::ErrorKind::BadArgument,
+              format!("expected <FILE>:<LINE>, got {t:?}"),
+            )
+            .hint("Use `find-related src/file.rs:42`, or `--file FILE --line N`.")
+            .exit(*json);
+          }
+        },
+        (None, Some(f), Some(l)) => (f.clone(), *l),
+        _ => unreachable!("clap should have rejected this argument combination"),
+      };
+      require_path("find-related", path, *json);
+      let exit = crate::search::cli::run_find_related(
+        &file_path,
+        line_num,
+        path,
+        *top_k,
+        *json,
+        !(*compact),
+      );
+      std::process::exit(exit);
+    }
+    Commands::Surface {
+      path,
+      tree,
+      include_chain,
+      max_depth,
+      include_private,
+      lang,
+      json,
+      compact,
+    } => {
+      if !path.exists() {
+        crate::cli_error::CliError::new(
+          "surface",
+          crate::cli_error::ErrorKind::PathNotFound,
+          format!("path not found: {}", path.display()),
+        )
+        .exit(*json);
+      }
+      let lang_override = match lang {
+        Some(s) => match crate::surface::LangOverride::parse(s) {
+          Some(l) => Some(l),
+          None => {
+            crate::cli_error::CliError::new(
+              "surface",
+              crate::cli_error::ErrorKind::BadArgument,
+              format!("unknown --lang value '{}'", s),
+            )
+            .hint("Expected rust|python|fallback.")
+            .exit(*json);
+          }
+        },
+        None => None,
+      };
+      let json_on = *json;
+      let pretty = !(*compact);
+      let output = if json_on {
+        crate::surface::OutputMode::Json { compact: !pretty }
+      } else if *tree {
+        crate::surface::OutputMode::Tree
+      } else {
+        crate::surface::OutputMode::Flat
+      };
+      let opts = crate::surface::SurfaceOptions {
+        output,
+        include_private: *include_private,
+        max_depth: *max_depth,
+        include_chain: *include_chain,
+        lang_override,
+      };
+      match crate::surface::resolve_surface(path, &opts) {
+        Ok(entries) => {
+          let rendered = crate::surface::render::render(&entries, opts.output, opts.include_chain);
+          print!("{}", rendered);
+        }
+        Err(e) => {
+          use crate::surface::SurfaceError;
+          let kind = match &e {
+            SurfaceError::NoEntryPoint { .. } => crate::cli_error::ErrorKind::PathNotFound,
+            // The path was verified to exist above, so a
+            // surviving Io error is a read/permission failure —
+            // an internal failure (exit 1), not a wrong path an
+            // agent should retry differently.
+            SurfaceError::Io { .. } | SurfaceError::Parse { .. } => {
+              crate::cli_error::ErrorKind::IndexError
+            }
+            SurfaceError::BadOverride(_) => crate::cli_error::ErrorKind::BadArgument,
+          };
+          crate::cli_error::CliError::new("surface", kind, e.to_string()).exit(json_on);
+        }
+      }
+    }
+    Commands::Deps {
+      file,
+      depth,
+      hide_external,
+      rebuild,
+      json,
+      compact,
+    } => {
+      let exit = crate::deps::cli::run_deps(
+        file,
+        *depth,
+        !(*hide_external),
+        *json,
+        !(*compact),
+        *rebuild,
+      );
+      std::process::exit(exit);
+    }
+    Commands::ReverseDeps {
+      file,
+      depth,
+      limit,
+      tests,
+      exclude_tests,
+      rebuild,
+      json,
+      compact,
+    } => {
+      let exit = crate::deps::cli::run_reverse_deps(
+        file,
+        *depth,
+        *limit,
+        *tests,
+        *exclude_tests,
+        *json,
+        !(*compact),
+        *rebuild,
+      );
+      std::process::exit(exit);
+    }
+    Commands::Cycles {
+      path,
+      min_size,
+      include_refs,
+      rebuild,
+      json,
+      compact,
+    } => {
+      let exit =
+        crate::deps::cli::run_cycles(path, *min_size, *include_refs, *json, !(*compact), *rebuild);
+      std::process::exit(exit);
+    }
+    Commands::Graph {
+      path,
+      json,
+      hide_external,
+      include_external,
+      rebuild,
+      compact,
+    } => {
+      if *include_external {
+        eprintln!("# note: --include-external is deprecated; unresolved imports are shown by default now (use --hide-external to drop them)");
+      }
+      let exit = crate::deps::cli::run_graph(path, *json, !(*hide_external), !(*compact), *rebuild);
+      std::process::exit(exit);
+    }
+    Commands::Index {
+      path,
+      rebuild,
+      stats,
+      json,
+      compact,
+    } => {
+      let exit = crate::search::cli::run_index(path, *rebuild, *stats, *json, !(*compact));
+      std::process::exit(exit);
+    }
+    Commands::Callers {
+      target,
+      path,
+      file,
+      symbol,
+      depth,
+      limit,
+      hide_ambiguous,
+      include_ambiguous,
+      tests,
+      exclude_tests,
+      rebuild,
+      json,
+      compact,
+    } => {
+      if *include_ambiguous {
+        eprintln!("# note: --include-ambiguous is deprecated; ambiguous callers are shown by default now (use --hide-ambiguous to drop them)");
+      }
+      let resolved = compose_target(target.as_deref(), file.as_deref(), symbol.as_deref());
+      let exit = crate::calls::cli::run_callers(
+        &resolved,
+        path,
+        *depth,
+        *limit,
+        !(*hide_ambiguous),
+        *tests,
+        *exclude_tests,
+        *rebuild,
+        *json,
+        !(*compact),
+      );
+      std::process::exit(exit);
+    }
+    Commands::Context {
+      target,
+      path,
+      file,
+      symbol,
+      budget,
+      rebuild,
+      json,
+      compact,
+    } => {
+      let resolved = compose_target(target.as_deref(), file.as_deref(), symbol.as_deref());
+      let exit = crate::context::run_context(
+        &resolved,
+        path,
+        &crate::context::ContextOptions {
+          budget: *budget,
+          json: *json,
+          pretty: !(*compact),
+        },
+        *rebuild,
+      );
+      std::process::exit(exit);
+    }
+    Commands::Callees {
+      target,
+      path,
+      file,
+      symbol,
+      depth,
+      limit,
+      hide_external,
+      external,
+      rebuild,
+      json,
+      compact,
+    } => {
+      if *external {
+        eprintln!("# note: --external is deprecated; unresolved/external callees are shown by default now (use --hide-external to drop them)");
+      }
+      let resolved = compose_target(target.as_deref(), file.as_deref(), symbol.as_deref());
+      let exit = crate::calls::cli::run_callees(
+        &resolved,
+        path,
+        *depth,
+        *limit,
+        !(*hide_external),
+        *rebuild,
+        *json,
+        !(*compact),
+      );
+      std::process::exit(exit);
+    }
+    Commands::Trace {
+      from,
+      to,
+      path,
+      depth,
+      rebuild,
+      json,
+      compact,
+    } => {
+      let exit = crate::calls::cli::run_trace(from, to, path, *depth, *rebuild, *json, !(*compact));
+      std::process::exit(exit);
+    }
+    Commands::Impact {
+      target,
+      path,
+      file,
+      symbol,
+      depth,
+      limit,
+      mode,
+      hide_ambiguous,
+      tests,
+      exclude_tests,
+      rebuild,
+      json,
+      compact,
+    } => {
+      let impact_mode = match crate::impact::ImpactMode::parse(mode) {
+        Some(m) => m,
+        // A rejected argument is a rejection, not a `# note:` beside
+        // a result: it owes the same envelope as every other one
+        // (#36), so `--json` consumers need no per-command table.
+        None => crate::cli_error::CliError::new(
+          "impact",
+          crate::cli_error::ErrorKind::BadArgument,
+          format!("unknown --mode '{}'", mode),
+        )
+        .hint("Expected: deps, dependents, tests, all")
+        .exit(*json),
+      };
+      let resolved = compose_target(target.as_deref(), file.as_deref(), symbol.as_deref());
+      let opts = crate::impact::ImpactOptions {
+        depth: *depth,
+        limit: *limit,
+        mode: impact_mode,
+        include_ambiguous: !(*hide_ambiguous),
+        tests: *tests,
+        exclude_tests: *exclude_tests,
+        json: *json,
+        pretty: !(*compact),
+      };
+      let exit = crate::impact::run_impact(&resolved, path, &opts, *rebuild);
+      std::process::exit(exit);
+    }
+    Commands::Run {
+      pattern,
+      rewrite,
+      lang,
+      paths,
+      glob,
+      write,
+      json,
+      compact,
+    } => {
+      // Same rejection rule as every other path-taking subcommand: a
+      // path that doesn't resolve is a failed call (exit 2, empty
+      // stdout), not a run that matched nothing (issue #33). The MCP
+      // side already did this via `resolve_paths_for_mcp`.
+      let paths = resolve_optional_paths("run", paths, *json);
+      let exit = crate::run::cli::run(
+        pattern,
+        rewrite.as_deref(),
+        lang.as_deref(),
+        &paths,
+        glob.as_deref(),
+        *write,
+        *json,
+        !(*compact),
+      );
+      std::process::exit(exit);
+    }
+  }
 }
 
 /// Fold `--file <F> --symbol <S>` into the same `<file>:<symbol>` canonical
 /// form the positional `<TARGET>` arg uses. Clap's `required_unless_present_all`
 /// guarantees exactly one of the two arms is populated.
 fn compose_target(target: Option<&str>, file: Option<&str>, symbol: Option<&str>) -> String {
-    if let Some(t) = target {
-        return t.to_string();
-    }
-    match (file, symbol) {
-        (Some(f), Some(s)) => format!("{}:{}", f, s),
-        _ => unreachable!("clap guarantees target XOR (file && symbol)"),
-    }
+  if let Some(t) = target {
+    return t.to_string();
+  }
+  match (file, symbol) {
+    (Some(f), Some(s)) => format!("{}:{}", f, s),
+    _ => unreachable!("clap guarantees target XOR (file && symbol)"),
+  }
 }
 
 fn resolve_scope(local: bool, _global: bool) -> installers::Scope {
-    if local {
-        installers::Scope::Local(std::env::current_dir().expect("cwd"))
-    } else {
-        installers::Scope::Global
-    }
+  if local {
+    installers::Scope::Local(std::env::current_dir().expect("cwd"))
+  } else {
+    installers::Scope::Global
+  }
 }
 
 fn run_install(
-    target: Option<&str>,
-    all: bool,
-    mcp: bool,
-    skills: bool,
-    scope: &installers::Scope,
-    opts: &installers::InstallOpts,
+  target: Option<&str>,
+  all: bool,
+  mcp: bool,
+  skills: bool,
+  scope: &installers::Scope,
+  opts: &installers::InstallOpts,
 ) -> i32 {
-    let registry = installers::registry();
-    let chosen: Vec<&Box<dyn installers::Installer>> = if all {
-        select_all(&registry, scope)
-    } else if let Some(name) = target {
-        match registry.iter().find(|i| i.name() == name) {
-            Some(i) => vec![i],
-            None => {
-                eprintln!("unknown --target '{}'. Known: {}", name, names(&registry));
-                return 2;
-            }
-        }
-    } else {
-        eprintln!(
-            "must pass --target <name> or --all. Known: {}",
-            names(&registry)
-        );
+  let registry = installers::registry();
+  let chosen: Vec<&Box<dyn installers::Installer>> = if all {
+    select_all(&registry, scope)
+  } else if let Some(name) = target {
+    match registry.iter().find(|i| i.name() == name) {
+      Some(i) => vec![i],
+      None => {
+        eprintln!("unknown --target '{}'. Known: {}", name, names(&registry));
         return 2;
-    };
+      }
+    }
+  } else {
+    eprintln!(
+      "must pass --target <name> or --all. Known: {}",
+      names(&registry)
+    );
+    return 2;
+  };
 
-    let exclusive_mode = mcp || skills;
-    let mut any_installed = false;
-    let mut any_failed = false;
-    for inst in chosen {
-        let label = inst.name();
-        if !exclusive_mode {
-            match inst.install_prompt(scope, opts) {
-                Ok(c) => {
-                    print_change(label, "prompt", &c);
-                    if !matches!(
-                        c,
-                        installers::Change::Skipped { .. } | installers::Change::NotApplicable
-                    ) {
-                        any_installed = true;
-                    }
-                }
-                Err(e) => {
-                    eprintln!("{}: prompt: {}", label, e);
-                    any_failed = true;
-                }
-            }
-            match inst.install_hook(scope, opts) {
-                Ok(c) => {
-                    print_change(label, "hook", &c);
-                    if !matches!(
-                        c,
-                        installers::Change::Skipped { .. } | installers::Change::NotApplicable
-                    ) {
-                        any_installed = true;
-                    }
-                }
-                Err(e) => {
-                    eprintln!("{}: hook: {}", label, e);
-                    any_failed = true;
-                }
-            }
-            match inst.install_subagents(scope, opts) {
-                Ok(changes) => {
-                    for c in &changes {
-                        print_change(label, "subagent", c);
-                        if !matches!(
-                            c,
-                            installers::Change::Skipped { .. } | installers::Change::NotApplicable
-                        ) {
-                            any_installed = true;
-                        }
-                    }
-                }
-                Err(e) => {
-                    eprintln!("{}: subagent: {}", label, e);
-                    any_failed = true;
-                }
-            }
-        } else {
-            if mcp {
-                match inst.install_mcp(scope, opts) {
-                    Ok(c) => {
-                        print_change(label, "mcp", &c);
-                        if !matches!(
-                            c,
-                            installers::Change::Skipped { .. } | installers::Change::NotApplicable
-                        ) {
-                            any_installed = true;
-                        }
-                    }
-                    Err(e) => {
-                        eprintln!("{}: mcp: {}", label, e);
-                        any_failed = true;
-                    }
-                }
-            }
-            if skills {
-                match inst.install_skills(scope, opts) {
-                    Ok(c) => {
-                        print_change(label, "skills", &c);
-                        if !matches!(
-                            c,
-                            installers::Change::Skipped { .. } | installers::Change::NotApplicable
-                        ) {
-                            any_installed = true;
-                        }
-                    }
-                    Err(e) => {
-                        eprintln!("{}: skills: {}", label, e);
-                        any_failed = true;
-                    }
-                }
-            }
+  let exclusive_mode = mcp || skills;
+  let mut any_installed = false;
+  let mut any_failed = false;
+  for inst in chosen {
+    let label = inst.name();
+    if !exclusive_mode {
+      match inst.install_prompt(scope, opts) {
+        Ok(c) => {
+          print_change(label, "prompt", &c);
+          if !matches!(
+            c,
+            installers::Change::Skipped { .. } | installers::Change::NotApplicable
+          ) {
+            any_installed = true;
+          }
         }
-    }
-
-    if any_failed && any_installed {
-        1
-    } else if any_failed {
-        2
+        Err(e) => {
+          eprintln!("{}: prompt: {}", label, e);
+          any_failed = true;
+        }
+      }
+      match inst.install_hook(scope, opts) {
+        Ok(c) => {
+          print_change(label, "hook", &c);
+          if !matches!(
+            c,
+            installers::Change::Skipped { .. } | installers::Change::NotApplicable
+          ) {
+            any_installed = true;
+          }
+        }
+        Err(e) => {
+          eprintln!("{}: hook: {}", label, e);
+          any_failed = true;
+        }
+      }
+      match inst.install_subagents(scope, opts) {
+        Ok(changes) => {
+          for c in &changes {
+            print_change(label, "subagent", c);
+            if !matches!(
+              c,
+              installers::Change::Skipped { .. } | installers::Change::NotApplicable
+            ) {
+              any_installed = true;
+            }
+          }
+        }
+        Err(e) => {
+          eprintln!("{}: subagent: {}", label, e);
+          any_failed = true;
+        }
+      }
     } else {
-        0
+      if mcp {
+        match inst.install_mcp(scope, opts) {
+          Ok(c) => {
+            print_change(label, "mcp", &c);
+            if !matches!(
+              c,
+              installers::Change::Skipped { .. } | installers::Change::NotApplicable
+            ) {
+              any_installed = true;
+            }
+          }
+          Err(e) => {
+            eprintln!("{}: mcp: {}", label, e);
+            any_failed = true;
+          }
+        }
+      }
+      if skills {
+        match inst.install_skills(scope, opts) {
+          Ok(c) => {
+            print_change(label, "skills", &c);
+            if !matches!(
+              c,
+              installers::Change::Skipped { .. } | installers::Change::NotApplicable
+            ) {
+              any_installed = true;
+            }
+          }
+          Err(e) => {
+            eprintln!("{}: skills: {}", label, e);
+            any_failed = true;
+          }
+        }
+      }
     }
+  }
+
+  if any_failed && any_installed {
+    1
+  } else if any_failed {
+    2
+  } else {
+    0
+  }
 }
 
 fn run_uninstall(
-    target: Option<&str>,
-    all: bool,
-    scope: &installers::Scope,
-    opts: &installers::InstallOpts,
+  target: Option<&str>,
+  all: bool,
+  scope: &installers::Scope,
+  opts: &installers::InstallOpts,
 ) -> i32 {
-    let registry = installers::registry();
-    let chosen: Vec<&Box<dyn installers::Installer>> = if all {
-        select_all(&registry, scope)
-    } else if let Some(name) = target {
-        match registry.iter().find(|i| i.name() == name) {
-            Some(i) => vec![i],
-            None => {
-                eprintln!("unknown --target '{}'. Known: {}", name, names(&registry));
-                return 2;
-            }
-        }
-    } else {
-        eprintln!(
-            "must pass --target <name> or --all. Known: {}",
-            names(&registry)
-        );
+  let registry = installers::registry();
+  let chosen: Vec<&Box<dyn installers::Installer>> = if all {
+    select_all(&registry, scope)
+  } else if let Some(name) = target {
+    match registry.iter().find(|i| i.name() == name) {
+      Some(i) => vec![i],
+      None => {
+        eprintln!("unknown --target '{}'. Known: {}", name, names(&registry));
         return 2;
-    };
+      }
+    }
+  } else {
+    eprintln!(
+      "must pass --target <name> or --all. Known: {}",
+      names(&registry)
+    );
+    return 2;
+  };
 
-    let mut any_failed = false;
-    for inst in chosen {
-        match inst.uninstall(scope, opts) {
-            Ok(changes) => {
-                for c in changes {
-                    print_change(inst.name(), "uninstall", &c);
-                }
-            }
-            Err(e) => {
-                eprintln!("{}: {}", inst.name(), e);
-                any_failed = true;
-            }
+  let mut any_failed = false;
+  for inst in chosen {
+    match inst.uninstall(scope, opts) {
+      Ok(changes) => {
+        for c in changes {
+          print_change(inst.name(), "uninstall", &c);
         }
+      }
+      Err(e) => {
+        eprintln!("{}: {}", inst.name(), e);
+        any_failed = true;
+      }
     }
-    if any_failed {
-        1
-    } else {
-        0
-    }
+  }
+  if any_failed {
+    1
+  } else {
+    0
+  }
 }
 
 fn run_status(scope: &installers::Scope) {
-    for inst in installers::registry() {
-        let s = inst.status(scope);
-        let prompt = if s.prompt_installed {
-            format!("prompt {}", s.prompt_version.unwrap_or_else(|| "?".into()))
-        } else {
-            "prompt -".to_string()
-        };
-        let hook = if s.hook_partial {
-            "hook partial"
-        } else if s.hook_installed {
-            "hook ✓"
-        } else {
-            "hook -"
-        };
-        let mcp = if s.mcp_installed { "mcp ✓" } else { "mcp -" };
-        let skills = if s.skills_installed {
-            "skills ✓"
-        } else {
-            "skills -"
-        };
-        println!(
-            "{:<14} {:<14} {:<12} {:<8} {}",
-            inst.name(),
-            prompt,
-            hook,
-            mcp,
-            skills
-        );
-        if s.hook_partial {
-            // A qualification of a delivered answer, so stderr — stdout carries
-            // the table, and a note wedged between two rows reads as a row.
-            //
-            // Worded as an observation rather than an instruction: a settings
-            // file can be short an event because the user removed it on purpose,
-            // and there is no way to tell that from an install that predates it.
-            eprintln!(
+  for inst in installers::registry() {
+    let s = inst.status(scope);
+    let prompt = if s.prompt_installed {
+      format!("prompt {}", s.prompt_version.unwrap_or_else(|| "?".into()))
+    } else {
+      "prompt -".to_string()
+    };
+    let hook = if s.hook_partial {
+      "hook partial"
+    } else if s.hook_installed {
+      "hook ✓"
+    } else {
+      "hook -"
+    };
+    let mcp = if s.mcp_installed { "mcp ✓" } else { "mcp -" };
+    let skills = if s.skills_installed {
+      "skills ✓"
+    } else {
+      "skills -"
+    };
+    println!(
+      "{:<14} {:<14} {:<12} {:<8} {}",
+      inst.name(),
+      prompt,
+      hook,
+      mcp,
+      skills
+    );
+    if s.hook_partial {
+      // A qualification of a delivered answer, so stderr — stdout carries
+      // the table, and a note wedged between two rows reads as a row.
+      //
+      // Worded as an observation rather than an instruction: a settings
+      // file can be short an event because the user removed it on purpose,
+      // and there is no way to tell that from an install that predates it.
+      eprintln!(
                 "# note: {}: our hook is registered for some of the events `install` writes, not all. \
 `ast-bro install` adds the rest; nothing else is needed if the missing one was removed deliberately.",
                 inst.name()
             );
-        }
     }
+  }
 }
 
 fn names(registry: &[Box<dyn installers::Installer>]) -> String {
-    registry
-        .iter()
-        .map(|i| i.name())
-        .collect::<Vec<_>>()
-        .join(", ")
+  registry
+    .iter()
+    .map(|i| i.name())
+    .collect::<Vec<_>>()
+    .join(", ")
 }
 
 /// Picks the adapters to act on for `--all`. For `Scope::Global`, we
@@ -2578,272 +2565,275 @@ fn names(registry: &[Box<dyn installers::Installer>]) -> String {
 /// so detection is bypassed.
 #[allow(clippy::borrowed_box)]
 fn select_all<'a>(
-    registry: &'a [Box<dyn installers::Installer>],
-    scope: &installers::Scope,
+  registry: &'a [Box<dyn installers::Installer>],
+  scope: &installers::Scope,
 ) -> Vec<&'a Box<dyn installers::Installer>> {
-    let bypass_detection = matches!(scope, installers::Scope::Local(_));
-    registry
-        .iter()
-        .filter(|inst| {
-            if bypass_detection {
-                return true;
-            }
-            let d = inst.detect(scope);
-            if !d.present {
-                println!(
-                    "{:<14} {:<10} skipped  (not detected on this system)",
-                    inst.name(),
-                    "detect"
-                );
-            }
-            d.present
-        })
-        .collect()
+  let bypass_detection = matches!(scope, installers::Scope::Local(_));
+  registry
+    .iter()
+    .filter(|inst| {
+      if bypass_detection {
+        return true;
+      }
+      let d = inst.detect(scope);
+      if !d.present {
+        println!(
+          "{:<14} {:<10} skipped  (not detected on this system)",
+          inst.name(),
+          "detect"
+        );
+      }
+      d.present
+    })
+    .collect()
 }
 
 fn print_change(target: &str, phase: &str, change: &installers::Change) {
-    use installers::Change::*;
-    match change {
-        Created(p) => println!("{:<14} {:<10} created  {}", target, phase, p.display()),
-        Updated(p) => println!("{:<14} {:<10} updated  {}", target, phase, p.display()),
-        Removed(p) => println!("{:<14} {:<10} removed  {}", target, phase, p.display()),
-        Skipped { path, reason } => {
-            println!(
-                "{:<14} {:<10} skipped  {} ({})",
-                target,
-                phase,
-                path.display(),
-                reason
-            )
-        }
-        NotApplicable => println!("{:<14} {:<10} n/a", target, phase),
+  use installers::Change::*;
+  match change {
+    Created(p) => println!("{:<14} {:<10} created  {}", target, phase, p.display()),
+    Updated(p) => println!("{:<14} {:<10} updated  {}", target, phase, p.display()),
+    Removed(p) => println!("{:<14} {:<10} removed  {}", target, phase, p.display()),
+    Skipped { path, reason } => {
+      println!(
+        "{:<14} {:<10} skipped  {} ({})",
+        target,
+        phase,
+        path.display(),
+        reason
+      )
     }
+    NotApplicable => println!("{:<14} {:<10} n/a", target, phase),
+  }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+  use super::*;
 
-    /// `--preset digest` caps members at the constant the MCP `digest` tool
-    /// also reads, so the two describe one behavior.
-    ///
-    /// The literal that used to live here was invisible to every guard in
-    /// `defaults`: it was neither a clap default, a serde default, nor a
-    /// struct field, so changing `MAX_MEMBERS` moved the MCP tool and left
-    /// the CLI capping at 50.
-    #[test]
-    fn preset_digest_caps_members_at_the_shared_constant() {
-        assert_eq!(
-            preset_max_members(None, true),
-            Some(crate::defaults::MAX_MEMBERS)
-        );
+  /// `--preset digest` caps members at the constant the MCP `digest` tool
+  /// also reads, so the two describe one behavior.
+  ///
+  /// The literal that used to live here was invisible to every guard in
+  /// `defaults`: it was neither a clap default, a serde default, nor a
+  /// struct field, so changing `MAX_MEMBERS` moved the MCP tool and left
+  /// the CLI capping at 50.
+  #[test]
+  fn preset_digest_caps_members_at_the_shared_constant() {
+    assert_eq!(
+      preset_max_members(None, true),
+      Some(crate::defaults::MAX_MEMBERS)
+    );
+  }
+
+  /// An explicit `--max-members` wins over the preset, and a plain `map`
+  /// stays uncapped.
+  #[test]
+  fn explicit_max_members_overrides_the_preset() {
+    assert_eq!(preset_max_members(Some(8), true), Some(8));
+    assert_eq!(preset_max_members(Some(8), false), Some(8));
+    assert_eq!(preset_max_members(None, false), None);
+  }
+
+  use clap::CommandFactory;
+
+  /// Every argument of every subcommand carries help text.
+  ///
+  /// A clap argument derives its description from the doc comment above the
+  /// field, and a field without one is not a compile error: it renders in
+  /// `--help` as a flag name followed by an empty line. That is invisible in
+  /// review and reads to a user as an option with nothing to say, which is
+  /// how all five `--no-*` projection flags shipped until #39.
+  ///
+  /// A failure names the subcommand path and the argument. Fix it by writing
+  /// a doc comment above the field, not by listing the argument here.
+  #[test]
+  fn every_argument_documents_itself() {
+    let mut undocumented = Vec::new();
+    collect_undocumented(&Cli::command(), &mut Vec::new(), &mut undocumented);
+    assert!(
+      undocumented.is_empty(),
+      "arguments with no help text (add a doc comment above the field): {undocumented:#?}"
+    );
+  }
+
+  /// Every subcommand carries an `about` line, for the same reason.
+  ///
+  /// Recurses, so a nested subcommand is held to the rule its parent is.
+  /// The tree is flat today, which is exactly when a check like this stops
+  /// being enforced and starts being assumed.
+  #[test]
+  fn every_subcommand_documents_itself() {
+    let mut bare = Vec::new();
+    collect_bare_subcommands(&Cli::command(), &mut Vec::new(), &mut bare);
+    assert!(
+      bare.is_empty(),
+      "subcommands with no about line (add a doc comment above the variant): {bare:#?}"
+    );
+  }
+
+  /// Blank help counts as missing, and the walk reaches nested subcommands.
+  #[test]
+  fn the_help_guards_report_blank_and_nested_entries() {
+    let tree = clap::Command::new("t")
+      .about("root")
+      .arg(clap::Arg::new("missing").long("missing"))
+      .arg(clap::Arg::new("blank").long("blank").help("   "))
+      .arg(
+        clap::Arg::new("described")
+          .long("described")
+          .help("Has text."),
+      )
+      .subcommand(
+        clap::Command::new("outer")
+          .about("described")
+          .subcommand(clap::Command::new("inner").arg(clap::Arg::new("deep").long("deep"))),
+      );
+    let mut args = Vec::new();
+    collect_undocumented(&tree, &mut Vec::new(), &mut args);
+    assert_eq!(args, ["t missing", "t blank", "t outer inner deep"]);
+    let mut subs = Vec::new();
+    collect_bare_subcommands(&tree, &mut Vec::new(), &mut subs);
+    assert_eq!(subs, ["t outer inner"]);
+  }
+
+  /// Depth-first over the subcommand tree, recording `<path> <arg>` for each
+  /// argument whose help is missing or blank. `path` is the ancestor chain,
+  /// so a nested subcommand's failure says where to look.
+  fn collect_undocumented(cmd: &clap::Command, path: &mut Vec<String>, out: &mut Vec<String>) {
+    path.push(cmd.get_name().to_string());
+    for arg in cmd.get_arguments() {
+      if !has_text(arg.get_help()) && !has_text(arg.get_long_help()) {
+        out.push(format!("{} {}", path.join(" "), arg.get_id()));
+      }
     }
-
-    /// An explicit `--max-members` wins over the preset, and a plain `map`
-    /// stays uncapped.
-    #[test]
-    fn explicit_max_members_overrides_the_preset() {
-        assert_eq!(preset_max_members(Some(8), true), Some(8));
-        assert_eq!(preset_max_members(Some(8), false), Some(8));
-        assert_eq!(preset_max_members(None, false), None);
+    for sub in cmd.get_subcommands() {
+      collect_undocumented(sub, path, out);
     }
+    path.pop();
+  }
 
-    use clap::CommandFactory;
-
-    /// Every argument of every subcommand carries help text.
-    ///
-    /// A clap argument derives its description from the doc comment above the
-    /// field, and a field without one is not a compile error: it renders in
-    /// `--help` as a flag name followed by an empty line. That is invisible in
-    /// review and reads to a user as an option with nothing to say, which is
-    /// how all five `--no-*` projection flags shipped until #39.
-    ///
-    /// A failure names the subcommand path and the argument. Fix it by writing
-    /// a doc comment above the field, not by listing the argument here.
-    #[test]
-    fn every_argument_documents_itself() {
-        let mut undocumented = Vec::new();
-        collect_undocumented(&Cli::command(), &mut Vec::new(), &mut undocumented);
-        assert!(
-            undocumented.is_empty(),
-            "arguments with no help text (add a doc comment above the field): {undocumented:#?}"
-        );
+  /// Depth-first over the subcommand tree, recording `<path>` for each
+  /// subcommand with no about line. The root is skipped: its description
+  /// comes from `#[command(about = ...)]`, not from a variant.
+  fn collect_bare_subcommands(cmd: &clap::Command, path: &mut Vec<String>, out: &mut Vec<String>) {
+    path.push(cmd.get_name().to_string());
+    for sub in cmd.get_subcommands() {
+      if !has_text(sub.get_about()) && !has_text(sub.get_long_about()) {
+        out.push(format!("{} {}", path.join(" "), sub.get_name()));
+      }
+      collect_bare_subcommands(sub, path, out);
     }
+    path.pop();
+  }
 
-    /// Every subcommand carries an `about` line, for the same reason.
-    ///
-    /// Recurses, so a nested subcommand is held to the rule its parent is.
-    /// The tree is flat today, which is exactly when a check like this stops
-    /// being enforced and starts being assumed.
-    #[test]
-    fn every_subcommand_documents_itself() {
-        let mut bare = Vec::new();
-        collect_bare_subcommands(&Cli::command(), &mut Vec::new(), &mut bare);
-        assert!(
-            bare.is_empty(),
-            "subcommands with no about line (add a doc comment above the variant): {bare:#?}"
-        );
-    }
-
-    /// Blank help counts as missing, and the walk reaches nested subcommands.
-    #[test]
-    fn the_help_guards_report_blank_and_nested_entries() {
-        let tree = clap::Command::new("t")
-            .about("root")
-            .arg(clap::Arg::new("missing").long("missing"))
-            .arg(clap::Arg::new("blank").long("blank").help("   "))
-            .arg(clap::Arg::new("described").long("described").help("Has text."))
-            .subcommand(
-                clap::Command::new("outer").about("described").subcommand(
-                    clap::Command::new("inner").arg(clap::Arg::new("deep").long("deep")),
-                ),
-            );
-        let mut args = Vec::new();
-        collect_undocumented(&tree, &mut Vec::new(), &mut args);
-        assert_eq!(args, ["t missing", "t blank", "t outer inner deep"]);
-        let mut subs = Vec::new();
-        collect_bare_subcommands(&tree, &mut Vec::new(), &mut subs);
-        assert_eq!(subs, ["t outer inner"]);
-    }
-
-    /// Depth-first over the subcommand tree, recording `<path> <arg>` for each
-    /// argument whose help is missing or blank. `path` is the ancestor chain,
-    /// so a nested subcommand's failure says where to look.
-    fn collect_undocumented(cmd: &clap::Command, path: &mut Vec<String>, out: &mut Vec<String>) {
-        path.push(cmd.get_name().to_string());
-        for arg in cmd.get_arguments() {
-            if !has_text(arg.get_help()) && !has_text(arg.get_long_help()) {
-                out.push(format!("{} {}", path.join(" "), arg.get_id()));
-            }
-        }
-        for sub in cmd.get_subcommands() {
-            collect_undocumented(sub, path, out);
-        }
-        path.pop();
-    }
-
-    /// Depth-first over the subcommand tree, recording `<path>` for each
-    /// subcommand with no about line. The root is skipped: its description
-    /// comes from `#[command(about = ...)]`, not from a variant.
-    fn collect_bare_subcommands(cmd: &clap::Command, path: &mut Vec<String>, out: &mut Vec<String>) {
-        path.push(cmd.get_name().to_string());
-        for sub in cmd.get_subcommands() {
-            if !has_text(sub.get_about()) && !has_text(sub.get_long_about()) {
-                out.push(format!("{} {}", path.join(" "), sub.get_name()));
-            }
-            collect_bare_subcommands(sub, path, out);
-        }
-        path.pop();
-    }
-
-    /// Whitespace-only help is the same defect as none: clap prints the line
-    /// and the reader learns nothing.
-    fn has_text(help: Option<&clap::builder::StyledStr>) -> bool {
-        help.is_some_and(|h| !h.to_string().trim().is_empty())
-    }
+  /// Whitespace-only help is the same defect as none: clap prints the line
+  /// and the reader learns nothing.
+  fn has_text(help: Option<&clap::builder::StyledStr>) -> bool {
+    help.is_some_and(|h| !h.to_string().trim().is_empty())
+  }
 }
 
 #[cfg(test)]
 mod hint_tests {
-    use super::{kb_ceil, shell_quote};
+  use super::{kb_ceil, shell_quote};
 
-    /// A path with no UTF-8 spelling takes the counted form rather than
-    /// losing the hint.
-    ///
-    /// This is the one unspellable class the end-to-end table cannot reach:
-    /// APFS rejects the filename outright, and an argument naming nothing is
-    /// a rejected call long before the hint is built. Restoring the early
-    /// `return None` that this arm replaced is caught here and nowhere else.
-    #[cfg(unix)]
-    #[test]
-    fn a_path_with_no_utf8_spelling_still_gets_the_counted_form() {
-        use super::{map_directory_hint, MapHintCall};
-        use std::os::unix::ffi::OsStringExt;
+  /// A path with no UTF-8 spelling takes the counted form rather than
+  /// losing the hint.
+  ///
+  /// This is the one unspellable class the end-to-end table cannot reach:
+  /// APFS rejects the filename outright, and an argument naming nothing is
+  /// a rejected call long before the hint is built. Restoring the early
+  /// `return None` that this arm replaced is caught here and nowhere else.
+  #[cfg(unix)]
+  #[test]
+  fn a_path_with_no_utf8_spelling_still_gets_the_counted_form() {
+    use super::{map_directory_hint, MapHintCall};
+    use std::os::unix::ffi::OsStringExt;
 
-        let invalid = std::path::PathBuf::from(std::ffi::OsString::from_vec(vec![0xff, 0xfe]));
-        assert!(
-            invalid.to_str().is_none(),
-            "the fixture must be unspellable"
-        );
-        let paths = [invalid, std::path::PathBuf::from("plain.rs")];
-        let call = MapHintCall {
-            requested_paths: &paths,
-            glob: None,
-            max_members: None,
-            json: false,
-            compact: false,
-            no_attrs: false,
-            no_lines: false,
-            already_digest: false,
-        };
-        let hint =
-            map_directory_hint(&call, 2, 30_000).expect("an unspellable path keeps the hint");
-        let counted = format!(
-            "running `--preset digest --max-members {}` on the same 2 paths",
-            crate::defaults::HINT_MAX_MEMBERS
-        );
-        assert!(
-            hint.contains(&counted),
-            "expected the counted form, got:\n{hint}"
-        );
-        assert!(
-            !hint.contains("ast-bro map"),
-            "nothing spells the path, so no command may claim to:\n{hint}"
-        );
+    let invalid = std::path::PathBuf::from(std::ffi::OsString::from_vec(vec![0xff, 0xfe]));
+    assert!(
+      invalid.to_str().is_none(),
+      "the fixture must be unspellable"
+    );
+    let paths = [invalid, std::path::PathBuf::from("plain.rs")];
+    let call = MapHintCall {
+      requested_paths: &paths,
+      glob: None,
+      max_members: None,
+      json: false,
+      compact: false,
+      no_attrs: false,
+      no_lines: false,
+      already_digest: false,
+    };
+    let hint = map_directory_hint(&call, 2, 30_000).expect("an unspellable path keeps the hint");
+    let counted = format!(
+      "running `--preset digest --max-members {}` on the same 2 paths",
+      crate::defaults::HINT_MAX_MEMBERS
+    );
+    assert!(
+      hint.contains(&counted),
+      "expected the counted form, got:\n{hint}"
+    );
+    assert!(
+      !hint.contains("ast-bro map"),
+      "nothing spells the path, so no command may claim to:\n{hint}"
+    );
+  }
+
+  #[test]
+  fn kb_never_reads_below_the_threshold_it_just_crossed() {
+    // The message quotes this next to a 25 KB bar, so 25_001 bytes must
+    // not announce themselves as 24 KB.
+    assert_eq!(kb_ceil(25_001), 25);
+    assert_eq!(kb_ceil(1), 1);
+    assert_eq!(kb_ceil(1024), 1);
+    assert_eq!(kb_ceil(1025), 2);
+    assert_eq!(kb_ceil(0), 0);
+  }
+
+  #[test]
+  fn shell_quote_leaves_a_plain_path_alone() {
+    assert_eq!(shell_quote("src/adapters"), "src/adapters");
+    // `%` has no meaning in a POSIX shell word, so quoting it is noise.
+    assert_eq!(shell_quote("build%20out"), "build%20out");
+  }
+
+  #[test]
+  fn shell_quote_keeps_a_tilde_quoted() {
+    // A path still spelled `~/project` here is a directory named `~`:
+    // a real tilde was expanded before this process started. Emitting it
+    // bare would send the next shell to the home directory instead.
+    assert_eq!(shell_quote("~/project"), "'~/project'");
+    assert_eq!(shell_quote("~"), "'~'");
+  }
+
+  // The quoting is POSIX, and only Unix has a `/bin/sh` to check it against.
+  #[cfg(unix)]
+  #[test]
+  fn a_quoted_value_round_trips_through_a_real_shell() {
+    // Asserting the escaped spelling by hand tests the author's model of
+    // quoting rather than the quoting, so ask a shell instead: what it
+    // echoes back has to be the value that went in.
+    for value in [
+      "it's here",
+      "my code",
+      "",
+      "~/project",
+      "-leading",
+      "a$b`c\"d",
+    ] {
+      let out = std::process::Command::new("/bin/sh")
+        .arg("-c")
+        .arg(format!("printf %s {}", shell_quote(value)))
+        .output()
+        .expect("run sh");
+      assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        value,
+        "shell_quote({value:?}) did not survive the round trip"
+      );
     }
-
-    #[test]
-    fn kb_never_reads_below_the_threshold_it_just_crossed() {
-        // The message quotes this next to a 25 KB bar, so 25_001 bytes must
-        // not announce themselves as 24 KB.
-        assert_eq!(kb_ceil(25_001), 25);
-        assert_eq!(kb_ceil(1), 1);
-        assert_eq!(kb_ceil(1024), 1);
-        assert_eq!(kb_ceil(1025), 2);
-        assert_eq!(kb_ceil(0), 0);
-    }
-
-    #[test]
-    fn shell_quote_leaves_a_plain_path_alone() {
-        assert_eq!(shell_quote("src/adapters"), "src/adapters");
-        // `%` has no meaning in a POSIX shell word, so quoting it is noise.
-        assert_eq!(shell_quote("build%20out"), "build%20out");
-    }
-
-    #[test]
-    fn shell_quote_keeps_a_tilde_quoted() {
-        // A path still spelled `~/project` here is a directory named `~`:
-        // a real tilde was expanded before this process started. Emitting it
-        // bare would send the next shell to the home directory instead.
-        assert_eq!(shell_quote("~/project"), "'~/project'");
-        assert_eq!(shell_quote("~"), "'~'");
-    }
-
-    // The quoting is POSIX, and only Unix has a `/bin/sh` to check it against.
-    #[cfg(unix)]
-    #[test]
-    fn a_quoted_value_round_trips_through_a_real_shell() {
-        // Asserting the escaped spelling by hand tests the author's model of
-        // quoting rather than the quoting, so ask a shell instead: what it
-        // echoes back has to be the value that went in.
-        for value in [
-            "it's here",
-            "my code",
-            "",
-            "~/project",
-            "-leading",
-            "a$b`c\"d",
-        ] {
-            let out = std::process::Command::new("/bin/sh")
-                .arg("-c")
-                .arg(format!("printf %s {}", shell_quote(value)))
-                .output()
-                .expect("run sh");
-            assert_eq!(
-                String::from_utf8_lossy(&out.stdout),
-                value,
-                "shell_quote({value:?}) did not survive the round trip"
-            );
-        }
-    }
+  }
 }

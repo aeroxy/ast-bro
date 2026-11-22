@@ -42,19 +42,19 @@ const EMBEDDINGS_TENSOR: &str = "embeddings";
 /// (and be dropped) for as long as `embeddings_ptr` points into it.
 #[allow(dead_code)]
 enum Backing {
-    Mmap(Arc<Mmap>),
-    Owned(Vec<f32>),
+  Mmap(Arc<Mmap>),
+  Owned(Vec<f32>),
 }
 
 pub struct Embedder {
-    /// Keeps whichever memory `embeddings_ptr` points into alive for the
-    /// lifetime of the embedder.
-    _backing: Backing,
-    /// vocab_size × DIM rows of f32, row-major, borrowed from `_backing`.
-    /// Stored as a raw pointer + length so `Embedder` can be `Send + Sync`.
-    embeddings_ptr: *const f32,
-    vocab_size: usize,
-    tokenizer: Tokenizer,
+  /// Keeps whichever memory `embeddings_ptr` points into alive for the
+  /// lifetime of the embedder.
+  _backing: Backing,
+  /// vocab_size × DIM rows of f32, row-major, borrowed from `_backing`.
+  /// Stored as a raw pointer + length so `Embedder` can be `Send + Sync`.
+  embeddings_ptr: *const f32,
+  vocab_size: usize,
+  tokenizer: Tokenizer,
 }
 
 // SAFETY: both `Backing` variants are immutable after `Embedder::open` returns
@@ -67,193 +67,184 @@ unsafe impl Send for Embedder {}
 unsafe impl Sync for Embedder {}
 
 impl Embedder {
-    /// Open the cached model files from `model_dir`. Expects:
-    /// - `<model_dir>/model.safetensors` containing a single `f32` or `f16`
-    ///   tensor named `embeddings` with shape `[vocab_size, DIM]`.
-    /// - `<model_dir>/tokenizer.json` in HuggingFace tokenizers format.
-    pub fn open(model_dir: &Path) -> io::Result<Self> {
-        let safetensors_path = model_dir.join("model.safetensors");
-        let tokenizer_path = model_dir.join("tokenizer.json");
+  /// Open the cached model files from `model_dir`. Expects:
+  /// - `<model_dir>/model.safetensors` containing a single `f32` or `f16`
+  ///   tensor named `embeddings` with shape `[vocab_size, DIM]`.
+  /// - `<model_dir>/tokenizer.json` in HuggingFace tokenizers format.
+  pub fn open(model_dir: &Path) -> io::Result<Self> {
+    let safetensors_path = model_dir.join("model.safetensors");
+    let tokenizer_path = model_dir.join("tokenizer.json");
 
-        let file = File::open(&safetensors_path)?;
-        let mmap = unsafe { Mmap::map(&file) }?;
-        let mmap = Arc::new(mmap);
+    let file = File::open(&safetensors_path)?;
+    let mmap = unsafe { Mmap::map(&file) }?;
+    let mmap = Arc::new(mmap);
 
-        // Parse the safetensors header against the same byte slice the matrix
-        // lives in, then extract the embeddings tensor.
-        let st = SafeTensors::deserialize(&mmap[..])
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("safetensors: {e}")))?;
-        let names: Vec<&str> = st.names().into_iter().collect();
-        let tensor = st.tensor(EMBEDDINGS_TENSOR).map_err(|e| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!(
-                    "safetensors missing '{EMBEDDINGS_TENSOR}' tensor (have: {names:?}): {e}"
-                ),
-            )
-        })?;
-        let shape = tensor.shape();
-        if shape.len() != 2 || shape[1] != DIM {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("expected shape [V, {DIM}], got {shape:?}"),
-            ));
+    // Parse the safetensors header against the same byte slice the matrix
+    // lives in, then extract the embeddings tensor.
+    let st = SafeTensors::deserialize(&mmap[..])
+      .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("safetensors: {e}")))?;
+    let names: Vec<&str> = st.names().into_iter().collect();
+    let tensor = st.tensor(EMBEDDINGS_TENSOR).map_err(|e| {
+      io::Error::new(
+        io::ErrorKind::InvalidData,
+        format!("safetensors missing '{EMBEDDINGS_TENSOR}' tensor (have: {names:?}): {e}"),
+      )
+    })?;
+    let shape = tensor.shape();
+    if shape.len() != 2 || shape[1] != DIM {
+      return Err(io::Error::new(
+        io::ErrorKind::InvalidData,
+        format!("expected shape [V, {DIM}], got {shape:?}"),
+      ));
+    }
+    let vocab_size = shape[0];
+    let data = tensor.data();
+
+    let (backing, ptr) = match tensor.dtype() {
+      Dtype::F32 => {
+        if data.len() != vocab_size * DIM * 4 {
+          return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+              "tensor data length {} != {} = vocab_size * DIM * 4",
+              data.len(),
+              vocab_size * DIM * 4
+            ),
+          ));
         }
-        let vocab_size = shape[0];
-        let data = tensor.data();
+        // mmap returns page-aligned pointers and the safetensors
+        // header pads the data offset to a multiple of 8, so this
+        // tensor is normally 4-byte aligned — but the file is
+        // downloaded external input, and a preceding odd-length
+        // tensor in a malformed file can misalign it. Reading
+        // through a misaligned *const f32 is UB, so check at
+        // runtime and fall back to an owned, aligned copy (same
+        // shape as the F16 branch) instead of trusting a
+        // debug-only assertion that vanishes in release builds.
+        if (data.as_ptr() as usize).is_multiple_of(std::mem::align_of::<f32>()) {
+          let ptr = data.as_ptr() as *const f32;
+          (Backing::Mmap(Arc::clone(&mmap)), ptr)
+        } else {
+          let owned = decode_f32_le(data);
+          let ptr = owned.as_ptr();
+          (Backing::Owned(owned), ptr)
+        }
+      }
+      Dtype::F16 => {
+        if data.len() != vocab_size * DIM * 2 {
+          return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+              "tensor data length {} != {} = vocab_size * DIM * 2",
+              data.len(),
+              vocab_size * DIM * 2
+            ),
+          ));
+        }
+        let owned = decode_f16_le(data);
+        let ptr = owned.as_ptr();
+        (Backing::Owned(owned), ptr)
+      }
+      other => {
+        return Err(io::Error::new(
+          io::ErrorKind::InvalidData,
+          format!("expected F32 or F16 embeddings, got {other:?}"),
+        ));
+      }
+    };
 
-        let (backing, ptr) = match tensor.dtype() {
-            Dtype::F32 => {
-                if data.len() != vocab_size * DIM * 4 {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        format!(
-                            "tensor data length {} != {} = vocab_size * DIM * 4",
-                            data.len(),
-                            vocab_size * DIM * 4
-                        ),
-                    ));
-                }
-                // mmap returns page-aligned pointers and the safetensors
-                // header pads the data offset to a multiple of 8, so this
-                // tensor is normally 4-byte aligned — but the file is
-                // downloaded external input, and a preceding odd-length
-                // tensor in a malformed file can misalign it. Reading
-                // through a misaligned *const f32 is UB, so check at
-                // runtime and fall back to an owned, aligned copy (same
-                // shape as the F16 branch) instead of trusting a
-                // debug-only assertion that vanishes in release builds.
-                if (data.as_ptr() as usize).is_multiple_of(std::mem::align_of::<f32>()) {
-                    let ptr = data.as_ptr() as *const f32;
-                    (Backing::Mmap(Arc::clone(&mmap)), ptr)
-                } else {
-                    let owned = decode_f32_le(data);
-                    let ptr = owned.as_ptr();
-                    (Backing::Owned(owned), ptr)
-                }
-            }
-            Dtype::F16 => {
-                if data.len() != vocab_size * DIM * 2 {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        format!(
-                            "tensor data length {} != {} = vocab_size * DIM * 2",
-                            data.len(),
-                            vocab_size * DIM * 2
-                        ),
-                    ));
-                }
-                let owned = decode_f16_le(data);
-                let ptr = owned.as_ptr();
-                (Backing::Owned(owned), ptr)
-            }
-            other => {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!("expected F32 or F16 embeddings, got {other:?}"),
-                ));
-            }
-        };
+    let tokenizer = Tokenizer::from_file(&tokenizer_path)
+      .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("tokenizer.json: {e}")))?;
 
-        let tokenizer = Tokenizer::from_file(&tokenizer_path).map_err(|e| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("tokenizer.json: {e}"),
-            )
-        })?;
+    Ok(Self {
+      _backing: backing,
+      embeddings_ptr: ptr,
+      vocab_size,
+      tokenizer,
+    })
+  }
 
-        Ok(Self {
-            _backing: backing,
-            embeddings_ptr: ptr,
-            vocab_size,
-            tokenizer,
-        })
+  #[allow(dead_code)] // used by network-gated tests
+  pub fn vocab_size(&self) -> usize {
+    self.vocab_size
+  }
+
+  /// All embedding rows as one big slice. Read-only; backed by `_backing`.
+  fn all_rows(&self) -> &[f32] {
+    // SAFETY: `embeddings_ptr` is valid for `vocab_size * DIM` f32s for the
+    // lifetime of `self._backing`.
+    unsafe { std::slice::from_raw_parts(self.embeddings_ptr, self.vocab_size * DIM) }
+  }
+
+  /// Look up the embedding row for a single token id. OOV ids are clamped
+  /// to the unknown-token row 0 (model2vec convention: vocab[0] is `[UNK]`).
+  fn row(&self, token_id: u32) -> &[f32] {
+    let id = (token_id as usize).min(self.vocab_size.saturating_sub(1));
+    let start = id * DIM;
+    &self.all_rows()[start..start + DIM]
+  }
+
+  /// Encode one string into a normalized `[f32; DIM]`.
+  ///
+  /// Implements model2vec's pipeline: tokenize → mean-pool → L2-normalize.
+  /// Empty input (or input that tokenizes to zero ids) returns the zero vector.
+  pub fn encode_one(&self, text: &str) -> [f32; DIM] {
+    let mut out = [0.0f32; DIM];
+    if text.is_empty() {
+      return out;
     }
 
-    #[allow(dead_code)] // used by network-gated tests
-    pub fn vocab_size(&self) -> usize {
-        self.vocab_size
+    let encoding = match self.tokenizer.encode(text, /* add_special_tokens */ false) {
+      Ok(e) => e,
+      Err(_) => return out,
+    };
+    let ids = encoding.get_ids();
+    if ids.is_empty() {
+      return out;
     }
 
-    /// All embedding rows as one big slice. Read-only; backed by `_backing`.
-    fn all_rows(&self) -> &[f32] {
-        // SAFETY: `embeddings_ptr` is valid for `vocab_size * DIM` f32s for the
-        // lifetime of `self._backing`.
-        unsafe {
-            std::slice::from_raw_parts(self.embeddings_ptr, self.vocab_size * DIM)
-        }
+    // Sum embeddings.
+    for &id in ids {
+      let row = self.row(id);
+      for i in 0..DIM {
+        out[i] += row[i];
+      }
     }
-
-    /// Look up the embedding row for a single token id. OOV ids are clamped
-    /// to the unknown-token row 0 (model2vec convention: vocab[0] is `[UNK]`).
-    fn row(&self, token_id: u32) -> &[f32] {
-        let id = (token_id as usize).min(self.vocab_size.saturating_sub(1));
-        let start = id * DIM;
-        &self.all_rows()[start..start + DIM]
+    // Mean-pool.
+    let inv_n = 1.0 / ids.len() as f32;
+    for v in &mut out {
+      *v *= inv_n;
     }
-
-    /// Encode one string into a normalized `[f32; DIM]`.
-    ///
-    /// Implements model2vec's pipeline: tokenize → mean-pool → L2-normalize.
-    /// Empty input (or input that tokenizes to zero ids) returns the zero vector.
-    pub fn encode_one(&self, text: &str) -> [f32; DIM] {
-        let mut out = [0.0f32; DIM];
-        if text.is_empty() {
-            return out;
-        }
-
-        let encoding = match self.tokenizer.encode(text, /* add_special_tokens */ false) {
-            Ok(e) => e,
-            Err(_) => return out,
-        };
-        let ids = encoding.get_ids();
-        if ids.is_empty() {
-            return out;
-        }
-
-        // Sum embeddings.
-        for &id in ids {
-            let row = self.row(id);
-            for i in 0..DIM {
-                out[i] += row[i];
-            }
-        }
-        // Mean-pool.
-        let inv_n = 1.0 / ids.len() as f32;
-        for v in &mut out {
-            *v *= inv_n;
-        }
-        // L2-normalize.
-        let norm: f32 = out.iter().map(|v| v * v).sum::<f32>().sqrt();
-        if norm > 0.0 {
-            let inv = 1.0 / norm;
-            for v in &mut out {
-                *v *= inv;
-            }
-        }
-        out
+    // L2-normalize.
+    let norm: f32 = out.iter().map(|v| v * v).sum::<f32>().sqrt();
+    if norm > 0.0 {
+      let inv = 1.0 / norm;
+      for v in &mut out {
+        *v *= inv;
+      }
     }
-
+    out
+  }
 }
 
 /// Decode a little-endian `f32` byte buffer, one value per 4-byte group —
 /// the aligned-copy fallback for a misaligned F32 tensor. The mmap fast
 /// path reads the same little-endian layout in place; keep the two in sync.
 fn decode_f32_le(bytes: &[u8]) -> Vec<f32> {
-    bytes
-        .chunks_exact(4)
-        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
-        .collect()
+  bytes
+    .chunks_exact(4)
+    .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+    .collect()
 }
 
 /// Decode a little-endian `f16` (IEEE-754 binary16) byte buffer into `f32`
 /// values, one per 2-byte pair. Callers validate `bytes.len()` is even (and
 /// matches the expected `vocab_size * DIM * 2`) before calling this.
 fn decode_f16_le(bytes: &[u8]) -> Vec<f32> {
-    bytes
-        .chunks_exact(2)
-        .map(|c| f16::from_le_bytes([c[0], c[1]]).to_f32())
-        .collect()
+  bytes
+    .chunks_exact(2)
+    .map(|c| f16::from_le_bytes([c[0], c[1]]).to_f32())
+    .collect()
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -279,402 +270,413 @@ const PAR_THRESHOLD: usize = 4096;
 ///
 /// Returns up to `k` `(row_id, score)` pairs sorted by score descending.
 pub fn cosine_topk(
-    query: &[f32; DIM],
-    embeddings: &[f32],
-    mask: Option<&[bool]>,
-    k: usize,
+  query: &[f32; DIM],
+  embeddings: &[f32],
+  mask: Option<&[bool]>,
+  k: usize,
 ) -> Vec<(u32, f32)> {
-    use rayon::prelude::*;
+  use rayon::prelude::*;
 
-    let n = embeddings.len() / DIM;
-    debug_assert_eq!(embeddings.len() % DIM, 0, "embeddings length not a multiple of DIM");
-    if let Some(m) = mask {
-        debug_assert_eq!(m.len(), n, "mask length must equal row count");
-    }
-    if n == 0 || k == 0 {
-        return Vec::new();
-    }
+  let n = embeddings.len() / DIM;
+  debug_assert_eq!(
+    embeddings.len() % DIM,
+    0,
+    "embeddings length not a multiple of DIM"
+  );
+  if let Some(m) = mask {
+    debug_assert_eq!(m.len(), n, "mask length must equal row count");
+  }
+  if n == 0 || k == 0 {
+    return Vec::new();
+  }
 
-    // Pre-load the query into 32 × f32x8 SIMD lanes so each row's dot product
-    // does no extra work to splat the query.
-    let q_lanes = load_query_lanes(query);
+  // Pre-load the query into 32 × f32x8 SIMD lanes so each row's dot product
+  // does no extra work to splat the query.
+  let q_lanes = load_query_lanes(query);
 
-    // Score every row. Parallel for big matrices, single-threaded otherwise.
-    let scores: Vec<f32> = if n >= PAR_THRESHOLD {
-        (0..n)
-            .into_par_iter()
-            .with_min_len(256)
-            .map(|i| score_row(i, embeddings, &q_lanes, mask))
-            .collect()
-    } else {
-        (0..n)
-            .map(|i| score_row(i, embeddings, &q_lanes, mask))
-            .collect()
-    };
+  // Score every row. Parallel for big matrices, single-threaded otherwise.
+  let scores: Vec<f32> = if n >= PAR_THRESHOLD {
+    (0..n)
+      .into_par_iter()
+      .with_min_len(256)
+      .map(|i| score_row(i, embeddings, &q_lanes, mask))
+      .collect()
+  } else {
+    (0..n)
+      .map(|i| score_row(i, embeddings, &q_lanes, mask))
+      .collect()
+  };
 
-    // Top-k via partial sort. For small k a min-heap is theoretically faster
-    // (O(n log k) vs O(n log n)), but n is typically ~10k and k ≤ 50, so a
-    // simple `select_nth_unstable_by` followed by sorting the prefix is
-    // simpler and cache-friendly enough.
-    let mut idx: Vec<u32> = (0..n as u32).collect();
-    let take = k.min(n);
-    idx.select_nth_unstable_by(take - 1, |&a, &b| {
-        scores[b as usize]
-            .partial_cmp(&scores[a as usize])
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-    let mut top: Vec<u32> = idx.into_iter().take(take).collect();
-    top.sort_by(|&a, &b| {
-        scores[b as usize]
-            .partial_cmp(&scores[a as usize])
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
+  // Top-k via partial sort. For small k a min-heap is theoretically faster
+  // (O(n log k) vs O(n log n)), but n is typically ~10k and k ≤ 50, so a
+  // simple `select_nth_unstable_by` followed by sorting the prefix is
+  // simpler and cache-friendly enough.
+  let mut idx: Vec<u32> = (0..n as u32).collect();
+  let take = k.min(n);
+  idx.select_nth_unstable_by(take - 1, |&a, &b| {
+    scores[b as usize]
+      .partial_cmp(&scores[a as usize])
+      .unwrap_or(std::cmp::Ordering::Equal)
+  });
+  let mut top: Vec<u32> = idx.into_iter().take(take).collect();
+  top.sort_by(|&a, &b| {
+    scores[b as usize]
+      .partial_cmp(&scores[a as usize])
+      .unwrap_or(std::cmp::Ordering::Equal)
+  });
 
-    top.into_iter()
-        .filter_map(|i| {
-            let s = scores[i as usize];
-            // A row past the size the model handles is stored non-finite on
-            // purpose, which keeps it reachable lexically and never densely.
-            if s.is_finite() { Some((i, s)) } else { None }
-        })
-        .collect()
+  top
+    .into_iter()
+    .filter_map(|i| {
+      let s = scores[i as usize];
+      // A row past the size the model handles is stored non-finite on
+      // purpose, which keeps it reachable lexically and never densely.
+      if s.is_finite() {
+        Some((i, s))
+      } else {
+        None
+      }
+    })
+    .collect()
 }
 
 #[inline]
 fn score_row(
-    i: usize,
-    embeddings: &[f32],
-    q_lanes: &[wide::f32x8; DIM / 8],
-    mask: Option<&[bool]>,
+  i: usize,
+  embeddings: &[f32],
+  q_lanes: &[wide::f32x8; DIM / 8],
+  mask: Option<&[bool]>,
 ) -> f32 {
-    if let Some(m) = mask {
-        if !m[i] {
-            return f32::NEG_INFINITY;
-        }
+  if let Some(m) = mask {
+    if !m[i] {
+      return f32::NEG_INFINITY;
     }
-    let row = &embeddings[i * DIM..(i + 1) * DIM];
-    let score = dot_simd(q_lanes, row);
-    // NaN participates in no ordering: `partial_cmp` answers `None` against
-    // every value, and the caller reads that as a tie. A row left comparable
-    // to nothing can be partitioned into the top-k window and then dropped by
-    // the `is_finite` filter, returning a pool shorter than `k`. Demoting the
-    // sentinel here is what makes the comparison total.
-    if score.is_finite() {
-        score
-    } else {
-        f32::NEG_INFINITY
-    }
+  }
+  let row = &embeddings[i * DIM..(i + 1) * DIM];
+  let score = dot_simd(q_lanes, row);
+  // NaN participates in no ordering: `partial_cmp` answers `None` against
+  // every value, and the caller reads that as a tie. A row left comparable
+  // to nothing can be partitioned into the top-k window and then dropped by
+  // the `is_finite` filter, returning a pool shorter than `k`. Demoting the
+  // sentinel here is what makes the comparison total.
+  if score.is_finite() {
+    score
+  } else {
+    f32::NEG_INFINITY
+  }
 }
 
 #[inline]
 fn load_query_lanes(query: &[f32; DIM]) -> [wide::f32x8; DIM / 8] {
-    let mut out = [wide::f32x8::splat(0.0); DIM / 8];
-    for (i, lane) in out.iter_mut().enumerate() {
-        let chunk: [f32; 8] = query[i * 8..(i + 1) * 8].try_into().unwrap();
-        *lane = wide::f32x8::from(chunk);
-    }
-    out
+  let mut out = [wide::f32x8::splat(0.0); DIM / 8];
+  for (i, lane) in out.iter_mut().enumerate() {
+    let chunk: [f32; 8] = query[i * 8..(i + 1) * 8].try_into().unwrap();
+    *lane = wide::f32x8::from(chunk);
+  }
+  out
 }
 
 /// SIMD dot product of a query (pre-loaded into 32 lanes) and a row slice.
 /// Both operands are L2-normalized, so the dot product equals cosine.
 #[inline]
 fn dot_simd(q_lanes: &[wide::f32x8; DIM / 8], row: &[f32]) -> f32 {
-    debug_assert_eq!(row.len(), DIM);
-    let mut acc = wide::f32x8::splat(0.0);
-    for (i, q) in q_lanes.iter().enumerate() {
-        let chunk: [f32; 8] = row[i * 8..(i + 1) * 8].try_into().unwrap();
-        let r = wide::f32x8::from(chunk);
-        acc += *q * r;
-    }
-    // Horizontal sum.
-    let arr: [f32; 8] = acc.into();
-    arr.iter().sum()
+  debug_assert_eq!(row.len(), DIM);
+  let mut acc = wide::f32x8::splat(0.0);
+  for (i, q) in q_lanes.iter().enumerate() {
+    let chunk: [f32; 8] = row[i * 8..(i + 1) * 8].try_into().unwrap();
+    let r = wide::f32x8::from(chunk);
+    acc += *q * r;
+  }
+  // Horizontal sum.
+  let arr: [f32; 8] = acc.into();
+  arr.iter().sum()
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::search::download::{ensure_model, ModelInfo};
+  use super::*;
+  use crate::search::download::{ensure_model, ModelInfo};
 
-    fn ensure_real_model() -> std::path::PathBuf {
-        // Download once into a per-test cache; subsequent runs reuse the cache
-        // and the SHA-256 manifest verification fast-paths.
-        let info = ModelInfo::potion_code_16m();
-        ensure_model(&info).expect("model download failed; see network-security wiki")
+  fn ensure_real_model() -> std::path::PathBuf {
+    // Download once into a per-test cache; subsequent runs reuse the cache
+    // and the SHA-256 manifest verification fast-paths.
+    let info = ModelInfo::potion_code_16m();
+    ensure_model(&info).expect("model download failed; see network-security wiki")
+  }
+
+  #[test]
+  #[ignore]
+  fn network_loads_potion_model() {
+    let dir = ensure_real_model();
+    let emb = Embedder::open(&dir).expect("Embedder::open failed");
+    assert!(emb.vocab_size() > 1000, "vocab implausibly small");
+  }
+
+  #[test]
+  #[ignore]
+  fn network_encodes_to_unit_vector() {
+    let emb = Embedder::open(&ensure_real_model()).unwrap();
+
+    let v = emb.encode_one("def parse_json(s): return json.loads(s)");
+    // Every component should be finite.
+    for x in v.iter() {
+      assert!(x.is_finite(), "non-finite component: {x}");
     }
+    // L2-norm should be ~1 (we just normalized).
+    let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+    assert!((norm - 1.0).abs() < 1e-5, "norm = {norm}, expected ≈ 1.0");
+  }
 
-    #[test]
-    #[ignore]
-    fn network_loads_potion_model() {
-        let dir = ensure_real_model();
-        let emb = Embedder::open(&dir).expect("Embedder::open failed");
-        assert!(emb.vocab_size() > 1000, "vocab implausibly small");
+  #[test]
+  #[ignore]
+  fn network_similar_strings_have_high_cosine() {
+    // Sanity: two semantically-similar code snippets should be closer than
+    // unrelated ones. Doesn't pin to specific scores — just enforces ordering.
+    let emb = Embedder::open(&ensure_real_model()).unwrap();
+    let a = emb.encode_one("def add(a, b): return a + b");
+    let b = emb.encode_one("def sum(x, y): return x + y");
+    let c = emb.encode_one("class HttpServer: def listen(self, port): pass");
+
+    let cos =
+      |u: &[f32], v: &[f32]| -> f32 { u.iter().zip(v.iter()).map(|(x, y)| x * y).sum::<f32>() };
+    let ab = cos(&a, &b);
+    let ac = cos(&a, &c);
+    assert!(
+      ab > ac,
+      "expected related code (cos {ab}) > unrelated code (cos {ac})"
+    );
+  }
+
+  // ── decode_f16_le (pure unit test, no network) ──────────────────────────
+
+  #[test]
+  fn decode_f16_le_matches_known_bit_patterns() {
+    // 0x3C00 = 1.0, 0x0000 = 0.0, 0xC000 = -2.0 (IEEE-754 binary16).
+    let bytes = [0x00, 0x3C, 0x00, 0x00, 0x00, 0xC0];
+    let decoded = decode_f16_le(&bytes);
+    assert_eq!(decoded, vec![1.0f32, 0.0, -2.0]);
+  }
+
+  #[test]
+  fn decode_f16_le_handles_ieee754_edge_cases() {
+    // The `half` crate gets these right; the point is that the *contract*
+    // is pinned, so a hand-rolled replacement can't quietly change it.
+    // A NaN or infinity smuggled into a vocab row poisons every cosine
+    // comparison it takes part in, and silently — hence the coverage.
+    let case = |lo: u8, hi: u8| decode_f16_le(&[lo, hi])[0];
+
+    // 0x0001 — smallest positive subnormal, exactly 2^-24.
+    assert_eq!(case(0x01, 0x00), 2f32.powi(-24));
+    // 0x03FF — largest subnormal, just under 2^-14.
+    assert_eq!(case(0xFF, 0x03), 1023.0 * 2f32.powi(-24));
+    // 0x7C00 / 0xFC00 — infinities keep their sign.
+    assert_eq!(case(0x00, 0x7C), f32::INFINITY);
+    assert_eq!(case(0x00, 0xFC), f32::NEG_INFINITY);
+    // 0x7E00 — quiet NaN stays NaN rather than decoding to a number.
+    assert!(case(0x00, 0x7E).is_nan());
+    // 0x8000 — negative zero keeps its sign bit (`-0.0 == 0.0`, so this
+    // has to be asserted on the bits, not the value).
+    let neg_zero = case(0x00, 0x80);
+    assert_eq!(neg_zero, 0.0);
+    assert!(neg_zero.is_sign_negative(), "0x8000 must decode to -0.0");
+    // 0x7BFF — largest finite binary16, 65504.
+    assert_eq!(case(0xFF, 0x7B), 65504.0);
+  }
+
+  // ── Embedder::open dtype rejection (no network, no model needed) ───────
+
+  /// Minimal safetensors file: 8-byte LE header length, JSON header, data.
+  fn safetensors_bytes(dtype: &str, rows: usize, elem_bytes: usize) -> Vec<u8> {
+    let len = rows * DIM * elem_bytes;
+    let header = format!(
+      r#"{{"embeddings":{{"dtype":"{dtype}","shape":[{rows},{DIM}],"data_offsets":[0,{len}]}}}}"#
+    );
+    let mut out = Vec::new();
+    out.extend_from_slice(&(header.len() as u64).to_le_bytes());
+    out.extend_from_slice(header.as_bytes());
+    out.resize(out.len() + len, 0);
+    out
+  }
+
+  #[test]
+  fn open_rejects_an_unsupported_embedding_dtype() {
+    // The dtype arm runs before the tokenizer is loaded, so this needs
+    // neither tokenizer.json nor a downloaded model.
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(
+      dir.path().join("model.safetensors"),
+      safetensors_bytes("I64", 2, 8),
+    )
+    .expect("write fixture");
+
+    let err = match Embedder::open(dir.path()) {
+      Err(e) => e,
+      Ok(_) => panic!("I64 embeddings must be rejected"),
+    };
+    assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+    assert!(
+      err.to_string().contains("expected F32 or F16 embeddings"),
+      "unexpected rejection message: {err}"
+    );
+  }
+
+  // ── cosine_topk (pure unit tests, no network) ──────────────────────────
+
+  fn unit(values: &[f32]) -> Vec<f32> {
+    let mut v = values.to_vec();
+    v.resize(DIM, 0.0);
+    let n: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+    if n > 0.0 {
+      for x in &mut v {
+        *x /= n;
+      }
     }
+    v
+  }
 
-    #[test]
-    #[ignore]
-    fn network_encodes_to_unit_vector() {
-        let emb = Embedder::open(&ensure_real_model()).unwrap();
+  /// An unembedded row is never a dense candidate, however the pool is sized.
+  #[test]
+  fn a_non_finite_row_never_enters_the_top_k() {
+    // A zero vector cannot serve as the sentinel: its dot product is a
+    // finite 0.0, which outranks every negative similarity and so enters
+    // the pool whenever the corpus is smaller than the pool — the normal
+    // case for a small repository.
+    let mut rows = vec![0.0f32; DIM * 3];
+    rows[..DIM].fill(1.0 / (DIM as f32).sqrt()); // row 0: matches
+    rows[DIM..DIM * 2].fill(-1.0 / (DIM as f32).sqrt()); // row 1: opposes
+    rows[DIM * 2..].fill(f32::NAN); // row 2: never embedded
+    let mut query = [0.0f32; DIM];
+    query.fill(1.0 / (DIM as f32).sqrt());
 
-        let v = emb.encode_one("def parse_json(s): return json.loads(s)");
-        // Every component should be finite.
-        for x in v.iter() {
-            assert!(x.is_finite(), "non-finite component: {x}");
-        }
-        // L2-norm should be ~1 (we just normalized).
-        let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
-        assert!((norm - 1.0).abs() < 1e-5, "norm = {norm}, expected ≈ 1.0");
+    let top = cosine_topk(&query, &rows, None, 10);
+    let ids: Vec<u32> = top.iter().map(|(i, _)| *i).collect();
+    assert!(ids.contains(&0), "the matching row should rank");
+    assert!(ids.contains(&1), "even an opposing row is a candidate");
+    assert!(
+      !ids.contains(&2),
+      "the non-embedded row must not be a candidate"
+    );
+    assert_eq!(top.len(), 2, "asked for 10 of 3 rows, one is excluded");
+  }
+
+  /// The pool holds `k` embedded rows even when unembedded rows sort first.
+  ///
+  /// Red here means the sentinel stopped being comparable, so unembedded
+  /// rows occupy window slots and the `is_finite` filter returns a short pool.
+  #[test]
+  fn non_finite_rows_do_not_steal_the_top_k_window() {
+    // Unembedded rows come first so a partition that treats them as ties
+    // has every chance to keep them, which is the case that fails when the
+    // sentinel is left incomparable.
+    let unit = 1.0 / (DIM as f32).sqrt();
+    let mut rows = vec![f32::NAN; DIM * 6];
+    for (n, scale) in [(3usize, 1.0f32), (4, 0.9), (5, 0.8)] {
+      rows[n * DIM..(n + 1) * DIM].fill(unit * scale);
     }
+    let mut query = [0.0f32; DIM];
+    query.fill(unit);
 
-    #[test]
-    #[ignore]
-    fn network_similar_strings_have_high_cosine() {
-        // Sanity: two semantically-similar code snippets should be closer than
-        // unrelated ones. Doesn't pin to specific scores — just enforces ordering.
-        let emb = Embedder::open(&ensure_real_model()).unwrap();
-        let a = emb.encode_one("def add(a, b): return a + b");
-        let b = emb.encode_one("def sum(x, y): return x + y");
-        let c = emb.encode_one("class HttpServer: def listen(self, port): pass");
+    let top = cosine_topk(&query, &rows, None, 3);
+    let ids: Vec<u32> = top.iter().map(|(i, _)| *i).collect();
+    assert_eq!(ids, vec![3, 4, 5], "the three embedded rows, best first");
+    assert!(top.iter().all(|(_, s)| s.is_finite()), "every score finite");
+  }
 
-        let cos = |u: &[f32], v: &[f32]| -> f32 {
-            u.iter().zip(v.iter()).map(|(x, y)| x * y).sum::<f32>()
-        };
-        let ab = cos(&a, &b);
-        let ac = cos(&a, &c);
-        assert!(
-            ab > ac,
-            "expected related code (cos {ab}) > unrelated code (cos {ac})"
-        );
+  #[test]
+  fn cosine_topk_empty_returns_empty() {
+    let q = [0.0f32; DIM];
+    assert!(cosine_topk(&q, &[], None, 5).is_empty());
+  }
+
+  #[test]
+  fn cosine_topk_zero_k_returns_empty() {
+    let q = [0.0f32; DIM];
+    let rows = vec![0.0f32; DIM];
+    assert!(cosine_topk(&q, &rows, None, 0).is_empty());
+  }
+
+  #[test]
+  fn cosine_topk_orders_by_similarity() {
+    // Three rows along ±axes; query along +x. Best match is row 0.
+    let mut rows = Vec::new();
+    rows.extend(unit(&[1.0, 0.0, 0.0])); // row 0: same direction as q
+    rows.extend(unit(&[0.0, 1.0, 0.0])); // row 1: orthogonal
+    rows.extend(unit(&[-1.0, 0.0, 0.0])); // row 2: opposite
+
+    let q: [f32; DIM] = unit(&[1.0, 0.0, 0.0]).try_into().unwrap();
+    let top = cosine_topk(&q, &rows, None, 3);
+
+    assert_eq!(top.len(), 3);
+    assert_eq!(top[0].0, 0);
+    assert!((top[0].1 - 1.0).abs() < 1e-5);
+    assert_eq!(top[1].0, 1);
+    assert!(top[1].1.abs() < 1e-5); // ≈ 0
+    assert_eq!(top[2].0, 2);
+    assert!((top[2].1 + 1.0).abs() < 1e-5); // ≈ -1
+  }
+
+  #[test]
+  fn cosine_topk_respects_k() {
+    let mut rows = Vec::new();
+    for i in 0..10 {
+      // Each row aligns with query proportionally — row 0 best, row 9 worst.
+      let mag = 1.0 - (i as f32) * 0.1;
+      rows.extend(unit(&[mag, 0.1, 0.0]));
     }
+    let q: [f32; DIM] = unit(&[1.0, 0.0, 0.0]).try_into().unwrap();
+    let top = cosine_topk(&q, &rows, None, 3);
+    assert_eq!(top.len(), 3);
+    // Top-3 should be rows 0, 1, 2 in order.
+    assert_eq!(top[0].0, 0);
+    assert_eq!(top[1].0, 1);
+    assert_eq!(top[2].0, 2);
+  }
 
-    // ── decode_f16_le (pure unit test, no network) ──────────────────────────
+  #[test]
+  fn cosine_topk_mask_excludes_filtered_rows() {
+    let mut rows = Vec::new();
+    rows.extend(unit(&[1.0, 0.0, 0.0])); // row 0: best
+    rows.extend(unit(&[0.9, 0.1, 0.0])); // row 1: second best
+    rows.extend(unit(&[0.8, 0.2, 0.0])); // row 2: third best
 
-    #[test]
-    fn decode_f16_le_matches_known_bit_patterns() {
-        // 0x3C00 = 1.0, 0x0000 = 0.0, 0xC000 = -2.0 (IEEE-754 binary16).
-        let bytes = [0x00, 0x3C, 0x00, 0x00, 0x00, 0xC0];
-        let decoded = decode_f16_le(&bytes);
-        assert_eq!(decoded, vec![1.0f32, 0.0, -2.0]);
+    let q: [f32; DIM] = unit(&[1.0, 0.0, 0.0]).try_into().unwrap();
+    // Mask out the top row.
+    let mask = vec![false, true, true];
+    let top = cosine_topk(&q, &rows, Some(&mask), 5);
+    // Should return rows 1 and 2 only — row 0 was filtered before scoring.
+    assert_eq!(top.len(), 2);
+    assert_eq!(top[0].0, 1);
+    assert_eq!(top[1].0, 2);
+  }
+
+  #[test]
+  fn cosine_topk_handles_large_matrix() {
+    // Cross the parallel threshold to exercise the rayon path.
+    let n = 5000;
+    let mut rows = Vec::with_capacity(n * DIM);
+    for i in 0..n {
+      // Make row i best at "index i" with falling similarity to q (which is row 0).
+      let mut v = vec![0.0f32; 3];
+      v[0] = 1.0 - (i as f32) / (n as f32);
+      v[1] = (i as f32) / (n as f32);
+      rows.extend(unit(&v));
     }
-
-    #[test]
-    fn decode_f16_le_handles_ieee754_edge_cases() {
-        // The `half` crate gets these right; the point is that the *contract*
-        // is pinned, so a hand-rolled replacement can't quietly change it.
-        // A NaN or infinity smuggled into a vocab row poisons every cosine
-        // comparison it takes part in, and silently — hence the coverage.
-        let case = |lo: u8, hi: u8| decode_f16_le(&[lo, hi])[0];
-
-        // 0x0001 — smallest positive subnormal, exactly 2^-24.
-        assert_eq!(case(0x01, 0x00), 2f32.powi(-24));
-        // 0x03FF — largest subnormal, just under 2^-14.
-        assert_eq!(case(0xFF, 0x03), 1023.0 * 2f32.powi(-24));
-        // 0x7C00 / 0xFC00 — infinities keep their sign.
-        assert_eq!(case(0x00, 0x7C), f32::INFINITY);
-        assert_eq!(case(0x00, 0xFC), f32::NEG_INFINITY);
-        // 0x7E00 — quiet NaN stays NaN rather than decoding to a number.
-        assert!(case(0x00, 0x7E).is_nan());
-        // 0x8000 — negative zero keeps its sign bit (`-0.0 == 0.0`, so this
-        // has to be asserted on the bits, not the value).
-        let neg_zero = case(0x00, 0x80);
-        assert_eq!(neg_zero, 0.0);
-        assert!(neg_zero.is_sign_negative(), "0x8000 must decode to -0.0");
-        // 0x7BFF — largest finite binary16, 65504.
-        assert_eq!(case(0xFF, 0x7B), 65504.0);
+    let q: [f32; DIM] = unit(&[1.0, 0.0, 0.0]).try_into().unwrap();
+    let top = cosine_topk(&q, &rows, None, 5);
+    assert_eq!(top.len(), 5);
+    // Top result should be row 0 (full alignment with q).
+    assert_eq!(top[0].0, 0);
+    // Scores should be monotonically non-increasing.
+    for w in top.windows(2) {
+      assert!(w[0].1 >= w[1].1, "scores not monotone: {:?}", top);
     }
+  }
 
-    // ── Embedder::open dtype rejection (no network, no model needed) ───────
-
-    /// Minimal safetensors file: 8-byte LE header length, JSON header, data.
-    fn safetensors_bytes(dtype: &str, rows: usize, elem_bytes: usize) -> Vec<u8> {
-        let len = rows * DIM * elem_bytes;
-        let header = format!(
-            r#"{{"embeddings":{{"dtype":"{dtype}","shape":[{rows},{DIM}],"data_offsets":[0,{len}]}}}}"#
-        );
-        let mut out = Vec::new();
-        out.extend_from_slice(&(header.len() as u64).to_le_bytes());
-        out.extend_from_slice(header.as_bytes());
-        out.resize(out.len() + len, 0);
-        out
-    }
-
-    #[test]
-    fn open_rejects_an_unsupported_embedding_dtype() {
-        // The dtype arm runs before the tokenizer is loaded, so this needs
-        // neither tokenizer.json nor a downloaded model.
-        let dir = tempfile::tempdir().expect("tempdir");
-        std::fs::write(
-            dir.path().join("model.safetensors"),
-            safetensors_bytes("I64", 2, 8),
-        )
-        .expect("write fixture");
-
-        let err = match Embedder::open(dir.path()) {
-            Err(e) => e,
-            Ok(_) => panic!("I64 embeddings must be rejected"),
-        };
-        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
-        assert!(
-            err.to_string().contains("expected F32 or F16 embeddings"),
-            "unexpected rejection message: {err}"
-        );
-    }
-
-    // ── cosine_topk (pure unit tests, no network) ──────────────────────────
-
-    fn unit(values: &[f32]) -> Vec<f32> {
-        let mut v = values.to_vec();
-        v.resize(DIM, 0.0);
-        let n: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
-        if n > 0.0 {
-            for x in &mut v {
-                *x /= n;
-            }
-        }
-        v
-    }
-
-    /// An unembedded row is never a dense candidate, however the pool is sized.
-    #[test]
-    fn a_non_finite_row_never_enters_the_top_k() {
-        // A zero vector cannot serve as the sentinel: its dot product is a
-        // finite 0.0, which outranks every negative similarity and so enters
-        // the pool whenever the corpus is smaller than the pool — the normal
-        // case for a small repository.
-        let mut rows = vec![0.0f32; DIM * 3];
-        rows[..DIM].fill(1.0 / (DIM as f32).sqrt()); // row 0: matches
-        rows[DIM..DIM * 2].fill(-1.0 / (DIM as f32).sqrt()); // row 1: opposes
-        rows[DIM * 2..].fill(f32::NAN); // row 2: never embedded
-        let mut query = [0.0f32; DIM];
-        query.fill(1.0 / (DIM as f32).sqrt());
-
-        let top = cosine_topk(&query, &rows, None, 10);
-        let ids: Vec<u32> = top.iter().map(|(i, _)| *i).collect();
-        assert!(ids.contains(&0), "the matching row should rank");
-        assert!(ids.contains(&1), "even an opposing row is a candidate");
-        assert!(!ids.contains(&2), "the non-embedded row must not be a candidate");
-        assert_eq!(top.len(), 2, "asked for 10 of 3 rows, one is excluded");
-    }
-
-    /// The pool holds `k` embedded rows even when unembedded rows sort first.
-    ///
-    /// Red here means the sentinel stopped being comparable, so unembedded
-    /// rows occupy window slots and the `is_finite` filter returns a short pool.
-    #[test]
-    fn non_finite_rows_do_not_steal_the_top_k_window() {
-        // Unembedded rows come first so a partition that treats them as ties
-        // has every chance to keep them, which is the case that fails when the
-        // sentinel is left incomparable.
-        let unit = 1.0 / (DIM as f32).sqrt();
-        let mut rows = vec![f32::NAN; DIM * 6];
-        for (n, scale) in [(3usize, 1.0f32), (4, 0.9), (5, 0.8)] {
-            rows[n * DIM..(n + 1) * DIM].fill(unit * scale);
-        }
-        let mut query = [0.0f32; DIM];
-        query.fill(unit);
-
-        let top = cosine_topk(&query, &rows, None, 3);
-        let ids: Vec<u32> = top.iter().map(|(i, _)| *i).collect();
-        assert_eq!(ids, vec![3, 4, 5], "the three embedded rows, best first");
-        assert!(top.iter().all(|(_, s)| s.is_finite()), "every score finite");
-    }
-
-    #[test]
-    fn cosine_topk_empty_returns_empty() {
-        let q = [0.0f32; DIM];
-        assert!(cosine_topk(&q, &[], None, 5).is_empty());
-    }
-
-    #[test]
-    fn cosine_topk_zero_k_returns_empty() {
-        let q = [0.0f32; DIM];
-        let rows = vec![0.0f32; DIM];
-        assert!(cosine_topk(&q, &rows, None, 0).is_empty());
-    }
-
-    #[test]
-    fn cosine_topk_orders_by_similarity() {
-        // Three rows along ±axes; query along +x. Best match is row 0.
-        let mut rows = Vec::new();
-        rows.extend(unit(&[1.0, 0.0, 0.0])); // row 0: same direction as q
-        rows.extend(unit(&[0.0, 1.0, 0.0])); // row 1: orthogonal
-        rows.extend(unit(&[-1.0, 0.0, 0.0])); // row 2: opposite
-
-        let q: [f32; DIM] = unit(&[1.0, 0.0, 0.0]).try_into().unwrap();
-        let top = cosine_topk(&q, &rows, None, 3);
-
-        assert_eq!(top.len(), 3);
-        assert_eq!(top[0].0, 0);
-        assert!((top[0].1 - 1.0).abs() < 1e-5);
-        assert_eq!(top[1].0, 1);
-        assert!(top[1].1.abs() < 1e-5); // ≈ 0
-        assert_eq!(top[2].0, 2);
-        assert!((top[2].1 + 1.0).abs() < 1e-5); // ≈ -1
-    }
-
-    #[test]
-    fn cosine_topk_respects_k() {
-        let mut rows = Vec::new();
-        for i in 0..10 {
-            // Each row aligns with query proportionally — row 0 best, row 9 worst.
-            let mag = 1.0 - (i as f32) * 0.1;
-            rows.extend(unit(&[mag, 0.1, 0.0]));
-        }
-        let q: [f32; DIM] = unit(&[1.0, 0.0, 0.0]).try_into().unwrap();
-        let top = cosine_topk(&q, &rows, None, 3);
-        assert_eq!(top.len(), 3);
-        // Top-3 should be rows 0, 1, 2 in order.
-        assert_eq!(top[0].0, 0);
-        assert_eq!(top[1].0, 1);
-        assert_eq!(top[2].0, 2);
-    }
-
-    #[test]
-    fn cosine_topk_mask_excludes_filtered_rows() {
-        let mut rows = Vec::new();
-        rows.extend(unit(&[1.0, 0.0, 0.0])); // row 0: best
-        rows.extend(unit(&[0.9, 0.1, 0.0])); // row 1: second best
-        rows.extend(unit(&[0.8, 0.2, 0.0])); // row 2: third best
-
-        let q: [f32; DIM] = unit(&[1.0, 0.0, 0.0]).try_into().unwrap();
-        // Mask out the top row.
-        let mask = vec![false, true, true];
-        let top = cosine_topk(&q, &rows, Some(&mask), 5);
-        // Should return rows 1 and 2 only — row 0 was filtered before scoring.
-        assert_eq!(top.len(), 2);
-        assert_eq!(top[0].0, 1);
-        assert_eq!(top[1].0, 2);
-    }
-
-    #[test]
-    fn cosine_topk_handles_large_matrix() {
-        // Cross the parallel threshold to exercise the rayon path.
-        let n = 5000;
-        let mut rows = Vec::with_capacity(n * DIM);
-        for i in 0..n {
-            // Make row i best at "index i" with falling similarity to q (which is row 0).
-            let mut v = vec![0.0f32; 3];
-            v[0] = 1.0 - (i as f32) / (n as f32);
-            v[1] = (i as f32) / (n as f32);
-            rows.extend(unit(&v));
-        }
-        let q: [f32; DIM] = unit(&[1.0, 0.0, 0.0]).try_into().unwrap();
-        let top = cosine_topk(&q, &rows, None, 5);
-        assert_eq!(top.len(), 5);
-        // Top result should be row 0 (full alignment with q).
-        assert_eq!(top[0].0, 0);
-        // Scores should be monotonically non-increasing.
-        for w in top.windows(2) {
-            assert!(w[0].1 >= w[1].1, "scores not monotone: {:?}", top);
-        }
-    }
-
-    #[test]
-    #[ignore]
-    fn network_empty_returns_zero_vector() {
-        let emb = Embedder::open(&ensure_real_model()).unwrap();
-        let v = emb.encode_one("");
-        assert!(v.iter().all(|&x| x == 0.0));
-    }
+  #[test]
+  #[ignore]
+  fn network_empty_returns_zero_vector() {
+    let emb = Embedder::open(&ensure_real_model()).unwrap();
+    let v = emb.encode_one("");
+    assert!(v.iter().all(|&x| x == 0.0));
+  }
 }

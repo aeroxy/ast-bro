@@ -39,34 +39,34 @@ use std::path::Path;
 /// dispatches to the right per-language resolver, and returns the
 /// flattened surface entries (or a structured error).
 pub fn resolve_surface(
-    path: &Path,
-    opts: &SurfaceOptions,
+  path: &Path,
+  opts: &SurfaceOptions,
 ) -> Result<Vec<SurfaceEntry>, SurfaceError> {
-    let entry = match opts.lang_override {
-        Some(l) => entry_point::discover_as(path, l)?,
-        None => discover(path)?,
-    };
-    resolve_entry(&entry, opts)
+  let entry = match opts.lang_override {
+    Some(l) => entry_point::discover_as(path, l)?,
+    None => discover(path)?,
+  };
+  resolve_entry(&entry, opts)
 }
 
 /// Recursively dispatch a discovered entry point. Workspace members
 /// fan out and their entries are concatenated, prefixed by crate name.
 pub fn resolve_entry(
-    entry: &EntryPoint,
-    opts: &SurfaceOptions,
+  entry: &EntryPoint,
+  opts: &SurfaceOptions,
 ) -> Result<Vec<SurfaceEntry>, SurfaceError> {
-    match entry {
-        EntryPoint::RustCrate { .. } => rust::resolve(entry, opts),
-        EntryPoint::RustWorkspace { members } => {
-            let mut all = Vec::new();
-            for m in members {
-                all.extend(resolve_entry(m, opts)?);
-            }
-            Ok(all)
-        }
-        EntryPoint::PythonPackage { .. } => python::resolve(entry, opts),
-        EntryPoint::TsPackage { .. } => typescript::resolve(entry, opts),
-        EntryPoint::ScalaPackage { .. } => scala::resolve(entry, opts),
-        EntryPoint::Fallback { .. } => fallback::resolve(entry, opts),
+  match entry {
+    EntryPoint::RustCrate { .. } => rust::resolve(entry, opts),
+    EntryPoint::RustWorkspace { members } => {
+      let mut all = Vec::new();
+      for m in members {
+        all.extend(resolve_entry(m, opts)?);
+      }
+      Ok(all)
     }
+    EntryPoint::PythonPackage { .. } => python::resolve(entry, opts),
+    EntryPoint::TsPackage { .. } => typescript::resolve(entry, opts),
+    EntryPoint::ScalaPackage { .. } => scala::resolve(entry, opts),
+    EntryPoint::Fallback { .. } => fallback::resolve(entry, opts),
+  }
 }

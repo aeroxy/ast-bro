@@ -25,38 +25,38 @@ use super::*;
 
 /// What a fixture is expected to yield beyond small chunks.
 enum Expect {
-    /// The member walk must find at least this many declarations.
-    Members(usize),
-    /// A data format: split points come from top-level children, not members.
-    SplitsOnly,
+  /// The member walk must find at least this many declarations.
+  Members(usize),
+  /// A data format: split points come from top-level children, not members.
+  SplitsOnly,
 }
 
 struct Fixture {
-    lang: SupportLang,
-    /// Whole file. `{body}` is replaced by the concatenated members.
-    file: &'static str,
-    /// One member. `{i}` is the index, `{pad}` the generated padding.
-    member: &'static str,
-    /// One padding line inside a member body. `{j}` is the line index.
-    pad_line: &'static str,
-    expect: Expect,
+  lang: SupportLang,
+  /// Whole file. `{body}` is replaced by the concatenated members.
+  file: &'static str,
+  /// One member. `{i}` is the index, `{pad}` the generated padding.
+  member: &'static str,
+  /// One padding line inside a member body. `{j}` is the line index.
+  pad_line: &'static str,
+  expect: Expect,
 }
 
 const MEMBERS: usize = 6;
 const PAD_LINES: usize = 12;
 
 fn render(f: &Fixture) -> String {
-    let body: String = (0..MEMBERS)
-        .map(|i| {
-            let pad: String = (0..PAD_LINES)
-                .map(|j| f.pad_line.replace("{j}", &j.to_string()))
-                .collect();
-            f.member
-                .replace("{pad}", &pad)
-                .replace("{i}", &i.to_string())
-        })
+  let body: String = (0..MEMBERS)
+    .map(|i| {
+      let pad: String = (0..PAD_LINES)
+        .map(|j| f.pad_line.replace("{j}", &j.to_string()))
         .collect();
-    f.file.replace("{body}", &body)
+      f.member
+        .replace("{pad}", &pad)
+        .replace("{i}", &i.to_string())
+    })
+    .collect();
+  f.file.replace("{body}", &body)
 }
 
 #[rustfmt::skip]
@@ -175,15 +175,15 @@ const FIXTURES: &[Fixture] = &[
 /// not a silently unmeasured language.
 #[test]
 fn every_supported_language_has_a_fixture() {
-    let missing: Vec<String> = SupportLang::all_langs()
-        .iter()
-        .filter(|l| !FIXTURES.iter().any(|f| f.lang == **l))
-        .map(|l| format!("{l:?}"))
-        .collect();
-    assert!(
-        missing.is_empty(),
-        "no chunker fixture for {missing:?} — add one to FIXTURES"
-    );
+  let missing: Vec<String> = SupportLang::all_langs()
+    .iter()
+    .filter(|l| !FIXTURES.iter().any(|f| f.lang == **l))
+    .map(|l| format!("{l:?}"))
+    .collect();
+  assert!(
+    missing.is_empty(),
+    "no chunker fixture for {missing:?} — add one to FIXTURES"
+  );
 }
 
 /// Languages the chunker does not handle yet, and what stops it.
@@ -196,80 +196,80 @@ fn every_supported_language_has_a_fixture() {
 /// still fails, so fixing a language turns that test red and the entry has to
 /// be deleted along with the fix.
 const KNOWN_GAPS: &[(SupportLang, &str)] = &[
-    (
-        SupportLang::Dart,
-        "a method is a `class_member` wrapping sibling `method_signature` and \
+  (
+    SupportLang::Dart,
+    "a method is a `class_member` wrapping sibling `method_signature` and \
          `function_body` nodes, so no single node spans the member",
-    ),
-    (
-        SupportLang::Elixir,
-        "every form is a `call` carrying a `do_block`; `def` is indistinguishable \
+  ),
+  (
+    SupportLang::Elixir,
+    "every form is a `call` carrying a `do_block`; `def` is indistinguishable \
          from any other macro call by node kind alone",
-    ),
-    (
-        SupportLang::Haskell,
-        "top-level `declarations` is not a container, and a definition is split \
+  ),
+  (
+    SupportLang::Haskell,
+    "top-level `declarations` is not a container, and a definition is split \
          into sibling `signature` and `function` nodes",
-    ),
-    (
-        SupportLang::Hcl,
-        "the parse root holds one `body` node, so blocks sit at depth 1 where \
+  ),
+  (
+    SupportLang::Hcl,
+    "the parse root holds one `body` node, so blocks sit at depth 1 where \
          only member kinds qualify",
-    ),
-    (
-        SupportLang::Html,
-        "the parse root holds one `element`, so nested elements sit at depth 1 \
+  ),
+  (
+    SupportLang::Html,
+    "the parse root holds one `element`, so nested elements sit at depth 1 \
          where only member kinds qualify",
-    ),
-    (
-        SupportLang::Json,
-        "the parse root holds one `object`, so pairs sit at depth 1 where only \
+  ),
+  (
+    SupportLang::Json,
+    "the parse root holds one `object`, so pairs sit at depth 1 where only \
          member kinds qualify",
-    ),
-    (
-        SupportLang::Nix,
-        "the parse root holds one `attrset_expression`, so bindings sit at depth \
+  ),
+  (
+    SupportLang::Nix,
+    "the parse root holds one `attrset_expression`, so bindings sit at depth \
          1 where only member kinds qualify",
-    ),
-    (
-        SupportLang::Yaml,
-        "the parse root holds one `document`, so mapping entries sit at depth 1 \
+  ),
+  (
+    SupportLang::Yaml,
+    "the parse root holds one `document`, so mapping entries sit at depth 1 \
          where only member kinds qualify",
-    ),
+  ),
 ];
 
 fn is_known_gap(lang: SupportLang) -> bool {
-    KNOWN_GAPS.iter().any(|(l, _)| *l == lang)
+  KNOWN_GAPS.iter().any(|(l, _)| *l == lang)
 }
 
 /// Property 1: the member walk sees every declaration the fixture declares.
 fn member_failure(f: &Fixture) -> Option<String> {
-    let Expect::Members(want) = f.expect else {
-        return None;
-    };
-    let found = build_split_plan(&render(f), f.lang).members.len();
-    (found < want).then(|| format!("{:?}: found {found} members, want >= {want}", f.lang))
+  let Expect::Members(want) = f.expect else {
+    return None;
+  };
+  let found = build_split_plan(&render(f), f.lang).members.len();
+  (found < want).then(|| format!("{:?}: found {found} members, want >= {want}", f.lang))
 }
 
 /// Property 2: no `Source` chunk swallows the whole file.
 fn split_failure(f: &Fixture) -> Option<String> {
-    let src = render(f);
-    let limit = MAX_CHARS + src.len() / MEMBERS;
-    let chunks = chunk_source(&src, "fixture", ChunkerKind::AstGrep(f.lang));
-    let worst = chunks
-        .iter()
-        .filter(|c| c.kind == ChunkKind::Source)
-        .map(|c| c.content.len())
-        .max()
-        .unwrap_or(0);
-    (worst > limit).then(|| {
-        format!(
-            "{:?}: largest Source chunk is {worst} chars of a {} char file (limit {limit}, {} chunks)",
-            f.lang,
-            src.len(),
-            chunks.len()
-        )
-    })
+  let src = render(f);
+  let limit = MAX_CHARS + src.len() / MEMBERS;
+  let chunks = chunk_source(&src, "fixture", ChunkerKind::AstGrep(f.lang));
+  let worst = chunks
+    .iter()
+    .filter(|c| c.kind == ChunkKind::Source)
+    .map(|c| c.content.len())
+    .max()
+    .unwrap_or(0);
+  (worst > limit).then(|| {
+    format!(
+      "{:?}: largest Source chunk is {worst} chars of a {} char file (limit {limit}, {} chunks)",
+      f.lang,
+      src.len(),
+      chunks.len()
+    )
+  })
 }
 
 /// The member walk must see every declaration the fixture declares.
@@ -279,12 +279,16 @@ fn split_failure(f: &Fixture) -> Option<String> {
 /// breadcrumbs, and no member-level split points.
 #[test]
 fn every_language_finds_its_members() {
-    let failures: Vec<String> = FIXTURES
-        .iter()
-        .filter(|f| !is_known_gap(f.lang))
-        .filter_map(member_failure)
-        .collect();
-    assert!(failures.is_empty(), "member walk incomplete:\n  {}", failures.join("\n  "));
+  let failures: Vec<String> = FIXTURES
+    .iter()
+    .filter(|f| !is_known_gap(f.lang))
+    .filter_map(member_failure)
+    .collect();
+  assert!(
+    failures.is_empty(),
+    "member walk incomplete:\n  {}",
+    failures.join("\n  ")
+  );
 }
 
 /// No `Source` chunk may swallow the whole file.
@@ -295,32 +299,38 @@ fn every_language_finds_its_members() {
 /// which is what this catches.
 #[test]
 fn every_language_splits_a_large_file() {
-    let failures: Vec<String> = FIXTURES
-        .iter()
-        .filter(|f| !is_known_gap(f.lang))
-        .filter_map(split_failure)
-        .collect();
-    assert!(failures.is_empty(), "chunks not split:\n  {}", failures.join("\n  "));
+  let failures: Vec<String> = FIXTURES
+    .iter()
+    .filter(|f| !is_known_gap(f.lang))
+    .filter_map(split_failure)
+    .collect();
+  assert!(
+    failures.is_empty(),
+    "chunks not split:\n  {}",
+    failures.join("\n  ")
+  );
 }
 
 /// Every `KNOWN_GAPS` entry still reproduces. Fixing one fails here on purpose.
 #[test]
 fn known_gaps_still_fail() {
-    let fixed: Vec<&str> = KNOWN_GAPS
+  let fixed: Vec<&str> = KNOWN_GAPS
+    .iter()
+    .filter(|(lang, _)| {
+      let f = FIXTURES
         .iter()
-        .filter(|(lang, _)| {
-            let f = FIXTURES.iter().find(|f| f.lang == *lang).expect("gap without a fixture");
-            member_failure(f).is_none() && split_failure(f).is_none()
-        })
-        .map(|(_, reason)| *reason)
-        .collect();
-    assert!(
-        fixed.is_empty(),
-        "these languages now chunk correctly — delete their KNOWN_GAPS entries:\n  {}",
-        fixed.join("\n  ")
-    );
+        .find(|f| f.lang == *lang)
+        .expect("gap without a fixture");
+      member_failure(f).is_none() && split_failure(f).is_none()
+    })
+    .map(|(_, reason)| *reason)
+    .collect();
+  assert!(
+    fixed.is_empty(),
+    "these languages now chunk correctly — delete their KNOWN_GAPS entries:\n  {}",
+    fixed.join("\n  ")
+  );
 }
-
 
 /// One oversized callable, in a shape a real codebase uses.
 ///
@@ -328,19 +338,19 @@ fn known_gaps_still_fail() {
 /// `MAX_CHARS`. Only languages with a `map` adapter appear here: these are the
 /// shapes users actually search for.
 struct Shape {
-    label: &'static str,
-    lang: SupportLang,
-    src: &'static str,
+  label: &'static str,
+  lang: SupportLang,
+  src: &'static str,
 }
 
 /// Enough lines that even the tersest statement style clears `MAX_CHARS`.
 const SHAPE_PAD_LINES: usize = 70;
 
 fn render_shape(s: &Shape, pad_line: &str) -> String {
-    let pad: String = (0..SHAPE_PAD_LINES)
-        .map(|j| pad_line.replace("{j}", &j.to_string()))
-        .collect();
-    s.src.replace("{pad}", &pad)
+  let pad: String = (0..SHAPE_PAD_LINES)
+    .map(|j| pad_line.replace("{j}", &j.to_string()))
+    .collect();
+  s.src.replace("{pad}", &pad)
 }
 
 /// Padding must be real statements, not comments. Several grammars attach a
@@ -406,36 +416,39 @@ fn shapes() -> Vec<(Shape, &'static str)> {
 /// vector is dropped from dense retrieval, so only BM25 can reach it.
 #[test]
 fn an_oversized_callable_is_split_into_parts() {
-    let mut failures = Vec::new();
-    for (s, pad_line) in shapes() {
-        let src = render_shape(&s, pad_line);
-        // Guard the fixture, not the chunker: a shape whose member stopped
-        // clearing MAX_CHARS would pass the real assertion for the wrong reason.
-        let biggest = build_split_plan(&src, s.lang)
-            .members
-            .iter()
-            .map(|m| m.end - m.start)
-            .max()
-            .unwrap_or(0);
-        assert!(
-            biggest > MAX_CHARS,
-            "{}: largest member is {biggest} chars, under MAX_CHARS — grow SHAPE_PAD_LINES",
-            s.label
-        );
-        let chunks = chunk_source(&src, "fixture", ChunkerKind::AstGrep(s.lang));
-        let parts = chunks.iter().filter(|c| c.kind == ChunkKind::Part).count();
-        if parts < 2 {
-            failures.push(format!(
-                "{}: {parts} Part chunk(s) for a {} char body ({} chunks total)",
-                s.label,
-                src.len(),
-                chunks.len()
-            ));
-        }
+  let mut failures = Vec::new();
+  for (s, pad_line) in shapes() {
+    let src = render_shape(&s, pad_line);
+    // Guard the fixture, not the chunker: a shape whose member stopped
+    // clearing MAX_CHARS would pass the real assertion for the wrong reason.
+    let biggest = build_split_plan(&src, s.lang)
+      .members
+      .iter()
+      .map(|m| m.end - m.start)
+      .max()
+      .unwrap_or(0);
+    assert!(
+      biggest > MAX_CHARS,
+      "{}: largest member is {biggest} chars, under MAX_CHARS — grow SHAPE_PAD_LINES",
+      s.label
+    );
+    let chunks = chunk_source(&src, "fixture", ChunkerKind::AstGrep(s.lang));
+    let parts = chunks.iter().filter(|c| c.kind == ChunkKind::Part).count();
+    if parts < 2 {
+      failures.push(format!(
+        "{}: {parts} Part chunk(s) for a {} char body ({} chunks total)",
+        s.label,
+        src.len(),
+        chunks.len()
+      ));
     }
-    assert!(failures.is_empty(), "oversized callables not split:\n  {}", failures.join("\n  "));
+  }
+  assert!(
+    failures.is_empty(),
+    "oversized callables not split:\n  {}",
+    failures.join("\n  ")
+  );
 }
-
 
 /// A second way the same language spells a container or a member.
 ///
@@ -444,29 +457,29 @@ fn an_oversized_callable_is_split_into_parts() {
 /// a `do` block holding members, and four levels of nesting all still collapsed
 /// into one chunk — the table below is what would have caught that.
 struct Variant {
-    label: &'static str,
-    lang: SupportLang,
-    /// A whole file. `{pad}` is replaced per member; `{i}` is the index.
-    src: &'static str,
+  label: &'static str,
+  lang: SupportLang,
+  /// A whole file. `{pad}` is replaced per member; `{i}` is the index.
+  src: &'static str,
 }
 
 fn render_variant(v: &Variant, members: usize, pad_lines: usize, pad_line: &str) -> String {
-    let one: String = (0..members)
-        .map(|i| {
-            let pad: String = (0..pad_lines)
-                .map(|j| pad_line.replace("{j}", &j.to_string()))
-                .collect();
-            v.src
-                .split("{member}")
-                .nth(1)
-                .unwrap_or("")
-                .replace("{pad}", &pad)
-                .replace("{i}", &i.to_string())
-        })
+  let one: String = (0..members)
+    .map(|i| {
+      let pad: String = (0..pad_lines)
+        .map(|j| pad_line.replace("{j}", &j.to_string()))
         .collect();
-    let (head, tail) = v.src.split_once("{member}").unwrap();
-    let tail = tail.split_once("{member}").map(|(_, t)| t).unwrap_or("");
-    format!("{head}{one}{tail}")
+      v.src
+        .split("{member}")
+        .nth(1)
+        .unwrap_or("")
+        .replace("{pad}", &pad)
+        .replace("{i}", &i.to_string())
+    })
+    .collect();
+  let (head, tail) = v.src.split_once("{member}").unwrap();
+  let tail = tail.split_once("{member}").map(|(_, t)| t).unwrap_or("");
+  format!("{head}{one}{tail}")
 }
 
 #[rustfmt::skip]
@@ -495,29 +508,32 @@ fn variants() -> Vec<(Variant, &'static str)> {
 /// happens to use.
 #[test]
 fn every_member_shape_splits() {
-    let mut failures = Vec::new();
-    for (v, pad_line) in variants() {
-        let src = render_variant(&v, MEMBERS, PAD_LINES, pad_line);
-        let limit = MAX_CHARS + src.len() / MEMBERS;
-        let chunks = chunk_source(&src, "fixture", ChunkerKind::AstGrep(v.lang));
-        let worst = chunks
-            .iter()
-            .filter(|c| c.kind == ChunkKind::Source)
-            .map(|c| c.content.len())
-            .max()
-            .unwrap_or(0);
-        if worst > limit {
-            failures.push(format!(
-                "{}: largest Source chunk is {worst} chars of a {} char file (limit {limit}, {} chunks)",
-                v.label,
-                src.len(),
-                chunks.len()
-            ));
-        }
+  let mut failures = Vec::new();
+  for (v, pad_line) in variants() {
+    let src = render_variant(&v, MEMBERS, PAD_LINES, pad_line);
+    let limit = MAX_CHARS + src.len() / MEMBERS;
+    let chunks = chunk_source(&src, "fixture", ChunkerKind::AstGrep(v.lang));
+    let worst = chunks
+      .iter()
+      .filter(|c| c.kind == ChunkKind::Source)
+      .map(|c| c.content.len())
+      .max()
+      .unwrap_or(0);
+    if worst > limit {
+      failures.push(format!(
+        "{}: largest Source chunk is {worst} chars of a {} char file (limit {limit}, {} chunks)",
+        v.label,
+        src.len(),
+        chunks.len()
+      ));
     }
-    assert!(failures.is_empty(), "member shapes not split:\n  {}", failures.join("\n  "));
+  }
+  assert!(
+    failures.is_empty(),
+    "member shapes not split:\n  {}",
+    failures.join("\n  ")
+  );
 }
-
 
 /// One declaration per language, and the signature its outline entry carries.
 ///
@@ -526,11 +542,11 @@ fn every_member_shape_splits() {
 /// off: both name the parameter node `parameter_list` as a direct child of the
 /// declaration, so a body-start rule based on kind alone fired on it.
 struct SigCase {
-    label: &'static str,
-    lang: SupportLang,
-    src: &'static str,
-    /// The signature one member of `src` must carry, whitespace collapsed.
-    want: &'static str,
+  label: &'static str,
+  lang: SupportLang,
+  src: &'static str,
+  /// The signature one member of `src` must carry, whitespace collapsed.
+  want: &'static str,
 }
 
 #[rustfmt::skip]
@@ -590,16 +606,20 @@ fn sig_cases() -> Vec<SigCase> {
 /// gets on the same query.
 #[test]
 fn every_language_keeps_its_parameters_in_the_signature() {
-    let mut failures = Vec::new();
-    for c in sig_cases() {
-        let got: Vec<String> = build_split_plan(c.src, c.lang)
-            .members
-            .into_iter()
-            .map(|m| m.signature)
-            .collect();
-        if !got.iter().any(|s| s == c.want) {
-            failures.push(format!("{}: want {:?}, got {:?}", c.label, c.want, got));
-        }
+  let mut failures = Vec::new();
+  for c in sig_cases() {
+    let got: Vec<String> = build_split_plan(c.src, c.lang)
+      .members
+      .into_iter()
+      .map(|m| m.signature)
+      .collect();
+    if !got.iter().any(|s| s == c.want) {
+      failures.push(format!("{}: want {:?}, got {:?}", c.label, c.want, got));
     }
-    assert!(failures.is_empty(), "signatures truncated:\n  {}", failures.join("\n  "));
+  }
+  assert!(
+    failures.is_empty(),
+    "signatures truncated:\n  {}",
+    failures.join("\n  ")
+  );
 }

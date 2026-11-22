@@ -67,20 +67,20 @@ const FILE_PRIOR_WEIGHT: f32 = 1.0;
 
 /// Promote chunks whose file scored well in phase one.
 fn apply_file_prior(
-    scored: &mut HashMap<u32, f32>,
-    chunks: &[Chunk],
-    prior: &HashMap<&str, f32>,
-    weight: f32,
+  scored: &mut HashMap<u32, f32>,
+  chunks: &[Chunk],
+  prior: &HashMap<&str, f32>,
+  weight: f32,
 ) {
-    if prior.is_empty() {
-        return;
+  if prior.is_empty() {
+    return;
+  }
+  for (id, score) in scored.iter_mut() {
+    let chunk = &chunks[*id as usize];
+    if let Some(p) = prior.get(chunk.file_path.as_str()) {
+      *score *= 1.0 + weight * p;
     }
-    for (id, score) in scored.iter_mut() {
-        let chunk = &chunks[*id as usize];
-        if let Some(p) = prior.get(chunk.file_path.as_str()) {
-            *score *= 1.0 + weight * p;
-        }
-    }
+  }
 }
 
 /// How many candidates each retriever contributes before fusion.
@@ -111,136 +111,137 @@ const SCHEMA: &str = "ast-bro.search-index.v2";
 /// On-disk paths under a repo's `.ast-bro/index/` directory.
 #[derive(Debug, Clone)]
 pub struct IndexPaths {
-    pub root: PathBuf,
-    pub index_dir: PathBuf,
-    pub meta_json: PathBuf,
-    pub chunks_bin: PathBuf,
-    pub embeddings_f32: PathBuf,
-    pub bm25_bin: PathBuf,
-    pub files_bin: PathBuf,
-    pub lock: PathBuf,
-    pub gitignore: PathBuf,
+  pub root: PathBuf,
+  pub index_dir: PathBuf,
+  pub meta_json: PathBuf,
+  pub chunks_bin: PathBuf,
+  pub embeddings_f32: PathBuf,
+  pub bm25_bin: PathBuf,
+  pub files_bin: PathBuf,
+  pub lock: PathBuf,
+  pub gitignore: PathBuf,
 }
 
 impl IndexPaths {
-    pub fn from_repo(repo_root: &Path) -> Self {
-        let new_dir = repo_root.join(".ast-bro");
-        let old_dir = repo_root.join(".ast-outline");
+  pub fn from_repo(repo_root: &Path) -> Self {
+    let new_dir = repo_root.join(".ast-bro");
+    let old_dir = repo_root.join(".ast-outline");
 
-        // Process-wide guard via OnceLock<Mutex<HashSet>> so concurrent threads
-        // (e.g. parallel MCP tool calls) don't race on std::fs::rename within
-        // the same process, and multiple repos are each migrated at most once.
-        // Inter-process races are not covered — fs::rename is atomic on most
-        // platforms so the loser simply gets an error, but a filesystem-level
-        // lock would be needed for full cross-process safety.
-        static MIGRATED: OnceLock<std::sync::Mutex<std::collections::HashSet<PathBuf>>> = OnceLock::new();
-        let set = MIGRATED.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()));
-        let mut guard = set.lock().unwrap();
-        if guard.insert(repo_root.to_path_buf()) && old_dir.exists() && !new_dir.exists() {
-            if let Err(e) = std::fs::rename(&old_dir, &new_dir) {
-                eprintln!("warning: could not rename .ast-outline -> .ast-bro: {e}");
-            } else {
-                eprintln!("info: auto-renamed .ast-outline -> .ast-bro");
-            }
-        }
-
-        let index_dir = new_dir.join("index");
-        Self {
-            root: repo_root.to_path_buf(),
-            meta_json: index_dir.join("meta.json"),
-            chunks_bin: index_dir.join("chunks.bin"),
-            embeddings_f32: index_dir.join("embeddings.f32"),
-            bm25_bin: index_dir.join("bm25.bin"),
-            files_bin: index_dir.join("files.bin"),
-            lock: index_dir.join("lock"),
-            gitignore: new_dir.join(".gitignore"),
-            index_dir,
-        }
+    // Process-wide guard via OnceLock<Mutex<HashSet>> so concurrent threads
+    // (e.g. parallel MCP tool calls) don't race on std::fs::rename within
+    // the same process, and multiple repos are each migrated at most once.
+    // Inter-process races are not covered — fs::rename is atomic on most
+    // platforms so the loser simply gets an error, but a filesystem-level
+    // lock would be needed for full cross-process safety.
+    static MIGRATED: OnceLock<std::sync::Mutex<std::collections::HashSet<PathBuf>>> =
+      OnceLock::new();
+    let set = MIGRATED.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()));
+    let mut guard = set.lock().unwrap();
+    if guard.insert(repo_root.to_path_buf()) && old_dir.exists() && !new_dir.exists() {
+      if let Err(e) = std::fs::rename(&old_dir, &new_dir) {
+        eprintln!("warning: could not rename .ast-outline -> .ast-bro: {e}");
+      } else {
+        eprintln!("info: auto-renamed .ast-outline -> .ast-bro");
+      }
     }
+
+    let index_dir = new_dir.join("index");
+    Self {
+      root: repo_root.to_path_buf(),
+      meta_json: index_dir.join("meta.json"),
+      chunks_bin: index_dir.join("chunks.bin"),
+      embeddings_f32: index_dir.join("embeddings.f32"),
+      bm25_bin: index_dir.join("bm25.bin"),
+      files_bin: index_dir.join("files.bin"),
+      lock: index_dir.join("lock"),
+      gitignore: new_dir.join(".gitignore"),
+      index_dir,
+    }
+  }
 }
 
 /// Top-level metadata persisted as JSON for human readability + version checks.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Meta {
-    pub schema: String,
-    #[serde(alias = "ast_outline_version")]
-    pub ast_bro_version: String,
-    pub model: ModelMeta,
-    pub created_unix: u64,
-    pub chunk_count: u32,
-    /// Always `"f32_le"` for v1/v2. Reserved so a future schema can switch
-    /// to f16/quantized.
-    pub embedding_dtype: String,
-    /// Reserved for incremental updates — empty in v1/v2.
-    #[serde(default)]
-    pub tombstones: Vec<u32>,
-    /// Subdirectory of `paths.root` that this index covers, as a POSIX path
-    /// (forward slashes, no leading `./`). `""` means the whole home.
-    /// Added in schema v2; defaults to `""` when reading a v1 meta.
-    #[serde(default)]
-    pub indexed_corpus: String,
+  pub schema: String,
+  #[serde(alias = "ast_outline_version")]
+  pub ast_bro_version: String,
+  pub model: ModelMeta,
+  pub created_unix: u64,
+  pub chunk_count: u32,
+  /// Always `"f32_le"` for v1/v2. Reserved so a future schema can switch
+  /// to f16/quantized.
+  pub embedding_dtype: String,
+  /// Reserved for incremental updates — empty in v1/v2.
+  #[serde(default)]
+  pub tombstones: Vec<u32>,
+  /// Subdirectory of `paths.root` that this index covers, as a POSIX path
+  /// (forward slashes, no leading `./`). `""` means the whole home.
+  /// Added in schema v2; defaults to `""` when reading a v1 meta.
+  #[serde(default)]
+  pub indexed_corpus: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelMeta {
-    pub id: String,
-    pub dim: u32,
+  pub id: String,
+  pub dim: u32,
 }
 
 /// One search hit — a chunk with its final score.
 #[derive(Debug, Clone)]
 pub struct SearchHit {
-    pub chunk: Chunk,
-    pub score: f32,
+  pub chunk: Chunk,
+  pub score: f32,
 }
 
 /// Options for `search`. `find-related` doesn't need any (just `top_k`).
 #[derive(Debug, Clone, Default)]
 pub struct SearchOptions {
-    pub top_k: usize,
-    /// Override the auto-resolved alpha. `None` = auto-detect from query type.
-    pub alpha: Option<f32>,
-    /// If set, restrict to chunks whose `language` field is in this set.
-    pub languages: Option<Vec<String>>,
-    /// If set, restrict to chunks whose `file_path` starts with this POSIX
-    /// prefix (relative to home). `""` or `None` = no filter.
-    pub query_scope: Option<String>,
-    /// `path:` filters — keep only chunks whose `file_path` (lowercased)
-    /// contains ANY of these substrings. Empty = no filter.
-    pub path_contains: Vec<String>,
-    /// `name:` filters — keep only chunks whose file name/stem (lowercased)
-    /// contains ANY of these substrings. Empty = no filter.
-    pub name_contains: Vec<String>,
+  pub top_k: usize,
+  /// Override the auto-resolved alpha. `None` = auto-detect from query type.
+  pub alpha: Option<f32>,
+  /// If set, restrict to chunks whose `language` field is in this set.
+  pub languages: Option<Vec<String>>,
+  /// If set, restrict to chunks whose `file_path` starts with this POSIX
+  /// prefix (relative to home). `""` or `None` = no filter.
+  pub query_scope: Option<String>,
+  /// `path:` filters — keep only chunks whose `file_path` (lowercased)
+  /// contains ANY of these substrings. Empty = no filter.
+  pub path_contains: Vec<String>,
+  /// `name:` filters — keep only chunks whose file name/stem (lowercased)
+  /// contains ANY of these substrings. Empty = no filter.
+  pub name_contains: Vec<String>,
 }
 
 impl SearchOptions {
-    #[allow(dead_code)] // used by network-gated tests; CLI/MCP build via struct literal
-    pub fn with_top_k(top_k: usize) -> Self {
-        Self {
-            top_k,
-            ..Default::default()
-        }
+  #[allow(dead_code)] // used by network-gated tests; CLI/MCP build via struct literal
+  pub fn with_top_k(top_k: usize) -> Self {
+    Self {
+      top_k,
+      ..Default::default()
     }
+  }
 }
 
 pub struct Index {
-    pub paths: IndexPaths,
-    pub meta: Meta,
-    chunks: Vec<Chunk>,
-    /// `chunk_count × DIM` row-major. Held in memory for v1; mmap is a v2 swap.
-    embeddings: Vec<f32>,
-    bm25: Bm25Index,
-    files: Vec<FileRecord>,
-    embedder: Arc<Embedder>,
-    /// `live[i] == false` iff chunk id `i` is in `meta.tombstones`.
-    /// `None` (the fast path) when no tombstones exist — search/find_related
-    /// skip the live filter entirely.
-    live_mask: Option<Vec<bool>>,
-    /// Memoised dep graph for `find-related` boost. `None` until the
-    /// first call; then either Some(graph) when `.ast-bro/deps/`
-    /// has a fresh cache, or stays None to mean "no boost available".
-    /// Mutated via `RwLock` so the borrow remains shared.
-    dep_graph: std::sync::RwLock<Option<Option<crate::deps::DepGraph>>>,
+  pub paths: IndexPaths,
+  pub meta: Meta,
+  chunks: Vec<Chunk>,
+  /// `chunk_count × DIM` row-major. Held in memory for v1; mmap is a v2 swap.
+  embeddings: Vec<f32>,
+  bm25: Bm25Index,
+  files: Vec<FileRecord>,
+  embedder: Arc<Embedder>,
+  /// `live[i] == false` iff chunk id `i` is in `meta.tombstones`.
+  /// `None` (the fast path) when no tombstones exist — search/find_related
+  /// skip the live filter entirely.
+  live_mask: Option<Vec<bool>>,
+  /// Memoised dep graph for `find-related` boost. `None` until the
+  /// first call; then either Some(graph) when `.ast-bro/deps/`
+  /// has a fresh cache, or stays None to mean "no boost available".
+  /// Mutated via `RwLock` so the borrow remains shared.
+  dep_graph: std::sync::RwLock<Option<Option<crate::deps::DepGraph>>>,
 }
 
 /// Compaction kicks in when tombstones occupy more than this fraction of
@@ -250,731 +251,707 @@ pub struct Index {
 const DEFAULT_COMPACTION_RATIO: f32 = 0.30;
 
 fn compaction_ratio() -> f32 {
-    std::env::var("AST_BRO_COMPACTION_RATIO")
-        .or_else(|_| std::env::var("AST_OUTLINE_COMPACTION_RATIO"))
-        .ok()
-        .and_then(|s| s.parse::<f32>().ok())
-        .filter(|v| (0.0..=1.0).contains(v))
-        .unwrap_or(DEFAULT_COMPACTION_RATIO)
+  std::env::var("AST_BRO_COMPACTION_RATIO")
+    .or_else(|_| std::env::var("AST_OUTLINE_COMPACTION_RATIO"))
+    .ok()
+    .and_then(|s| s.parse::<f32>().ok())
+    .filter(|v| (0.0..=1.0).contains(v))
+    .unwrap_or(DEFAULT_COMPACTION_RATIO)
 }
 
 impl Index {
-    /// Open the index for `path_arg`. Walks up from `path_arg` to `cwd`
-    /// looking for an existing `.ast-bro/index/`; if found, refreshes
-    /// it on detected file changes, otherwise builds at the resolved home.
-    pub fn open(path_arg: &Path, cwd: &Path) -> io::Result<Self> {
-        let (home, _found) = resolve_home(path_arg, cwd, Marker::SearchIndex);
-        let paths = IndexPaths::from_repo(&home);
+  /// Open the index for `path_arg`. Walks up from `path_arg` to `cwd`
+  /// looking for an existing `.ast-bro/index/`; if found, refreshes
+  /// it on detected file changes, otherwise builds at the resolved home.
+  pub fn open(path_arg: &Path, cwd: &Path) -> io::Result<Self> {
+    let (home, _found) = resolve_home(path_arg, cwd, Marker::SearchIndex);
+    let paths = IndexPaths::from_repo(&home);
 
-        // Try to load. If anything fails (missing files, schema mismatch,
-        // corruption) fall back to a fresh build.
-        if paths.meta_json.exists() {
-            match Self::load_unlocked(&paths) {
-                Ok(mut loaded) => {
-                    // Compaction trigger first — fires even on empty-delta
-                    // opens so a stale-but-quiet repo gets cleaned up too.
-                    let total_chunks = loaded.meta.chunk_count as usize;
-                    let dead = loaded.meta.tombstones.len();
-                    if total_chunks > 0
-                        && (dead as f32) / (total_chunks as f32) > compaction_ratio()
-                    {
-                        eprintln!(
-                            "ast-bro: tombstones {}/{} exceed {:.0}% — compacting (full rebuild)",
-                            dead,
-                            total_chunks,
-                            compaction_ratio() * 100.0,
-                        );
-                        return Self::build_with_corpus(
-                            path_arg,
-                            cwd,
-                            &loaded.meta.indexed_corpus,
-                        );
-                    }
-
-                    let corpus_dir = corpus_walk_dir(&paths.root, &loaded.meta.indexed_corpus);
-                    let delta = compute_delta(&corpus_dir, &paths.root, &loaded.files);
-                    if !delta.requires_rebuild() && delta.mtime_only.is_empty() {
-                        return Ok(loaded);
-                    }
-
-                    if delta.requires_rebuild() {
-                        eprintln!(
-                            "ast-bro: index stale ({} added, {} modified, {} removed) — applying delta",
-                            delta.added.len(),
-                            delta.modified.len(),
-                            delta.removed.len(),
-                        );
-                    }
-                    match loaded.apply_delta(&delta) {
-                        Ok(()) => return Ok(loaded),
-                        Err(e) => {
-                            eprintln!(
-                                "ast-bro: delta apply failed ({e}); falling back to full rebuild"
-                            );
-                            return Self::build_with_corpus(
-                                path_arg,
-                                cwd,
-                                &loaded.meta.indexed_corpus,
-                            );
-                        }
-                    }
-                }
-                Err(e) => {
-                    eprintln!("ast-bro: index unreadable ({e}); rebuilding");
-                }
-            }
-        }
-
-        Self::build(path_arg, cwd)
-    }
-
-    /// Force a full rebuild from scratch. Corpus = `path_arg` relative to
-    /// the resolved home (or `""` when `path_arg == home`).
-    pub fn build(path_arg: &Path, cwd: &Path) -> io::Result<Self> {
-        let (home, _) = resolve_home(path_arg, cwd, Marker::SearchIndex);
-        let corpus = relative_posix(path_arg, &home).unwrap_or_default();
-        Self::build_with_corpus(path_arg, cwd, &corpus)
-    }
-
-    /// Force a full rebuild with an explicit corpus. Used by the corpus
-    /// reconciliation logic in `run_index` and by `Index::open` when
-    /// rebuilding a stale index (preserves the recorded corpus).
-    pub fn build_with_corpus(
-        path_arg: &Path,
-        cwd: &Path,
-        corpus: &str,
-    ) -> io::Result<Self> {
-        let (home, _) = resolve_home(path_arg, cwd, Marker::SearchIndex);
-        let paths = IndexPaths::from_repo(&home);
-        fs::create_dir_all(&paths.index_dir)?;
-        // Always ensure the .gitignore is present so users don't accidentally
-        // commit the cache.
-        ensure_gitignore(&paths)?;
-
-        let lock_file = acquire_lock(&paths)?;
-
-        let started = std::time::Instant::now();
-        let walk_dir = corpus_walk_dir(&paths.root, corpus);
-        if corpus.is_empty() {
-            eprintln!("ast-bro: building index for {}", paths.root.display());
-        } else {
+    // Try to load. If anything fails (missing files, schema mismatch,
+    // corruption) fall back to a fresh build.
+    if paths.meta_json.exists() {
+      match Self::load_unlocked(&paths) {
+        Ok(mut loaded) => {
+          // Compaction trigger first — fires even on empty-delta
+          // opens so a stale-but-quiet repo gets cleaned up too.
+          let total_chunks = loaded.meta.chunk_count as usize;
+          let dead = loaded.meta.tombstones.len();
+          if total_chunks > 0 && (dead as f32) / (total_chunks as f32) > compaction_ratio() {
             eprintln!(
-                "ast-bro: building index for {} (corpus: {})",
-                paths.root.display(),
-                corpus
+              "ast-bro: tombstones {}/{} exceed {:.0}% — compacting (full rebuild)",
+              dead,
+              total_chunks,
+              compaction_ratio() * 100.0,
             );
-        }
+            return Self::build_with_corpus(path_arg, cwd, &loaded.meta.indexed_corpus);
+          }
 
-        // 1. Walk + chunk every indexable file under `walk_dir`. Chunk
-        //    file_paths are stored relative to `home` (paths.root) so search
-        //    can post-filter by query_scope without remapping.
-        let (file_paths, chunks_per_file): (Vec<PathBuf>, Vec<Vec<Chunk>>) =
-            walk_and_chunk(&walk_dir, &paths.root, &paths.root);
+          let corpus_dir = corpus_walk_dir(&paths.root, &loaded.meta.indexed_corpus);
+          let delta = compute_delta(&corpus_dir, &paths.root, &loaded.files);
+          if !delta.requires_rebuild() && delta.mtime_only.is_empty() {
+            return Ok(loaded);
+          }
 
-        // 2. Build flat chunks vec + per-file chunk_range.
-        let mut chunks = Vec::new();
-        let mut files: Vec<FileRecord> = Vec::with_capacity(file_paths.len());
-        for (path, file_chunks) in file_paths.iter().zip(chunks_per_file.into_iter()) {
-            let rel = match path.strip_prefix(&paths.root) {
-                Ok(r) => normalise_path(r),
-                Err(_) => continue,
-            };
-            let meta_io = match fs::metadata(path) {
-                Ok(m) => m,
-                Err(_) => continue,
-            };
-            let mtime_ns = mtime_nanos(&meta_io);
-            let size = meta_io.len();
-            let content_hash = hash_file(path).unwrap_or(0);
-            let chunk_start = chunks.len() as u32;
-            chunks.extend(file_chunks);
-            let chunk_end = chunks.len() as u32;
-            files.push(FileRecord {
-                path: rel,
-                mtime_ns,
-                size,
-                content_hash,
-                chunk_start,
-                chunk_end,
-            });
-        }
-        let chunk_count = chunks.len() as u32;
-        eprintln!(
-            "ast-bro: chunked {} files → {} chunks in {:.1}s",
-            file_paths.len(),
-            chunk_count,
-            started.elapsed().as_secs_f64()
-        );
-
-        // 3. Load model + embed all chunks (parallel via rayon).
-        let model_dir = ensure_model(&ModelInfo::potion_code_16m())?;
-        let embedder = Arc::new(Embedder::open(&model_dir)?);
-        let started_embed = std::time::Instant::now();
-        let embeddings: Vec<f32> = chunks
-            .par_iter()
-            .flat_map(|c| embed_chunk(&embedder, c))
-            .collect();
-        eprintln!(
-            "ast-bro: embedded in {:.1}s",
-            started_embed.elapsed().as_secs_f64()
-        );
-
-        // 4. Build BM25.
-        let started_bm25 = std::time::Instant::now();
-        let bm25_docs: Vec<Vec<String>> = chunks
-            .par_iter()
-            .map(|c| tokenize(&enrich_for_bm25(c)))
-            .collect();
-        let bm25 = Bm25Index::build(bm25_docs);
-        eprintln!(
-            "ast-bro: bm25 built in {:.1}s",
-            started_bm25.elapsed().as_secs_f64()
-        );
-
-        // 5. Persist everything atomically — write to temp paths then rename.
-        let meta = Meta {
-            schema: SCHEMA.to_string(),
-            ast_bro_version: env!("CARGO_PKG_VERSION").to_string(),
-            model: ModelMeta {
-                id: ModelInfo::potion_code_16m().id,
-                dim: DIM as u32,
-            },
-            created_unix: SystemTime::now()
-                .duration_since(SystemTime::UNIX_EPOCH)
-                .map(|d| d.as_secs())
-                .unwrap_or(0),
-            chunk_count,
-            embedding_dtype: "f32_le".to_string(),
-            tombstones: Vec::new(),
-            indexed_corpus: corpus.to_string(),
-        };
-        write_meta(&paths.meta_json, &meta)?;
-        write_bincode(&paths.chunks_bin, &chunks)?;
-        write_bincode(&paths.files_bin, &files)?;
-        write_bincode(&paths.bm25_bin, &bm25)?;
-        write_embeddings(&paths.embeddings_f32, &embeddings)?;
-
-        eprintln!(
-            "ast-bro: index built in {:.1}s total",
-            started.elapsed().as_secs_f64()
-        );
-
-        // Lock auto-released on drop.
-        drop(lock_file);
-
-        Ok(Self {
-            paths,
-            meta,
-            chunks,
-            embeddings,
-            bm25,
-            files,
-            embedder,
-            live_mask: None, // fresh build → no tombstones
-            dep_graph: std::sync::RwLock::new(None),
-        })
-    }
-
-    /// Apply a delta in place: tombstone removed/modified files' old
-    /// chunks, re-chunk + re-embed modified/added files, append new chunks
-    /// plus embedding rows, rebuild BM25 over the live set, refresh
-    /// mtime-only records, and persist the four binaries + meta.
-    ///
-    /// On any I/O failure during persistence, the in-memory state may be
-    /// partially updated; the caller (Index::open) treats this as a hard
-    /// failure and falls back to a full rebuild.
-    fn apply_delta(&mut self, delta: &crate::search::cache::Delta) -> io::Result<()> {
-        use std::collections::HashSet;
-
-        let started = std::time::Instant::now();
-
-        // --- 1. Identify which existing FileRecords get tombstoned ---
-        // Keys: home-relative POSIX paths (FileRecord.path).
-        let removed_keys: HashSet<&str> =
-            delta.removed.iter().map(|s| s.as_str()).collect();
-        let modified_keys: HashSet<String> = delta
-            .modified
-            .iter()
-            .map(|p| {
-                p.strip_prefix(&self.paths.root)
-                    .map(normalise_path)
-                    .unwrap_or_else(|_| p.display().to_string())
-            })
-            .collect();
-
-        let mut new_tombstones: Vec<u32> = Vec::new();
-        let mut new_files: Vec<FileRecord> = Vec::with_capacity(self.files.len());
-        let mut mtime_refresh: std::collections::HashMap<String, (i128, u64)> =
-            std::collections::HashMap::new();
-        for p in &delta.mtime_only {
-            let rel = p
-                .strip_prefix(&self.paths.root)
-                .map(normalise_path)
-                .unwrap_or_else(|_| p.display().to_string());
-            if let Ok(m) = fs::metadata(p) {
-                mtime_refresh.insert(rel, (mtime_nanos(&m), m.len()));
+          if delta.requires_rebuild() {
+            eprintln!(
+              "ast-bro: index stale ({} added, {} modified, {} removed) — applying delta",
+              delta.added.len(),
+              delta.modified.len(),
+              delta.removed.len(),
+            );
+          }
+          match loaded.apply_delta(&delta) {
+            Ok(()) => return Ok(loaded),
+            Err(e) => {
+              eprintln!("ast-bro: delta apply failed ({e}); falling back to full rebuild");
+              return Self::build_with_corpus(path_arg, cwd, &loaded.meta.indexed_corpus);
             }
+          }
         }
-
-        for f in self.files.drain(..) {
-            let key = f.path.as_str();
-            let is_removed = removed_keys.contains(key);
-            let is_modified = modified_keys.contains(&f.path);
-            if is_removed || is_modified {
-                for id in f.chunk_start..f.chunk_end {
-                    new_tombstones.push(id);
-                }
-                continue; // dropped (modified files re-added below)
-            }
-            if let Some((m, sz)) = mtime_refresh.remove(&f.path) {
-                let mut updated = f;
-                updated.mtime_ns = m;
-                updated.size = sz;
-                new_files.push(updated);
-            } else {
-                new_files.push(f);
-            }
+        Err(e) => {
+          eprintln!("ast-bro: index unreadable ({e}); rebuilding");
         }
-        self.files = new_files;
-
-        // --- 2. Re-chunk modified + added in parallel; embed sequentially
-        //         (embedder is cheap per call but its internal state isn't
-        //          shared across threads in our wrapper). Append in stable
-        //          input order so chunk_range is contiguous per file. ---
-        let mut to_index: Vec<PathBuf> = Vec::with_capacity(
-            delta.modified.len() + delta.added.len(),
-        );
-        to_index.extend(delta.modified.iter().cloned());
-        to_index.extend(delta.added.iter().cloned());
-        // Deterministic ordering for reproducible chunk ids.
-        to_index.sort();
-
-        let chunked: Vec<(PathBuf, Vec<Chunk>)> = to_index
-            .par_iter()
-            .map(|p| {
-                let rel = p
-                    .strip_prefix(&self.paths.root)
-                    .map(normalise_path)
-                    .unwrap_or_else(|_| p.display().to_string());
-                (p.clone(), chunk_file(p, &rel))
-            })
-            .collect();
-
-        let mut added_chunks: u32 = 0;
-        let tombstoned_chunks: u32 = new_tombstones.len() as u32;
-        for (path, file_chunks) in chunked {
-            let chunk_start = self.chunks.len() as u32;
-            for c in file_chunks {
-                let v = embed_chunk(&self.embedder, &c);
-                self.embeddings.extend_from_slice(&v);
-                self.chunks.push(c);
-            }
-            let chunk_end = self.chunks.len() as u32;
-            added_chunks += chunk_end - chunk_start;
-
-            let meta_io = match fs::metadata(&path) {
-                Ok(m) => m,
-                Err(_) => continue,
-            };
-            let mtime_ns = mtime_nanos(&meta_io);
-            let size = meta_io.len();
-            let content_hash = hash_file(&path).unwrap_or(0);
-            let rel = path
-                .strip_prefix(&self.paths.root)
-                .map(normalise_path)
-                .unwrap_or_else(|_| path.display().to_string());
-            self.files.push(FileRecord {
-                path: rel,
-                mtime_ns,
-                size,
-                content_hash,
-                chunk_start,
-                chunk_end,
-            });
-        }
-        // Stable sort so persistence is deterministic.
-        self.files.sort_by(|a, b| a.path.cmp(&b.path));
-
-        // --- 3. Update tombstones + meta counters ---
-        if !new_tombstones.is_empty() {
-            self.meta.tombstones.extend(new_tombstones);
-            self.meta.tombstones.sort_unstable();
-            self.meta.tombstones.dedup();
-        }
-        self.meta.chunk_count = self.chunks.len() as u32;
-        self.live_mask = build_live_mask(self.chunks.len(), &self.meta.tombstones);
-
-        // --- 4. Rebuild BM25 from live chunks. Tombstoned slots produce
-        //         empty doc-tokens so they don't contribute terms; the
-        //         empty docs still occupy doc-ids 1:1 with `chunks`,
-        //         keeping `get_scores` slot-aligned. ---
-        let live_mask_view = self.live_mask.as_deref();
-        let bm25_docs: Vec<Vec<String>> = self
-            .chunks
-            .par_iter()
-            .enumerate()
-            .map(|(i, c)| {
-                if live_mask_view.is_some_and(|m| !m[i]) {
-                    Vec::new()
-                } else {
-                    tokenize(&enrich_for_bm25(c))
-                }
-            })
-            .collect();
-        self.bm25 = Bm25Index::build(bm25_docs);
-
-        // --- 5. Persist atomically (best-effort: each file via write_atomic;
-        //         meta.json is renamed last so partial-write recovery on
-        //         next open will see either the old or new consistent state
-        //         once we add directory-rename atomicity). ---
-        ensure_gitignore(&self.paths)?;
-        let _lock = acquire_lock(&self.paths)?;
-        write_bincode(&self.paths.chunks_bin, &self.chunks)?;
-        write_bincode(&self.paths.files_bin, &self.files)?;
-        write_bincode(&self.paths.bm25_bin, &self.bm25)?;
-        write_embeddings(&self.paths.embeddings_f32, &self.embeddings)?;
-        write_meta(&self.paths.meta_json, &self.meta)?;
-
-        eprintln!(
-            "ast-bro: delta applied (+{added_chunks} chunks, +{tombstoned_chunks} tombstones) in {:.2}s",
-            started.elapsed().as_secs_f64()
-        );
-        Ok(())
+      }
     }
 
-    /// Load from disk without delta-checking. Used by `open` and tests.
-    fn load_unlocked(paths: &IndexPaths) -> io::Result<Self> {
-        let meta: Meta = read_meta(&paths.meta_json)?;
-        // Only the current schema decodes. Earlier ones — including the
-        // pre-rename `ast-outline.*` names — predate the `Chunk` layout change
-        // in v2, so the caller has to rebuild rather than read them.
-        if meta.schema != SCHEMA {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("schema {} is not {SCHEMA}; rebuild the index", meta.schema),
-            ));
+    Self::build(path_arg, cwd)
+  }
+
+  /// Force a full rebuild from scratch. Corpus = `path_arg` relative to
+  /// the resolved home (or `""` when `path_arg == home`).
+  pub fn build(path_arg: &Path, cwd: &Path) -> io::Result<Self> {
+    let (home, _) = resolve_home(path_arg, cwd, Marker::SearchIndex);
+    let corpus = relative_posix(path_arg, &home).unwrap_or_default();
+    Self::build_with_corpus(path_arg, cwd, &corpus)
+  }
+
+  /// Force a full rebuild with an explicit corpus. Used by the corpus
+  /// reconciliation logic in `run_index` and by `Index::open` when
+  /// rebuilding a stale index (preserves the recorded corpus).
+  pub fn build_with_corpus(path_arg: &Path, cwd: &Path, corpus: &str) -> io::Result<Self> {
+    let (home, _) = resolve_home(path_arg, cwd, Marker::SearchIndex);
+    let paths = IndexPaths::from_repo(&home);
+    fs::create_dir_all(&paths.index_dir)?;
+    // Always ensure the .gitignore is present so users don't accidentally
+    // commit the cache.
+    ensure_gitignore(&paths)?;
+
+    let lock_file = acquire_lock(&paths)?;
+
+    let started = std::time::Instant::now();
+    let walk_dir = corpus_walk_dir(&paths.root, corpus);
+    if corpus.is_empty() {
+      eprintln!("ast-bro: building index for {}", paths.root.display());
+    } else {
+      eprintln!(
+        "ast-bro: building index for {} (corpus: {})",
+        paths.root.display(),
+        corpus
+      );
+    }
+
+    // 1. Walk + chunk every indexable file under `walk_dir`. Chunk
+    //    file_paths are stored relative to `home` (paths.root) so search
+    //    can post-filter by query_scope without remapping.
+    let (file_paths, chunks_per_file): (Vec<PathBuf>, Vec<Vec<Chunk>>) =
+      walk_and_chunk(&walk_dir, &paths.root, &paths.root);
+
+    // 2. Build flat chunks vec + per-file chunk_range.
+    let mut chunks = Vec::new();
+    let mut files: Vec<FileRecord> = Vec::with_capacity(file_paths.len());
+    for (path, file_chunks) in file_paths.iter().zip(chunks_per_file.into_iter()) {
+      let rel = match path.strip_prefix(&paths.root) {
+        Ok(r) => normalise_path(r),
+        Err(_) => continue,
+      };
+      let meta_io = match fs::metadata(path) {
+        Ok(m) => m,
+        Err(_) => continue,
+      };
+      let mtime_ns = mtime_nanos(&meta_io);
+      let size = meta_io.len();
+      let content_hash = hash_file(path).unwrap_or(0);
+      let chunk_start = chunks.len() as u32;
+      chunks.extend(file_chunks);
+      let chunk_end = chunks.len() as u32;
+      files.push(FileRecord {
+        path: rel,
+        mtime_ns,
+        size,
+        content_hash,
+        chunk_start,
+        chunk_end,
+      });
+    }
+    let chunk_count = chunks.len() as u32;
+    eprintln!(
+      "ast-bro: chunked {} files → {} chunks in {:.1}s",
+      file_paths.len(),
+      chunk_count,
+      started.elapsed().as_secs_f64()
+    );
+
+    // 3. Load model + embed all chunks (parallel via rayon).
+    let model_dir = ensure_model(&ModelInfo::potion_code_16m())?;
+    let embedder = Arc::new(Embedder::open(&model_dir)?);
+    let started_embed = std::time::Instant::now();
+    let embeddings: Vec<f32> = chunks
+      .par_iter()
+      .flat_map(|c| embed_chunk(&embedder, c))
+      .collect();
+    eprintln!(
+      "ast-bro: embedded in {:.1}s",
+      started_embed.elapsed().as_secs_f64()
+    );
+
+    // 4. Build BM25.
+    let started_bm25 = std::time::Instant::now();
+    let bm25_docs: Vec<Vec<String>> = chunks
+      .par_iter()
+      .map(|c| tokenize(&enrich_for_bm25(c)))
+      .collect();
+    let bm25 = Bm25Index::build(bm25_docs);
+    eprintln!(
+      "ast-bro: bm25 built in {:.1}s",
+      started_bm25.elapsed().as_secs_f64()
+    );
+
+    // 5. Persist everything atomically — write to temp paths then rename.
+    let meta = Meta {
+      schema: SCHEMA.to_string(),
+      ast_bro_version: env!("CARGO_PKG_VERSION").to_string(),
+      model: ModelMeta {
+        id: ModelInfo::potion_code_16m().id,
+        dim: DIM as u32,
+      },
+      created_unix: SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0),
+      chunk_count,
+      embedding_dtype: "f32_le".to_string(),
+      tombstones: Vec::new(),
+      indexed_corpus: corpus.to_string(),
+    };
+    write_meta(&paths.meta_json, &meta)?;
+    write_bincode(&paths.chunks_bin, &chunks)?;
+    write_bincode(&paths.files_bin, &files)?;
+    write_bincode(&paths.bm25_bin, &bm25)?;
+    write_embeddings(&paths.embeddings_f32, &embeddings)?;
+
+    eprintln!(
+      "ast-bro: index built in {:.1}s total",
+      started.elapsed().as_secs_f64()
+    );
+
+    // Lock auto-released on drop.
+    drop(lock_file);
+
+    Ok(Self {
+      paths,
+      meta,
+      chunks,
+      embeddings,
+      bm25,
+      files,
+      embedder,
+      live_mask: None, // fresh build → no tombstones
+      dep_graph: std::sync::RwLock::new(None),
+    })
+  }
+
+  /// Apply a delta in place: tombstone removed/modified files' old
+  /// chunks, re-chunk + re-embed modified/added files, append new chunks
+  /// plus embedding rows, rebuild BM25 over the live set, refresh
+  /// mtime-only records, and persist the four binaries + meta.
+  ///
+  /// On any I/O failure during persistence, the in-memory state may be
+  /// partially updated; the caller (Index::open) treats this as a hard
+  /// failure and falls back to a full rebuild.
+  fn apply_delta(&mut self, delta: &crate::search::cache::Delta) -> io::Result<()> {
+    use std::collections::HashSet;
+
+    let started = std::time::Instant::now();
+
+    // --- 1. Identify which existing FileRecords get tombstoned ---
+    // Keys: home-relative POSIX paths (FileRecord.path).
+    let removed_keys: HashSet<&str> = delta.removed.iter().map(|s| s.as_str()).collect();
+    let modified_keys: HashSet<String> = delta
+      .modified
+      .iter()
+      .map(|p| {
+        p.strip_prefix(&self.paths.root)
+          .map(normalise_path)
+          .unwrap_or_else(|_| p.display().to_string())
+      })
+      .collect();
+
+    let mut new_tombstones: Vec<u32> = Vec::new();
+    let mut new_files: Vec<FileRecord> = Vec::with_capacity(self.files.len());
+    let mut mtime_refresh: std::collections::HashMap<String, (i128, u64)> =
+      std::collections::HashMap::new();
+    for p in &delta.mtime_only {
+      let rel = p
+        .strip_prefix(&self.paths.root)
+        .map(normalise_path)
+        .unwrap_or_else(|_| p.display().to_string());
+      if let Ok(m) = fs::metadata(p) {
+        mtime_refresh.insert(rel, (mtime_nanos(&m), m.len()));
+      }
+    }
+
+    for f in self.files.drain(..) {
+      let key = f.path.as_str();
+      let is_removed = removed_keys.contains(key);
+      let is_modified = modified_keys.contains(&f.path);
+      if is_removed || is_modified {
+        for id in f.chunk_start..f.chunk_end {
+          new_tombstones.push(id);
         }
-        if meta.model.dim as usize != DIM {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("model dim {} != {DIM}", meta.model.dim),
-            ));
-        }
-        // Reject an index embedded by a different model, even when the
-        // dimension happens to match (e.g. a future same-dim model swap).
-        // Returning an error here routes `Index::open` to a full rebuild
-        // rather than silently mixing query vectors from one model with chunk
-        // vectors from another. Checked before the binaries/model load so a
-        // mismatch costs only the meta read.
-        let active_model_id = ModelInfo::potion_code_16m().id;
-        if meta.model.id != active_model_id {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!(
-                    "model id {} != active {active_model_id} — reindex required",
-                    meta.model.id
-                ),
-            ));
-        }
-
-        let chunks: Vec<Chunk> = read_bincode(&paths.chunks_bin)?;
-        let files: Vec<FileRecord> = read_bincode(&paths.files_bin)?;
-        let bm25: Bm25Index = read_bincode(&paths.bm25_bin)?;
-        let embeddings = read_embeddings(&paths.embeddings_f32)?;
-
-        if embeddings.len() != chunks.len() * DIM {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!(
-                    "embeddings.f32 length {} != chunks ({}) × DIM ({DIM})",
-                    embeddings.len(),
-                    chunks.len()
-                ),
-            ));
-        }
-
-        let model_dir = ensure_model(&ModelInfo::potion_code_16m())?;
-        let embedder = Arc::new(Embedder::open(&model_dir)?);
-        let live_mask = build_live_mask(chunks.len(), &meta.tombstones);
-
-        Ok(Self {
-            paths: paths.clone(),
-            meta,
-            chunks,
-            embeddings,
-            bm25,
-            files,
-            embedder,
-            live_mask,
-            dep_graph: std::sync::RwLock::new(None),
-        })
+        continue; // dropped (modified files re-added below)
+      }
+      if let Some((m, sz)) = mtime_refresh.remove(&f.path) {
+        let mut updated = f;
+        updated.mtime_ns = m;
+        updated.size = sz;
+        new_files.push(updated);
+      } else {
+        new_files.push(f);
+      }
     }
+    self.files = new_files;
 
-    /// Total chunk slots, including tombstones.
-    pub fn chunk_count(&self) -> usize {
-        self.chunks.len()
+    // --- 2. Re-chunk modified + added in parallel; embed sequentially
+    //         (embedder is cheap per call but its internal state isn't
+    //          shared across threads in our wrapper). Append in stable
+    //          input order so chunk_range is contiguous per file. ---
+    let mut to_index: Vec<PathBuf> = Vec::with_capacity(delta.modified.len() + delta.added.len());
+    to_index.extend(delta.modified.iter().cloned());
+    to_index.extend(delta.added.iter().cloned());
+    // Deterministic ordering for reproducible chunk ids.
+    to_index.sort();
+
+    let chunked: Vec<(PathBuf, Vec<Chunk>)> = to_index
+      .par_iter()
+      .map(|p| {
+        let rel = p
+          .strip_prefix(&self.paths.root)
+          .map(normalise_path)
+          .unwrap_or_else(|_| p.display().to_string());
+        (p.clone(), chunk_file(p, &rel))
+      })
+      .collect();
+
+    let mut added_chunks: u32 = 0;
+    let tombstoned_chunks: u32 = new_tombstones.len() as u32;
+    for (path, file_chunks) in chunked {
+      let chunk_start = self.chunks.len() as u32;
+      for c in file_chunks {
+        let v = embed_chunk(&self.embedder, &c);
+        self.embeddings.extend_from_slice(&v);
+        self.chunks.push(c);
+      }
+      let chunk_end = self.chunks.len() as u32;
+      added_chunks += chunk_end - chunk_start;
+
+      let meta_io = match fs::metadata(&path) {
+        Ok(m) => m,
+        Err(_) => continue,
+      };
+      let mtime_ns = mtime_nanos(&meta_io);
+      let size = meta_io.len();
+      let content_hash = hash_file(&path).unwrap_or(0);
+      let rel = path
+        .strip_prefix(&self.paths.root)
+        .map(normalise_path)
+        .unwrap_or_else(|_| path.display().to_string());
+      self.files.push(FileRecord {
+        path: rel,
+        mtime_ns,
+        size,
+        content_hash,
+        chunk_start,
+        chunk_end,
+      });
     }
+    // Stable sort so persistence is deterministic.
+    self.files.sort_by(|a, b| a.path.cmp(&b.path));
 
-    /// Live chunks (non-tombstoned) — what search actually retrieves.
-    #[allow(dead_code)] // public for embedders + future --stats wiring
-    pub fn live_chunk_count(&self) -> usize {
-        self.chunks.len() - self.meta.tombstones.len()
+    // --- 3. Update tombstones + meta counters ---
+    if !new_tombstones.is_empty() {
+      self.meta.tombstones.extend(new_tombstones);
+      self.meta.tombstones.sort_unstable();
+      self.meta.tombstones.dedup();
     }
+    self.meta.chunk_count = self.chunks.len() as u32;
+    self.live_mask = build_live_mask(self.chunks.len(), &self.meta.tombstones);
 
-    /// Number of tombstoned chunk slots.
-    #[allow(dead_code)] // public for embedders + future --stats wiring
-    pub fn tombstone_count(&self) -> usize {
-        self.meta.tombstones.len()
-    }
-
-    /// Number of indexed files (FileRecords). Lets callers report index stats
-    /// without re-reading and deserialising `files.bin` from disk.
-    pub fn file_count(&self) -> usize {
-        self.files.len()
-    }
-
-    /// True when this in-memory index still matches the working tree: a
-    /// `compute_delta` against the recorded corpus finds no added / modified /
-    /// removed files and no mtime-only touches. Used by the process-wide
-    /// shared registry (`shared::open_shared`) to decide whether a cached
-    /// `Arc<Index>` can be reused as-is or must be reloaded from disk. The
-    /// walk is stat-only in the steady state (hashing only on mtime/size
-    /// mismatch), so this is cheap to call per request.
-    pub fn is_fresh(&self) -> bool {
-        let corpus_dir = corpus_walk_dir(&self.paths.root, &self.meta.indexed_corpus);
-        let delta = compute_delta(&corpus_dir, &self.paths.root, &self.files);
-        !delta.requires_rebuild() && delta.mtime_only.is_empty()
-    }
-
-    /// Phase one of two-phase search: rank *files* using only their outline
-    /// chunks, and return a per-file prior in `0..=1`.
-    ///
-    /// An outline chunk is the file's signature list, so it states what the
-    /// file is for in one place. A body chunk can only ever match a fragment of
-    /// that, which is why aggregating body scores per file is a weaker file
-    /// signal than asking the outlines directly.
-    fn file_prior(
-        &self,
-        q_embed: &[f32; DIM],
-        query_tokens: &[String],
-        mask: Option<&[bool]>,
-    ) -> HashMap<&str, f32> {
-        // Restrict both retrievers to outline chunks, intersected with the
-        // caller's mask so language/scope filters still apply.
-        let outline_mask: Vec<bool> = self
-            .chunks
-            .iter()
-            .enumerate()
-            .map(|(i, c)| {
-                c.kind == ChunkKind::Outline && mask.is_none_or(|m| m[i])
-            })
-            .collect();
-        if !outline_mask.iter().any(|b| *b) {
-            return HashMap::new();
-        }
-
-        let sem = cosine_topk(q_embed, &self.embeddings, Some(&outline_mask), PHASE1_FILES);
-        let lex = if query_tokens.is_empty() {
-            Vec::new()
+    // --- 4. Rebuild BM25 from live chunks. Tombstoned slots produce
+    //         empty doc-tokens so they don't contribute terms; the
+    //         empty docs still occupy doc-ids 1:1 with `chunks`,
+    //         keeping `get_scores` slot-aligned. ---
+    let live_mask_view = self.live_mask.as_deref();
+    let bm25_docs: Vec<Vec<String>> = self
+      .chunks
+      .par_iter()
+      .enumerate()
+      .map(|(i, c)| {
+        if live_mask_view.is_some_and(|m| !m[i]) {
+          Vec::new()
         } else {
-            let raw = self.bm25.get_scores(query_tokens, Some(&outline_mask));
-            top_k_indices(&raw, PHASE1_FILES)
-        };
-        let fused = combine(&rrf_scores(&sem), &rrf_scores(&lex), 0.5);
+          tokenize(&enrich_for_bm25(c))
+        }
+      })
+      .collect();
+    self.bm25 = Bm25Index::build(bm25_docs);
 
-        let best = fused.values().copied().fold(0.0f32, f32::max);
-        if best <= 0.0 {
-            return HashMap::new();
-        }
-        // A file has one outline document per `OUTLINE_MAX_CHARS`, so several
-        // pieces can score. Keep the best — collecting into a map would let
-        // whichever piece came last in the (randomized) iteration order decide
-        // the file's prior, and the ranking downstream would differ run to run.
-        let mut prior: HashMap<&str, f32> = HashMap::new();
-        for (id, s) in fused {
-            let path = self.chunks[id as usize].file_path.as_str();
-            let normalised = s / best;
-            prior
-                .entry(path)
-                .and_modify(|p| *p = p.max(normalised))
-                .or_insert(normalised);
-        }
-        prior
+    // --- 5. Persist atomically (best-effort: each file via write_atomic;
+    //         meta.json is renamed last so partial-write recovery on
+    //         next open will see either the old or new consistent state
+    //         once we add directory-rename atomicity). ---
+    ensure_gitignore(&self.paths)?;
+    let _lock = acquire_lock(&self.paths)?;
+    write_bincode(&self.paths.chunks_bin, &self.chunks)?;
+    write_bincode(&self.paths.files_bin, &self.files)?;
+    write_bincode(&self.paths.bm25_bin, &self.bm25)?;
+    write_embeddings(&self.paths.embeddings_f32, &self.embeddings)?;
+    write_meta(&self.paths.meta_json, &self.meta)?;
+
+    eprintln!(
+      "ast-bro: delta applied (+{added_chunks} chunks, +{tombstoned_chunks} tombstones) in {:.2}s",
+      started.elapsed().as_secs_f64()
+    );
+    Ok(())
+  }
+
+  /// Load from disk without delta-checking. Used by `open` and tests.
+  fn load_unlocked(paths: &IndexPaths) -> io::Result<Self> {
+    let meta: Meta = read_meta(&paths.meta_json)?;
+    // Only the current schema decodes. Earlier ones — including the
+    // pre-rename `ast-outline.*` names — predate the `Chunk` layout change
+    // in v2, so the caller has to rebuild rather than read them.
+    if meta.schema != SCHEMA {
+      return Err(io::Error::new(
+        io::ErrorKind::InvalidData,
+        format!("schema {} is not {SCHEMA}; rebuild the index", meta.schema),
+      ));
+    }
+    if meta.model.dim as usize != DIM {
+      return Err(io::Error::new(
+        io::ErrorKind::InvalidData,
+        format!("model dim {} != {DIM}", meta.model.dim),
+      ));
+    }
+    // Reject an index embedded by a different model, even when the
+    // dimension happens to match (e.g. a future same-dim model swap).
+    // Returning an error here routes `Index::open` to a full rebuild
+    // rather than silently mixing query vectors from one model with chunk
+    // vectors from another. Checked before the binaries/model load so a
+    // mismatch costs only the meta read.
+    let active_model_id = ModelInfo::potion_code_16m().id;
+    if meta.model.id != active_model_id {
+      return Err(io::Error::new(
+        io::ErrorKind::InvalidData,
+        format!(
+          "model id {} != active {active_model_id} — reindex required",
+          meta.model.id
+        ),
+      ));
     }
 
-    /// Hybrid BM25 + dense search with full ranking pipeline.
-    pub fn search(&self, query: &str, opts: &SearchOptions) -> Vec<SearchHit> {
-        if self.chunks.is_empty() || opts.top_k == 0 {
-            return Vec::new();
-        }
-        let alpha = resolve_alpha(query, opts.alpha);
-        let candidate_count = MIN_CANDIDATES.max(opts.top_k);
+    let chunks: Vec<Chunk> = read_bincode(&paths.chunks_bin)?;
+    let files: Vec<FileRecord> = read_bincode(&paths.files_bin)?;
+    let bm25: Bm25Index = read_bincode(&paths.bm25_bin)?;
+    let embeddings = read_embeddings(&paths.embeddings_f32)?;
 
-        // Build combined mask: language ∧ query_scope ∧ live ∧ path: ∧ name:.
-        // Any may be inactive.
-        let mask = build_combined_mask(
-            &self.chunks,
-            opts.languages.as_deref(),
-            opts.query_scope.as_deref(),
-            self.live_mask.as_deref(),
-            &opts.path_contains,
-            &opts.name_contains,
-        );
+    if embeddings.len() != chunks.len() * DIM {
+      return Err(io::Error::new(
+        io::ErrorKind::InvalidData,
+        format!(
+          "embeddings.f32 length {} != chunks ({}) × DIM ({DIM})",
+          embeddings.len(),
+          chunks.len()
+        ),
+      ));
+    }
 
-        // Coverage-gap warning: if query_scope is set and points outside the
-        // indexed corpus, results will be empty silently otherwise.
-        if let Some(scope) = opts.query_scope.as_deref() {
-            let corpus = self.meta.indexed_corpus.as_str();
-            if !scope.is_empty()
-                && !corpus.is_empty()
-                && !path_starts_with(scope, corpus)
-                && !path_starts_with(corpus, scope)
-            {
-                eprintln!(
-                    "ast-bro: query scope '{scope}' is outside the indexed corpus '{corpus}' \
+    let model_dir = ensure_model(&ModelInfo::potion_code_16m())?;
+    let embedder = Arc::new(Embedder::open(&model_dir)?);
+    let live_mask = build_live_mask(chunks.len(), &meta.tombstones);
+
+    Ok(Self {
+      paths: paths.clone(),
+      meta,
+      chunks,
+      embeddings,
+      bm25,
+      files,
+      embedder,
+      live_mask,
+      dep_graph: std::sync::RwLock::new(None),
+    })
+  }
+
+  /// Total chunk slots, including tombstones.
+  pub fn chunk_count(&self) -> usize {
+    self.chunks.len()
+  }
+
+  /// Live chunks (non-tombstoned) — what search actually retrieves.
+  #[allow(dead_code)] // public for embedders + future --stats wiring
+  pub fn live_chunk_count(&self) -> usize {
+    self.chunks.len() - self.meta.tombstones.len()
+  }
+
+  /// Number of tombstoned chunk slots.
+  #[allow(dead_code)] // public for embedders + future --stats wiring
+  pub fn tombstone_count(&self) -> usize {
+    self.meta.tombstones.len()
+  }
+
+  /// Number of indexed files (FileRecords). Lets callers report index stats
+  /// without re-reading and deserialising `files.bin` from disk.
+  pub fn file_count(&self) -> usize {
+    self.files.len()
+  }
+
+  /// True when this in-memory index still matches the working tree: a
+  /// `compute_delta` against the recorded corpus finds no added / modified /
+  /// removed files and no mtime-only touches. Used by the process-wide
+  /// shared registry (`shared::open_shared`) to decide whether a cached
+  /// `Arc<Index>` can be reused as-is or must be reloaded from disk. The
+  /// walk is stat-only in the steady state (hashing only on mtime/size
+  /// mismatch), so this is cheap to call per request.
+  pub fn is_fresh(&self) -> bool {
+    let corpus_dir = corpus_walk_dir(&self.paths.root, &self.meta.indexed_corpus);
+    let delta = compute_delta(&corpus_dir, &self.paths.root, &self.files);
+    !delta.requires_rebuild() && delta.mtime_only.is_empty()
+  }
+
+  /// Phase one of two-phase search: rank *files* using only their outline
+  /// chunks, and return a per-file prior in `0..=1`.
+  ///
+  /// An outline chunk is the file's signature list, so it states what the
+  /// file is for in one place. A body chunk can only ever match a fragment of
+  /// that, which is why aggregating body scores per file is a weaker file
+  /// signal than asking the outlines directly.
+  fn file_prior(
+    &self,
+    q_embed: &[f32; DIM],
+    query_tokens: &[String],
+    mask: Option<&[bool]>,
+  ) -> HashMap<&str, f32> {
+    // Restrict both retrievers to outline chunks, intersected with the
+    // caller's mask so language/scope filters still apply.
+    let outline_mask: Vec<bool> = self
+      .chunks
+      .iter()
+      .enumerate()
+      .map(|(i, c)| c.kind == ChunkKind::Outline && mask.is_none_or(|m| m[i]))
+      .collect();
+    if !outline_mask.iter().any(|b| *b) {
+      return HashMap::new();
+    }
+
+    let sem = cosine_topk(q_embed, &self.embeddings, Some(&outline_mask), PHASE1_FILES);
+    let lex = if query_tokens.is_empty() {
+      Vec::new()
+    } else {
+      let raw = self.bm25.get_scores(query_tokens, Some(&outline_mask));
+      top_k_indices(&raw, PHASE1_FILES)
+    };
+    let fused = combine(&rrf_scores(&sem), &rrf_scores(&lex), 0.5);
+
+    let best = fused.values().copied().fold(0.0f32, f32::max);
+    if best <= 0.0 {
+      return HashMap::new();
+    }
+    // A file has one outline document per `OUTLINE_MAX_CHARS`, so several
+    // pieces can score. Keep the best — collecting into a map would let
+    // whichever piece came last in the (randomized) iteration order decide
+    // the file's prior, and the ranking downstream would differ run to run.
+    let mut prior: HashMap<&str, f32> = HashMap::new();
+    for (id, s) in fused {
+      let path = self.chunks[id as usize].file_path.as_str();
+      let normalised = s / best;
+      prior
+        .entry(path)
+        .and_modify(|p| *p = p.max(normalised))
+        .or_insert(normalised);
+    }
+    prior
+  }
+
+  /// Hybrid BM25 + dense search with full ranking pipeline.
+  pub fn search(&self, query: &str, opts: &SearchOptions) -> Vec<SearchHit> {
+    if self.chunks.is_empty() || opts.top_k == 0 {
+      return Vec::new();
+    }
+    let alpha = resolve_alpha(query, opts.alpha);
+    let candidate_count = MIN_CANDIDATES.max(opts.top_k);
+
+    // Build combined mask: language ∧ query_scope ∧ live ∧ path: ∧ name:.
+    // Any may be inactive.
+    let mask = build_combined_mask(
+      &self.chunks,
+      opts.languages.as_deref(),
+      opts.query_scope.as_deref(),
+      self.live_mask.as_deref(),
+      &opts.path_contains,
+      &opts.name_contains,
+    );
+
+    // Coverage-gap warning: if query_scope is set and points outside the
+    // indexed corpus, results will be empty silently otherwise.
+    if let Some(scope) = opts.query_scope.as_deref() {
+      let corpus = self.meta.indexed_corpus.as_str();
+      if !scope.is_empty()
+        && !corpus.is_empty()
+        && !path_starts_with(scope, corpus)
+        && !path_starts_with(corpus, scope)
+      {
+        eprintln!(
+          "ast-bro: query scope '{scope}' is outside the indexed corpus '{corpus}' \
                      — results will be empty. Re-run `ast-bro index .` to widen."
-                );
-            }
-        }
-
-        // Semantic top-N.
-        let q_embed = self.embedder.encode_one(query);
-        let semantic_scored = cosine_topk(
-            &q_embed,
-            &self.embeddings,
-            mask.as_deref(),
-            candidate_count,
         );
-
-        // BM25 top-N.
-        let query_tokens = tokenize(query);
-        let bm25_scores = if query_tokens.is_empty() {
-            Vec::new()
-        } else {
-            let raw = self.bm25.get_scores(&query_tokens, mask.as_deref());
-            top_k_indices(&raw, candidate_count)
-        };
-
-        // RRF + alpha combine.
-        let sem_rrf = rrf_scores(&semantic_scored);
-        let bm25_rrf = rrf_scores(&bm25_scores);
-        let combined = combine(&sem_rrf, &bm25_rrf, alpha);
-
-        // File coherence + query-aware boosts.
-        let mut scored = combined;
-        boost_multi_chunk_files(&mut scored, &self.chunks);
-        let prior = self.file_prior(&q_embed, &query_tokens, mask.as_deref());
-        apply_file_prior(&mut scored, &self.chunks, &prior, FILE_PRIOR_WEIGHT);
-        let scored = apply_query_boost(scored, query, &self.chunks);
-
-        // Final top-k with path penalties + saturation decay.
-        let ranked = rerank_topk(&scored, &self.chunks, opts.top_k, /* penalise_paths */ true);
-        ranked
-            .into_iter()
-            .map(|(id, score)| SearchHit {
-                chunk: self.chunks[id as usize].clone(),
-                score,
-            })
-            .collect()
+      }
     }
 
-    /// Lazily load the dep graph cache (if any). Returns None when no
-    /// fresh cache exists — `find_related` then skips the boost.
-    fn dep_graph_cached(&self) -> Option<crate::deps::DepGraph> {
-        {
-            let guard = self.dep_graph.read().ok()?;
-            if let Some(slot) = guard.as_ref() {
-                return slot.clone();
+    // Semantic top-N.
+    let q_embed = self.embedder.encode_one(query);
+    let semantic_scored = cosine_topk(&q_embed, &self.embeddings, mask.as_deref(), candidate_count);
+
+    // BM25 top-N.
+    let query_tokens = tokenize(query);
+    let bm25_scores = if query_tokens.is_empty() {
+      Vec::new()
+    } else {
+      let raw = self.bm25.get_scores(&query_tokens, mask.as_deref());
+      top_k_indices(&raw, candidate_count)
+    };
+
+    // RRF + alpha combine.
+    let sem_rrf = rrf_scores(&semantic_scored);
+    let bm25_rrf = rrf_scores(&bm25_scores);
+    let combined = combine(&sem_rrf, &bm25_rrf, alpha);
+
+    // File coherence + query-aware boosts.
+    let mut scored = combined;
+    boost_multi_chunk_files(&mut scored, &self.chunks);
+    let prior = self.file_prior(&q_embed, &query_tokens, mask.as_deref());
+    apply_file_prior(&mut scored, &self.chunks, &prior, FILE_PRIOR_WEIGHT);
+    let scored = apply_query_boost(scored, query, &self.chunks);
+
+    // Final top-k with path penalties + saturation decay.
+    let ranked = rerank_topk(
+      &scored,
+      &self.chunks,
+      opts.top_k,
+      /* penalise_paths */ true,
+    );
+    ranked
+      .into_iter()
+      .map(|(id, score)| SearchHit {
+        chunk: self.chunks[id as usize].clone(),
+        score,
+      })
+      .collect()
+  }
+
+  /// Lazily load the dep graph cache (if any). Returns None when no
+  /// fresh cache exists — `find_related` then skips the boost.
+  fn dep_graph_cached(&self) -> Option<crate::deps::DepGraph> {
+    {
+      let guard = self.dep_graph.read().ok()?;
+      if let Some(slot) = guard.as_ref() {
+        return slot.clone();
+      }
+    }
+    let loaded = crate::graph_cache::shared::get_or_init(&self.paths.root)
+      .ok()
+      .map(|u| u.deps.clone());
+    if let Ok(mut w) = self.dep_graph.write() {
+      *w = Some(loaded.clone());
+    }
+    loaded
+  }
+
+  /// Semantic-only similarity from a chunk identified by its file + line.
+  /// Filters to chunks of the same language and excludes the source itself.
+  /// When a fresh dep-graph cache exists, also applies a multiplicative
+  /// boost to chunks in the importer/importee neighbourhood.
+  pub fn find_related(&self, file_path: &str, line: u32, top_k: usize) -> Option<Vec<SearchHit>> {
+    self.find_related_opts(
+      file_path, line, top_k, /* dep_boost */ true, /* dep_depth */ 2, None,
+    )
+  }
+
+  pub fn find_related_opts(
+    &self,
+    file_path: &str,
+    line: u32,
+    top_k: usize,
+    dep_boost: bool,
+    dep_depth: usize,
+    query_scope: Option<&str>,
+  ) -> Option<Vec<SearchHit>> {
+    let source_id = resolve_chunk(&self.chunks, file_path, line)?;
+    let source = &self.chunks[source_id as usize];
+
+    // Build language-restricted + self-excluding (+ scope-filtered + live) mask.
+    let live = self.live_mask.as_deref();
+    let mut mask = vec![false; self.chunks.len()];
+    for (i, c) in self.chunks.iter().enumerate() {
+      mask[i] = i as u32 != source_id
+        && c.language == source.language
+        && scope_matches(query_scope, &c.file_path)
+        && live.is_none_or(|m| m[i]);
+    }
+
+    // Pull a wider candidate window when boosting so the boost can
+    // promote items that wouldn't be in the top-k by raw similarity.
+    let candidate_k = if dep_boost { top_k * 5 } else { top_k };
+    let q_embed = self.embedder.encode_one(&source.content);
+    let mut scored = cosine_topk(&q_embed, &self.embeddings, Some(&mask), candidate_k);
+
+    if dep_boost {
+      if let Some(graph) = self.dep_graph_cached() {
+        let abs_source = self.paths.root.join(&source.file_path);
+        let abs_source = abs_source.canonicalize().unwrap_or(abs_source);
+        let depths = crate::deps::traverse::neighbourhood_depths(&graph, &abs_source, dep_depth);
+        if !depths.is_empty() {
+          for (id, score) in scored.iter_mut() {
+            let chunk = &self.chunks[*id as usize];
+            let abs = self.paths.root.join(&chunk.file_path);
+            let abs = abs.canonicalize().unwrap_or(abs);
+            if let Some(d) = depths.get(&abs) {
+              *score *= match *d {
+                0 => 1.0, // self — masked already
+                1 => 1.40,
+                2 => 1.20,
+                _ => 1.0,
+              };
             }
+          }
+          scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+          scored.truncate(top_k);
         }
-        let loaded = crate::graph_cache::shared::get_or_init(&self.paths.root).ok().map(|u| u.deps.clone());
-        if let Ok(mut w) = self.dep_graph.write() {
-            *w = Some(loaded.clone());
-        }
-        loaded
+      }
     }
 
-    /// Semantic-only similarity from a chunk identified by its file + line.
-    /// Filters to chunks of the same language and excludes the source itself.
-    /// When a fresh dep-graph cache exists, also applies a multiplicative
-    /// boost to chunks in the importer/importee neighbourhood.
-    pub fn find_related(
-        &self,
-        file_path: &str,
-        line: u32,
-        top_k: usize,
-    ) -> Option<Vec<SearchHit>> {
-        self.find_related_opts(
-            file_path, line, top_k, /* dep_boost */ true, /* dep_depth */ 2, None,
-        )
-    }
+    // Truncate (no-op if dep_boost was off).
+    scored.truncate(top_k);
 
-    pub fn find_related_opts(
-        &self,
-        file_path: &str,
-        line: u32,
-        top_k: usize,
-        dep_boost: bool,
-        dep_depth: usize,
-        query_scope: Option<&str>,
-    ) -> Option<Vec<SearchHit>> {
-        let source_id = resolve_chunk(&self.chunks, file_path, line)?;
-        let source = &self.chunks[source_id as usize];
-
-        // Build language-restricted + self-excluding (+ scope-filtered + live) mask.
-        let live = self.live_mask.as_deref();
-        let mut mask = vec![false; self.chunks.len()];
-        for (i, c) in self.chunks.iter().enumerate() {
-            mask[i] = i as u32 != source_id
-                && c.language == source.language
-                && scope_matches(query_scope, &c.file_path)
-                && live.is_none_or(|m| m[i]);
-        }
-
-        // Pull a wider candidate window when boosting so the boost can
-        // promote items that wouldn't be in the top-k by raw similarity.
-        let candidate_k = if dep_boost { top_k * 5 } else { top_k };
-        let q_embed = self.embedder.encode_one(&source.content);
-        let mut scored = cosine_topk(&q_embed, &self.embeddings, Some(&mask), candidate_k);
-
-        if dep_boost {
-            if let Some(graph) = self.dep_graph_cached() {
-                let abs_source = self.paths.root.join(&source.file_path);
-                let abs_source = abs_source.canonicalize().unwrap_or(abs_source);
-                let depths = crate::deps::traverse::neighbourhood_depths(&graph, &abs_source, dep_depth);
-                if !depths.is_empty() {
-                    for (id, score) in scored.iter_mut() {
-                        let chunk = &self.chunks[*id as usize];
-                        let abs = self.paths.root.join(&chunk.file_path);
-                        let abs = abs.canonicalize().unwrap_or(abs);
-                        if let Some(d) = depths.get(&abs) {
-                            *score *= match *d {
-                                0 => 1.0, // self — masked already
-                                1 => 1.40,
-                                2 => 1.20,
-                                _ => 1.0,
-                            };
-                        }
-                    }
-                    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-                    scored.truncate(top_k);
-                }
-            }
-        }
-
-        // Truncate (no-op if dep_boost was off).
-        scored.truncate(top_k);
-
-        Some(
-            scored
-                .into_iter()
-                .map(|(id, score)| SearchHit {
-                    chunk: self.chunks[id as usize].clone(),
-                    score,
-                })
-                .collect(),
-        )
-    }
+    Some(
+      scored
+        .into_iter()
+        .map(|(id, score)| SearchHit {
+          chunk: self.chunks[id as usize].clone(),
+          score,
+        })
+        .collect(),
+    )
+  }
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -984,155 +961,155 @@ impl Index {
 /// Combine language + query_scope + tombstone (`live`) masks. Returns
 /// `None` when no filter is active (semantically: all chunks pass).
 fn build_combined_mask(
-    chunks: &[Chunk],
-    languages: Option<&[String]>,
-    query_scope: Option<&str>,
-    live_mask: Option<&[bool]>,
-    path_contains: &[String],
-    name_contains: &[String],
+  chunks: &[Chunk],
+  languages: Option<&[String]>,
+  query_scope: Option<&str>,
+  live_mask: Option<&[bool]>,
+  path_contains: &[String],
+  name_contains: &[String],
 ) -> Option<Vec<bool>> {
-    let lang_active = languages.is_some_and(|l| !l.is_empty());
-    let scope_active = query_scope.is_some_and(|s| !s.is_empty());
-    let live_active = live_mask.is_some();
-    let path_active = !path_contains.is_empty();
-    let name_active = !name_contains.is_empty();
-    if !lang_active && !scope_active && !live_active && !path_active && !name_active {
-        return None;
-    }
-    Some(
-        chunks
-            .iter()
-            .enumerate()
-            .map(|(i, c)| {
-                let lang_ok = match languages {
-                    Some(langs) if !langs.is_empty() => langs.iter().any(|l| l == &c.language),
-                    _ => true,
-                };
-                let scope_ok = scope_matches(query_scope, &c.file_path);
-                let live_ok = live_mask.is_none_or(|m| m[i]);
-                // `path:`/`name:` both match case-insensitively against the file
-                // path; lowercase it once and reuse (basename is a substring of
-                // the path), instead of allocating separately per filter.
-                let lower_path =
-                    (path_active || name_active).then(|| c.file_path.to_ascii_lowercase());
-                let path_ok = !path_active || {
-                    let p = lower_path.as_deref().unwrap_or(&c.file_path);
-                    path_contains.iter().any(|s| p.contains(s.as_str()))
-                };
-                let name_ok = !name_active || {
-                    let p = lower_path.as_deref().unwrap_or(&c.file_path);
-                    let name = file_name_of(p);
-                    name_contains.iter().any(|s| name.contains(s.as_str()))
-                };
-                lang_ok && scope_ok && live_ok && path_ok && name_ok
-            })
-            .collect(),
-    )
+  let lang_active = languages.is_some_and(|l| !l.is_empty());
+  let scope_active = query_scope.is_some_and(|s| !s.is_empty());
+  let live_active = live_mask.is_some();
+  let path_active = !path_contains.is_empty();
+  let name_active = !name_contains.is_empty();
+  if !lang_active && !scope_active && !live_active && !path_active && !name_active {
+    return None;
+  }
+  Some(
+    chunks
+      .iter()
+      .enumerate()
+      .map(|(i, c)| {
+        let lang_ok = match languages {
+          Some(langs) if !langs.is_empty() => langs.iter().any(|l| l == &c.language),
+          _ => true,
+        };
+        let scope_ok = scope_matches(query_scope, &c.file_path);
+        let live_ok = live_mask.is_none_or(|m| m[i]);
+        // `path:`/`name:` both match case-insensitively against the file
+        // path; lowercase it once and reuse (basename is a substring of
+        // the path), instead of allocating separately per filter.
+        let lower_path = (path_active || name_active).then(|| c.file_path.to_ascii_lowercase());
+        let path_ok = !path_active || {
+          let p = lower_path.as_deref().unwrap_or(&c.file_path);
+          path_contains.iter().any(|s| p.contains(s.as_str()))
+        };
+        let name_ok = !name_active || {
+          let p = lower_path.as_deref().unwrap_or(&c.file_path);
+          let name = file_name_of(p);
+          name_contains.iter().any(|s| name.contains(s.as_str()))
+        };
+        lang_ok && scope_ok && live_ok && path_ok && name_ok
+      })
+      .collect(),
+  )
 }
 
 /// Basename of an (already-lowercased) path, for `name:` substring matching.
 fn file_name_of(file_path: &str) -> &str {
-    Path::new(file_path)
-        .file_name()
-        .and_then(|s| s.to_str())
-        .unwrap_or(file_path)
+  Path::new(file_path)
+    .file_name()
+    .and_then(|s| s.to_str())
+    .unwrap_or(file_path)
 }
 
 /// Build a `live[i] == !is_tombstoned(i)` mask, or `None` when there are no
 /// tombstones (callers can short-circuit the AND in the hot loop).
 fn build_live_mask(chunk_count: usize, tombstones: &[u32]) -> Option<Vec<bool>> {
-    if tombstones.is_empty() {
-        return None;
+  if tombstones.is_empty() {
+    return None;
+  }
+  let mut m = vec![true; chunk_count];
+  for &id in tombstones {
+    if let Some(slot) = m.get_mut(id as usize) {
+      *slot = false;
     }
-    let mut m = vec![true; chunk_count];
-    for &id in tombstones {
-        if let Some(slot) = m.get_mut(id as usize) {
-            *slot = false;
-        }
-    }
-    Some(m)
+  }
+  Some(m)
 }
 
 /// True when `file_path` is under (or equal to) the `query_scope` prefix.
 /// Empty / `None` scope passes everything.
 fn scope_matches(query_scope: Option<&str>, file_path: &str) -> bool {
-    match query_scope {
-        None => true,
-        Some("") => true,
-        Some(s) => path_starts_with(file_path, s),
-    }
+  match query_scope {
+    None => true,
+    Some("") => true,
+    Some(s) => path_starts_with(file_path, s),
+  }
 }
 
 /// Component-wise prefix check. `path_starts_with("packages/a", "packages")`
 /// is true; `path_starts_with("packagesfoo", "packages")` is false.
 fn path_starts_with(child: &str, parent: &str) -> bool {
-    if parent.is_empty() {
-        return true;
-    }
-    if child == parent {
-        return true;
-    }
-    if child.len() <= parent.len() {
-        return false;
-    }
-    child.starts_with(parent) && child.as_bytes()[parent.len()] == b'/'
+  if parent.is_empty() {
+    return true;
+  }
+  if child == parent {
+    return true;
+  }
+  if child.len() <= parent.len() {
+    return false;
+  }
+  child.starts_with(parent) && child.as_bytes()[parent.len()] == b'/'
 }
 
 /// Resolve the absolute directory we should walk for the given corpus.
 /// Empty corpus = the whole home.
 fn corpus_walk_dir(home: &Path, corpus: &str) -> PathBuf {
-    if corpus.is_empty() {
-        home.to_path_buf()
-    } else {
-        home.join(corpus)
-    }
+  if corpus.is_empty() {
+    home.to_path_buf()
+  } else {
+    home.join(corpus)
+  }
 }
 
 /// Convert a dense scores vector into the top-k `(id, score)` pairs (descending).
 /// Used for BM25 (which returns one score per chunk).
 fn top_k_indices(scores: &[f32], k: usize) -> Vec<(u32, f32)> {
-    if scores.is_empty() || k == 0 {
-        return Vec::new();
-    }
-    let take = k.min(scores.len());
-    let mut idx: Vec<u32> = (0..scores.len() as u32).collect();
-    idx.select_nth_unstable_by(take - 1, |&a, &b| {
-        scores[b as usize]
-            .partial_cmp(&scores[a as usize])
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-    let mut top: Vec<u32> = idx.into_iter().take(take).collect();
-    // Tie-break on id so the candidate list is a total order, not merely a
-    // deterministic one — see the note in `rerank_topk`.
-    top.sort_by(|&a, &b| {
-        scores[b as usize]
-            .partial_cmp(&scores[a as usize])
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then(a.cmp(&b))
-    });
-    // Drop zero-score entries — BM25 zeros mean "no query token matched".
-    top.into_iter()
-        .map(|i| (i, scores[i as usize]))
-        .filter(|(_, s)| *s > 0.0)
-        .collect()
+  if scores.is_empty() || k == 0 {
+    return Vec::new();
+  }
+  let take = k.min(scores.len());
+  let mut idx: Vec<u32> = (0..scores.len() as u32).collect();
+  idx.select_nth_unstable_by(take - 1, |&a, &b| {
+    scores[b as usize]
+      .partial_cmp(&scores[a as usize])
+      .unwrap_or(std::cmp::Ordering::Equal)
+  });
+  let mut top: Vec<u32> = idx.into_iter().take(take).collect();
+  // Tie-break on id so the candidate list is a total order, not merely a
+  // deterministic one — see the note in `rerank_topk`.
+  top.sort_by(|&a, &b| {
+    scores[b as usize]
+      .partial_cmp(&scores[a as usize])
+      .unwrap_or(std::cmp::Ordering::Equal)
+      .then(a.cmp(&b))
+  });
+  // Drop zero-score entries — BM25 zeros mean "no query token matched".
+  top
+    .into_iter()
+    .map(|i| (i, scores[i as usize]))
+    .filter(|(_, s)| *s > 0.0)
+    .collect()
 }
 
 /// Find the chunk that best contains `file_path:line`.
 fn resolve_chunk(chunks: &[Chunk], file_path: &str, line: u32) -> Option<u32> {
-    let normalised = file_path.replace('\\', "/");
-    let mut fallback: Option<u32> = None;
-    for (i, c) in chunks.iter().enumerate() {
-        if c.file_path != normalised {
-            continue;
-        }
-        if c.start_line <= line && line < c.end_line {
-            return Some(i as u32);
-        }
-        if line == c.end_line {
-            fallback = Some(i as u32);
-        }
+  let normalised = file_path.replace('\\', "/");
+  let mut fallback: Option<u32> = None;
+  for (i, c) in chunks.iter().enumerate() {
+    if c.file_path != normalised {
+      continue;
     }
-    fallback
+    if c.start_line <= line && line < c.end_line {
+      return Some(i as u32);
+    }
+    if line == c.end_line {
+      fallback = Some(i as u32);
+    }
+  }
+  fallback
 }
 
 /// Above this, a chunk is indexed lexically but not embedded.
@@ -1168,10 +1145,10 @@ const MAX_EMBED_CHARS: usize = 6000;
 /// BM25 keeps the breadcrumb too (see `enrich_for_bm25`), where it measured as
 /// no change on top of this but carries the effect on its own.
 fn embed_text(chunk: &Chunk) -> String {
-    if chunk.breadcrumb.is_empty() {
-        return chunk.content.clone();
-    }
-    format!("{}\n{}", chunk.breadcrumb, chunk.content)
+  if chunk.breadcrumb.is_empty() {
+    return chunk.content.clone();
+  }
+  format!("{}\n{}", chunk.breadcrumb, chunk.content)
 }
 
 /// Embeds one chunk, or returns a non-finite vector when it is too big to
@@ -1182,545 +1159,546 @@ fn embed_text(chunk: &Chunk) -> String {
 /// prefix was added. The length is computed before building the string so the
 /// oversized case allocates nothing.
 fn embed_chunk(embedder: &Embedder, chunk: &Chunk) -> Vec<f32> {
-    let crumb_len = if chunk.breadcrumb.is_empty() {
-        0
-    } else {
-        chunk.breadcrumb.len() + 1
-    };
-    if chunk.content.len() + crumb_len > MAX_EMBED_CHARS {
-        return vec![f32::NAN; DIM];
-    }
-    embedder.encode_one(&embed_text(chunk)).to_vec()
+  let crumb_len = if chunk.breadcrumb.is_empty() {
+    0
+  } else {
+    chunk.breadcrumb.len() + 1
+  };
+  if chunk.content.len() + crumb_len > MAX_EMBED_CHARS {
+    return vec![f32::NAN; DIM];
+  }
+  embedder.encode_one(&embed_text(chunk)).to_vec()
 }
 
 /// Append file path components and the breadcrumb to chunk content, so
 /// path-shaped and symbol-shaped queries reach the lexical retriever.
 fn enrich_for_bm25(chunk: &Chunk) -> String {
-    let crumb = chunk.breadcrumb.as_str();
-    let path = Path::new(&chunk.file_path);
-    let stem = path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("");
-    let dir_parts: Vec<&str> = path
-        .parent()
-        .map(|p| {
-            p.components()
-                .filter_map(|c| c.as_os_str().to_str())
-                .filter(|s| *s != "." && *s != "/")
-                .collect()
-        })
-        .unwrap_or_default();
-    let dir_text: String = dir_parts
-        .iter()
-        .rev()
-        .take(3)
-        .copied()
-        .collect::<Vec<_>>()
-        .into_iter()
-        .rev()
-        .collect::<Vec<_>>()
-        .join(" ");
-    format!("{} {} {} {} {}", chunk.content, stem, stem, dir_text, crumb)
+  let crumb = chunk.breadcrumb.as_str();
+  let path = Path::new(&chunk.file_path);
+  let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+  let dir_parts: Vec<&str> = path
+    .parent()
+    .map(|p| {
+      p.components()
+        .filter_map(|c| c.as_os_str().to_str())
+        .filter(|s| *s != "." && *s != "/")
+        .collect()
+    })
+    .unwrap_or_default();
+  let dir_text: String = dir_parts
+    .iter()
+    .rev()
+    .take(3)
+    .copied()
+    .collect::<Vec<_>>()
+    .into_iter()
+    .rev()
+    .collect::<Vec<_>>()
+    .join(" ");
+  format!("{} {} {} {} {}", chunk.content, stem, stem, dir_text, crumb)
 }
 
 /// Walk `walk_root` and return absolute file paths + their chunks.
 /// Chunk `file_path` strings are stored relative to `strip_root` so that a
 /// corpus-narrowed walk still produces stable paths relative to the index
 /// home (used by `query_scope` filtering at search time).
-fn walk_and_chunk(walk_root: &Path, strip_root: &Path, repo_root: &Path) -> (Vec<PathBuf>, Vec<Vec<Chunk>>) {
-    // Collect indexable paths first so chunking can run in parallel.
-    let mut paths: Vec<PathBuf> = Vec::new();
-    let mut builder = WalkBuilder::new(walk_root);
-    add_filters(&mut builder, repo_root);
-    let walker = builder.build();
-    for entry in walker.flatten() {
-        let p = entry.path();
-        if !entry.file_type().is_some_and(|ft| ft.is_file()) {
-            continue;
-        }
-        if is_indexable(p).is_none() {
-            continue;
-        }
-        if should_skip_path(p, walk_root) {
-            continue;
-        }
-        // Skip oversized files — must match the guard in `compute_delta` so
-        // the build and delta walks agree on the file set (see
-        // MAX_INDEX_FILE_BYTES). Reuse the walker's cached metadata. On a
-        // metadata error, skip (matching `compute_delta`) rather than
-        // defaulting to size 0: the FileRecord stat below drops unreadable
-        // files but does *not* re-check the size cap, so defaulting-to-0 could
-        // let a transient error slip an oversized file past this guard and into
-        // the index — one `compute_delta` then wants removed, a rebuild loop.
-        let meta = match entry.metadata() {
-            Ok(m) => m,
-            Err(_) => continue,
-        };
-        if meta.len() > MAX_INDEX_FILE_BYTES {
-            continue;
-        }
-        paths.push(p.to_path_buf());
+fn walk_and_chunk(
+  walk_root: &Path,
+  strip_root: &Path,
+  repo_root: &Path,
+) -> (Vec<PathBuf>, Vec<Vec<Chunk>>) {
+  // Collect indexable paths first so chunking can run in parallel.
+  let mut paths: Vec<PathBuf> = Vec::new();
+  let mut builder = WalkBuilder::new(walk_root);
+  add_filters(&mut builder, repo_root);
+  let walker = builder.build();
+  for entry in walker.flatten() {
+    let p = entry.path();
+    if !entry.file_type().is_some_and(|ft| ft.is_file()) {
+      continue;
     }
-    paths.sort(); // deterministic order
+    if is_indexable(p).is_none() {
+      continue;
+    }
+    if should_skip_path(p, walk_root) {
+      continue;
+    }
+    // Skip oversized files — must match the guard in `compute_delta` so
+    // the build and delta walks agree on the file set (see
+    // MAX_INDEX_FILE_BYTES). Reuse the walker's cached metadata. On a
+    // metadata error, skip (matching `compute_delta`) rather than
+    // defaulting to size 0: the FileRecord stat below drops unreadable
+    // files but does *not* re-check the size cap, so defaulting-to-0 could
+    // let a transient error slip an oversized file past this guard and into
+    // the index — one `compute_delta` then wants removed, a rebuild loop.
+    let meta = match entry.metadata() {
+      Ok(m) => m,
+      Err(_) => continue,
+    };
+    if meta.len() > MAX_INDEX_FILE_BYTES {
+      continue;
+    }
+    paths.push(p.to_path_buf());
+  }
+  paths.sort(); // deterministic order
 
-    let chunks_per_file: Vec<Vec<Chunk>> = paths
-        .par_iter()
-        .map(|p| {
-            let rel = p
-                .strip_prefix(strip_root)
-                .map(normalise_path)
-                .unwrap_or_else(|_| p.display().to_string());
-            chunk_file(p, &rel)
-        })
-        .collect();
+  let chunks_per_file: Vec<Vec<Chunk>> = paths
+    .par_iter()
+    .map(|p| {
+      let rel = p
+        .strip_prefix(strip_root)
+        .map(normalise_path)
+        .unwrap_or_else(|_| p.display().to_string());
+      chunk_file(p, &rel)
+    })
+    .collect();
 
-    (paths, chunks_per_file)
+  (paths, chunks_per_file)
 }
 
 fn ensure_gitignore(paths: &IndexPaths) -> io::Result<()> {
-    if paths.gitignore.exists() {
-        return Ok(());
-    }
-    if let Some(parent) = paths.gitignore.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    fs::write(&paths.gitignore, "*\n")?;
-    Ok(())
+  if paths.gitignore.exists() {
+    return Ok(());
+  }
+  if let Some(parent) = paths.gitignore.parent() {
+    fs::create_dir_all(parent)?;
+  }
+  fs::write(&paths.gitignore, "*\n")?;
+  Ok(())
 }
 
 fn acquire_lock(paths: &IndexPaths) -> io::Result<fs::File> {
-    let lock_file = fs::OpenOptions::new()
-        .create(true)
-        .read(true)
-        .write(true)
-        .truncate(false)
-        .open(&paths.lock)?;
-    lock_file.lock_exclusive().map_err(|e| {
-        io::Error::other(
-            format!("could not acquire index lock: {e}"),
-        )
-    })?;
-    Ok(lock_file)
+  let lock_file = fs::OpenOptions::new()
+    .create(true)
+    .read(true)
+    .write(true)
+    .truncate(false)
+    .open(&paths.lock)?;
+  lock_file
+    .lock_exclusive()
+    .map_err(|e| io::Error::other(format!("could not acquire index lock: {e}")))?;
+  Ok(lock_file)
 }
 
 fn write_meta(path: &Path, meta: &Meta) -> io::Result<()> {
-    let json = serde_json::to_vec_pretty(meta)
-        .map_err(io::Error::other)?;
-    write_atomic(path, &json)
+  let json = serde_json::to_vec_pretty(meta).map_err(io::Error::other)?;
+  write_atomic(path, &json)
 }
 
 fn read_meta(path: &Path) -> io::Result<Meta> {
-    let bytes = fs::read(path)?;
-    serde_json::from_slice(&bytes).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+  let bytes = fs::read(path)?;
+  serde_json::from_slice(&bytes).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
 }
 
 fn write_bincode<T: Serialize>(path: &Path, value: &T) -> io::Result<()> {
-    let bytes = bincode::serde::encode_to_vec(value, bincode::config::standard())
-        .map_err(io::Error::other)?;
-    write_atomic(path, &bytes)
+  let bytes =
+    bincode::serde::encode_to_vec(value, bincode::config::standard()).map_err(io::Error::other)?;
+  write_atomic(path, &bytes)
 }
 
 fn read_bincode<T: serde::de::DeserializeOwned>(path: &Path) -> io::Result<T> {
-    let bytes = fs::read(path)?;
-    let (value, _): (T, _) = bincode::serde::decode_from_slice(&bytes, bincode::config::standard())
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-    Ok(value)
+  let bytes = fs::read(path)?;
+  let (value, _): (T, _) = bincode::serde::decode_from_slice(&bytes, bincode::config::standard())
+    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+  Ok(value)
 }
 
 fn write_embeddings(path: &Path, values: &[f32]) -> io::Result<()> {
-    // Header-less, contiguous little-endian f32. Length is known from
-    // chunk_count × DIM in meta.json.
-    let mut bytes = Vec::with_capacity(values.len() * 4);
-    for v in values {
-        bytes.extend_from_slice(&v.to_le_bytes());
-    }
-    write_atomic(path, &bytes)
+  // Header-less, contiguous little-endian f32. Length is known from
+  // chunk_count × DIM in meta.json.
+  let mut bytes = Vec::with_capacity(values.len() * 4);
+  for v in values {
+    bytes.extend_from_slice(&v.to_le_bytes());
+  }
+  write_atomic(path, &bytes)
 }
 
 fn read_embeddings(path: &Path) -> io::Result<Vec<f32>> {
-    let bytes = fs::read(path)?;
-    if bytes.len() % 4 != 0 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "embeddings.f32 length not a multiple of 4",
-        ));
-    }
-    let n = bytes.len() / 4;
-    let mut out = Vec::with_capacity(n);
-    for i in 0..n {
-        let arr: [u8; 4] = bytes[i * 4..i * 4 + 4].try_into().unwrap();
-        out.push(f32::from_le_bytes(arr));
-    }
-    Ok(out)
+  let bytes = fs::read(path)?;
+  if bytes.len() % 4 != 0 {
+    return Err(io::Error::new(
+      io::ErrorKind::InvalidData,
+      "embeddings.f32 length not a multiple of 4",
+    ));
+  }
+  let n = bytes.len() / 4;
+  let mut out = Vec::with_capacity(n);
+  for i in 0..n {
+    let arr: [u8; 4] = bytes[i * 4..i * 4 + 4].try_into().unwrap();
+    out.push(f32::from_le_bytes(arr));
+  }
+  Ok(out)
 }
 
 fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    let tmp = path.with_extension("tmp");
-    let mut file = fs::File::create(&tmp)?;
-    file.write_all(bytes)?;
-    file.sync_all()?;
-    drop(file);
-    fs::rename(&tmp, path)?;
-    Ok(())
+  let tmp = path.with_extension("tmp");
+  let mut file = fs::File::create(&tmp)?;
+  file.write_all(bytes)?;
+  file.sync_all()?;
+  drop(file);
+  fs::rename(&tmp, path)?;
+  Ok(())
 }
 
 fn mtime_nanos(meta: &fs::Metadata) -> i128 {
-    let mtime = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
-    match mtime.duration_since(SystemTime::UNIX_EPOCH) {
-        Ok(d) => d.as_nanos() as i128,
-        Err(e) => -(e.duration().as_nanos() as i128),
-    }
+  let mtime = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+  match mtime.duration_since(SystemTime::UNIX_EPOCH) {
+    Ok(d) => d.as_nanos() as i128,
+    Err(e) => -(e.duration().as_nanos() as i128),
+  }
 }
 
 fn normalise_path(p: &Path) -> String {
-    p.components()
-        .map(|c| c.as_os_str().to_string_lossy().into_owned())
-        .collect::<Vec<_>>()
-        .join("/")
+  p.components()
+    .map(|c| c.as_os_str().to_string_lossy().into_owned())
+    .collect::<Vec<_>>()
+    .join("/")
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::search::chunker::ChunkKind;
-    use std::fs::File;
-    use std::io::Write;
+  use super::*;
+  use crate::search::chunker::ChunkKind;
+  use std::fs::File;
+  use std::io::Write;
 
-    fn tmp_repo() -> tempfile::TempDir {
-        tempfile::tempdir().unwrap()
+  fn tmp_repo() -> tempfile::TempDir {
+    tempfile::tempdir().unwrap()
+  }
+
+  fn write_file(dir: &Path, rel: &str, body: &str) {
+    let path = dir.join(rel);
+    if let Some(parent) = path.parent() {
+      fs::create_dir_all(parent).unwrap();
     }
+    let mut f = File::create(&path).unwrap();
+    f.write_all(body.as_bytes()).unwrap();
+  }
 
-    fn write_file(dir: &Path, rel: &str, body: &str) {
-        let path = dir.join(rel);
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).unwrap();
-        }
-        let mut f = File::create(&path).unwrap();
-        f.write_all(body.as_bytes()).unwrap();
-    }
+  #[test]
+  fn index_paths_layout() {
+    let p = IndexPaths::from_repo(Path::new("/r"));
+    assert!(p.index_dir.ends_with(".ast-bro/index"));
+    assert!(p.gitignore.ends_with(".ast-bro/.gitignore"));
+    assert!(p.meta_json.ends_with("meta.json"));
+    assert!(p.embeddings_f32.ends_with("embeddings.f32"));
+  }
 
-    #[test]
-    fn index_paths_layout() {
-        let p = IndexPaths::from_repo(Path::new("/r"));
-        assert!(p.index_dir.ends_with(".ast-bro/index"));
-        assert!(p.gitignore.ends_with(".ast-bro/.gitignore"));
-        assert!(p.meta_json.ends_with("meta.json"));
-        assert!(p.embeddings_f32.ends_with("embeddings.f32"));
-    }
+  #[test]
+  fn enrich_for_bm25_includes_stem_twice_and_dirs() {
+    let chunk = Chunk {
+      content: "fn x() {}".to_string(),
+      file_path: "src/auth/login.rs".to_string(),
+      start_line: 1,
+      end_line: 1,
+      start_byte: 0,
+      end_byte: 9,
+      language: "rust".to_string(),
+      breadcrumb: String::new(),
+      kind: ChunkKind::Source,
+    };
+    let enriched = enrich_for_bm25(&chunk);
+    // Stem appears twice; "src" and "auth" appear once each in dir text.
+    let count = |s: &str, n: &str| s.matches(n).count();
+    assert_eq!(count(&enriched, "login"), 2);
+    assert!(enriched.contains("src"));
+    assert!(enriched.contains("auth"));
+  }
 
-    #[test]
-    fn enrich_for_bm25_includes_stem_twice_and_dirs() {
-        let chunk = Chunk {
-            content: "fn x() {}".to_string(),
-            file_path: "src/auth/login.rs".to_string(),
-            start_line: 1,
-            end_line: 1,
-            start_byte: 0,
-            end_byte: 9,
-            language: "rust".to_string(),
-            breadcrumb: String::new(),
-            kind: ChunkKind::Source,
-        };
-        let enriched = enrich_for_bm25(&chunk);
-        // Stem appears twice; "src" and "auth" appear once each in dir text.
-        let count = |s: &str, n: &str| s.matches(n).count();
-        assert_eq!(count(&enriched, "login"), 2);
-        assert!(enriched.contains("src"));
-        assert!(enriched.contains("auth"));
-    }
+  #[test]
+  fn resolve_chunk_finds_overlapping() {
+    let mk = |sl, el| Chunk {
+      content: String::new(),
+      file_path: "f.rs".to_string(),
+      start_line: sl,
+      end_line: el,
+      start_byte: 0,
+      end_byte: 0,
+      language: "rust".to_string(),
+      breadcrumb: String::new(),
+      kind: ChunkKind::Source,
+    };
+    let chunks = vec![mk(1, 10), mk(20, 30), mk(40, 50)];
+    assert_eq!(resolve_chunk(&chunks, "f.rs", 5), Some(0));
+    assert_eq!(resolve_chunk(&chunks, "f.rs", 25), Some(1));
+    assert_eq!(resolve_chunk(&chunks, "f.rs", 9), Some(0));
+    // line == end_line: fallback path.
+    assert_eq!(resolve_chunk(&chunks, "f.rs", 50), Some(2));
+    // No matching file.
+    assert_eq!(resolve_chunk(&chunks, "other.rs", 5), None);
+    // Out-of-range line.
+    assert_eq!(resolve_chunk(&chunks, "f.rs", 60), None);
+  }
 
-    #[test]
-    fn resolve_chunk_finds_overlapping() {
-        let mk = |sl, el| Chunk {
-            content: String::new(),
-            file_path: "f.rs".to_string(),
-            start_line: sl,
-            end_line: el,
-            start_byte: 0,
-            end_byte: 0,
-            language: "rust".to_string(),
-            breadcrumb: String::new(),
-            kind: ChunkKind::Source,
-        };
-        let chunks = vec![mk(1, 10), mk(20, 30), mk(40, 50)];
-        assert_eq!(resolve_chunk(&chunks, "f.rs", 5), Some(0));
-        assert_eq!(resolve_chunk(&chunks, "f.rs", 25), Some(1));
-        assert_eq!(resolve_chunk(&chunks, "f.rs", 9), Some(0));
-        // line == end_line: fallback path.
-        assert_eq!(resolve_chunk(&chunks, "f.rs", 50), Some(2));
-        // No matching file.
-        assert_eq!(resolve_chunk(&chunks, "other.rs", 5), None);
-        // Out-of-range line.
-        assert_eq!(resolve_chunk(&chunks, "f.rs", 60), None);
-    }
+  #[test]
+  fn top_k_indices_orders_and_drops_zeros() {
+    let scores = vec![0.0, 0.5, 0.0, 0.9, 0.1];
+    let top = top_k_indices(&scores, 5);
+    assert_eq!(top.len(), 3); // zeros dropped
+    assert_eq!(top[0].0, 3);
+    assert_eq!(top[1].0, 1);
+    assert_eq!(top[2].0, 4);
+  }
 
-    #[test]
-    fn top_k_indices_orders_and_drops_zeros() {
-        let scores = vec![0.0, 0.5, 0.0, 0.9, 0.1];
-        let top = top_k_indices(&scores, 5);
-        assert_eq!(top.len(), 3); // zeros dropped
-        assert_eq!(top[0].0, 3);
-        assert_eq!(top[1].0, 1);
-        assert_eq!(top[2].0, 4);
-    }
+  /// Smoke test of the persistence round-trip without touching the embedder.
+  /// Builds tiny structures by hand, writes, reads back, asserts equality.
+  #[test]
+  fn persistence_roundtrip() {
+    let dir = tmp_repo();
+    let paths = IndexPaths::from_repo(dir.path());
+    fs::create_dir_all(&paths.index_dir).unwrap();
 
-    /// Smoke test of the persistence round-trip without touching the embedder.
-    /// Builds tiny structures by hand, writes, reads back, asserts equality.
-    #[test]
-    fn persistence_roundtrip() {
-        let dir = tmp_repo();
-        let paths = IndexPaths::from_repo(dir.path());
-        fs::create_dir_all(&paths.index_dir).unwrap();
+    let chunks = vec![Chunk {
+      content: "hello".to_string(),
+      file_path: "a.rs".to_string(),
+      start_line: 1,
+      end_line: 1,
+      start_byte: 0,
+      end_byte: 5,
+      language: "rust".to_string(),
+      breadcrumb: String::new(),
+      kind: ChunkKind::Source,
+    }];
+    let files = vec![FileRecord {
+      path: "a.rs".to_string(),
+      mtime_ns: 0,
+      size: 5,
+      content_hash: 0,
+      chunk_start: 0,
+      chunk_end: 1,
+    }];
+    let bm25 = Bm25Index::build(vec![vec!["hello".to_string()]]);
+    let embeddings = vec![0.0; DIM];
+    let meta = Meta {
+      schema: SCHEMA.to_string(),
+      ast_bro_version: env!("CARGO_PKG_VERSION").to_string(),
+      model: ModelMeta {
+        id: "m".into(),
+        dim: DIM as u32,
+      },
+      created_unix: 0,
+      chunk_count: 1,
+      embedding_dtype: "f32_le".to_string(),
+      tombstones: Vec::new(),
+      indexed_corpus: String::new(),
+    };
 
-        let chunks = vec![Chunk {
-            content: "hello".to_string(),
-            file_path: "a.rs".to_string(),
-            start_line: 1,
-            end_line: 1,
-            start_byte: 0,
-            end_byte: 5,
-            language: "rust".to_string(),
-            breadcrumb: String::new(),
-            kind: ChunkKind::Source,
-        }];
-        let files = vec![FileRecord {
-            path: "a.rs".to_string(),
-            mtime_ns: 0,
-            size: 5,
-            content_hash: 0,
-            chunk_start: 0,
-            chunk_end: 1,
-        }];
-        let bm25 = Bm25Index::build(vec![vec!["hello".to_string()]]);
-        let embeddings = vec![0.0; DIM];
-        let meta = Meta {
-            schema: SCHEMA.to_string(),
-            ast_bro_version: env!("CARGO_PKG_VERSION").to_string(),
-            model: ModelMeta { id: "m".into(), dim: DIM as u32 },
-            created_unix: 0,
-            chunk_count: 1,
-            embedding_dtype: "f32_le".to_string(),
-            tombstones: Vec::new(),
-            indexed_corpus: String::new(),
-        };
+    write_meta(&paths.meta_json, &meta).unwrap();
+    write_bincode(&paths.chunks_bin, &chunks).unwrap();
+    write_bincode(&paths.files_bin, &files).unwrap();
+    write_bincode(&paths.bm25_bin, &bm25).unwrap();
+    write_embeddings(&paths.embeddings_f32, &embeddings).unwrap();
 
-        write_meta(&paths.meta_json, &meta).unwrap();
-        write_bincode(&paths.chunks_bin, &chunks).unwrap();
-        write_bincode(&paths.files_bin, &files).unwrap();
-        write_bincode(&paths.bm25_bin, &bm25).unwrap();
-        write_embeddings(&paths.embeddings_f32, &embeddings).unwrap();
+    let meta2: Meta = read_meta(&paths.meta_json).unwrap();
+    let chunks2: Vec<Chunk> = read_bincode(&paths.chunks_bin).unwrap();
+    let files2: Vec<FileRecord> = read_bincode(&paths.files_bin).unwrap();
+    let _bm25_2: Bm25Index = read_bincode(&paths.bm25_bin).unwrap();
+    let emb2 = read_embeddings(&paths.embeddings_f32).unwrap();
 
-        let meta2: Meta = read_meta(&paths.meta_json).unwrap();
-        let chunks2: Vec<Chunk> = read_bincode(&paths.chunks_bin).unwrap();
-        let files2: Vec<FileRecord> = read_bincode(&paths.files_bin).unwrap();
-        let _bm25_2: Bm25Index = read_bincode(&paths.bm25_bin).unwrap();
-        let emb2 = read_embeddings(&paths.embeddings_f32).unwrap();
+    assert_eq!(meta2.chunk_count, 1);
+    assert_eq!(chunks2, chunks);
+    assert_eq!(files2, files);
+    assert_eq!(emb2, embeddings);
+  }
 
-        assert_eq!(meta2.chunk_count, 1);
-        assert_eq!(chunks2, chunks);
-        assert_eq!(files2, files);
-        assert_eq!(emb2, embeddings);
-    }
+  /// A meta whose model id differs from the active model must be rejected
+  /// (forcing a rebuild) even when the dimension matches. The id check runs
+  /// before the model load, so this needs no network.
+  #[test]
+  fn load_rejects_model_id_mismatch() {
+    let dir = tmp_repo();
+    let paths = IndexPaths::from_repo(dir.path());
+    fs::create_dir_all(&paths.index_dir).unwrap();
+    let meta = Meta {
+      schema: SCHEMA.to_string(),
+      ast_bro_version: "0.0.0".to_string(),
+      model: ModelMeta {
+        id: "someone/other-model".to_string(),
+        dim: DIM as u32,
+      },
+      created_unix: 0,
+      chunk_count: 0,
+      embedding_dtype: "f32_le".to_string(),
+      tombstones: Vec::new(),
+      indexed_corpus: String::new(),
+    };
+    write_meta(&paths.meta_json, &meta).unwrap();
 
-    /// A meta whose model id differs from the active model must be rejected
-    /// (forcing a rebuild) even when the dimension matches. The id check runs
-    /// before the model load, so this needs no network.
-    #[test]
-    fn load_rejects_model_id_mismatch() {
-        let dir = tmp_repo();
-        let paths = IndexPaths::from_repo(dir.path());
-        fs::create_dir_all(&paths.index_dir).unwrap();
-        let meta = Meta {
-            schema: SCHEMA.to_string(),
-            ast_bro_version: "0.0.0".to_string(),
-            model: ModelMeta {
-                id: "someone/other-model".to_string(),
-                dim: DIM as u32,
-            },
-            created_unix: 0,
-            chunk_count: 0,
-            embedding_dtype: "f32_le".to_string(),
-            tombstones: Vec::new(),
-            indexed_corpus: String::new(),
-        };
-        write_meta(&paths.meta_json, &meta).unwrap();
+    // `Index` isn't `Debug`, so destructure rather than `expect_err`.
+    let err = match Index::load_unlocked(&paths) {
+      Ok(_) => panic!("mismatched model id must error"),
+      Err(e) => e,
+    };
+    assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+    assert!(err.to_string().contains("model id"), "got: {err}");
+  }
 
-        // `Index` isn't `Debug`, so destructure rather than `expect_err`.
-        let err = match Index::load_unlocked(&paths) {
-            Ok(_) => panic!("mismatched model id must error"),
-            Err(e) => e,
-        };
-        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
-        assert!(err.to_string().contains("model id"), "got: {err}");
-    }
+  /// Full end-to-end: build, search, find_related against a tiny tmp repo.
+  /// Network-gated — requires the model be downloadable.
+  #[test]
+  #[ignore]
+  fn network_end_to_end_build_and_search() {
+    let dir = tmp_repo();
+    // Plant some Rust files with semantically distinct content.
+    write_file(
+      dir.path(),
+      "src/auth/login.rs",
+      "pub fn login(username: &str, password: &str) -> bool { username == \"admin\" }",
+    );
+    write_file(
+      dir.path(),
+      "src/auth/logout.rs",
+      "pub fn logout(session_id: &str) { drop_session(session_id) }",
+    );
+    write_file(
+      dir.path(),
+      "src/http/handler.rs",
+      "pub struct HandlerStack { items: Vec<u32> }",
+    );
 
-    /// Full end-to-end: build, search, find_related against a tiny tmp repo.
-    /// Network-gated — requires the model be downloadable.
-    #[test]
-    #[ignore]
-    fn network_end_to_end_build_and_search() {
-        let dir = tmp_repo();
-        // Plant some Rust files with semantically distinct content.
-        write_file(
-            dir.path(),
-            "src/auth/login.rs",
-            "pub fn login(username: &str, password: &str) -> bool { username == \"admin\" }",
-        );
-        write_file(
-            dir.path(),
-            "src/auth/logout.rs",
-            "pub fn logout(session_id: &str) { drop_session(session_id) }",
-        );
-        write_file(
-            dir.path(),
-            "src/http/handler.rs",
-            "pub struct HandlerStack { items: Vec<u32> }",
-        );
+    let index = Index::build(dir.path(), dir.path()).expect("build failed");
+    assert!(index.chunk_count() >= 3);
 
-        let index = Index::build(dir.path(), dir.path()).expect("build failed");
-        assert!(index.chunk_count() >= 3);
+    // Symbol query: should rank handler.rs first.
+    let hits = index.search("HandlerStack", &SearchOptions::with_top_k(3));
+    assert!(!hits.is_empty());
+    assert!(hits[0].chunk.file_path.contains("handler.rs"));
 
-        // Symbol query: should rank handler.rs first.
-        let hits = index.search("HandlerStack", &SearchOptions::with_top_k(3));
-        assert!(!hits.is_empty());
-        assert!(hits[0].chunk.file_path.contains("handler.rs"));
+    // NL query: should rank one of the auth files first.
+    let hits = index.search("how does login work", &SearchOptions::with_top_k(3));
+    assert!(!hits.is_empty());
+    assert!(hits[0].chunk.file_path.contains("login.rs"));
 
-        // NL query: should rank one of the auth files first.
-        let hits = index.search("how does login work", &SearchOptions::with_top_k(3));
-        assert!(!hits.is_empty());
-        assert!(hits[0].chunk.file_path.contains("login.rs"));
+    // find-related from login.rs:1 should pull logout.rs (same lang, related).
+    let related = index
+      .find_related("src/auth/login.rs", 1, 5)
+      .expect("source chunk not found");
+    assert!(!related.is_empty());
+    // The source chunk itself must be excluded.
+    assert!(related
+      .iter()
+      .all(|h| !h.chunk.file_path.contains("login.rs")));
 
-        // find-related from login.rs:1 should pull logout.rs (same lang, related).
-        let related = index
-            .find_related("src/auth/login.rs", 1, 5)
-            .expect("source chunk not found");
-        assert!(!related.is_empty());
-        // The source chunk itself must be excluded.
-        assert!(related.iter().all(|h| !h.chunk.file_path.contains("login.rs")));
+    // Re-open from cache: should detect no changes and skip rebuild.
+    let reopened = Index::open(dir.path(), dir.path()).expect("re-open failed");
+    assert_eq!(reopened.chunk_count(), index.chunk_count());
+  }
 
-        // Re-open from cache: should detect no changes and skip rebuild.
-        let reopened = Index::open(dir.path(), dir.path()).expect("re-open failed");
-        assert_eq!(reopened.chunk_count(), index.chunk_count());
-    }
+  #[test]
+  fn path_starts_with_component_boundary() {
+    assert!(path_starts_with("packages/a", "packages"));
+    assert!(path_starts_with("packages", "packages"));
+    assert!(!path_starts_with("packagesfoo", "packages"));
+    assert!(!path_starts_with("packages", "packages/a"));
+    assert!(path_starts_with("anything", ""));
+  }
 
-    #[test]
-    fn path_starts_with_component_boundary() {
-        assert!(path_starts_with("packages/a", "packages"));
-        assert!(path_starts_with("packages", "packages"));
-        assert!(!path_starts_with("packagesfoo", "packages"));
-        assert!(!path_starts_with("packages", "packages/a"));
-        assert!(path_starts_with("anything", ""));
-    }
+  #[test]
+  fn scope_matches_basic() {
+    assert!(scope_matches(None, "src/foo.rs"));
+    assert!(scope_matches(Some(""), "src/foo.rs"));
+    assert!(scope_matches(Some("src"), "src/foo.rs"));
+    assert!(!scope_matches(Some("packages"), "src/foo.rs"));
+  }
 
-    #[test]
-    fn scope_matches_basic() {
-        assert!(scope_matches(None, "src/foo.rs"));
-        assert!(scope_matches(Some(""), "src/foo.rs"));
-        assert!(scope_matches(Some("src"), "src/foo.rs"));
-        assert!(!scope_matches(Some("packages"), "src/foo.rs"));
-    }
+  #[test]
+  fn build_combined_mask_returns_none_when_no_filters() {
+    let mk = || Chunk {
+      content: String::new(),
+      file_path: "src/a.rs".to_string(),
+      start_line: 0,
+      end_line: 0,
+      start_byte: 0,
+      end_byte: 0,
+      language: "rust".to_string(),
+      breadcrumb: String::new(),
+      kind: ChunkKind::Source,
+    };
+    let chunks = vec![mk()];
+    assert!(build_combined_mask(&chunks, None, None, None, &[], &[]).is_none());
+    assert!(build_combined_mask(&chunks, None, Some(""), None, &[], &[]).is_none());
+  }
 
-    #[test]
-    fn build_combined_mask_returns_none_when_no_filters() {
-        let mk = || Chunk {
-            content: String::new(),
-            file_path: "src/a.rs".to_string(),
-            start_line: 0,
-            end_line: 0,
-            start_byte: 0,
-            end_byte: 0,
-            language: "rust".to_string(),
-            breadcrumb: String::new(),
-            kind: ChunkKind::Source,
-        };
-        let chunks = vec![mk()];
-        assert!(build_combined_mask(&chunks, None, None, None, &[], &[]).is_none());
-        assert!(build_combined_mask(&chunks, None, Some(""), None, &[], &[]).is_none());
-    }
+  #[test]
+  fn build_combined_mask_combines_lang_scope_and_live() {
+    let mk = |lang: &str, p: &str| Chunk {
+      content: String::new(),
+      file_path: p.to_string(),
+      start_line: 0,
+      end_line: 0,
+      start_byte: 0,
+      end_byte: 0,
+      language: lang.to_string(),
+      breadcrumb: String::new(),
+      kind: ChunkKind::Source,
+    };
+    let chunks = vec![
+      mk("rust", "src/a.rs"),
+      mk("rust", "packages/b.rs"),
+      mk("python", "src/c.py"),
+      mk("rust", "src/d.rs"),
+    ];
+    let mask = build_combined_mask(
+      &chunks,
+      Some(&["rust".to_string()]),
+      Some("src"),
+      None,
+      &[],
+      &[],
+    )
+    .expect("filters active → some mask");
+    assert_eq!(mask, vec![true, false, false, true]);
 
-    #[test]
-    fn build_combined_mask_combines_lang_scope_and_live() {
-        let mk = |lang: &str, p: &str| Chunk {
-            content: String::new(),
-            file_path: p.to_string(),
-            start_line: 0,
-            end_line: 0,
-            start_byte: 0,
-            end_byte: 0,
-            language: lang.to_string(),
-            breadcrumb: String::new(),
-            kind: ChunkKind::Source,
-        };
-        let chunks = vec![
-            mk("rust", "src/a.rs"),
-            mk("rust", "packages/b.rs"),
-            mk("python", "src/c.py"),
-            mk("rust", "src/d.rs"),
-        ];
-        let mask = build_combined_mask(
-            &chunks,
-            Some(&["rust".to_string()]),
-            Some("src"),
-            None,
-            &[],
-            &[],
-        )
-        .expect("filters active → some mask");
-        assert_eq!(mask, vec![true, false, false, true]);
+    // Tombstone src/d.rs (id 3) — should drop out.
+    let live = vec![true, true, true, false];
+    let mask = build_combined_mask(
+      &chunks,
+      Some(&["rust".to_string()]),
+      Some("src"),
+      Some(&live),
+      &[],
+      &[],
+    )
+    .expect("filters active");
+    assert_eq!(mask, vec![true, false, false, false]);
+  }
 
-        // Tombstone src/d.rs (id 3) — should drop out.
-        let live = vec![true, true, true, false];
-        let mask = build_combined_mask(
-            &chunks,
-            Some(&["rust".to_string()]),
-            Some("src"),
-            Some(&live),
-            &[],
-            &[],
-        )
-        .expect("filters active");
-        assert_eq!(mask, vec![true, false, false, false]);
-    }
+  #[test]
+  fn build_combined_mask_path_and_name_filters() {
+    let mk = |p: &str| Chunk {
+      content: String::new(),
+      file_path: p.to_string(),
+      start_line: 0,
+      end_line: 0,
+      start_byte: 0,
+      end_byte: 0,
+      language: "rust".to_string(),
+      breadcrumb: String::new(),
+      kind: ChunkKind::Source,
+    };
+    let chunks = vec![
+      mk("src/auth/login.rs"),
+      mk("src/http/handler.rs"),
+      mk("src/auth/logout.rs"),
+    ];
+    // path: keeps only the auth dir.
+    let mask = build_combined_mask(&chunks, None, None, None, &["auth".to_string()], &[])
+      .expect("path filter active");
+    assert_eq!(mask, vec![true, false, true]);
+    // name: matches the file basename only (not the dir).
+    let mask = build_combined_mask(&chunks, None, None, None, &[], &["login".to_string()])
+      .expect("name filter active");
+    assert_eq!(mask, vec![true, false, false]);
+  }
 
-    #[test]
-    fn build_combined_mask_path_and_name_filters() {
-        let mk = |p: &str| Chunk {
-            content: String::new(),
-            file_path: p.to_string(),
-            start_line: 0,
-            end_line: 0,
-            start_byte: 0,
-            end_byte: 0,
-            language: "rust".to_string(),
-            breadcrumb: String::new(),
-            kind: ChunkKind::Source,
-        };
-        let chunks = vec![
-            mk("src/auth/login.rs"),
-            mk("src/http/handler.rs"),
-            mk("src/auth/logout.rs"),
-        ];
-        // path: keeps only the auth dir.
-        let mask =
-            build_combined_mask(&chunks, None, None, None, &["auth".to_string()], &[])
-                .expect("path filter active");
-        assert_eq!(mask, vec![true, false, true]);
-        // name: matches the file basename only (not the dir).
-        let mask =
-            build_combined_mask(&chunks, None, None, None, &[], &["login".to_string()])
-                .expect("name filter active");
-        assert_eq!(mask, vec![true, false, false]);
-    }
+  #[test]
+  fn live_mask_returns_none_when_no_tombstones() {
+    assert!(build_live_mask(10, &[]).is_none());
+  }
 
-    #[test]
-    fn live_mask_returns_none_when_no_tombstones() {
-        assert!(build_live_mask(10, &[]).is_none());
-    }
-
-    #[test]
-    fn live_mask_marks_tombstoned_slots_dead() {
-        let m = build_live_mask(5, &[1, 3]).expect("tombstones present");
-        assert_eq!(m, vec![true, false, true, false, true]);
-    }
+  #[test]
+  fn live_mask_marks_tombstoned_slots_dead() {
+    let m = build_live_mask(5, &[1, 3]).expect("tombstones present");
+    assert_eq!(m, vec![true, false, true, false, true]);
+  }
 }

@@ -36,8 +36,8 @@ use crate::search::cache::{compute_delta, Delta, FileRecord};
 /// the read guard during the filesystem walk) is just two refcount bumps.
 #[derive(Clone)]
 struct Entry {
-    graph: Arc<UnifiedGraph>,
-    records: Arc<Vec<FileRecord>>,
+  graph: Arc<UnifiedGraph>,
+  records: Arc<Vec<FileRecord>>,
 }
 
 /// Per-repo memoised graphs. Keyed by the canonical root path so multiple
@@ -47,11 +47,14 @@ type Registry = RwLock<HashMap<PathBuf, Entry>>;
 static REGISTRY: OnceLock<Registry> = OnceLock::new();
 
 fn registry() -> &'static Registry {
-    REGISTRY.get_or_init(|| RwLock::new(HashMap::new()))
+  REGISTRY.get_or_init(|| RwLock::new(HashMap::new()))
 }
 
 fn store(key: PathBuf, graph: Arc<UnifiedGraph>, records: Arc<Vec<FileRecord>>) {
-    registry().write().unwrap().insert(key, Entry { graph, records });
+  registry()
+    .write()
+    .unwrap()
+    .insert(key, Entry { graph, records });
 }
 
 /// Get the unified graph for `root`, building (and persisting) it if no
@@ -63,51 +66,51 @@ fn store(key: PathBuf, graph: Arc<UnifiedGraph>, records: Arc<Vec<FileRecord>>) 
 /// changed tree is patched in place (no `graph.bin` re-read) and the entry
 /// swapped, so a long-lived session never serves a stale graph.
 pub fn get_or_init(root: &Path) -> std::io::Result<Arc<UnifiedGraph>> {
-    let key = root_for(root);
+  let key = root_for(root);
 
-    // Fast path: cached + still fresh. Bind the clone to a `let` so the read
-    // guard is released at the `;` — never held across the `compute_delta`
-    // walk, and (critically) never held into a later `store` write lock.
-    let cached = registry().read().unwrap().get(&key).cloned();
-    if let Some(entry) = cached {
-        let delta = compute_delta(root, root, entry.records.as_slice());
-        if !delta.requires_rebuild() {
-            return Ok(entry.graph);
-        }
+  // Fast path: cached + still fresh. Bind the clone to a `let` so the read
+  // guard is released at the `;` — never held across the `compute_delta`
+  // walk, and (critically) never held into a later `store` write lock.
+  let cached = registry().read().unwrap().get(&key).cloned();
+  if let Some(entry) = cached {
+    let delta = compute_delta(root, root, entry.records.as_slice());
+    if !delta.requires_rebuild() {
+      return Ok(entry.graph);
     }
+  }
 
-    // Slow path: serialize the stale-patch / rebuild so two threads that both
-    // saw the entry stale don't each load + race on the on-disk write. The MCP
-    // server is single-threaded today, but the registry is process-wide and
-    // concurrency-designed, so close the TOCTOU properly. Mirrors
-    // `search::shared::open_shared`.
-    static LOAD_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    let _guard = LOAD_LOCK.lock().unwrap();
+  // Slow path: serialize the stale-patch / rebuild so two threads that both
+  // saw the entry stale don't each load + race on the on-disk write. The MCP
+  // server is single-threaded today, but the registry is process-wide and
+  // concurrency-designed, so close the TOCTOU properly. Mirrors
+  // `search::shared::open_shared`.
+  static LOAD_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+  let _guard = LOAD_LOCK.lock().unwrap();
 
-    // Re-read + re-check under the lock — another thread may have refreshed it.
-    // Bind to a `let` so the read guard drops before `store`'s write lock
-    // (holding a read guard into a write() on the same thread self-deadlocks).
-    let cached = registry().read().unwrap().get(&key).cloned();
-    if let Some(entry) = cached {
-        let delta = compute_delta(root, root, entry.records.as_slice());
-        if !delta.requires_rebuild() {
-            return Ok(entry.graph);
-        }
-        // Stale: patch the in-memory graph and swap. On patch failure, fall
-        // through to a disk reload / full rebuild.
-        if let Some((graph, records)) =
-            patch_in_memory(&entry.graph, entry.records.as_slice(), root, &key, &delta)
-        {
-            let arc = Arc::new(graph);
-            store(key, arc.clone(), records);
-            return Ok(arc);
-        }
+  // Re-read + re-check under the lock — another thread may have refreshed it.
+  // Bind to a `let` so the read guard drops before `store`'s write lock
+  // (holding a read guard into a write() on the same thread self-deadlocks).
+  let cached = registry().read().unwrap().get(&key).cloned();
+  if let Some(entry) = cached {
+    let delta = compute_delta(root, root, entry.records.as_slice());
+    if !delta.requires_rebuild() {
+      return Ok(entry.graph);
     }
+    // Stale: patch the in-memory graph and swap. On patch failure, fall
+    // through to a disk reload / full rebuild.
+    if let Some((graph, records)) =
+      patch_in_memory(&entry.graph, entry.records.as_slice(), root, &key, &delta)
+    {
+      let arc = Arc::new(graph);
+      store(key, arc.clone(), records);
+      return Ok(arc);
+    }
+  }
 
-    let (graph, records) = cache::load_or_build_with_records(&key, false)?;
-    let arc = Arc::new(graph);
-    store(key, arc.clone(), Arc::new(records));
-    Ok(arc)
+  let (graph, records) = cache::load_or_build_with_records(&key, false)?;
+  let arc = Arc::new(graph);
+  store(key, arc.clone(), Arc::new(records));
+  Ok(arc)
 }
 
 /// Patch a cloned copy of `graph` for `delta` using the same per-file
@@ -119,33 +122,33 @@ pub fn get_or_init(root: &Path) -> std::io::Result<Arc<UnifiedGraph>> {
 /// the canonicalised registry key used as the persist target so the on-disk
 /// write matches every other save site (cold load / `rebuild` / `promote_calls`).
 fn patch_in_memory(
-    graph: &UnifiedGraph,
-    prev_records: &[FileRecord],
-    root: &Path,
-    key: &Path,
-    delta: &Delta,
+  graph: &UnifiedGraph,
+  prev_records: &[FileRecord],
+  root: &Path,
+  key: &Path,
+  delta: &Delta,
 ) -> Option<(UnifiedGraph, Arc<Vec<FileRecord>>)> {
-    let mut g = graph.clone();
-    if apply_delta_to_deps(&mut g.deps, root, delta).is_err() {
-        return None;
-    }
-    // Disjoint field borrow: `&mut g.calls` and `&g.deps` are different fields,
-    // so no snapshot clone of the (post-delta) dep graph is needed.
-    if let Some(calls) = g.calls.as_mut() {
-        apply_delta_to_calls(calls, &g.deps, root, delta);
-    }
-    let new_records = refresh_records(prev_records.to_vec(), root, delta);
-    let _ = cache::save(key, &g, &new_records);
-    Some((g, Arc::new(new_records)))
+  let mut g = graph.clone();
+  if apply_delta_to_deps(&mut g.deps, root, delta).is_err() {
+    return None;
+  }
+  // Disjoint field borrow: `&mut g.calls` and `&g.deps` are different fields,
+  // so no snapshot clone of the (post-delta) dep graph is needed.
+  if let Some(calls) = g.calls.as_mut() {
+    apply_delta_to_calls(calls, &g.deps, root, delta);
+  }
+  let new_records = refresh_records(prev_records.to_vec(), root, delta);
+  let _ = cache::save(key, &g, &new_records);
+  Some((g, Arc::new(new_records)))
 }
 
 /// Force a rebuild from disk (drops the in-memory entry, ignores the cache).
 pub fn rebuild(root: &Path) -> std::io::Result<Arc<UnifiedGraph>> {
-    let key = root_for(root);
-    let (graph, records) = cache::load_or_build_with_records(&key, true)?;
-    let arc = Arc::new(graph);
-    store(key, arc.clone(), Arc::new(records));
-    Ok(arc)
+  let key = root_for(root);
+  let (graph, records) = cache::load_or_build_with_records(&key, true)?;
+  let arc = Arc::new(graph);
+  store(key, arc.clone(), Arc::new(records));
+  Ok(arc)
 }
 
 /// Ensure the call graph half is materialised. If `current.calls` is
@@ -154,113 +157,113 @@ pub fn rebuild(root: &Path) -> std::io::Result<Arc<UnifiedGraph>> {
 /// per-root entry to the promoted version. Returns the promoted `Arc`.
 pub fn promote_calls<F>(root: &Path, build: F) -> std::io::Result<Arc<UnifiedGraph>>
 where
-    F: FnOnce(&UnifiedGraph) -> crate::calls::graph::CallGraph,
+  F: FnOnce(&UnifiedGraph) -> crate::calls::graph::CallGraph,
 {
-    let current = get_or_init(root)?;
-    if current.calls.is_some() {
-        return Ok(current);
-    }
-    let calls = build(&current);
-    let promoted = Arc::new(UnifiedGraph {
-        deps: current.deps.clone(),
-        calls: Some(calls),
-    });
-    let key = root_for(root);
-    // The entry `get_or_init` just stored for this key pairs `current` with the
-    // fingerprints it was validated against, so reuse those rather than re-walk:
-    // they describe `current.deps == promoted.deps`. promote_calls always runs
-    // right after `get_or_init` on the same thread (MCP is single-threaded, the
-    // CLI is one-shot), so the entry is still `current` here and the records
-    // match. Deliberately NOT re-collecting fresh records on a hypothetical Arc
-    // swap: records describing the *live tree* would mask stale `promoted.deps`
-    // and defeat the next re-validation. The `collect` fallback only covers an
-    // evicted slot. (A cross-thread promote would need the CAS-retry the
-    // `get_or_init` TOCTOU lock uses; not reachable today, so not paid for.)
-    let records = registry()
-        .read()
-        .unwrap()
-        .get(&key)
-        .map(|e| e.records.clone())
-        .unwrap_or_else(|| Arc::new(cache::collect_file_records(&key).unwrap_or_default()));
-    store(key.clone(), promoted.clone(), records.clone());
-    // Best-effort persist; failure is non-fatal — the in-memory state is
-    // still correct for the rest of the session.
-    let _ = cache::save(&key, &promoted, records.as_slice());
-    Ok(promoted)
+  let current = get_or_init(root)?;
+  if current.calls.is_some() {
+    return Ok(current);
+  }
+  let calls = build(&current);
+  let promoted = Arc::new(UnifiedGraph {
+    deps: current.deps.clone(),
+    calls: Some(calls),
+  });
+  let key = root_for(root);
+  // The entry `get_or_init` just stored for this key pairs `current` with the
+  // fingerprints it was validated against, so reuse those rather than re-walk:
+  // they describe `current.deps == promoted.deps`. promote_calls always runs
+  // right after `get_or_init` on the same thread (MCP is single-threaded, the
+  // CLI is one-shot), so the entry is still `current` here and the records
+  // match. Deliberately NOT re-collecting fresh records on a hypothetical Arc
+  // swap: records describing the *live tree* would mask stale `promoted.deps`
+  // and defeat the next re-validation. The `collect` fallback only covers an
+  // evicted slot. (A cross-thread promote would need the CAS-retry the
+  // `get_or_init` TOCTOU lock uses; not reachable today, so not paid for.)
+  let records = registry()
+    .read()
+    .unwrap()
+    .get(&key)
+    .map(|e| e.records.clone())
+    .unwrap_or_else(|| Arc::new(cache::collect_file_records(&key).unwrap_or_default()));
+  store(key.clone(), promoted.clone(), records.clone());
+  // Best-effort persist; failure is non-fatal — the in-memory state is
+  // still correct for the rest of the session.
+  let _ = cache::save(&key, &promoted, records.as_slice());
+  Ok(promoted)
 }
 
 /// Drop the cached entry for `root`.
 #[allow(dead_code)]
 pub fn forget(root: &Path) {
-    let key = root_for(root);
-    registry().write().unwrap().remove(&key);
+  let key = root_for(root);
+  registry().write().unwrap().remove(&key);
 }
 
 /// Canonicalise the repo root for use as a registry key. Falls back to the
 /// raw path when canonicalisation fails (e.g. test fixtures).
 pub fn root_for(root: &Path) -> PathBuf {
-    root.canonicalize().unwrap_or_else(|_| root.to_path_buf())
+  root.canonicalize().unwrap_or_else(|_| root.to_path_buf())
 }
 
 /// Convenience: run a closure with the unified graph for `root`. Mainly
 /// useful in tests; production code holds the `Arc` for as long as needed.
 #[allow(dead_code)]
 pub fn with_root<R, F: FnOnce(&UnifiedGraph) -> R>(root: &Path, f: F) -> std::io::Result<R> {
-    let g = get_or_init(root)?;
-    Ok(f(&g))
+  let g = get_or_init(root)?;
+  Ok(f(&g))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use std::fs;
+  use super::*;
+  use std::fs;
 
-    fn write(p: &Path, body: &str) {
-        if let Some(parent) = p.parent() {
-            fs::create_dir_all(parent).unwrap();
-        }
-        fs::write(p, body).unwrap();
+  fn write(p: &Path, body: &str) {
+    if let Some(parent) = p.parent() {
+      fs::create_dir_all(parent).unwrap();
     }
+    fs::write(p, body).unwrap();
+  }
 
-    /// The graph build is pure parsing (no model), so this runs in CI.
-    /// An unchanged tree reuses the cached `Arc`; an edit reloads a fresh one
-    /// that reflects the change — proving `get_or_init` re-validates per call
-    /// instead of freezing after the first query.
-    #[test]
-    fn get_or_init_revalidates_on_change() {
-        let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path();
-        write(
-            &root.join("Cargo.toml"),
-            "[package]\nname = \"reval\"\nversion = \"0.0.0\"\nedition = \"2021\"\n",
-        );
-        write(&root.join("src/a.rs"), "pub fn a() {}\n");
+  /// The graph build is pure parsing (no model), so this runs in CI.
+  /// An unchanged tree reuses the cached `Arc`; an edit reloads a fresh one
+  /// that reflects the change — proving `get_or_init` re-validates per call
+  /// instead of freezing after the first query.
+  #[test]
+  fn get_or_init_revalidates_on_change() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(
+      &root.join("Cargo.toml"),
+      "[package]\nname = \"reval\"\nversion = \"0.0.0\"\nedition = \"2021\"\n",
+    );
+    write(&root.join("src/a.rs"), "pub fn a() {}\n");
 
-        forget(root);
-        let first = get_or_init(root).expect("cold build");
-        let second = get_or_init(root).expect("warm reuse");
-        assert!(
-            Arc::ptr_eq(&first, &second),
-            "unchanged tree must reuse the cached Arc"
-        );
-        let files_before = first.deps.forward.len();
+    forget(root);
+    let first = get_or_init(root).expect("cold build");
+    let second = get_or_init(root).expect("warm reuse");
+    assert!(
+      Arc::ptr_eq(&first, &second),
+      "unchanged tree must reuse the cached Arc"
+    );
+    let files_before = first.deps.forward.len();
 
-        // Add a second file → the graph must reload into a fresh Arc that
-        // knows about the new file. No mtime fiddling needed: `compute_delta`
-        // classifies a brand-new path as `added` by membership alone (mtime is
-        // only consulted for paths already in the cache), so detection here is
-        // mtime-independent.
-        write(&root.join("src/b.rs"), "pub fn b() {}\n");
-        let third = get_or_init(root).expect("revalidate after add");
-        assert!(
-            !Arc::ptr_eq(&first, &third),
-            "added file must trigger a reload into a fresh Arc"
-        );
-        assert!(
-            third.deps.forward.len() > files_before,
-            "reloaded graph must include the added file"
-        );
+    // Add a second file → the graph must reload into a fresh Arc that
+    // knows about the new file. No mtime fiddling needed: `compute_delta`
+    // classifies a brand-new path as `added` by membership alone (mtime is
+    // only consulted for paths already in the cache), so detection here is
+    // mtime-independent.
+    write(&root.join("src/b.rs"), "pub fn b() {}\n");
+    let third = get_or_init(root).expect("revalidate after add");
+    assert!(
+      !Arc::ptr_eq(&first, &third),
+      "added file must trigger a reload into a fresh Arc"
+    );
+    assert!(
+      third.deps.forward.len() > files_before,
+      "reloaded graph must include the added file"
+    );
 
-        forget(root);
-    }
+    forget(root);
+  }
 }
