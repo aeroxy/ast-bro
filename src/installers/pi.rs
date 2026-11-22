@@ -23,7 +23,15 @@ impl Pi {
     /// `<agent-dir>`: `$PI_CODING_AGENT_DIR`, else `~/.pi/agent`.
     fn agent_dir(&self) -> Result<PathBuf, String> {
         match std::env::var_os("PI_CODING_AGENT_DIR") {
-            Some(dir) if !dir.is_empty() => Ok(PathBuf::from(dir)),
+            // pi expands a leading `~` in it, even one the shell left quoted.
+            Some(dir) if !dir.is_empty() => {
+                let dir = PathBuf::from(dir);
+                if dir.starts_with("~") {
+                    Ok(paths::expand_tilde(&dir, &paths::home()?))
+                } else {
+                    Ok(dir)
+                }
+            }
             _ => paths::under_home(".pi/agent"),
         }
     }

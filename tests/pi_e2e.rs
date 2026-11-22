@@ -77,3 +77,26 @@ fn pi_cli_install_status_uninstall_lifecycle() {
     assert!(status.contains("mcp -"));
     assert!(status.contains("skills -"));
 }
+
+// `dirs::home_dir` ignores `HOME` on Windows, so the home directory cannot be redirected there.
+#[cfg(unix)]
+#[test]
+fn pi_agent_dir_expands_a_quoted_tilde() {
+    let home = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    let output = Command::new(binary())
+        .args(["install", "--target", "pi"])
+        .current_dir(cwd.path())
+        .env("HOME", home.path())
+        .env("PI_CODING_AGENT_DIR", "~/agent")
+        .env("NO_COLOR", "1")
+        .output()
+        .expect("run ast-bro");
+    assert!(
+        output.status.success(),
+        "stderr:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(home.path().join("agent/extensions/ast-bro.ts").is_file());
+    assert!(!cwd.path().join("~").exists());
+}
