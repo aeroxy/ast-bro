@@ -1242,6 +1242,21 @@ fn elixir_a_test_label_with_a_colon_is_a_name() {
 }
 
 #[test]
+fn elixir_a_module_in_a_describe_is_named_by_its_module() {
+  // A `describe` adds no module level, issue #107.
+  let tmp = tempfile::tempdir().unwrap();
+  let root = tmp.path();
+  write(&root.join("mix.exs"), "defmodule Shop.MixProject do\nend\n");
+  write(
+        &root.join("test/d_test.exs"),
+        "defmodule DTest do\n  describe \"group\" do\n    defmodule Helper do\n      def go, do: :ok\n    end\n\n    test \"uses it\" do\n      Helper.go()\n    end\n  end\nend\n",
+    );
+  let (out, code) = run_in(root, &["callers", "DTest.Helper.go", ".", "--rebuild"]);
+  assert_eq!(code, 0, "{}", out);
+  assert!(out.contains("test group uses it"), "{}", out);
+}
+
+#[test]
 fn elixir_partial_update_resolves_new_calls_the_same_way() {
   let tmp = elixir_project();
   let root = tmp.path();

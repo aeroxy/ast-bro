@@ -804,6 +804,9 @@ impl<'s> Walker<'s> {
     } else {
       self.body_calls(node, module_fqn)
     };
+    // A `describe` adds no module level: a module defined in it belongs to
+    // the enclosing module.
+    let mut modules = Vec::new();
     let (kind, name, children) = match keyword {
       "describe" => {
         let mut children = Vec::new();
@@ -811,7 +814,12 @@ impl<'s> Walker<'s> {
           let outer = self.describe.replace(label.clone());
           let inner = self.walk_body(&block, module_fqn);
           self.describe = outer;
-          children = inner.decls;
+          (modules, children) = inner.decls.into_iter().partition(|d| {
+            matches!(
+              d.native_kind.as_deref(),
+              Some("module" | "protocol" | "impl")
+            )
+          });
           out.defines_struct |= inner.defines_struct;
           for b in inner.behaviours {
             if !out.behaviours.contains(&b) {
@@ -865,6 +873,7 @@ impl<'s> Walker<'s> {
       children,
       calls,
     });
+    out.decls.extend(modules);
   }
 
   /// The calls in a clause's guard and body; a `defdelegate` calls `to:`.
@@ -2405,6 +2414,18 @@ mod tests {
       .map(|c| c.name.as_str())
       .collect();
     assert_eq!(calls, vec!["run"]);
+  }
+
+  #[test]
+  fn a_module_in_a_describe_belongs_to_the_module() {
+    // A `describe` adds no module level: Elixir defines `D.Helper`.
+    let r = parse(
+            "defmodule D do\n  describe \"group\" do\n    defmodule Helper do\n      def go, do: :ok\n    end\n\n    test \"uses it\" do\n      Helper.go()\n    end\n  end\nend\n",
+        );
+    let names = |ds: &[Declaration]| -> Vec<String> { ds.iter().map(|d| d.name.clone()).collect() };
+    let d = &r.declarations[0];
+    assert_eq!(names(&d.children), vec!["describe group", "Helper"]);
+    assert_eq!(names(&d.children[0].children), vec!["test group uses it"]);
   }
 
   #[test]
