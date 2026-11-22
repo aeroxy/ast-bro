@@ -517,7 +517,8 @@ impl<'s> Walker<'s> {
                 k @ ("test" | "describe" | "setup" | "setup_all")
                     if _is_exunit_block(&child, k) =>
                 {
-                    last_fn = None;
+                    // A clause after the test still folds into those before
+                    // it, as across any other macro call.
                     let p = std::mem::take(&mut pending);
                     self.exunit_decl(&child, k, p, module_fqn, &mut out);
                 }
@@ -2251,6 +2252,21 @@ mod tests {
         assert_eq!(got, vec![("def f(x)", 4), ("def unquote(n)()", 10)]);
         assert_eq!(a.children[0].end_line, 6);
         assert!(a.children[0].docs.is_empty(), "{:?}", a.children[0].docs);
+    }
+
+    #[test]
+    fn clauses_fold_across_a_test_between_them() {
+        // Kernel.WarningTest: `purge/1` has a clause on each side of tests;
+        // main folds them into one entry, at the first clause.
+        let r = parse(
+            "defmodule W do\n  defp purge(l) when is_list(l), do: l\n  test \"t\" do\n    :ok\n  end\n  defp purge(m) when is_atom(m), do: m\nend\n",
+        );
+        let got: Vec<(&str, usize, usize)> = r.declarations[0]
+            .children
+            .iter()
+            .map(|d| (d.name.as_str(), d.start_line, d.end_line))
+            .collect();
+        assert_eq!(got, vec![("purge", 2, 6), ("test t", 3, 5)]);
     }
 
     #[test]
