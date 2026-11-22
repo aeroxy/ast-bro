@@ -105,8 +105,9 @@ const MIN_CANDIDATES: usize = 100;
 /// Current schema version written by all new builds.
 // v2 adds `breadcrumb` and `kind` to `Chunk`, which changes the bincode layout
 // of chunks.bin. A v1 index cannot be decoded, so the loader rejects it and the
-// caller rebuilds.
-const SCHEMA: &str = "ast-bro.search-index.v2";
+// caller rebuilds. v3 chunks Elixir per definition: a v2 index keeps every
+// unchanged Elixir file as one chunk.
+const SCHEMA: &str = "ast-bro.search-index.v3";
 
 /// On-disk paths under a repo's `.ast-bro/index/` directory.
 #[derive(Debug, Clone)]

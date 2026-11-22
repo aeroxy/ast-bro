@@ -320,13 +320,17 @@ insertion order and demanding bit-identical scores.
     └── lock                 # advisory exclusive lock during writes
 ```
 
-Loader refuses if `meta.json.schema != "ast-bro.search-index.v2"`, model id mismatches, or `chunks.len() × 256 × 4 != len(embeddings.f32)`. Each binary is read via bincode with `serde::Deserialize`. Embeddings are read into memory (mmap is a later swap that won't change the format).
+Loader refuses if `meta.json.schema != "ast-bro.search-index.v3"`, model id mismatches, or `chunks.len() × 256 × 4 != len(embeddings.f32)`. Each binary is read via bincode with `serde::Deserialize`. Embeddings are read into memory (mmap is a later swap that won't change the format).
 
 Schema v2 adds `breadcrumb` and `kind` to `Chunk`, which changes the bincode
 layout of `chunks.bin`. A v1 index cannot be decoded, so the loader rejects it
 outright — including the pre-rename `ast-outline.*` names — and the caller
 rebuilds. There is no migration path and there does not need to be: the index
 is a cache.
+
+Schema v3 chunks Elixir per definition. The layout is unchanged, but a refresh
+re-chunks only the files that changed, so a v2 index would keep every unchanged
+Elixir module as one chunk until `--rebuild`.
 
 A chunk above `MAX_EMBED_CHARS = 6000` gets a non-finite embedding rather than a
 real one, so `cosine_topk` drops it and only BM25 can retrieve it. A zero vector
