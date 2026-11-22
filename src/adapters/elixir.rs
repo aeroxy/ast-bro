@@ -125,13 +125,9 @@ pub(crate) fn arity_range(signature: &str) -> Option<(usize, usize)> {
         return Some((arity, arity));
     }
     let def = grep.root().children().find(|c| c.kind() == "call")?;
-    let mut head = _named_args(&def).into_iter().next()?;
+    let keyword = _call_keyword(&def).unwrap_or_default();
+    let (head, _) = _def_head(_named_args(&def).into_iter().next()?, &keyword);
     let (_, arity) = _head_name_arity(&head);
-    if head.kind() == "binary_operator"
-        && head.field("operator").is_some_and(|o| o.text() == "when")
-    {
-        head = head.field("left")?;
-    }
     let defaults = match head.kind().as_ref() {
         "call" => _named_args(&head)
             .iter()
@@ -713,7 +709,7 @@ impl<'s> Walker<'s> {
         let Some(head) = args.first() else {
             return;
         };
-        let (name, arity) = _head_name_arity(head);
+        let (name, arity) = _head_name_arity(&_def_head(head.clone(), keyword).0);
         let range = node.range();
         let end_line = node.end_pos().line() + 1;
         let calls = self.clause_calls(node, keyword, &args, module_fqn);
@@ -938,14 +934,9 @@ impl<'s> Walker<'s> {
         let scope = self.scopes.last().cloned().unwrap_or_default();
         self.scopes.push(scope);
         if let Some(head) = args.first() {
-            let mut call = head.clone();
-            if head.kind() == "binary_operator"
-                && head.field("operator").is_some_and(|o| o.text() == "when")
-            {
-                if let Some(guard) = head.field("right") {
-                    self.calls_in(&guard, module_fqn, &mut out);
-                }
-                call = head.field("left").unwrap_or(call);
+            let (call, guard) = _def_head(head.clone(), keyword);
+            if let Some(guard) = guard {
+                self.calls_in(&guard, module_fqn, &mut out);
             }
             self.default_calls(&call, module_fqn, &mut out);
         }
@@ -2125,7 +2116,7 @@ fn _head_name_arity<'a, D: Doc>(head: &Node<'a, D>) -> (String, usize) {
                 .field("operator")
                 .map(|o| o.text().into_owned())
                 .unwrap_or_default();
-            if op == "when" || op == "::" {
+            if op == "when" {
                 if let Some(left) = head.field("left") {
                     return _head_name_arity(&left);
                 }
@@ -2149,6 +2140,24 @@ fn _head_name_arity<'a, D: Doc>(head: &Node<'a, D>) -> (String, usize) {
         }
         _ => (_text(head), 0),
     }
+}
+
+/// The call a definition's head names, and its guard: `f(x) when g`. A user
+/// macro's head may also carry a return type (`deftyped f(x) :: t when g`),
+/// but `defmacro left :: right` defines the operator `::` itself.
+fn _def_head<'a, D: Doc>(head: Node<'a, D>, keyword: &str) -> (Node<'a, D>, Option<Node<'a, D>>) {
+    let op = |n: &Node<'a, D>, want: &str| {
+        n.kind() == "binary_operator" && n.field("operator").is_some_and(|o| o.text() == want)
+    };
+    let (mut head, mut guard) = (head, None);
+    if op(&head, "when") {
+        guard = head.field("right");
+        head = head.field("left").unwrap_or(head);
+    }
+    if op(&head, "::") && !DEF_MACROS.iter().any(|(kw, _, _)| *kw == keyword) {
+        head = head.field("left").unwrap_or(head);
+    }
+    (head, guard)
 }
 
 /// Keys of `defstruct [:a, b: 1]` / `defstruct a: 1` — atoms and keyword
@@ -2237,6 +2246,34 @@ mod tests {
         assert_eq!(got, vec![("def f(x)", 4), ("def unquote(n)()", 10)]);
         assert_eq!(a.children[0].end_line, 6);
         assert!(a.children[0].docs.is_empty(), "{:?}", a.children[0].docs);
+    }
+
+    #[test]
+    fn only_a_user_def_macro_reads_through_a_typed_head() {
+        // Kernel.SpecialForms defines the operator `::`; `deftyped` is a user
+        // macro whose head carries a return type.
+        let r = parse(
+            "defmodule K do\n  defmacro left :: right do\n    {left, right}\n  end\n  deftyped f(x \\\\ 1) :: integer do\n    x\n  end\n  deftyped g(x \\\\ D.v()) :: t, do: x\nend\n",
+        );
+        let got: Vec<(&str, Option<(usize, usize)>)> = r.declarations[0]
+            .children
+            .iter()
+            .map(|d| (d.name.as_str(), arity_range(&d.signature)))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                ("::", Some((2, 2))),
+                ("f", Some((0, 1))),
+                ("g", Some((0, 1)))
+            ]
+        );
+        // A default argument's call is the function's.
+        let g = &r.declarations[0].children[2];
+        assert_eq!(
+            g.calls.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
+            ["v"]
+        );
     }
 
     #[test]
