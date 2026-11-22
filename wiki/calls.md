@@ -280,7 +280,7 @@ Languages still emitting empty `Declaration::calls`: **none.** JavaScript is ser
 
 ## Unified graph cache
 
-The call graph does **not** get its own cache file. It rides inside a unified `UnifiedGraph { deps, calls: Option<CallGraph> }` at `.ast-bro/deps/graph.bin`. The schema constant is `JSON_SCHEMA_GRAPH_INDEX = "ast-bro.graph-index.v6"`. (The directory keeps its `deps/` name even though it now holds the call graph too — renaming would force every existing user to rebuild from a new path for no benefit.)
+The call graph does **not** get its own cache file. It rides inside a unified `UnifiedGraph { deps, calls: Option<CallGraph> }` at `.ast-bro/deps/graph.bin`. The schema constant is `JSON_SCHEMA_GRAPH_INDEX = "ast-bro.graph-index.v7"`. (The directory keeps its `deps/` name even though it now holds the call graph too — renaming would force every existing user to rebuild from a new path for no benefit.)
 
 ### Disk layout
 
@@ -328,7 +328,7 @@ The legacy `deps-index.v1` cache (at `.ast-bro/deps/graph.bin`) was retired in t
 
 The schema bump from `ast-outline.graph-index.v1` to `v2` happened mid-development to fix a silent bincode round-trip bug — `#[serde(skip_serializing_if)]` on `DepEdge::local_name` / `raw_path` and `CallEdge::receiver` / `candidates` corrupts bincode's positional encoding (a skipped Option/Vec field shifts every byte that follows). The skip annotations were a JSON-output ergonomics holdover that never applied to the cache; binary positional formats *require* every field to be encoded. Removed the annotations, bumped the schema, and any v1 cache files (which were all corrupt and silently re-cold-built every invocation) get a clean rebuild.
 
-The `ast-bro.` name restarted at `graph-index.v1`. `ast-bro.graph-index.v2` adds `CallEdge::receiver_scope` and `CallGraph::namespaces`, and an older cache rebuilds once. `v3` adds Elixir files to the dep graph: a v2 cache already fingerprints `.ex` files, so without the bump nothing reads as changed and every Elixir file stays out until `--rebuild`. `v4` adds Elixir files to the call graph, for the same reason: a v3 cache holds them with no call sites. `v5` adds `Arity::is_callback`, so that a `@callback` takes no call: bincode encodes fields by position, so a v4 cache cannot be read with the new layout. `v6` keeps a bare call to its language family (issue #96): a v5 cache holds cross-language `Exact` edges, and an incremental update re-resolves only bare edges, so it would never revisit them.
+The `ast-bro.` name restarted at `graph-index.v1`. `ast-bro.graph-index.v2` adds `CallEdge::receiver_scope` and `CallGraph::namespaces`, and an older cache rebuilds once. `v3` adds Elixir files to the dep graph: a v2 cache already fingerprints `.ex` files, so without the bump nothing reads as changed and every Elixir file stays out until `--rebuild`. `v4` adds Elixir files to the call graph, for the same reason: a v3 cache holds them with no call sites. `v5` adds `Arity::is_callback`, so that a `@callback` takes no call: bincode encodes fields by position, so a v4 cache cannot be read with the new layout. `v6` keeps a bare call to its language family (issue #96): a v5 cache holds cross-language `Exact` edges, and an incremental update re-resolves only bare edges, so it would never revisit them. `v7` adds the definitions in module-level blocks, from user `def…` macros and in ExUnit tests: a v6 cache holds the old declarations of every Elixir file that did not change.
 
 ### Per-file invalidation
 
