@@ -385,9 +385,12 @@ impl<'s> Walker<'s> {
                     let scope = self.scopes.last().cloned().unwrap_or_default();
                     self.scopes.push(scope);
                     // The blocks of `if … do def … end` are walked as part of
-                    // the module body below; only the condition is left.
-                    if _call_keyword(&child).as_deref() != Some("quote")
-                        && !wrapped_bodies(&child).is_empty()
+                    // the module body below; only the condition is left. A
+                    // test's body is its own, even when it defines a module.
+                    if !matches!(
+                        keyword.as_deref(),
+                        Some("quote" | "test" | "setup" | "setup_all")
+                    ) && !wrapped_bodies(&child).is_empty()
                     {
                         for arg in _named_args(&child) {
                             self.references_in(&arg, module_fqn);
@@ -2353,6 +2356,18 @@ mod tests {
         );
         let refs: Vec<&str> = d.iter().map(|(_, m)| m.as_str()).collect();
         assert_eq!(refs, vec!["S", "R", "V", "U"]);
+    }
+
+    #[test]
+    fn scan_references_read_a_test_body_that_defines_a_module() {
+        // A test is not a module-level wrapper: its body runs in the test,
+        // so a `defmodule` inside it does not hide the test's other calls.
+        let (defined, d) = scan(
+            "defmodule BazTest do\n  test \"runs a mock\" do\n    defmodule MyMock do\n      def call(x), do: Foo.bar(x)\n    end\n    assert Baz.run(MyMock) == 1\n  end\n  setup do\n    defmodule M2 do\n    end\n    Qux.go()\n  end\nend\n",
+        );
+        let refs: Vec<&str> = d.iter().map(|(_, m)| m.as_str()).collect();
+        assert_eq!(refs, vec!["Foo", "Baz", "BazTest.MyMock", "Qux"]);
+        assert_eq!(defined, vec!["BazTest", "BazTest.MyMock", "BazTest.M2"]);
     }
 
     #[test]
