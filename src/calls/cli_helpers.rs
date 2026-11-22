@@ -150,7 +150,8 @@ fn qn_matches(qn: &Qn, raw: &str, parts: &[&str]) -> Option<bool> {
     }
     // A dotted name (`namespace Shop.Billing`) is one qn segment but one
     // query part per dot, as `show` reads it. The file stays whole, and so
-    // does a name that is nothing but dots.
+    // do a name that is nothing but dots and a free-text label with a space
+    // (ExUnit's `test reads map.field`).
     let mut split = qn.0.split("::");
     let file = split.next();
     let segments: Vec<(&str, bool)> = file
@@ -158,7 +159,7 @@ fn qn_matches(qn: &Qn, raw: &str, parts: &[&str]) -> Option<bool> {
         .map(|f| (f, true))
         .chain(split.flat_map(|s| {
             let pieces: Vec<&str> = s.split('.').filter(|p| !p.is_empty()).collect();
-            if pieces.is_empty() {
+            if pieces.is_empty() || s.contains(' ') {
                 vec![(s, true)]
             } else {
                 pieces
