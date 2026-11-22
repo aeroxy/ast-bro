@@ -50,7 +50,8 @@ build_call_graph(root, deps):
     pass A — same-file:                     # bare name → qn via local
                                             #   defined_names + ImportBindings,
                                             #   resolved through suffix index
-    pass B — global symbol table:           # single-match promotion;
+    pass B — global symbol table:           # single-match promotion among
+                                            #   the caller's language family;
                                             #   receiver-bearing calls deferred
                                             #   to pass C (avoids
                                             #   `builder.hidden()` false hits
@@ -194,11 +195,13 @@ For each `RawEdge` whose target is a bare name:
 
 ### Pass B — global symbol table
 
-`symbol_table: HashMap<String, Vec<Qn>>` indexes every project declaration's terminal name. For each remaining bare edge:
+`symbol_table: HashMap<String, Vec<Qn>>` indexes every project declaration's terminal name. For each remaining bare edge, counting only the candidates its language can call (below):
 
 - 0 candidates → leave `Bare`.
 - 1 candidate → promote to `Resolved` with `Exact`.
 - N candidates → defer to pass C.
+
+**Language gate.** A candidate counts only if the caller's file can call into its language: TypeScript, TSX and JavaScript are one family, Java, Kotlin and Scala another, and every other language is on its own (`can_reach` in `src/calls/resolve.rs`). A Python call never reaches a Ruby method of the same name, however unique that name is in the project, and with no candidate left the edge stays `Bare`. Pass C sees only the candidates that passed, and the unresolved call sites `callers` lists under a target go through the same gate (issue #96). Foreign-function bindings do cross languages (a PyO3 function called from Python, JNI, a Node addon), and a call into one now stays `Bare` where a unique name used to bind it here.
 
 **Receiver gate.** Receiver-bearing calls (`obj.bar()`, `self.x()`, `super::foo()`) are deliberately **not** promoted by pass B. With a global single-match it would be too easy for `obj.hidden()` against a generic builder pattern to claim a wildly unrelated `hidden` definition somewhere else in the project. Receiver-bearing edges always go through pass C, which can confirm the relationship via the dep graph. The exact suppression list (`self`, `Self`, `crate`, `super`, `this`, `$this` — see `receiver_is_self_like`) lives in `src/calls/resolve.rs`.
 
@@ -277,7 +280,7 @@ Languages still emitting empty `Declaration::calls`: **none.** JavaScript is ser
 
 ## Unified graph cache
 
-The call graph does **not** get its own cache file. It rides inside a unified `UnifiedGraph { deps, calls: Option<CallGraph> }` at `.ast-bro/deps/graph.bin`. The schema constant is `JSON_SCHEMA_GRAPH_INDEX = "ast-bro.graph-index.v5"`. (The directory keeps its `deps/` name even though it now holds the call graph too — renaming would force every existing user to rebuild from a new path for no benefit.)
+The call graph does **not** get its own cache file. It rides inside a unified `UnifiedGraph { deps, calls: Option<CallGraph> }` at `.ast-bro/deps/graph.bin`. The schema constant is `JSON_SCHEMA_GRAPH_INDEX = "ast-bro.graph-index.v6"`. (The directory keeps its `deps/` name even though it now holds the call graph too — renaming would force every existing user to rebuild from a new path for no benefit.)
 
 ### Disk layout
 
@@ -325,7 +328,7 @@ The legacy `deps-index.v1` cache (at `.ast-bro/deps/graph.bin`) was retired in t
 
 The schema bump from `ast-outline.graph-index.v1` to `v2` happened mid-development to fix a silent bincode round-trip bug — `#[serde(skip_serializing_if)]` on `DepEdge::local_name` / `raw_path` and `CallEdge::receiver` / `candidates` corrupts bincode's positional encoding (a skipped Option/Vec field shifts every byte that follows). The skip annotations were a JSON-output ergonomics holdover that never applied to the cache; binary positional formats *require* every field to be encoded. Removed the annotations, bumped the schema, and any v1 cache files (which were all corrupt and silently re-cold-built every invocation) get a clean rebuild.
 
-The `ast-bro.` name restarted at `graph-index.v1`. `ast-bro.graph-index.v2` adds `CallEdge::receiver_scope` and `CallGraph::namespaces`, and an older cache rebuilds once. `v3` adds Elixir files to the dep graph: a v2 cache already fingerprints `.ex` files, so without the bump nothing reads as changed and every Elixir file stays out until `--rebuild`. `v4` adds Elixir files to the call graph, for the same reason: a v3 cache holds them with no call sites. `v5` adds `Arity::is_callback`, so that a `@callback` takes no call: bincode encodes fields by position, so a v4 cache cannot be read with the new layout.
+The `ast-bro.` name restarted at `graph-index.v1`. `ast-bro.graph-index.v2` adds `CallEdge::receiver_scope` and `CallGraph::namespaces`, and an older cache rebuilds once. `v3` adds Elixir files to the dep graph: a v2 cache already fingerprints `.ex` files, so without the bump nothing reads as changed and every Elixir file stays out until `--rebuild`. `v4` adds Elixir files to the call graph, for the same reason: a v3 cache holds them with no call sites. `v5` adds `Arity::is_callback`, so that a `@callback` takes no call: bincode encodes fields by position, so a v4 cache cannot be read with the new layout. `v6` keeps a bare call to its language family (issue #96): a v5 cache holds cross-language `Exact` edges, and an incremental update re-resolves only bare edges, so it would never revisit them.
 
 ### Per-file invalidation
 
@@ -352,7 +355,7 @@ The `ast-bro.` name restarted at `graph-index.v1`. `ast-bro.graph-index.v2` adds
 4. Splice new qns into the live indices **before** resolving — the resolver's pass A/B for a new edge needs to see qns just added by the same delta.
 5. Resolve only the new passes via `resolve::run_with_table` (the split-out resolver entrypoint that takes a prebuilt symbol table instead of constructing one).
 6. Validate every `Resolved` edge against the post-update qn set. Edges whose target qn no longer exists (deleted or renamed) get demoted to `Bare` with the original callee name preserved. Edges that *kept* their target — the common case for a modify without a rename — keep their original `Exact` confidence; we deliberately don't blanket-demote everything pointing into changed files because that would burn the high-trust tags for the 99% case.
-7. Bare-name re-resolution: for every `Bare` edge, look up its name in the (now updated) symbol table. Single-match, no-receiver hits promote to `Resolved/Exact` — pass B's rule *and* pass B's confidence, since parity covers the tag as well as the target (receiver suppression included); everything else goes through `resolve::disambiguate` — the *same* function pass C uses — so candidates are filtered to what the caller's file can reach through the dep graph, with a memoized per-file closure. Picks up two cases the partial path would otherwise miss: edges demoted in step 6 whose target moved to a different file, and pre-existing `Bare` edges in unchanged files that finally have a target because a *new* file in this delta defines it.
+7. Bare-name re-resolution: for every `Bare` edge, look up its name in the (now updated) symbol table and keep the candidates its language can call (pass B's language gate). With none left, the edge goes back to what a cold build leaves, `Bare` with no candidates, rather than keeping candidates that may since have been deleted. Single-match, no-receiver hits promote to `Resolved/Exact` — pass B's rule *and* pass B's confidence, since parity covers the tag as well as the target (receiver suppression included); everything else goes through `resolve::disambiguate` — the *same* function pass C uses — so candidates are filtered to what the caller's file can reach through the dep graph, with a memoized per-file closure. Picks up two cases the partial path would otherwise miss: edges demoted in step 6 whose target moved to a different file, and pre-existing `Bare` edges in unchanged files that finally have a target because a *new* file in this delta defines it.
 
    The invariant is parity — a partial update must produce the graph a cold build of the same content produces. This step used to assign the *unfiltered* symbol-table entry as an edge's candidate set, which broke that: it ran over the whole graph, so one edit to an unrelated file gave every bare edge in the project candidates the dep filter had ruled out. Measured on ast-bro itself, `callers CliError.new` reported 1023 unresolved sites cold and 1073 after appending a comment to `src/adapters/sql.rs` — every `Vec::new()` in the tree newly counted as a possible caller. Reusing pass C's own decision function is what keeps the two paths honest; `tests/calls_e2e.rs::incremental_update_matches_a_cold_build_of_the_same_content` pins it.
 8. Rebuild reverse adjacency + recompute stats. Both are derived; rebuilding fresh is cheaper than incremental maintenance.

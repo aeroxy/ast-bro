@@ -4801,3 +4801,100 @@ fn trace_separates_a_depth_cutoff_from_a_broken_chain() {
     let (out, _) = run_in(root, &["trace", "top", "island", "."]);
     assert!(out.contains("dynamic-dispatch"), "{out}");
 }
+
+/// A Python call beside a Ruby method of the same name (issue #96), plus
+/// whatever else the test adds.
+fn python_beside_ruby() -> tempfile::TempDir {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(&root.join("pyproject.toml"), "[project]\nname = \"mixed\"\nversion = \"0.0.0\"\n");
+    write(&root.join("app.py"), "def main():\n    helper()\n");
+    write(&root.join("util.rb"), "def helper\n  1\nend\n");
+    tmp
+}
+
+#[test]
+fn a_bare_call_does_not_bind_into_another_language() {
+    // Pass B used to take the one project `helper`, a Ruby method, as the
+    // Python call's target, tagged `Exact` (issue #96).
+    let tmp = python_beside_ruby();
+    let root = tmp.path();
+    let (out, code) = run_in(root, &["callees", "main", ".", "--rebuild"]);
+    assert_eq!(code, 0, "{}", out);
+    assert!(!out.contains("util.rb"), "the Python call bound into Ruby:\n{}", out);
+    let (out, code) = run_in(root, &["callers", "helper", "."]);
+    assert_eq!(code, 0, "{}", out);
+    assert!(out.contains("# 0 caller(s)"), "{}", out);
+    // Nor is it offered as a possible caller: Python cannot reach it.
+    assert!(!out.contains("app.py"), "{}", out);
+}
+
+#[test]
+fn a_bare_call_takes_its_own_language_over_another() {
+    // Two `helper`s, one per language: the Python one is the only candidate
+    // the Python call has, so it binds as a single match does.
+    let tmp = python_beside_ruby();
+    let root = tmp.path();
+    write(&root.join("lib.py"), "def helper():\n    pass\n");
+    let (out, code) = run_in(root, &["callees", "main", ".", "--rebuild"]);
+    assert_eq!(code, 0, "{}", out);
+    assert!(out.contains("lib.py::helper  (Exact)"), "{}", out);
+    assert!(!out.contains("util.rb"), "{}", out);
+}
+
+#[test]
+fn a_bare_call_binds_within_a_language_family() {
+    // TypeScript, TSX and JavaScript call each other, and so do Java,
+    // Kotlin and Scala: a single match in the same family still binds.
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(&root.join("package.json"), "{\"name\": \"mixed\"}\n");
+    write(&root.join("src/app.tsx"), "export function App() {\n  return formatName();\n}\n");
+    write(&root.join("src/util.js"), "export function formatName() {\n  return 1;\n}\n");
+    write(&root.join("jvm/Run.kt"), "fun runKt() {\n    javaHelper()\n}\n");
+    write(&root.join("jvm/Util.java"), "class Util {\n    static void javaHelper() {}\n}\n");
+    let (out, code) = run_in(root, &["callees", "App", ".", "--rebuild"]);
+    assert_eq!(code, 0, "{}", out);
+    assert!(out.contains("src/util.js::formatName  (Exact)"), "{}", out);
+    let (out, code) = run_in(root, &["callees", "runKt", "."]);
+    assert_eq!(code, 0, "{}", out);
+    assert!(out.contains("jvm/Util.java::Util::javaHelper  (Exact)"), "{}", out);
+}
+
+#[test]
+fn an_incremental_update_keeps_a_bare_call_in_its_language() {
+    // The updater re-resolves bare calls itself, so it must apply the same
+    // language rule as a cold build, whichever language's file comes or goes.
+    let tmp = python_beside_ruby();
+    let root = tmp.path();
+    let callees = |rebuild: bool| {
+        let mut args = vec!["callees", "main", ".", "--json", "--compact"];
+        if rebuild {
+            args.push("--rebuild");
+        }
+        run_in(root, &args).0
+    };
+    assert!(!callees(true).contains("util.rb"));
+    // A Python `helper` arrives: the call binds to it.
+    write(&root.join("lib.py"), "def helper():\n    pass\n");
+    let warm = callees(false);
+    assert!(warm.contains("lib.py::helper"), "{}", warm);
+    assert_eq!(warm, callees(true), "incremental and cold builds disagree");
+    // It goes again: the call must not fall back to the Ruby method.
+    std::fs::remove_file(root.join("lib.py")).unwrap();
+    let warm = callees(false);
+    assert!(!warm.contains("util.rb"), "{}", warm);
+    assert_eq!(warm, callees(true), "incremental and cold builds disagree");
+    // Two Python `helper`s leave the call ambiguous between them; once both
+    // are gone it names neither, and still not the Ruby one.
+    write(&root.join("lib.py"), "def helper():\n    pass\n");
+    write(&root.join("lib2.py"), "def helper():\n    pass\n");
+    let warm = callees(false);
+    assert!(warm.contains("lib2.py::helper"), "{}", warm);
+    assert_eq!(warm, callees(true), "incremental and cold builds disagree");
+    std::fs::remove_file(root.join("lib.py")).unwrap();
+    std::fs::remove_file(root.join("lib2.py")).unwrap();
+    let warm = callees(false);
+    assert!(!warm.contains("lib") && !warm.contains("util.rb"), "{}", warm);
+    assert_eq!(warm, callees(true), "incremental and cold builds disagree");
+}

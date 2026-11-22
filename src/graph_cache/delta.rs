@@ -322,7 +322,20 @@ pub fn apply_delta_to_calls(
                 continue;
             }
             let CallTarget::Bare(name) = &e.target else { continue };
-            let Some(cands) = calls.symbol_table.get(name) else { continue };
+            // Pass B's language rule: only a function the caller's language
+            // can call is a candidate (issue #96).
+            let cands = crate::calls::resolve::reachable_from(
+                crate::deps::resolver::Lang::from_path(&e.file),
+                calls.symbol_table.get(name).map_or(&[][..], Vec::as_slice),
+            );
+            if cands.is_empty() {
+                // What a cold build leaves: bare, with no candidates. Leaving
+                // the edge as it was would keep candidates that may since
+                // have been deleted.
+                e.confidence = crate::calls::graph::Confidence::Ambiguous;
+                e.candidates.clear();
+                continue;
+            }
             // Same gate as pass B on a cold build: scope-shifting keyword
             // receivers (`crate`/`super`) withhold single-match promotion —
             // the one match may sit in a scope the keyword rules out.
@@ -339,16 +352,13 @@ pub fn apply_delta_to_calls(
                 e.candidates.clear();
                 continue;
             }
-            if cands.is_empty() {
-                continue;
-            }
             let src_file = root.join(&e.file);
             let (target, confidence, candidates) = crate::calls::resolve::disambiguate(
                 deps,
                 root,
                 &src_file,
                 name,
-                cands,
+                &cands,
                 &mut closures,
             );
             e.target = target;

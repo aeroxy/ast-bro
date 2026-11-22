@@ -11,7 +11,10 @@
 //! `External` (see `resolve_scoped`).
 //!
 //! Pass B — global symbol-table: any remaining bare name with exactly one
-//! global qn match promotes to `Resolved(qn)`. Multiple matches defer.
+//! global qn match promotes to `Resolved(qn)`. Multiple matches defer. Only
+//! a qn in a language the caller's file can call counts as a match:
+//! TypeScript, TSX and JavaScript are one family, Java, Kotlin and Scala
+//! another, and every other language is on its own (see `can_reach`).
 //!
 //! Pass C — dep-graph disambiguation: ambiguous names filter to candidates
 //! whose file appears in the source file's transitive forward-dep closure.
@@ -402,35 +405,38 @@ pub fn run_with_table(
             // to a scope the keyword explicitly rules out. Pass B cannot
             // check the anchor, so the edge goes to pass C's dep filter.
             let has_receiver = !self_like || scope_shifting;
-            match symbol_table.get(&raw.bare_name) {
-                Some(cands) if cands.len() == 1 && !has_receiver => {
-                    let edge = raw_to_edge(
-                        raw.clone(),
-                        CallTarget::Resolved(cands[0].clone()),
-                        Confidence::Exact,
-                        rel_path(root, &fp.file),
-                        Vec::new(),
-                    );
-                    forward.entry(edge.source.clone()).or_default().push(edge);
-                }
-                Some(cands) if !cands.is_empty() => {
-                    // Defer to pass C — either ambiguous (>1) or
-                    // receiver-bearing single match.
-                    ambiguous_buffer.push((raw.clone(), fp.file.clone(), cands.clone()));
-                }
-                _ => {
-                    // 0 candidates: keep as Bare. Could be external, could
-                    // be dynamically dispatched. We don't try to distinguish
-                    // External here (would require deeper import tracking).
-                    let edge = raw_to_edge(
-                        raw.clone(),
-                        CallTarget::Bare(raw.bare_name.clone()),
-                        Confidence::Ambiguous,
-                        rel_path(root, &fp.file),
-                        Vec::new(),
-                    );
-                    forward.entry(edge.source.clone()).or_default().push(edge);
-                }
+            // Only a function this file's language can call is a candidate:
+            // a Python call never reaches a Ruby method, however unique its
+            // name (issue #96).
+            let cands = reachable_from(
+                lang,
+                symbol_table.get(&raw.bare_name).map_or(&[][..], Vec::as_slice),
+            );
+            if cands.len() == 1 && !has_receiver {
+                let edge = raw_to_edge(
+                    raw.clone(),
+                    CallTarget::Resolved(cands[0].clone()),
+                    Confidence::Exact,
+                    rel_path(root, &fp.file),
+                    Vec::new(),
+                );
+                forward.entry(edge.source.clone()).or_default().push(edge);
+            } else if !cands.is_empty() {
+                // Defer to pass C — either ambiguous (>1) or
+                // receiver-bearing single match.
+                ambiguous_buffer.push((raw.clone(), fp.file.clone(), cands));
+            } else {
+                // 0 candidates: keep as Bare. Could be external, could
+                // be dynamically dispatched. We don't try to distinguish
+                // External here (would require deeper import tracking).
+                let edge = raw_to_edge(
+                    raw.clone(),
+                    CallTarget::Bare(raw.bare_name.clone()),
+                    Confidence::Ambiguous,
+                    rel_path(root, &fp.file),
+                    Vec::new(),
+                );
+                forward.entry(edge.source.clone()).or_default().push(edge);
             }
         }
 
@@ -563,6 +569,35 @@ fn dotted_path<'a>(parts: &[&'a str]) -> Vec<&'a str> {
 /// The language of the file a qn is declared in.
 pub(crate) fn qn_lang(qn: &Qn) -> Option<Lang> {
     Lang::from_path(Path::new(qn.file()))
+}
+
+/// The languages whose bare calls reach one another's functions: TypeScript,
+/// TSX and JavaScript are one family, Java, Kotlin and Scala another, and
+/// every other language is on its own.
+fn lang_family(lang: Lang) -> Lang {
+    match lang {
+        Lang::Tsx | Lang::JavaScript => Lang::TypeScript,
+        Lang::Kotlin | Lang::Scala => Lang::Java,
+        other => other,
+    }
+}
+
+/// Whether a bare call written in `lang` can reach `qn`: the two are in one
+/// language family. A language not known on either side rules nothing out.
+pub(crate) fn can_reach(lang: Option<Lang>, qn: &Qn) -> bool {
+    match (lang, qn_lang(qn)) {
+        (Some(a), Some(b)) => lang_family(a) == lang_family(b),
+        _ => true,
+    }
+}
+
+/// The candidates a bare call written in `lang` can reach (see `can_reach`).
+pub(crate) fn reachable_from(lang: Option<Lang>, cands: &[Qn]) -> Vec<Qn> {
+    cands
+        .iter()
+        .filter(|qn| can_reach(lang, qn))
+        .cloned()
+        .collect()
 }
 
 /// The scope a callable sits in: its qn parts after the file, without its

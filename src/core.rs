@@ -31,8 +31,10 @@ pub const JSON_SCHEMA_RUN: &str = "ast-bro.run.v1";
 /// The `ast-bro.` name restarted at v1; v2 adds `CallEdge::receiver_scope`
 /// and `CallGraph::namespaces`; v3 adds Elixir files, which a v2 cache
 /// already fingerprints without holding their edges; v4 adds their call
-/// sites, which a v3 cache holds empty; v5 adds `Arity::is_callback`.
-pub const JSON_SCHEMA_GRAPH_INDEX: &str = "ast-bro.graph-index.v5";
+/// sites, which a v3 cache holds empty; v5 adds `Arity::is_callback`; v6
+/// keeps a bare call to its language family, and a v5 cache holds
+/// cross-language `Exact` edges that an incremental update never revisits.
+pub const JSON_SCHEMA_GRAPH_INDEX: &str = "ast-bro.graph-index.v6";
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Copy, Default)]
 pub enum DeclarationKind {

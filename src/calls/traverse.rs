@@ -278,7 +278,13 @@ pub fn unattributed_callers(graph: &CallGraph, targets: &[Qn]) -> Vec<CallEdge> 
         for e in edges {
             let CallTarget::Bare(name) = &e.target else { continue };
             let hit = if e.candidates.is_empty() {
-                names.contains(name.as_str())
+                // Only a target the call's language can reach (issue #96).
+                names.contains(name.as_str()) && {
+                    let lang = crate::deps::resolver::Lang::from_path(&e.file);
+                    targets
+                        .iter()
+                        .any(|t| t.name() == name && crate::calls::resolve::can_reach(lang, t))
+                }
             } else {
                 e.candidates.iter().any(|c| target_set.contains(c))
             };
