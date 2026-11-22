@@ -4898,3 +4898,21 @@ fn an_incremental_update_keeps_a_bare_call_in_its_language() {
     assert!(!warm.contains("lib") && !warm.contains("util.rb"), "{}", warm);
     assert_eq!(warm, callees(true), "incremental and cold builds disagree");
 }
+
+#[test]
+fn unresolved_sites_count_declarers_in_the_targets_language_only() {
+    // Four Python `shutdown_now`s used to push the declarer count past the
+    // listing cap, hiding the one Rust call that can reach `Conn` (#96).
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(&root.join("Cargo.toml"), "[package]\nname = \"mixed\"\nversion = \"0.0.0\"\nedition = \"2021\"\n");
+    write(&root.join("src/conn.rs"), "pub struct Conn;\nimpl Conn {\n    pub fn shutdown_now(&self) {}\n}\n");
+    write(&root.join("src/stop.rs"), "pub fn stop(x: &Thing) {\n    x.shutdown_now();\n}\n");
+    for n in ["a", "b", "c", "d"] {
+        write(&root.join(format!("py/{n}.py")), "def shutdown_now():\n    pass\n");
+    }
+    let (out, code) = run_in(root, &["callers", "Conn.shutdown_now", ".", "--rebuild"]);
+    assert_eq!(code, 0, "{}", out);
+    assert!(out.contains("src/stop.rs:2"), "the Rust site is not listed:\n{}", out);
+    assert!(!out.contains("declared by"), "{}", out);
+}
