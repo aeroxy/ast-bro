@@ -184,7 +184,7 @@ pub(crate) fn module_of(qn: &Qn) -> String {
     }
     segments[1..segments.len() - 1]
         .iter()
-        .filter(|s| !s.contains(' '))
+        .filter(|s| !s.starts_with("describe "))
         .copied()
         .collect::<Vec<_>>()
         .join(".")

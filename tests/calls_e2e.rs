@@ -1020,6 +1020,55 @@ fn elixir_test_callers_name_the_test() {
 }
 
 #[test]
+fn elixir_test_labels_are_not_names() {
+    // A label is free text: a `.` or `::` in it neither names a function nor
+    // starts a module, and only a `describe` level is left out of a module.
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(&root.join("mix.exs"), "defmodule Shop.MixProject do\nend\n");
+    write(
+        &root.join("test/t_test.exs"),
+        r#"defmodule T do
+  test "reads map.field" do
+    :ok
+  end
+  test "Foo::bar" do
+    :ok
+  end
+  describe "A::B" do
+    test "works" do
+      helper()
+    end
+  end
+  def go, do: bar()
+  defp helper, do: 1
+end
+"#,
+    );
+    write(
+        &root.join("lib/concat.ex"),
+        "defmodule Module.concat([Foo, Bar]) do\n  def run, do: helper()\nend\n",
+    );
+    write(&root.join("script.exs"), "def helper, do: 1\n");
+    let (out, code) = run_in(root, &["callees", "field", ".", "--rebuild"]);
+    assert_eq!(code, 2, "a label's last word answered a lookup:\n{}", out);
+    let (out, _) = run_in(root, &["callees", "T.go", "."]);
+    assert!(
+        !out.contains("(Exact)"),
+        "`bar()` bound to a label:\n{}",
+        out
+    );
+    let (out, _) = run_in(root, &["callers", "T.helper", ".", "--tests"]);
+    assert!(
+        out.contains("works"),
+        "test in `describe \"A::B\"`:\n{}",
+        out
+    );
+    let (out, _) = run_in(root, &["callees", "lib/concat.ex:run", "."]);
+    assert!(!out.contains("script.exs"), "bound to a script:\n{}", out);
+}
+
+#[test]
 fn elixir_partial_update_resolves_new_calls_the_same_way() {
     let tmp = elixir_project();
     let root = tmp.path();

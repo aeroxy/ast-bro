@@ -829,7 +829,9 @@ impl<'s> Walker<'s> {
         } else {
             format!("{} {}", keyword, shown.join(", "))
         };
-        let label = label.unwrap_or_default();
+        // A qn joins its segments with `::`, so a label writes it `: :`
+        // (`test "Foo::bar"` is no function `bar`); the signature keeps it.
+        let label = label.unwrap_or_default().replace("::", ": :");
         let calls = if keyword == "describe" {
             Vec::new()
         } else {
