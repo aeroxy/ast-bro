@@ -4913,6 +4913,7 @@ fn unresolved_sites_count_declarers_in_the_targets_language_only() {
     }
     let (out, code) = run_in(root, &["callers", "Conn.shutdown_now", ".", "--rebuild"]);
     assert_eq!(code, 0, "{}", out);
-    assert!(out.contains("src/stop.rs:2"), "the Rust site is not listed:\n{}", out);
+    // The row's qn, which uses `/` on every platform (its file column is native).
+    assert!(out.contains("in src/stop.rs::stop"), "the Rust site is not listed:\n{}", out);
     assert!(!out.contains("declared by"), "{}", out);
 }
