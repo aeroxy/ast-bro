@@ -1,3 +1,3 @@
 fn main() {
-    ast_bro::run();
+  ast_bro::run();
 }

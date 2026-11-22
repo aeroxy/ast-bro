@@ -29,19 +29,19 @@ use serde::{Deserialize, Serialize};
 /// when the call graph is promoted from `None` to `Some`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UnifiedGraph {
-    /// File-level dep graph. Always populated.
-    pub deps: DepGraph,
-    /// Symbol-level call graph. `None` until a `callers`/`callees` query
-    /// triggers `promote_calls`. The on-disk cache may persist this when
-    /// present so subsequent sessions don't pay the build cost again.
-    #[serde(default)]
-    pub calls: Option<CallGraph>,
+  /// File-level dep graph. Always populated.
+  pub deps: DepGraph,
+  /// Symbol-level call graph. `None` until a `callers`/`callees` query
+  /// triggers `promote_calls`. The on-disk cache may persist this when
+  /// present so subsequent sessions don't pay the build cost again.
+  #[serde(default)]
+  pub calls: Option<CallGraph>,
 }
 
 impl UnifiedGraph {
-    pub fn from_deps(deps: DepGraph) -> Self {
-        Self { deps, calls: None }
-    }
+  pub fn from_deps(deps: DepGraph) -> Self {
+    Self { deps, calls: None }
+  }
 }
 
 /// Fetch the unified graph with its call-graph half guaranteed present,
@@ -49,18 +49,20 @@ impl UnifiedGraph {
 /// materialised yet. Shared by `impact` and `context`, which both need the
 /// call graph and would otherwise each carry an identical copy of this logic.
 pub fn ensure_with_calls(
-    root: &std::path::Path,
-    force_rebuild: bool,
+  root: &std::path::Path,
+  force_rebuild: bool,
 ) -> std::io::Result<std::sync::Arc<UnifiedGraph>> {
-    let unified = if force_rebuild {
-        shared::rebuild(root)?
-    } else {
-        get_or_init(root)?
-    };
-    if unified.calls.is_some() {
-        return Ok(unified);
-    }
-    promote_calls(root, |g| crate::calls::build::build_call_graph(root, &g.deps))
+  let unified = if force_rebuild {
+    shared::rebuild(root)?
+  } else {
+    get_or_init(root)?
+  };
+  if unified.calls.is_some() {
+    return Ok(unified);
+  }
+  promote_calls(root, |g| {
+    crate::calls::build::build_call_graph(root, &g.deps)
+  })
 }
 
 /// A unified graph whose calls half is known to be present. Only
@@ -71,18 +73,18 @@ pub fn ensure_with_calls(
 pub struct SymbolGraph(std::sync::Arc<UnifiedGraph>);
 
 impl SymbolGraph {
-    /// The call graph. Infallible by construction — see the type's docs.
-    pub fn calls(&self) -> &CallGraph {
-        match &self.0.calls {
-            Some(c) => c,
-            None => unreachable!("SymbolGraph constructed without its calls half"),
-        }
+  /// The call graph. Infallible by construction — see the type's docs.
+  pub fn calls(&self) -> &CallGraph {
+    match &self.0.calls {
+      Some(c) => c,
+      None => unreachable!("SymbolGraph constructed without its calls half"),
     }
+  }
 
-    /// The file-level dep graph, always populated.
-    pub fn deps(&self) -> &DepGraph {
-        &self.0.deps
-    }
+  /// The file-level dep graph, always populated.
+  pub fn deps(&self) -> &DepGraph {
+    &self.0.deps
+  }
 }
 
 /// Shared prologue for the symbol-query commands (`callers`, `callees`,
@@ -92,31 +94,29 @@ impl SymbolGraph {
 /// exit 1, both on stderr with a JSON envelope under `--json`. Returns
 /// `Err(exit_code)` for the caller to propagate.
 pub fn load_for_symbol_query(
-    command: &str,
-    path: &std::path::Path,
-    rebuild: bool,
-    json: bool,
+  command: &str,
+  path: &std::path::Path,
+  rebuild: bool,
+  json: bool,
 ) -> Result<(std::path::PathBuf, SymbolGraph), i32> {
-    use crate::cli_error::{CliError, ErrorKind};
-    let root = match crate::project_root::find_root_for(path) {
-        Ok(r) => r,
-        Err(e) => return Err(CliError::new(command, ErrorKind::PathNotFound, e).emit(json)),
-    };
-    let graph = match ensure_with_calls(&root, rebuild) {
-        Ok(g) => g,
-        Err(e) => {
-            return Err(
-                CliError::new(command, ErrorKind::IndexError, e.to_string()).emit(json),
-            )
-        }
-    };
-    if graph.calls.is_none() {
-        return Err(CliError::new(
-            command,
-            ErrorKind::IndexError,
-            "call graph unavailable: the cache's calls section is absent or failed to load",
-        )
-        .emit(json));
-    }
-    Ok((root, SymbolGraph(graph)))
+  use crate::cli_error::{CliError, ErrorKind};
+  let root = match crate::project_root::find_root_for(path) {
+    Ok(r) => r,
+    Err(e) => return Err(CliError::new(command, ErrorKind::PathNotFound, e).emit(json)),
+  };
+  let graph = match ensure_with_calls(&root, rebuild) {
+    Ok(g) => g,
+    Err(e) => return Err(CliError::new(command, ErrorKind::IndexError, e.to_string()).emit(json)),
+  };
+  if graph.calls.is_none() {
+    return Err(
+      CliError::new(
+        command,
+        ErrorKind::IndexError,
+        "call graph unavailable: the cache's calls section is absent or failed to load",
+      )
+      .emit(json),
+    );
+  }
+  Ok((root, SymbolGraph(graph)))
 }

@@ -4,395 +4,393 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use std::path::PathBuf;
 
-use crate::core::{
-    self, DigestOptions, MapOptions,
-};
+use crate::core::{self, DigestOptions, MapOptions};
 
 /// Static descriptors returned to clients via `tools/list`.
 pub fn list() -> Value {
-    json!({
-        "tools": [
-            {
-                "name": "map",
-                "description": "AST-based structural map of source files — signatures with line ranges, no method bodies. Returns text by default (5–10× smaller than reading the file). Set `json: true` for the machine-readable schema `ast-bro.map.v1`. A `[group]` line is a comment on the enclosing block, not on the symbol below it: Go's `const ( … )`, `var ( … )` and `type ( … )` take one doc comment covering every member. Read it as the block's, not as that member's own; the exception is a type in a `type ( … )` block with no comment of its own, which `go doc` documents with the block's comment. In `json: true` it is `group` (`{docs, start_line, end_line}`) on every member of the block, shed with `docs` when documentation is projected out (`no_docs`, `detail` below `full`) and reported by `projected.docs: false`; a member's own doc comment is `docs`, as always.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "paths": {
-                            "type": "array",
-                            "items": { "type": "string" },
-                            "description": "Files or directories to map.",
-                            "minItems": 1
-                        },
-                        "detail":     { "type": "string", "enum": ["names", "signatures", "full"], "description": "Detail level: `full` (signatures + docs, default), `signatures` (no docs), `names` (bare member names — the digest renderer)." },
-                        "no_private": { "type": "boolean", "description": "Hide private declarations." },
-                        "no_fields":  { "type": "boolean", "description": "Hide fields, properties, events, indexers, and Markdown code blocks." },
-                        "no_docs":    { "type": "boolean", "description": "Drop doc comments — in JSON the `docs`, `docs_inside`, and `doc_start_byte` keys, together routinely a third of the payload." },
-                        "no_attrs":   { "type": "boolean", "description": "Hide attributes / decorators." },
-                        "no_lines":   { "type": "boolean", "description": "Hide line ranges — in JSON the byte offsets too: `start_line`, `end_line`, `start_byte`, `end_byte`, `doc_start_byte`." },
-                        "max_members": { "type": "integer", "minimum": 0, "description": "Cap members shown per type; the output reports what was cut (`... +N more` in text, `truncated` and `dropped_members` under `json`)." },
-                        "glob":       { "type": "string",  "description": "Glob filter applied during directory walk." },
-                        "json":       { "type": "boolean", "description": "Return JSON (schema `ast-bro.map.v1`) instead of text. A payload the projection flags took keys out of carries a `projected` object naming which ones." }
-                    },
-                    "required": ["paths"]
-                }
-            },
-            {
-                "name": "digest",
-                "description": format!("One-page module map for an unfamiliar directory: every file's types and public methods. Alias for `map` with detail=names, public-only, max_members={}. Returns text by default; set `json: true` for `ast-bro.map.v1`.", crate::defaults::MAX_MEMBERS),
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "paths": {
-                            "type": "array",
-                            "items": { "type": "string" },
-                            "description": "Files or directories to digest.",
-                            "minItems": 1
-                        },
-                        "include_private": { "type": "boolean", "description": "Include private declarations, overriding the digest preset." },
-                        "include_fields":  { "type": "boolean", "description": "Include fields, properties, events, indexers, and Markdown code blocks, overriding the digest preset." },
-                        "max_members":     { "type": "integer", "minimum": 0, "description": format!("Cap members per type (default {}); the output reports what was cut (`... +N more` in text, `truncated` and `dropped_members` under `json`).", crate::defaults::MAX_MEMBERS) },
-                        "glob":            { "type": "string", "description": "Glob filter applied during directory walk." },
-                        "json":            { "type": "boolean", "description": "Return JSON (schema `ast-bro.map.v1`) instead of text. The digest preset drops doc comments from the payload on the caller's behalf, so it carries a `projected` object naming what is gone." }
-                    },
-                    "required": ["paths"]
-                }
-            },
-            {
-                "name": "show",
-                "description": "Extract source of one or more symbols from a file, a directory, or a glob — pass a directory when you know the symbol but not the file. Suffix matching: `TakeDamage`, or `Player.TakeDamage` when ambiguous. For markdown the symbol is a heading or `frontmatter`. Returns text by default; set `json: true` for `ast-bro.show.v2`.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "path":    { "type": "string", "description": "File, directory, or glob to search." },
-                        "symbols": {
-                            "type": "array",
-                            "items": { "type": "string" },
-                            "description": "One or more symbol names to extract.",
-                            "minItems": 1
-                        },
-                        "limit":   { "type": "integer", "minimum": 0, "description": format!("Cap on rendered bodies when the target is a directory or glob (default {}). The reported total is always exact.", crate::defaults::SHOW_LIMIT) },
-                        "json":    { "type": "boolean", "description": "Return JSON (schema `ast-bro.show.v2`) instead of text." }
-                    },
-                    "required": ["path", "symbols"]
-                }
-            },
-            {
-                "name": "implements",
-                "description": "Find subclasses / implementations of a type using AST matching. Transitive by default — set `direct: true` for level-1 only. Returns text by default; set `json: true` for `ast-bro.implements.v1`.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "target": { "type": "string", "description": "Type name to look up." },
-                        "paths":  {
-                            "type": "array",
-                            "items": { "type": "string" },
-                            "description": "Files or directories to search.",
-                            "minItems": 1
-                        },
-                        "direct": { "type": "boolean", "description": "Direct subtypes only (skip transitive)." },
-                        "json":   { "type": "boolean", "description": "Return JSON (schema `ast-bro.implements.v1`) instead of text." }
-                    },
-                    "required": ["target", "paths"]
-                }
-            },
-            {
-                "name": "surface",
-                "description": "True public API surface — resolves `pub use` re-exports (Rust) and `__all__` (Python) to compute exactly what a downstream user sees, not just every `pub`/non-underscore item per file. Falls back to visibility-filtered output for Java/C#/Go/Kotlin (no real re-export concept). Returns text by default; set `json: true` for `ast-bro.surface.v1`.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "path":            { "type": "string",  "description": format!("Crate root file, package init, or directory to auto-detect (default \"{}\").", crate::defaults::ROOT) },
-                        "tree":            { "type": "boolean", "description": "Render as a hierarchical tree grouped by module." },
-                        "include_chain":   { "type": "boolean", "description": "Append the via-chain on each entry (text mode only)." },
-                        "max_depth":       { "type": "integer", "description": format!("Recursion guard for re-export chains (default {}).", crate::defaults::SURFACE_MAX_DEPTH) },
-                        "include_private": { "type": "boolean", "description": "Include private items — only meaningful for the fallback resolver." },
-                        "lang":            { "type": "string",  "description": "Force a resolver: `rust`, `python`, or `fallback`." },
-                        "json":            { "type": "boolean", "description": "Return JSON (schema `ast-bro.surface.v1`) instead of text." }
-                    }
-                }
-            },
-            {
-                "name": "deps",
-                "description": "Forward import-graph traversal: what does this file import (transitively)? Builds a per-repo dep graph at `.ast-bro/deps/graph.bin` on first call, then reuses it. Returns text by default; set `json: true` for `ast-bro.deps.v1`.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "file":    { "type": "string",  "description": "Path to the file whose imports to follow." },
-                        "depth":   { "type": "integer", "description": format!("Max BFS depth (default {}).", crate::defaults::FILE_DEPTH), "minimum": 1 },
-                        "hide_external": { "type": "boolean", "description": "Drop unresolved imports. Default: false (shown with [external] tag)." },
-                        "rebuild": { "type": "boolean", "description": "Drop the cached graph and rebuild." },
-                        "json":    { "type": "boolean", "description": "Return JSON (schema `ast-bro.deps.v1`) instead of text." }
-                    },
-                    "required": ["file"]
-                }
-            },
-            {
-                "name": "reverse_deps",
-                "description": "Reverse import-graph: who imports this file (transitively)? Useful for refactor blast-radius assessment. Returns text by default; set `json: true` for `ast-bro.reverse-deps.v1`.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "file":    { "type": "string",  "description": "Path to the file whose importers to find." },
-                        "depth":   { "type": "integer", "description": format!("Max BFS depth (default {}).", crate::defaults::FILE_DEPTH), "minimum": 1 },
-                        "limit":   { "type": "integer", "description": format!("Cap result count (default {}).", crate::defaults::LIMIT), "minimum": 1 },
-                        "rebuild": { "type": "boolean", "description": "Drop the cached graph and rebuild." },
-                        "json":    { "type": "boolean", "description": "Return JSON (schema `ast-bro.reverse-deps.v1`) instead of text." }
-                    },
-                    "required": ["file"]
-                }
-            },
-            {
-                "name": "cycles",
-                "description": "Find import cycles via Tarjan SCC. Returns the list of strongly-connected components with `len > 1` (or singletons with self-edges). Returns text by default; set `json: true` for `ast-bro.cycles.v1`. Exits non-zero when cycles exist (useful for CI gates).",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "path":     { "type": "string",  "description": format!("Repo root (default \"{}\").", crate::defaults::ROOT) },
-                        "min_size": { "type": "integer", "description": format!("Drop SCCs smaller than this (default {}).", crate::defaults::MIN_SIZE), "minimum": 1 },
-                        "include_refs": { "type": "boolean", "description": "Also count `ref` edges: modules named without a directive (Elixir), mostly runtime calls, whose cycles are normal. Default false." },
-                        "rebuild":  { "type": "boolean", "description": "Drop the cached graph and rebuild." },
-                        "json":     { "type": "boolean", "description": "Return JSON (schema `ast-bro.cycles.v1`) instead of text." }
-                    }
-                }
-            },
-            {
-                "name": "graph",
-                "description": "Emit the file-level dependency graph. Unresolved external imports shown by default (tagged `[external]`). Returns text by default; set `json: true` for `ast-bro.graph.v1`.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "path":             { "type": "string",  "description": format!("Repo root (default \"{}\").", crate::defaults::ROOT) },
-                        "json":             { "type": "boolean", "description": "Return JSON (schema `ast-bro.graph.v1`) instead of text." },
-                        "hide_external":    { "type": "boolean", "description": "Drop unresolved imports. Default: false (shown with [external] tag)." },
-                        "rebuild":          { "type": "boolean", "description": "Drop the cached graph and rebuild." }
-                    }
-                }
-            },
-            {
-                "name": "search",
-                "description": "Hybrid BM25 + dense semantic search over the repo. First call builds a per-repo index at `.ast-bro/index/` (one-time, ~seconds for typical repos). Returns text by default; set `json: true` for `ast-bro.search.v1`.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "query":     { "type": "string",  "description": "Search query (free-form text or symbol name)." },
-                        "path":      { "type": "string",  "description": format!("Repo root to search in (default \"{}\").", crate::defaults::ROOT) },
-                        "top_k":     { "type": "integer", "description": format!("Max results to return (default {}).", crate::defaults::TOP_K), "minimum": 1 },
-                        "alpha":     { "type": "number",  "description": "Override semantic-vs-BM25 weight (0.0=pure BM25, 1.0=pure semantic). Default auto-detects from query type." },
-                        "languages": { "type": "array", "items": { "type": "string" }, "description": "Restrict to chunks of these languages (e.g. [\"rust\", \"python\"])." },
-                        "json":      { "type": "boolean", "description": "Return JSON (schema `ast-bro.search.v1`) instead of text." }
-                    },
-                    "required": ["query"]
-                }
-            },
-            {
-                "name": "find_related",
-                "description": "Find chunks semantically similar to a given file:line. Useful for navigating to related code. Returns text by default; set `json: true` for `ast-bro.related.v1`.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "path":  { "type": "string",  "description": "Repo-relative path of the source chunk." },
-                        "line":  { "type": "integer", "description": "1-indexed line within `path`.", "minimum": 1 },
-                        "root":  { "type": "string",  "description": format!("Repo root containing the index (default \"{}\").", crate::defaults::ROOT) },
-                        "top_k": { "type": "integer", "description": format!("Max results (default {}).", crate::defaults::TOP_K), "minimum": 1 },
-                        "json":  { "type": "boolean", "description": "Return JSON (schema `ast-bro.related.v1`) instead of text." }
-                    },
-                    "required": ["path", "line"]
-                }
-            },
-            {
-                "name": "index",
-                "description": "Build, refresh, or inspect the per-repo search index. With `stats: true` returns index stats. With `rebuild: true` drops the cache and rebuilds. Otherwise just opens (and incrementally refreshes if files changed). Returns text by default; set `json: true` for `ast-bro.index-stats.v1`.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "path":    { "type": "string",  "description": format!("Repo root (default \"{}\").", crate::defaults::ROOT) },
-                        "rebuild": { "type": "boolean", "description": "Drop existing cache and rebuild." },
-                        "stats":   { "type": "boolean", "description": "Print index stats and return." },
-                        "json":    { "type": "boolean", "description": "Return JSON (schema `ast-bro.index-stats.v1`) instead of text." }
-                    }
-                }
-            },
-            {
-                "name": "callers",
-                "description": "Find callers of a symbol — AST-accurate, no grep noise. Suffix-matches the target like `show`/`implements`: `TakeDamage`, or `Type.method` when ambiguous. Ambiguous matches shown by default (tagged red). Returns text by default; set `json: true` for `ast-bro.callers.v1`.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "target":            { "type": "string",  "description": "Symbol name to look up." },
-                        "path":              { "type": "string",  "description": format!("Repo root (default \"{}\").", crate::defaults::ROOT) },
-                        "depth":             { "type": "integer", "description": format!("Max BFS depth (default {}).", crate::defaults::CALL_DEPTH), "minimum": 1 },
-                        "limit":             { "type": "integer", "description": format!("Cap result count (default {}).", crate::defaults::LIMIT), "minimum": 1 },
-                        "hide_ambiguous":    { "type": "boolean", "description": "Drop callers with multiple candidates. Default: false (shown with Ambiguous tag)." },
-                        "json":              { "type": "boolean", "description": "Return JSON (schema `ast-bro.callers.v1`) instead of text." }
-                    },
-                    "required": ["target"]
-                }
-            },
-            {
-                "name": "callees",
-                "description": "What does this symbol call? — AST-accurate forward call traversal. Suffix-matches the target like `callers`. Unresolved/external callees shown by default (tagged cyan/red). Returns text by default; set `json: true` for `ast-bro.callees.v1`.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "target":         { "type": "string",  "description": "Symbol name to look up." },
-                        "path":           { "type": "string",  "description": format!("Repo root (default \"{}\").", crate::defaults::ROOT) },
-                        "depth":          { "type": "integer", "description": format!("Max BFS depth (default {}).", crate::defaults::CALL_DEPTH), "minimum": 1 },
-                        "limit":          { "type": "integer", "description": format!("Cap result count (default {}). The reported total stays exact.", crate::defaults::LIMIT), "minimum": 1 },
-                        "hide_external":  { "type": "boolean", "description": "Drop unresolved/external callees. Default: false (shown with [unresolved]/[external] tags)." },
-                        "json":           { "type": "boolean", "description": "Return JSON (schema `ast-bro.callees.v1`) instead of text." }
-                    },
-                    "required": ["target"]
-                }
-            },
-            {
-                "name": "trace",
-                "description": "Trace the static call path between two symbols — \"how does <from> reach <to>?\". Shortest-path BFS over the call graph with each hop's source body inlined, so a flow question (e.g. request→handler, update→render) is answered in ONE call instead of chaining `callers`/`callees`. If no static path exists the chain broke at dynamic dispatch — the response inlines both endpoints plus the target file's sibling callables. Targets are suffix-matched like `callers`. Returns text by default; set `json: true` for `ast-bro.trace.v1`.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "from":    { "type": "string",  "description": "Source symbol — where the path starts." },
-                        "to":      { "type": "string",  "description": "Destination symbol — where the path should reach." },
-                        "path":    { "type": "string",  "description": format!("Repo root (default \"{}\").", crate::defaults::ROOT) },
-                        "depth":   { "type": "integer", "description": format!("Max path length in hops (default {}).", crate::defaults::TRACE_DEPTH), "minimum": 1 },
-                        "json":    { "type": "boolean", "description": "Return JSON (schema `ast-bro.trace.v1`) instead of text." }
-                    },
-                    "required": ["from", "to"]
-                }
-            },
-            {
-                "name": "impact",
-                "description": "Cross-file impact analysis: callers + callees + file reverse-deps + test detection in one call. Answers 'what would break if I change X?' and 'how wide is the blast radius?' in one shot. Four modes: `deps` (what it calls/imports), `dependents` (who calls/imports it), `tests` (affected tests only), `all` (default). Returns text by default; set `json: true` for `ast-bro.impact.v1`.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "target":            { "type": "string",  "description": "Symbol to analyse (e.g. 'handleRequest', 'Player.TakeDamage', 'src/Player.cs:TakeDamage')." },
-                        "path":              { "type": "string",  "description": format!("Repo root (default \"{}\").", crate::defaults::ROOT) },
-                        "depth":             { "type": "integer", "description": format!("Transitive depth (default {}).", crate::defaults::IMPACT_DEPTH), "minimum": 1 },
-                        "limit":             { "type": "integer", "description": format!("Result cap per section (default {}).", crate::defaults::LIMIT), "minimum": 1 },
-                        "mode":              { "type": "string",  "description": format!("Section: 'deps', 'dependents', 'tests', or '{}' (default).", crate::defaults::IMPACT_MODE), "enum": ["deps", "dependents", "tests", "all"] },
-                        "hide_ambiguous":    { "type": "boolean", "description": "Drop ambiguous call-edge matches. Default: false (shown with Ambiguous tag)." },
-                        "tests":             { "type": "boolean", "description": "Show only test files." },
-                        "exclude_tests":     { "type": "boolean", "description": "Exclude test files from output." },
-                        "json":              { "type": "boolean", "description": "Return JSON (schema `ast-bro.impact.v1`) instead of text." }
-                    },
-                    "required": ["target"]
-                }
-            },
-            {
-                "name": "context",
-                "description": "Token-budgeted context for a symbol — target body + direct callees (bodies) + callers/transitive (signatures), greedily packed into a caller-supplied token budget. Replaces chains of 4–5 `show`/`callers`/`callees` calls with ONE context-aware payload. Budget degrades gracefully from full bodies to signatures only. Returns text by default; set `json: true` for `ast-bro.context.v1`.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "target": { "type": "string",  "description": "Symbol to build context for (same form as callers)." },
-                        "path":   { "type": "string",  "description": format!("Repo root (default \"{}\").", crate::defaults::ROOT) },
-                        "budget": { "type": "integer", "description": format!("Token budget (default {}). ~4 bytes per token rough.", crate::defaults::BUDGET), "minimum": 100 },
-                        "json":   { "type": "boolean", "description": "Return JSON (schema `ast-bro.context.v1`) instead of text." }
-                    },
-                    "required": ["target"]
-                }
-            },
-            {
-                "name": "run",
-                "description": "AST-aware pattern search and rewrite. Use metavariables like $FUNC, $ARG, $$$BODY for structural matching. Search-only without rewrite; transform code with rewrite and write. WARNING: `write: true` mutates files on disk — a broad pattern can touch many files at once (capped at 50 per call). Always preview with the default dry-run first and confirm the diff before re-running with `write: true`. Returns text by default; set `json: true` for `ast-bro.run.v1`.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "pattern":  { "type": "string",  "description": "AST pattern with metavariables (e.g. '$FUNC($$$)')." },
-                        "rewrite":  { "type": "string",  "description": "Replacement template (e.g. 'bar($A)'). Omit for search-only." },
-                        "lang":     { "type": "string",  "description": "Language (auto-detected from file paths if omitted)." },
-                        "paths":    { "type": "array", "items": { "type": "string" }, "description": "Files or directories to search.", "minItems": 1 },
-                        "glob":     { "type": "string",  "description": "Glob pattern to filter files, e.g. '**/*.rs'." },
-                        "write":    { "type": "boolean", "description": "Write changes to disk. Default: false (dry-run). DANGEROUS: mutates files; preview the dry-run diff first and confirm before flipping to true." },
-                        "json":     { "type": "boolean", "description": "Return results as JSON instead of text." }
-                    },
-                    "required": ["pattern"]
-                }
-            },
-            {
-                "name": "squeeze",
-                "description": "Compress repetitive log/text with a reversible legend (logs, not code).",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "path":  { "type": "string",  "description": "Path to the log/text file to read." },
-                        "start": { "type": "integer", "description": "1-indexed inclusive start line of the slice.", "minimum": 1 },
-                        "end":   { "type": "integer", "description": "1-indexed inclusive end line of the slice.", "minimum": 1 },
-                        "raw":   { "type": "boolean", "description": "Skip compression and emit the raw text." },
-                        "json":  { "type": "boolean", "description": "Return JSON (schema `ast-bro.squeeze.v1`) instead of text." }
-                    },
-                    "required": ["path"]
-                }
-            }
-        ]
-    })
+  json!({
+      "tools": [
+          {
+              "name": "map",
+              "description": "AST-based structural map of source files — signatures with line ranges, no method bodies. Returns text by default (5–10× smaller than reading the file). Set `json: true` for the machine-readable schema `ast-bro.map.v1`. A `[group]` line is a comment on the enclosing block, not on the symbol below it: Go's `const ( … )`, `var ( … )` and `type ( … )` take one doc comment covering every member. Read it as the block's, not as that member's own; the exception is a type in a `type ( … )` block with no comment of its own, which `go doc` documents with the block's comment. In `json: true` it is `group` (`{docs, start_line, end_line}`) on every member of the block, shed with `docs` when documentation is projected out (`no_docs`, `detail` below `full`) and reported by `projected.docs: false`; a member's own doc comment is `docs`, as always.",
+              "inputSchema": {
+                  "type": "object",
+                  "properties": {
+                      "paths": {
+                          "type": "array",
+                          "items": { "type": "string" },
+                          "description": "Files or directories to map.",
+                          "minItems": 1
+                      },
+                      "detail":     { "type": "string", "enum": ["names", "signatures", "full"], "description": "Detail level: `full` (signatures + docs, default), `signatures` (no docs), `names` (bare member names — the digest renderer)." },
+                      "no_private": { "type": "boolean", "description": "Hide private declarations." },
+                      "no_fields":  { "type": "boolean", "description": "Hide fields, properties, events, indexers, and Markdown code blocks." },
+                      "no_docs":    { "type": "boolean", "description": "Drop doc comments — in JSON the `docs`, `docs_inside`, and `doc_start_byte` keys, together routinely a third of the payload." },
+                      "no_attrs":   { "type": "boolean", "description": "Hide attributes / decorators." },
+                      "no_lines":   { "type": "boolean", "description": "Hide line ranges — in JSON the byte offsets too: `start_line`, `end_line`, `start_byte`, `end_byte`, `doc_start_byte`." },
+                      "max_members": { "type": "integer", "minimum": 0, "description": "Cap members shown per type; the output reports what was cut (`... +N more` in text, `truncated` and `dropped_members` under `json`)." },
+                      "glob":       { "type": "string",  "description": "Glob filter applied during directory walk." },
+                      "json":       { "type": "boolean", "description": "Return JSON (schema `ast-bro.map.v1`) instead of text. A payload the projection flags took keys out of carries a `projected` object naming which ones." }
+                  },
+                  "required": ["paths"]
+              }
+          },
+          {
+              "name": "digest",
+              "description": format!("One-page module map for an unfamiliar directory: every file's types and public methods. Alias for `map` with detail=names, public-only, max_members={}. Returns text by default; set `json: true` for `ast-bro.map.v1`.", crate::defaults::MAX_MEMBERS),
+              "inputSchema": {
+                  "type": "object",
+                  "properties": {
+                      "paths": {
+                          "type": "array",
+                          "items": { "type": "string" },
+                          "description": "Files or directories to digest.",
+                          "minItems": 1
+                      },
+                      "include_private": { "type": "boolean", "description": "Include private declarations, overriding the digest preset." },
+                      "include_fields":  { "type": "boolean", "description": "Include fields, properties, events, indexers, and Markdown code blocks, overriding the digest preset." },
+                      "max_members":     { "type": "integer", "minimum": 0, "description": format!("Cap members per type (default {}); the output reports what was cut (`... +N more` in text, `truncated` and `dropped_members` under `json`).", crate::defaults::MAX_MEMBERS) },
+                      "glob":            { "type": "string", "description": "Glob filter applied during directory walk." },
+                      "json":            { "type": "boolean", "description": "Return JSON (schema `ast-bro.map.v1`) instead of text. The digest preset drops doc comments from the payload on the caller's behalf, so it carries a `projected` object naming what is gone." }
+                  },
+                  "required": ["paths"]
+              }
+          },
+          {
+              "name": "show",
+              "description": "Extract source of one or more symbols from a file, a directory, or a glob — pass a directory when you know the symbol but not the file. Suffix matching: `TakeDamage`, or `Player.TakeDamage` when ambiguous. For markdown the symbol is a heading or `frontmatter`. Returns text by default; set `json: true` for `ast-bro.show.v2`.",
+              "inputSchema": {
+                  "type": "object",
+                  "properties": {
+                      "path":    { "type": "string", "description": "File, directory, or glob to search." },
+                      "symbols": {
+                          "type": "array",
+                          "items": { "type": "string" },
+                          "description": "One or more symbol names to extract.",
+                          "minItems": 1
+                      },
+                      "limit":   { "type": "integer", "minimum": 0, "description": format!("Cap on rendered bodies when the target is a directory or glob (default {}). The reported total is always exact.", crate::defaults::SHOW_LIMIT) },
+                      "json":    { "type": "boolean", "description": "Return JSON (schema `ast-bro.show.v2`) instead of text." }
+                  },
+                  "required": ["path", "symbols"]
+              }
+          },
+          {
+              "name": "implements",
+              "description": "Find subclasses / implementations of a type using AST matching. Transitive by default — set `direct: true` for level-1 only. Returns text by default; set `json: true` for `ast-bro.implements.v1`.",
+              "inputSchema": {
+                  "type": "object",
+                  "properties": {
+                      "target": { "type": "string", "description": "Type name to look up." },
+                      "paths":  {
+                          "type": "array",
+                          "items": { "type": "string" },
+                          "description": "Files or directories to search.",
+                          "minItems": 1
+                      },
+                      "direct": { "type": "boolean", "description": "Direct subtypes only (skip transitive)." },
+                      "json":   { "type": "boolean", "description": "Return JSON (schema `ast-bro.implements.v1`) instead of text." }
+                  },
+                  "required": ["target", "paths"]
+              }
+          },
+          {
+              "name": "surface",
+              "description": "True public API surface — resolves `pub use` re-exports (Rust) and `__all__` (Python) to compute exactly what a downstream user sees, not just every `pub`/non-underscore item per file. Falls back to visibility-filtered output for Java/C#/Go/Kotlin (no real re-export concept). Returns text by default; set `json: true` for `ast-bro.surface.v1`.",
+              "inputSchema": {
+                  "type": "object",
+                  "properties": {
+                      "path":            { "type": "string",  "description": format!("Crate root file, package init, or directory to auto-detect (default \"{}\").", crate::defaults::ROOT) },
+                      "tree":            { "type": "boolean", "description": "Render as a hierarchical tree grouped by module." },
+                      "include_chain":   { "type": "boolean", "description": "Append the via-chain on each entry (text mode only)." },
+                      "max_depth":       { "type": "integer", "description": format!("Recursion guard for re-export chains (default {}).", crate::defaults::SURFACE_MAX_DEPTH) },
+                      "include_private": { "type": "boolean", "description": "Include private items — only meaningful for the fallback resolver." },
+                      "lang":            { "type": "string",  "description": "Force a resolver: `rust`, `python`, or `fallback`." },
+                      "json":            { "type": "boolean", "description": "Return JSON (schema `ast-bro.surface.v1`) instead of text." }
+                  }
+              }
+          },
+          {
+              "name": "deps",
+              "description": "Forward import-graph traversal: what does this file import (transitively)? Builds a per-repo dep graph at `.ast-bro/deps/graph.bin` on first call, then reuses it. Returns text by default; set `json: true` for `ast-bro.deps.v1`.",
+              "inputSchema": {
+                  "type": "object",
+                  "properties": {
+                      "file":    { "type": "string",  "description": "Path to the file whose imports to follow." },
+                      "depth":   { "type": "integer", "description": format!("Max BFS depth (default {}).", crate::defaults::FILE_DEPTH), "minimum": 1 },
+                      "hide_external": { "type": "boolean", "description": "Drop unresolved imports. Default: false (shown with [external] tag)." },
+                      "rebuild": { "type": "boolean", "description": "Drop the cached graph and rebuild." },
+                      "json":    { "type": "boolean", "description": "Return JSON (schema `ast-bro.deps.v1`) instead of text." }
+                  },
+                  "required": ["file"]
+              }
+          },
+          {
+              "name": "reverse_deps",
+              "description": "Reverse import-graph: who imports this file (transitively)? Useful for refactor blast-radius assessment. Returns text by default; set `json: true` for `ast-bro.reverse-deps.v1`.",
+              "inputSchema": {
+                  "type": "object",
+                  "properties": {
+                      "file":    { "type": "string",  "description": "Path to the file whose importers to find." },
+                      "depth":   { "type": "integer", "description": format!("Max BFS depth (default {}).", crate::defaults::FILE_DEPTH), "minimum": 1 },
+                      "limit":   { "type": "integer", "description": format!("Cap result count (default {}).", crate::defaults::LIMIT), "minimum": 1 },
+                      "rebuild": { "type": "boolean", "description": "Drop the cached graph and rebuild." },
+                      "json":    { "type": "boolean", "description": "Return JSON (schema `ast-bro.reverse-deps.v1`) instead of text." }
+                  },
+                  "required": ["file"]
+              }
+          },
+          {
+              "name": "cycles",
+              "description": "Find import cycles via Tarjan SCC. Returns the list of strongly-connected components with `len > 1` (or singletons with self-edges). Returns text by default; set `json: true` for `ast-bro.cycles.v1`. Exits non-zero when cycles exist (useful for CI gates).",
+              "inputSchema": {
+                  "type": "object",
+                  "properties": {
+                      "path":     { "type": "string",  "description": format!("Repo root (default \"{}\").", crate::defaults::ROOT) },
+                      "min_size": { "type": "integer", "description": format!("Drop SCCs smaller than this (default {}).", crate::defaults::MIN_SIZE), "minimum": 1 },
+                      "include_refs": { "type": "boolean", "description": "Also count `ref` edges: modules named without a directive (Elixir), mostly runtime calls, whose cycles are normal. Default false." },
+                      "rebuild":  { "type": "boolean", "description": "Drop the cached graph and rebuild." },
+                      "json":     { "type": "boolean", "description": "Return JSON (schema `ast-bro.cycles.v1`) instead of text." }
+                  }
+              }
+          },
+          {
+              "name": "graph",
+              "description": "Emit the file-level dependency graph. Unresolved external imports shown by default (tagged `[external]`). Returns text by default; set `json: true` for `ast-bro.graph.v1`.",
+              "inputSchema": {
+                  "type": "object",
+                  "properties": {
+                      "path":             { "type": "string",  "description": format!("Repo root (default \"{}\").", crate::defaults::ROOT) },
+                      "json":             { "type": "boolean", "description": "Return JSON (schema `ast-bro.graph.v1`) instead of text." },
+                      "hide_external":    { "type": "boolean", "description": "Drop unresolved imports. Default: false (shown with [external] tag)." },
+                      "rebuild":          { "type": "boolean", "description": "Drop the cached graph and rebuild." }
+                  }
+              }
+          },
+          {
+              "name": "search",
+              "description": "Hybrid BM25 + dense semantic search over the repo. First call builds a per-repo index at `.ast-bro/index/` (one-time, ~seconds for typical repos). Returns text by default; set `json: true` for `ast-bro.search.v1`.",
+              "inputSchema": {
+                  "type": "object",
+                  "properties": {
+                      "query":     { "type": "string",  "description": "Search query (free-form text or symbol name)." },
+                      "path":      { "type": "string",  "description": format!("Repo root to search in (default \"{}\").", crate::defaults::ROOT) },
+                      "top_k":     { "type": "integer", "description": format!("Max results to return (default {}).", crate::defaults::TOP_K), "minimum": 1 },
+                      "alpha":     { "type": "number",  "description": "Override semantic-vs-BM25 weight (0.0=pure BM25, 1.0=pure semantic). Default auto-detects from query type." },
+                      "languages": { "type": "array", "items": { "type": "string" }, "description": "Restrict to chunks of these languages (e.g. [\"rust\", \"python\"])." },
+                      "json":      { "type": "boolean", "description": "Return JSON (schema `ast-bro.search.v1`) instead of text." }
+                  },
+                  "required": ["query"]
+              }
+          },
+          {
+              "name": "find_related",
+              "description": "Find chunks semantically similar to a given file:line. Useful for navigating to related code. Returns text by default; set `json: true` for `ast-bro.related.v1`.",
+              "inputSchema": {
+                  "type": "object",
+                  "properties": {
+                      "path":  { "type": "string",  "description": "Repo-relative path of the source chunk." },
+                      "line":  { "type": "integer", "description": "1-indexed line within `path`.", "minimum": 1 },
+                      "root":  { "type": "string",  "description": format!("Repo root containing the index (default \"{}\").", crate::defaults::ROOT) },
+                      "top_k": { "type": "integer", "description": format!("Max results (default {}).", crate::defaults::TOP_K), "minimum": 1 },
+                      "json":  { "type": "boolean", "description": "Return JSON (schema `ast-bro.related.v1`) instead of text." }
+                  },
+                  "required": ["path", "line"]
+              }
+          },
+          {
+              "name": "index",
+              "description": "Build, refresh, or inspect the per-repo search index. With `stats: true` returns index stats. With `rebuild: true` drops the cache and rebuilds. Otherwise just opens (and incrementally refreshes if files changed). Returns text by default; set `json: true` for `ast-bro.index-stats.v1`.",
+              "inputSchema": {
+                  "type": "object",
+                  "properties": {
+                      "path":    { "type": "string",  "description": format!("Repo root (default \"{}\").", crate::defaults::ROOT) },
+                      "rebuild": { "type": "boolean", "description": "Drop existing cache and rebuild." },
+                      "stats":   { "type": "boolean", "description": "Print index stats and return." },
+                      "json":    { "type": "boolean", "description": "Return JSON (schema `ast-bro.index-stats.v1`) instead of text." }
+                  }
+              }
+          },
+          {
+              "name": "callers",
+              "description": "Find callers of a symbol — AST-accurate, no grep noise. Suffix-matches the target like `show`/`implements`: `TakeDamage`, or `Type.method` when ambiguous. Ambiguous matches shown by default (tagged red). Returns text by default; set `json: true` for `ast-bro.callers.v1`.",
+              "inputSchema": {
+                  "type": "object",
+                  "properties": {
+                      "target":            { "type": "string",  "description": "Symbol name to look up." },
+                      "path":              { "type": "string",  "description": format!("Repo root (default \"{}\").", crate::defaults::ROOT) },
+                      "depth":             { "type": "integer", "description": format!("Max BFS depth (default {}).", crate::defaults::CALL_DEPTH), "minimum": 1 },
+                      "limit":             { "type": "integer", "description": format!("Cap result count (default {}).", crate::defaults::LIMIT), "minimum": 1 },
+                      "hide_ambiguous":    { "type": "boolean", "description": "Drop callers with multiple candidates. Default: false (shown with Ambiguous tag)." },
+                      "json":              { "type": "boolean", "description": "Return JSON (schema `ast-bro.callers.v1`) instead of text." }
+                  },
+                  "required": ["target"]
+              }
+          },
+          {
+              "name": "callees",
+              "description": "What does this symbol call? — AST-accurate forward call traversal. Suffix-matches the target like `callers`. Unresolved/external callees shown by default (tagged cyan/red). Returns text by default; set `json: true` for `ast-bro.callees.v1`.",
+              "inputSchema": {
+                  "type": "object",
+                  "properties": {
+                      "target":         { "type": "string",  "description": "Symbol name to look up." },
+                      "path":           { "type": "string",  "description": format!("Repo root (default \"{}\").", crate::defaults::ROOT) },
+                      "depth":          { "type": "integer", "description": format!("Max BFS depth (default {}).", crate::defaults::CALL_DEPTH), "minimum": 1 },
+                      "limit":          { "type": "integer", "description": format!("Cap result count (default {}). The reported total stays exact.", crate::defaults::LIMIT), "minimum": 1 },
+                      "hide_external":  { "type": "boolean", "description": "Drop unresolved/external callees. Default: false (shown with [unresolved]/[external] tags)." },
+                      "json":           { "type": "boolean", "description": "Return JSON (schema `ast-bro.callees.v1`) instead of text." }
+                  },
+                  "required": ["target"]
+              }
+          },
+          {
+              "name": "trace",
+              "description": "Trace the static call path between two symbols — \"how does <from> reach <to>?\". Shortest-path BFS over the call graph with each hop's source body inlined, so a flow question (e.g. request→handler, update→render) is answered in ONE call instead of chaining `callers`/`callees`. If no static path exists the chain broke at dynamic dispatch — the response inlines both endpoints plus the target file's sibling callables. Targets are suffix-matched like `callers`. Returns text by default; set `json: true` for `ast-bro.trace.v1`.",
+              "inputSchema": {
+                  "type": "object",
+                  "properties": {
+                      "from":    { "type": "string",  "description": "Source symbol — where the path starts." },
+                      "to":      { "type": "string",  "description": "Destination symbol — where the path should reach." },
+                      "path":    { "type": "string",  "description": format!("Repo root (default \"{}\").", crate::defaults::ROOT) },
+                      "depth":   { "type": "integer", "description": format!("Max path length in hops (default {}).", crate::defaults::TRACE_DEPTH), "minimum": 1 },
+                      "json":    { "type": "boolean", "description": "Return JSON (schema `ast-bro.trace.v1`) instead of text." }
+                  },
+                  "required": ["from", "to"]
+              }
+          },
+          {
+              "name": "impact",
+              "description": "Cross-file impact analysis: callers + callees + file reverse-deps + test detection in one call. Answers 'what would break if I change X?' and 'how wide is the blast radius?' in one shot. Four modes: `deps` (what it calls/imports), `dependents` (who calls/imports it), `tests` (affected tests only), `all` (default). Returns text by default; set `json: true` for `ast-bro.impact.v1`.",
+              "inputSchema": {
+                  "type": "object",
+                  "properties": {
+                      "target":            { "type": "string",  "description": "Symbol to analyse (e.g. 'handleRequest', 'Player.TakeDamage', 'src/Player.cs:TakeDamage')." },
+                      "path":              { "type": "string",  "description": format!("Repo root (default \"{}\").", crate::defaults::ROOT) },
+                      "depth":             { "type": "integer", "description": format!("Transitive depth (default {}).", crate::defaults::IMPACT_DEPTH), "minimum": 1 },
+                      "limit":             { "type": "integer", "description": format!("Result cap per section (default {}).", crate::defaults::LIMIT), "minimum": 1 },
+                      "mode":              { "type": "string",  "description": format!("Section: 'deps', 'dependents', 'tests', or '{}' (default).", crate::defaults::IMPACT_MODE), "enum": ["deps", "dependents", "tests", "all"] },
+                      "hide_ambiguous":    { "type": "boolean", "description": "Drop ambiguous call-edge matches. Default: false (shown with Ambiguous tag)." },
+                      "tests":             { "type": "boolean", "description": "Show only test files." },
+                      "exclude_tests":     { "type": "boolean", "description": "Exclude test files from output." },
+                      "json":              { "type": "boolean", "description": "Return JSON (schema `ast-bro.impact.v1`) instead of text." }
+                  },
+                  "required": ["target"]
+              }
+          },
+          {
+              "name": "context",
+              "description": "Token-budgeted context for a symbol — target body + direct callees (bodies) + callers/transitive (signatures), greedily packed into a caller-supplied token budget. Replaces chains of 4–5 `show`/`callers`/`callees` calls with ONE context-aware payload. Budget degrades gracefully from full bodies to signatures only. Returns text by default; set `json: true` for `ast-bro.context.v1`.",
+              "inputSchema": {
+                  "type": "object",
+                  "properties": {
+                      "target": { "type": "string",  "description": "Symbol to build context for (same form as callers)." },
+                      "path":   { "type": "string",  "description": format!("Repo root (default \"{}\").", crate::defaults::ROOT) },
+                      "budget": { "type": "integer", "description": format!("Token budget (default {}). ~4 bytes per token rough.", crate::defaults::BUDGET), "minimum": 100 },
+                      "json":   { "type": "boolean", "description": "Return JSON (schema `ast-bro.context.v1`) instead of text." }
+                  },
+                  "required": ["target"]
+              }
+          },
+          {
+              "name": "run",
+              "description": "AST-aware pattern search and rewrite. Use metavariables like $FUNC, $ARG, $$$BODY for structural matching. Search-only without rewrite; transform code with rewrite and write. WARNING: `write: true` mutates files on disk — a broad pattern can touch many files at once (capped at 50 per call). Always preview with the default dry-run first and confirm the diff before re-running with `write: true`. Returns text by default; set `json: true` for `ast-bro.run.v1`.",
+              "inputSchema": {
+                  "type": "object",
+                  "properties": {
+                      "pattern":  { "type": "string",  "description": "AST pattern with metavariables (e.g. '$FUNC($$$)')." },
+                      "rewrite":  { "type": "string",  "description": "Replacement template (e.g. 'bar($A)'). Omit for search-only." },
+                      "lang":     { "type": "string",  "description": "Language (auto-detected from file paths if omitted)." },
+                      "paths":    { "type": "array", "items": { "type": "string" }, "description": "Files or directories to search.", "minItems": 1 },
+                      "glob":     { "type": "string",  "description": "Glob pattern to filter files, e.g. '**/*.rs'." },
+                      "write":    { "type": "boolean", "description": "Write changes to disk. Default: false (dry-run). DANGEROUS: mutates files; preview the dry-run diff first and confirm before flipping to true." },
+                      "json":     { "type": "boolean", "description": "Return results as JSON instead of text." }
+                  },
+                  "required": ["pattern"]
+              }
+          },
+          {
+              "name": "squeeze",
+              "description": "Compress repetitive log/text with a reversible legend (logs, not code).",
+              "inputSchema": {
+                  "type": "object",
+                  "properties": {
+                      "path":  { "type": "string",  "description": "Path to the log/text file to read." },
+                      "start": { "type": "integer", "description": "1-indexed inclusive start line of the slice.", "minimum": 1 },
+                      "end":   { "type": "integer", "description": "1-indexed inclusive end line of the slice.", "minimum": 1 },
+                      "raw":   { "type": "boolean", "description": "Skip compression and emit the raw text." },
+                      "json":  { "type": "boolean", "description": "Return JSON (schema `ast-bro.squeeze.v1`) instead of text." }
+                  },
+                  "required": ["path"]
+              }
+          }
+      ]
+  })
 }
 
 /// Result of dispatching a tool — either textual content or an error message
 /// surfaced as `isError: true` on the MCP response.
 pub enum CallResult {
-    Text(String),
-    Error(String),
+  Text(String),
+  Error(String),
 }
 
 pub fn call(name: &str, args: Value) -> CallResult {
-    match name {
-        "map"          => run_map(args),
-        "digest"       => run_digest(args),
-        "show"         => run_show(args),
-        "implements"   => run_implements(args),
-        "surface"      => run_surface(args),
-        "deps"         => run_deps(args),
-        "reverse_deps" => run_reverse_deps(args),
-        "cycles"       => run_cycles(args),
-        "graph"        => run_graph(args),
-        "search"       => crate::search::mcp::run_search(args),
-        "find_related" => crate::search::mcp::run_find_related(args),
-        "index"        => crate::search::mcp::run_index(args),
-        "callers"      => run_callers(args),
-        "callees"      => run_callees(args),
-        "trace"        => run_trace(args),
-        "impact"       => crate::impact::mcp::run_impact(args),
-        "context"      => crate::context::mcp::run_context(args),
-        "run"          => run_run(args),
-        "squeeze"      => run_squeeze(args),
-        other => CallResult::Error(format!("unknown tool: {}", other)),
-    }
+  match name {
+    "map" => run_map(args),
+    "digest" => run_digest(args),
+    "show" => run_show(args),
+    "implements" => run_implements(args),
+    "surface" => run_surface(args),
+    "deps" => run_deps(args),
+    "reverse_deps" => run_reverse_deps(args),
+    "cycles" => run_cycles(args),
+    "graph" => run_graph(args),
+    "search" => crate::search::mcp::run_search(args),
+    "find_related" => crate::search::mcp::run_find_related(args),
+    "index" => crate::search::mcp::run_index(args),
+    "callers" => run_callers(args),
+    "callees" => run_callees(args),
+    "trace" => run_trace(args),
+    "impact" => crate::impact::mcp::run_impact(args),
+    "context" => crate::context::mcp::run_context(args),
+    "run" => run_run(args),
+    "squeeze" => run_squeeze(args),
+    other => CallResult::Error(format!("unknown tool: {}", other)),
+  }
 }
 
 // ---------- callers / callees ----------
 
 #[derive(serde::Deserialize)]
 struct CallersArgs {
-    target: String,
-    #[serde(default = "crate::defaults::root")]
-    path: PathBuf,
-    #[serde(default = "crate::defaults::call_depth")]
-    depth: usize,
-    #[serde(default = "crate::defaults::limit")]
-    limit: usize,
-    /// Hide ambiguous callers (default: false — show them tagged red).
-    #[serde(default)]
-    hide_ambiguous: bool,
-    #[serde(default)]
-    json: bool,
+  target: String,
+  #[serde(default = "crate::defaults::root")]
+  path: PathBuf,
+  #[serde(default = "crate::defaults::call_depth")]
+  depth: usize,
+  #[serde(default = "crate::defaults::limit")]
+  limit: usize,
+  /// Hide ambiguous callers (default: false — show them tagged red).
+  #[serde(default)]
+  hide_ambiguous: bool,
+  #[serde(default)]
+  json: bool,
 }
 
 #[derive(serde::Deserialize)]
 struct CalleesArgs {
-    target: String,
-    #[serde(default = "crate::defaults::root")]
-    path: PathBuf,
-    #[serde(default = "crate::defaults::call_depth")]
-    depth: usize,
-    #[serde(default = "crate::defaults::limit")]
-    limit: usize,
-    /// Hide unresolved/external callees (default: false — show them tagged).
-    #[serde(default)]
-    hide_external: bool,
-    #[serde(default)]
-    json: bool,
+  target: String,
+  #[serde(default = "crate::defaults::root")]
+  path: PathBuf,
+  #[serde(default = "crate::defaults::call_depth")]
+  depth: usize,
+  #[serde(default = "crate::defaults::limit")]
+  limit: usize,
+  /// Hide unresolved/external callees (default: false — show them tagged).
+  #[serde(default)]
+  hide_external: bool,
+  #[serde(default)]
+  json: bool,
 }
 
 /// Back-compat shim for renamed boolean args. Pre-rename clients sent
@@ -401,118 +399,127 @@ struct CalleesArgs {
 /// old key is present, translate it so old clients keep their behavior
 /// instead of having the flag silently ignored.
 pub(crate) fn translate_renamed_bool(args: &mut Value, old: &str, new: &str) {
-    if args.get(new).is_some() {
-        return;
-    }
-    if let Some(v) = args.get(old).and_then(Value::as_bool) {
-        args[new] = Value::Bool(!v);
-    }
+  if args.get(new).is_some() {
+    return;
+  }
+  if let Some(v) = args.get(old).and_then(Value::as_bool) {
+    args[new] = Value::Bool(!v);
+  }
 }
 
 fn run_callers(mut args: Value) -> CallResult {
-    translate_renamed_bool(&mut args, "include_ambiguous", "hide_ambiguous");
-    let a: CallersArgs = match serde_json::from_value(args) {
-        Ok(a) => a,
-        Err(e) => return CallResult::Error(format!("bad args: {}", e)),
-    };
-    let root = match crate::project_root::find_root_for(&a.path) {
-        Ok(r) => r,
-        Err(e) => return CallResult::Error(e),
-    };
-    match crate::calls::mcp::run_callers_text(
-        &a.target,
-        &root,
-        a.depth,
-        a.limit,
-        !a.hide_ambiguous,
-        a.json,
-    ) {
-        Ok(out) => CallResult::Text(out),
-        Err(e) => CallResult::Error(e),
-    }
+  translate_renamed_bool(&mut args, "include_ambiguous", "hide_ambiguous");
+  let a: CallersArgs = match serde_json::from_value(args) {
+    Ok(a) => a,
+    Err(e) => return CallResult::Error(format!("bad args: {}", e)),
+  };
+  let root = match crate::project_root::find_root_for(&a.path) {
+    Ok(r) => r,
+    Err(e) => return CallResult::Error(e),
+  };
+  match crate::calls::mcp::run_callers_text(
+    &a.target,
+    &root,
+    a.depth,
+    a.limit,
+    !a.hide_ambiguous,
+    a.json,
+  ) {
+    Ok(out) => CallResult::Text(out),
+    Err(e) => CallResult::Error(e),
+  }
 }
 
 fn run_callees(mut args: Value) -> CallResult {
-    translate_renamed_bool(&mut args, "external", "hide_external");
-    let a: CalleesArgs = match serde_json::from_value(args) {
-        Ok(a) => a,
-        Err(e) => return CallResult::Error(format!("bad args: {}", e)),
-    };
-    let root = match crate::project_root::find_root_for(&a.path) {
-        Ok(r) => r,
-        Err(e) => return CallResult::Error(e),
-    };
-    match crate::calls::mcp::run_callees_text(
-        &a.target,
-        &root,
-        a.depth,
-        a.limit,
-        !a.hide_external,
-        a.json,
-    ) {
-        Ok(out) => CallResult::Text(out),
-        Err(e) => CallResult::Error(e),
-    }
+  translate_renamed_bool(&mut args, "external", "hide_external");
+  let a: CalleesArgs = match serde_json::from_value(args) {
+    Ok(a) => a,
+    Err(e) => return CallResult::Error(format!("bad args: {}", e)),
+  };
+  let root = match crate::project_root::find_root_for(&a.path) {
+    Ok(r) => r,
+    Err(e) => return CallResult::Error(e),
+  };
+  match crate::calls::mcp::run_callees_text(
+    &a.target,
+    &root,
+    a.depth,
+    a.limit,
+    !a.hide_external,
+    a.json,
+  ) {
+    Ok(out) => CallResult::Text(out),
+    Err(e) => CallResult::Error(e),
+  }
 }
 
 #[derive(serde::Deserialize)]
 struct TraceArgs {
-    from: String,
-    to: String,
-    #[serde(default = "crate::defaults::root")]
-    path: PathBuf,
-    #[serde(default = "crate::defaults::trace_depth")]
-    depth: usize,
-    #[serde(default)]
-    json: bool,
+  from: String,
+  to: String,
+  #[serde(default = "crate::defaults::root")]
+  path: PathBuf,
+  #[serde(default = "crate::defaults::trace_depth")]
+  depth: usize,
+  #[serde(default)]
+  json: bool,
 }
 
 fn run_trace(args: Value) -> CallResult {
-    let a: TraceArgs = match serde_json::from_value(args) {
-        Ok(a) => a,
-        Err(e) => return CallResult::Error(format!("bad args: {}", e)),
-    };
-    let root = match crate::project_root::find_root_for(&a.path) {
-        Ok(r) => r,
-        Err(e) => return CallResult::Error(e),
-    };
-    match crate::calls::mcp::run_trace_text(&a.from, &a.to, &root, a.depth, a.json) {
-        Ok(out) => CallResult::Text(out),
-        Err(e) => CallResult::Error(e),
-    }
+  let a: TraceArgs = match serde_json::from_value(args) {
+    Ok(a) => a,
+    Err(e) => return CallResult::Error(format!("bad args: {}", e)),
+  };
+  let root = match crate::project_root::find_root_for(&a.path) {
+    Ok(r) => r,
+    Err(e) => return CallResult::Error(e),
+  };
+  match crate::calls::mcp::run_trace_text(&a.from, &a.to, &root, a.depth, a.json) {
+    Ok(out) => CallResult::Text(out),
+    Err(e) => CallResult::Error(e),
+  }
 }
 
 #[derive(Deserialize, Default)]
 struct MapArgs {
-    paths: Vec<PathBuf>,
-    #[serde(default)] detail: Option<String>,
-    #[serde(default)] no_private: bool,
-    #[serde(default)] no_fields: bool,
-    #[serde(default)] no_docs: bool,
-    #[serde(default)] no_attrs: bool,
-    #[serde(default)] no_lines: bool,
-    #[serde(default)] max_members: Option<usize>,
-    #[serde(default)] glob: Option<String>,
-    #[serde(default)] json: bool,
+  paths: Vec<PathBuf>,
+  #[serde(default)]
+  detail: Option<String>,
+  #[serde(default)]
+  no_private: bool,
+  #[serde(default)]
+  no_fields: bool,
+  #[serde(default)]
+  no_docs: bool,
+  #[serde(default)]
+  no_attrs: bool,
+  #[serde(default)]
+  no_lines: bool,
+  #[serde(default)]
+  max_members: Option<usize>,
+  #[serde(default)]
+  glob: Option<String>,
+  #[serde(default)]
+  json: bool,
 }
 
 /// `# note: path not found: …` line for text responses (None when all
 /// requested paths resolved).
 fn partial_note(missing: &[String]) -> Option<String> {
-    if missing.is_empty() {
-        None
-    } else {
-        Some(format!("# note: path not found: {}", missing.join(", ")))
-    }
+  if missing.is_empty() {
+    None
+  } else {
+    Some(format!("# note: path not found: {}", missing.join(", ")))
+  }
 }
 
 /// Text response with the partial-miss note in front of it, if there is one.
 /// The four text-mode tools that accept a path list all say it this way.
 fn with_note(note: &Option<String>, out: String) -> CallResult {
-    match note {
-        Some(n) => CallResult::Text(format!("{}\n{}", n, out)),
-        None => CallResult::Text(out),
-    }
+  match note {
+    Some(n) => CallResult::Text(format!("{}\n{}", n, out)),
+    None => CallResult::Text(out),
+  }
 }
 
 /// JSON responses can't prepend a note without breaking parsers, and MCP
@@ -521,35 +528,35 @@ fn with_note(note: &Option<String>, out: String) -> CallResult {
 /// saw. No-op when everything resolved, keeping untouched payloads
 /// byte-identical to the CLI's.
 fn with_missing_paths(json: String, missing: &[String]) -> String {
-    if missing.is_empty() {
-        return json;
+  if missing.is_empty() {
+    return json;
+  }
+  match serde_json::from_str::<Value>(&json) {
+    Ok(mut doc) => {
+      doc["missing_paths"] = serde_json::json!(missing);
+      serde_json::to_string_pretty(&doc).unwrap_or(json)
     }
-    match serde_json::from_str::<Value>(&json) {
-        Ok(mut doc) => {
-            doc["missing_paths"] = serde_json::json!(missing);
-            serde_json::to_string_pretty(&doc).unwrap_or(json)
-        }
-        Err(_) => json,
-    }
+    Err(_) => json,
+  }
 }
 
 /// A resolved tool call, reduced to what the suggested call has to carry.
 struct DigestHintCall<'a> {
-    /// The paths as the caller sent them, including any that did not
-    /// resolve — dropping one would return an answer without the
-    /// `missing_paths` qualification the original carried.
-    requested_paths: &'a [PathBuf],
-    /// How many files the walk actually parsed, which is what decides
-    /// whether this was a multi-file answer at all.
-    files_inspected: usize,
-    glob: Option<&'a str>,
-    /// The cap in force, not the tool's default.
-    max_members: Option<usize>,
-    json: bool,
-    no_attrs: bool,
-    no_lines: bool,
-    /// Whether the call already renders the digest answer.
-    already_digest: bool,
+  /// The paths as the caller sent them, including any that did not
+  /// resolve — dropping one would return an answer without the
+  /// `missing_paths` qualification the original carried.
+  requested_paths: &'a [PathBuf],
+  /// How many files the walk actually parsed, which is what decides
+  /// whether this was a multi-file answer at all.
+  files_inspected: usize,
+  glob: Option<&'a str>,
+  /// The cap in force, not the tool's default.
+  max_members: Option<usize>,
+  json: bool,
+  no_attrs: bool,
+  no_lines: bool,
+  /// Whether the call already renders the digest answer.
+  already_digest: bool,
 }
 
 /// Message pointing an oversized directory answer at the cheaper tool call,
@@ -570,46 +577,46 @@ struct DigestHintCall<'a> {
 /// that named only a tool would answer a different question than the call
 /// it qualifies, exactly as the CLI's would if it dropped `--glob`.
 fn digest_hint(call: &DigestHintCall<'_>, payload: &str) -> Option<String> {
-    if !crate::map_hint_is_due(call.files_inspected, call.already_digest, payload.len()) {
-        return None;
-    }
-    // A path that is not UTF-8 cannot be spelled into JSON at all, and a
-    // suggestion naming a lossy substitute would point at nothing. Unlike
-    // the CLI there is no counted form to fall back to — and no way to reach
-    // this either, since these paths were parsed out of a JSON string and
-    // JSON strings are UTF-8.
-    let paths: Vec<&str> = call
-        .requested_paths
-        .iter()
-        .map(|p| p.to_str())
-        .collect::<Option<_>>()?;
-    let hint_cap = crate::defaults::HINT_MAX_MEMBERS;
-    let cap = call.max_members.map_or(hint_cap, |m| m.min(hint_cap));
-    let mut args = serde_json::Map::new();
-    // `paths` stays in whatever the list costs. It is the one field of the
-    // tool's arguments with no default, so an object without it is not a
-    // call an agent can send — and an object is exactly what an agent
-    // copies whole. The CLI can shorten its own hint because there the
-    // suggestion is prose the reader completes from a command line they
-    // still have in front of them.
-    args.insert("paths".into(), serde_json::json!(paths));
-    args.insert("detail".into(), serde_json::json!("names"));
-    args.insert("no_private".into(), serde_json::json!(true));
-    args.insert("no_fields".into(), serde_json::json!(true));
-    args.insert("max_members".into(), serde_json::json!(cap));
-    if let Some(glob) = call.glob {
-        args.insert("glob".into(), serde_json::json!(glob));
-    }
-    if call.no_attrs {
-        args.insert("no_attrs".into(), serde_json::json!(true));
-    }
-    if call.no_lines {
-        args.insert("no_lines".into(), serde_json::json!(true));
-    }
-    if call.json {
-        args.insert("json".into(), serde_json::json!(true));
-    }
-    Some(format!(
+  if !crate::map_hint_is_due(call.files_inspected, call.already_digest, payload.len()) {
+    return None;
+  }
+  // A path that is not UTF-8 cannot be spelled into JSON at all, and a
+  // suggestion naming a lossy substitute would point at nothing. Unlike
+  // the CLI there is no counted form to fall back to — and no way to reach
+  // this either, since these paths were parsed out of a JSON string and
+  // JSON strings are UTF-8.
+  let paths: Vec<&str> = call
+    .requested_paths
+    .iter()
+    .map(|p| p.to_str())
+    .collect::<Option<_>>()?;
+  let hint_cap = crate::defaults::HINT_MAX_MEMBERS;
+  let cap = call.max_members.map_or(hint_cap, |m| m.min(hint_cap));
+  let mut args = serde_json::Map::new();
+  // `paths` stays in whatever the list costs. It is the one field of the
+  // tool's arguments with no default, so an object without it is not a
+  // call an agent can send — and an object is exactly what an agent
+  // copies whole. The CLI can shorten its own hint because there the
+  // suggestion is prose the reader completes from a command line they
+  // still have in front of them.
+  args.insert("paths".into(), serde_json::json!(paths));
+  args.insert("detail".into(), serde_json::json!("names"));
+  args.insert("no_private".into(), serde_json::json!(true));
+  args.insert("no_fields".into(), serde_json::json!(true));
+  args.insert("max_members".into(), serde_json::json!(cap));
+  if let Some(glob) = call.glob {
+    args.insert("glob".into(), serde_json::json!(glob));
+  }
+  if call.no_attrs {
+    args.insert("no_attrs".into(), serde_json::json!(true));
+  }
+  if call.no_lines {
+    args.insert("no_lines".into(), serde_json::json!(true));
+  }
+  if call.json {
+    args.insert("json".into(), serde_json::json!(true));
+  }
+  Some(format!(
         "this was a multi-file answer ({} KB); the `map` tool with {} answers the same question in a fraction of the size",
         crate::kb_ceil(payload.len()),
         Value::Object(args),
@@ -618,7 +625,7 @@ fn digest_hint(call: &DigestHintCall<'_>, payload: &str) -> Option<String> {
 
 /// The same message as a `# note:`-style line, for the text responses.
 fn hint_line(hint: &Option<String>) -> Option<String> {
-    hint.as_ref().map(|h| format!("# hint: {}", h))
+  hint.as_ref().map(|h| format!("# hint: {}", h))
 }
 
 /// JSON response with the hint attached as a field.
@@ -630,574 +637,622 @@ fn hint_line(hint: &Option<String>) -> Option<String> {
 /// internal contradiction rather than a caller error. Debug builds and the
 /// test suite say so; a release build drops the hint rather than the answer.
 fn with_hint(json: String, hint: &Option<String>) -> String {
-    let Some(hint) = hint else {
-        return json;
-    };
-    match serde_json::from_str::<Value>(&json) {
-        Ok(mut doc) => {
-            doc["hint"] = serde_json::json!(hint);
-            serde_json::to_string_pretty(&doc).unwrap_or(json)
-        }
-        Err(e) => {
-            debug_assert!(false, "rendered payload is not valid JSON: {e}");
-            json
-        }
+  let Some(hint) = hint else {
+    return json;
+  };
+  match serde_json::from_str::<Value>(&json) {
+    Ok(mut doc) => {
+      doc["hint"] = serde_json::json!(hint);
+      serde_json::to_string_pretty(&doc).unwrap_or(json)
     }
+    Err(e) => {
+      debug_assert!(false, "rendered payload is not valid JSON: {e}");
+      json
+    }
+  }
 }
 
 /// Text response with each note that applies in front of it, in the order a
 /// reader needs them: what was missed, then what to do differently.
 fn with_notes(notes: &[&Option<String>], out: String) -> CallResult {
-    let mut prefix = String::new();
-    for note in notes.iter().filter_map(|n| n.as_ref()) {
-        prefix.push_str(note);
-        prefix.push('\n');
-    }
-    CallResult::Text(format!("{}{}", prefix, out))
+  let mut prefix = String::new();
+  for note in notes.iter().filter_map(|n| n.as_ref()) {
+    prefix.push_str(note);
+    prefix.push('\n');
+  }
+  CallResult::Text(format!("{}{}", prefix, out))
 }
 
 fn run_map(args: Value) -> CallResult {
-    let a: MapArgs = match serde_json::from_value(args) {
-        Ok(v) => v,
-        Err(e) => return CallResult::Error(format!("invalid arguments: {}", e)),
+  let a: MapArgs = match serde_json::from_value(args) {
+    Ok(v) => v,
+    Err(e) => return CallResult::Error(format!("invalid arguments: {}", e)),
+  };
+  // Missing inputs are a rejected call, not an empty answer (#33) —
+  // MCP has no stderr, so the distinction must ride the error channel.
+  let (paths, missing) = match crate::resolve_paths_for_mcp("map", &a.paths) {
+    Ok(pair) => pair,
+    Err(e) => return CallResult::Error(e),
+  };
+  let path_note = partial_note(&missing);
+  let detail = a.detail.as_deref().unwrap_or("full");
+  if !matches!(detail, "names" | "signatures" | "full") {
+    return CallResult::Error(format!(
+      "invalid detail level '{}': expected names|signatures|full",
+      detail
+    ));
+  }
+  let results = crate::walk_and_parse(&paths, a.glob.as_deref());
+  // Partial misses ride the text response (JSON responses stay pure).
+  let note = |out: String| with_note(&path_note, out);
+  let include_docs = detail == "full" && !a.no_docs;
+  let opts = MapOptions {
+    include_private: !a.no_private,
+    include_fields: !a.no_fields,
+    include_docs,
+    include_attributes: !a.no_attrs,
+    include_line_numbers: !a.no_lines,
+    max_doc_lines: crate::defaults::MAX_DOC_LINES,
+    max_members: a.max_members,
+  };
+  // The digest answer is the resolved axes, not the tool that was called:
+  // `map` asked for bare names with nothing private, no fields and a cap
+  // no looser than the preset's is the answer the hint would otherwise
+  // point at. The bound is the shared constant, not a literal: the CLI and
+  // this server are documented to share one decision, and a literal here
+  // is exactly what no `defaults` guard can see.
+  let already_digest = detail == "names"
+    && a.no_private
+    && a.no_fields
+    && a
+      .max_members
+      .is_some_and(|m| m <= crate::defaults::MAX_MEMBERS);
+  let hint_call = DigestHintCall {
+    requested_paths: &a.paths,
+    files_inspected: results.len(),
+    glob: a.glob.as_deref(),
+    max_members: a.max_members,
+    json: a.json,
+    no_attrs: a.no_attrs,
+    no_lines: a.no_lines,
+    already_digest,
+  };
+  if a.json {
+    // Measured before `missing_paths` is injected: the suggested call
+    // keeps every unresolved path, so metadata it cannot shrink must not
+    // be what pushes the answer over the bar.
+    let mapped = core::render_json_map(&results, &opts, true);
+    let hint = digest_hint(&hint_call, &mapped);
+    CallResult::Text(with_hint(with_missing_paths(mapped, &missing), &hint))
+  } else if detail == "names" {
+    let d_opts = DigestOptions {
+      include_private: !a.no_private,
+      include_fields: !a.no_fields,
+      include_attributes: !a.no_attrs,
+      include_line_numbers: !a.no_lines,
+      max_members_per_type: a.max_members.unwrap_or(usize::MAX),
+      max_heading_depth: crate::defaults::MAX_HEADING_DEPTH,
     };
-    // Missing inputs are a rejected call, not an empty answer (#33) —
-    // MCP has no stderr, so the distinction must ride the error channel.
-    let (paths, missing) = match crate::resolve_paths_for_mcp("map", &a.paths) {
-        Ok(pair) => pair,
-        Err(e) => return CallResult::Error(e),
-    };
-    let path_note = partial_note(&missing);
-    let detail = a.detail.as_deref().unwrap_or("full");
-    if !matches!(detail, "names" | "signatures" | "full") {
-        return CallResult::Error(format!(
-            "invalid detail level '{}': expected names|signatures|full",
-            detail
-        ));
-    }
-    let results = crate::walk_and_parse(&paths, a.glob.as_deref());
-    // Partial misses ride the text response (JSON responses stay pure).
-    let note = |out: String| with_note(&path_note, out);
-    let include_docs = detail == "full" && !a.no_docs;
-    let opts = MapOptions {
-        include_private: !a.no_private,
-        include_fields: !a.no_fields,
-        include_docs,
-        include_attributes: !a.no_attrs,
-        include_line_numbers: !a.no_lines,
-        max_doc_lines: crate::defaults::MAX_DOC_LINES,
-        max_members: a.max_members,
-    };
-    // The digest answer is the resolved axes, not the tool that was called:
-    // `map` asked for bare names with nothing private, no fields and a cap
-    // no looser than the preset's is the answer the hint would otherwise
-    // point at. The bound is the shared constant, not a literal: the CLI and
-    // this server are documented to share one decision, and a literal here
-    // is exactly what no `defaults` guard can see.
-    let already_digest = detail == "names"
-        && a.no_private
-        && a.no_fields
-        && a.max_members
-            .is_some_and(|m| m <= crate::defaults::MAX_MEMBERS);
-    let hint_call = DigestHintCall {
-        requested_paths: &a.paths,
-        files_inspected: results.len(),
-        glob: a.glob.as_deref(),
-        max_members: a.max_members,
-        json: a.json,
-        no_attrs: a.no_attrs,
-        no_lines: a.no_lines,
-        already_digest,
-    };
-    if a.json {
-        // Measured before `missing_paths` is injected: the suggested call
-        // keeps every unresolved path, so metadata it cannot shrink must not
-        // be what pushes the answer over the bar.
-        let mapped = core::render_json_map(&results, &opts, true);
-        let hint = digest_hint(&hint_call, &mapped);
-        CallResult::Text(with_hint(with_missing_paths(mapped, &missing), &hint))
-    } else if detail == "names" {
-        let d_opts = DigestOptions {
-            include_private: !a.no_private,
-            include_fields: !a.no_fields,
-            include_attributes: !a.no_attrs,
-            include_line_numbers: !a.no_lines,
-            max_members_per_type: a.max_members.unwrap_or(usize::MAX),
-            max_heading_depth: crate::defaults::MAX_HEADING_DEPTH,
-        };
-        let root = if paths.len() == 1 && paths[0].is_dir() {
-            Some(paths[0].as_path())
-        } else {
-            None
-        };
-        let out = core::render_digest(&results, &d_opts, root);
-        let hint = hint_line(&digest_hint(&hint_call, &out));
-        with_notes(&[&path_note, &hint], out)
-    } else if results.is_empty() {
-        // Same empty-answer message as the CLI (issue #33): the paths
-        // exist but contain nothing parseable — say so rather than return
-        // an empty string.
-        note("# 0 parseable file(s) in the given path(s)".to_string())
+    let root = if paths.len() == 1 && paths[0].is_dir() {
+      Some(paths[0].as_path())
     } else {
-        let mut out = String::new();
-        for res in &results {
-            out.push_str(&core::render_map(res, &opts));
-            out.push('\n');
-        }
-        let hint = hint_line(&digest_hint(&hint_call, &out));
-        with_notes(&[&path_note, &hint], out)
+      None
+    };
+    let out = core::render_digest(&results, &d_opts, root);
+    let hint = hint_line(&digest_hint(&hint_call, &out));
+    with_notes(&[&path_note, &hint], out)
+  } else if results.is_empty() {
+    // Same empty-answer message as the CLI (issue #33): the paths
+    // exist but contain nothing parseable — say so rather than return
+    // an empty string.
+    note("# 0 parseable file(s) in the given path(s)".to_string())
+  } else {
+    let mut out = String::new();
+    for res in &results {
+      out.push_str(&core::render_map(res, &opts));
+      out.push('\n');
     }
+    let hint = hint_line(&digest_hint(&hint_call, &out));
+    with_notes(&[&path_note, &hint], out)
+  }
 }
 
 #[derive(Deserialize, Default)]
 struct DigestArgs {
-    paths: Vec<PathBuf>,
-    #[serde(default)] include_private: bool,
-    #[serde(default)] include_fields: bool,
-    #[serde(default = "crate::defaults::max_members")] max_members: usize,
-    #[serde(default)] glob: Option<String>,
-    #[serde(default)] json: bool,
+  paths: Vec<PathBuf>,
+  #[serde(default)]
+  include_private: bool,
+  #[serde(default)]
+  include_fields: bool,
+  #[serde(default = "crate::defaults::max_members")]
+  max_members: usize,
+  #[serde(default)]
+  glob: Option<String>,
+  #[serde(default)]
+  json: bool,
 }
 
 fn run_digest(args: Value) -> CallResult {
-    let a: DigestArgs = match serde_json::from_value(args) {
-        Ok(v) => v,
-        Err(e) => return CallResult::Error(format!("invalid arguments: {}", e)),
+  let a: DigestArgs = match serde_json::from_value(args) {
+    Ok(v) => v,
+    Err(e) => return CallResult::Error(format!("invalid arguments: {}", e)),
+  };
+  let (paths, missing) = match crate::resolve_paths_for_mcp("digest", &a.paths) {
+    Ok(pair) => pair,
+    Err(e) => return CallResult::Error(e),
+  };
+  let path_note = partial_note(&missing);
+  let results = crate::walk_and_parse(&paths, a.glob.as_deref());
+  // Explicit arguments override the tool's own defaults, so calling
+  // `digest` is not by itself the digest answer: with private members,
+  // fields, or a loosened cap it renders what `map` renders.
+  let already_digest =
+    !a.include_private && !a.include_fields && a.max_members <= crate::defaults::MAX_MEMBERS;
+  let hint_call = DigestHintCall {
+    requested_paths: &a.paths,
+    files_inspected: results.len(),
+    glob: a.glob.as_deref(),
+    max_members: Some(a.max_members),
+    json: a.json,
+    // The `digest` tool has no display filters to preserve.
+    no_attrs: false,
+    no_lines: false,
+    already_digest,
+  };
+  if a.json {
+    // Mirrors the CLI's digest preset: names-level detail sheds doc
+    // comments from the JSON payload too (issue #37).
+    let opts = MapOptions {
+      include_private: a.include_private,
+      include_fields: a.include_fields,
+      include_docs: false,
+      include_attributes: true,
+      include_line_numbers: true,
+      max_doc_lines: crate::defaults::MAX_DOC_LINES,
+      max_members: Some(a.max_members),
     };
-    let (paths, missing) = match crate::resolve_paths_for_mcp("digest", &a.paths) {
-        Ok(pair) => pair,
-        Err(e) => return CallResult::Error(e),
+    // Measured before `missing_paths` is injected: the suggested call
+    // keeps every unresolved path, so metadata it cannot shrink must not
+    // be what pushes the answer over the bar.
+    let mapped = core::render_json_map(&results, &opts, true);
+    let hint = digest_hint(&hint_call, &mapped);
+    CallResult::Text(with_hint(with_missing_paths(mapped, &missing), &hint))
+  } else {
+    let opts = DigestOptions {
+      include_private: a.include_private,
+      include_fields: a.include_fields,
+      max_members_per_type: a.max_members,
+      max_heading_depth: crate::defaults::MAX_HEADING_DEPTH,
+      ..DigestOptions::default()
     };
-    let path_note = partial_note(&missing);
-    let results = crate::walk_and_parse(&paths, a.glob.as_deref());
-    // Explicit arguments override the tool's own defaults, so calling
-    // `digest` is not by itself the digest answer: with private members,
-    // fields, or a loosened cap it renders what `map` renders.
-    let already_digest =
-        !a.include_private && !a.include_fields && a.max_members <= crate::defaults::MAX_MEMBERS;
-    let hint_call = DigestHintCall {
-        requested_paths: &a.paths,
-        files_inspected: results.len(),
-        glob: a.glob.as_deref(),
-        max_members: Some(a.max_members),
-        json: a.json,
-        // The `digest` tool has no display filters to preserve.
-        no_attrs: false,
-        no_lines: false,
-        already_digest,
-    };
-    if a.json {
-        // Mirrors the CLI's digest preset: names-level detail sheds doc
-        // comments from the JSON payload too (issue #37).
-        let opts = MapOptions {
-            include_private: a.include_private,
-            include_fields: a.include_fields,
-            include_docs: false,
-            include_attributes: true,
-            include_line_numbers: true,
-            max_doc_lines: crate::defaults::MAX_DOC_LINES,
-            max_members: Some(a.max_members),
-        };
-        // Measured before `missing_paths` is injected: the suggested call
-        // keeps every unresolved path, so metadata it cannot shrink must not
-        // be what pushes the answer over the bar.
-        let mapped = core::render_json_map(&results, &opts, true);
-        let hint = digest_hint(&hint_call, &mapped);
-        CallResult::Text(with_hint(with_missing_paths(mapped, &missing), &hint))
+    let root = if paths.len() == 1 && paths[0].is_dir() {
+      Some(paths[0].as_path())
     } else {
-        let opts = DigestOptions {
-            include_private: a.include_private,
-            include_fields: a.include_fields,
-            max_members_per_type: a.max_members,
-            max_heading_depth: crate::defaults::MAX_HEADING_DEPTH,
-            ..DigestOptions::default()
-        };
-        let root = if paths.len() == 1 && paths[0].is_dir() {
-            Some(paths[0].as_path())
-        } else {
-            None
-        };
-        let out = core::render_digest(&results, &opts, root);
-        let hint = hint_line(&digest_hint(&hint_call, &out));
-        with_notes(&[&path_note, &hint], out)
-    }
+      None
+    };
+    let out = core::render_digest(&results, &opts, root);
+    let hint = hint_line(&digest_hint(&hint_call, &out));
+    with_notes(&[&path_note, &hint], out)
+  }
 }
 
 #[derive(Deserialize)]
 struct ShowArgs {
-    /// A file, a directory, or a glob — the same three target kinds the CLI
-    /// accepts. Kept as one field so the tool schema is unchanged.
-    path: PathBuf,
-    symbols: Vec<String>,
-    #[serde(default = "crate::defaults::show_limit")]
-    limit: usize,
-    #[serde(default)] json: bool,
+  /// A file, a directory, or a glob — the same three target kinds the CLI
+  /// accepts. Kept as one field so the tool schema is unchanged.
+  path: PathBuf,
+  symbols: Vec<String>,
+  #[serde(default = "crate::defaults::show_limit")]
+  limit: usize,
+  #[serde(default)]
+  json: bool,
 }
 
 fn run_show(args: Value) -> CallResult {
-    let a: ShowArgs = match serde_json::from_value(args) {
-        Ok(v) => v,
-        Err(e) => return CallResult::Error(format!("invalid arguments: {}", e)),
-    };
-    if a.symbols.is_empty() {
-        return CallResult::Error("`symbols` must not be empty".into());
+  let a: ShowArgs = match serde_json::from_value(args) {
+    Ok(v) => v,
+    Err(e) => return CallResult::Error(format!("invalid arguments: {}", e)),
+  };
+  if a.symbols.is_empty() {
+    return CallResult::Error("`symbols` must not be empty".into());
+  }
+  if !crate::show::is_target(&a.path) {
+    // Two different failures, and the caller's next move differs: a file
+    // that exists but has no adapter is a bad argument with nothing to
+    // repair, while an absent path is a path error that a repair hint can
+    // often fix outright. Same split the CLI makes, same wording.
+    if a.path.exists() {
+      return CallResult::Error(format!(
+        "unsupported file type for `show`: {}",
+        a.path.display()
+      ));
     }
-    if !crate::show::is_target(&a.path) {
-        // Two different failures, and the caller's next move differs: a file
-        // that exists but has no adapter is a bad argument with nothing to
-        // repair, while an absent path is a path error that a repair hint can
-        // often fix outright. Same split the CLI makes, same wording.
-        if a.path.exists() {
-            return CallResult::Error(format!(
-                "unsupported file type for `show`: {}",
-                a.path.display()
-            ));
-        }
-        let mut msg = format!("path not found: {}", a.path.display());
-        if let Some(hint) = crate::path_repair::hints(&[a.path.display().to_string()]) {
-            msg.push('\n');
-            msg.push_str(&hint);
-        }
-        return CallResult::Error(msg);
+    let mut msg = format!("path not found: {}", a.path.display());
+    if let Some(hint) = crate::path_repair::hints(&[a.path.display().to_string()]) {
+      msg.push('\n');
+      msg.push_str(&hint);
     }
-    let targets = vec![a.path.clone()];
-    let results = crate::show::collect(&targets);
-    if results.is_empty() {
-        return CallResult::Error(format!(
-            "no parseable file at: {} (no file of a supported language, not a missing symbol)",
-            a.path.display()
-        ));
-    }
+    return CallResult::Error(msg);
+  }
+  let targets = vec![a.path.clone()];
+  let results = crate::show::collect(&targets);
+  if results.is_empty() {
+    return CallResult::Error(format!(
+      "no parseable file at: {} (no file of a supported language, not a missing symbol)",
+      a.path.display()
+    ));
+  }
 
-    // Same engine as the CLI, so the two cannot drift on what a target is or
-    // on how a capped answer reports its total.
-    let multi = !a.path.is_file();
-    let outcome = crate::show::resolve(results, &a.symbols, a.limit, multi);
-    if outcome.total == 0 {
-        return CallResult::Error(format!(
-            "no symbol matching '{}' in {} file(s) searched under {}",
-            a.symbols.join(", "),
-            outcome.files_scanned,
-            a.path.display()
-        ));
-    }
+  // Same engine as the CLI, so the two cannot drift on what a target is or
+  // on how a capped answer reports its total.
+  let multi = !a.path.is_file();
+  let outcome = crate::show::resolve(results, &a.symbols, a.limit, multi);
+  if outcome.total == 0 {
+    return CallResult::Error(format!(
+      "no symbol matching '{}' in {} file(s) searched under {}",
+      a.symbols.join(", "),
+      outcome.files_scanned,
+      a.path.display()
+    ));
+  }
 
-    if a.json {
-        CallResult::Text(crate::show::render_json(&outcome, true))
-    } else {
-        // The client has no stderr channel, so the note that would be a
-        // stderr line on the CLI is prepended to the text instead.
-        let mut out = String::new();
-        if !outcome.unmatched.is_empty() {
-            out.push_str(&format!(
-                "# note: no symbol matching '{}' in {} file(s) searched (other symbol(s) shown)\n",
-                outcome.unmatched.join(", "),
-                outcome.files_scanned
-            ));
-        }
-        out.push_str(&crate::show::render_text(&outcome));
-        CallResult::Text(out)
+  if a.json {
+    CallResult::Text(crate::show::render_json(&outcome, true))
+  } else {
+    // The client has no stderr channel, so the note that would be a
+    // stderr line on the CLI is prepended to the text instead.
+    let mut out = String::new();
+    if !outcome.unmatched.is_empty() {
+      out.push_str(&format!(
+        "# note: no symbol matching '{}' in {} file(s) searched (other symbol(s) shown)\n",
+        outcome.unmatched.join(", "),
+        outcome.files_scanned
+      ));
     }
+    out.push_str(&crate::show::render_text(&outcome));
+    CallResult::Text(out)
+  }
 }
 
 #[derive(Deserialize)]
 struct ImplementsArgs {
-    target: String,
-    paths: Vec<PathBuf>,
-    #[serde(default)] direct: bool,
-    #[serde(default)] json: bool,
+  target: String,
+  paths: Vec<PathBuf>,
+  #[serde(default)]
+  direct: bool,
+  #[serde(default)]
+  json: bool,
 }
 
 #[derive(Deserialize, Default)]
 struct SurfaceArgs {
-    #[serde(default = "crate::defaults::root")]
-    path: PathBuf,
-    #[serde(default)] tree: bool,
-    #[serde(default)] include_chain: bool,
-    #[serde(default = "crate::defaults::surface_max_depth")] max_depth: usize,
-    #[serde(default)] include_private: bool,
-    #[serde(default)] lang: Option<String>,
-    #[serde(default)] json: bool,
+  #[serde(default = "crate::defaults::root")]
+  path: PathBuf,
+  #[serde(default)]
+  tree: bool,
+  #[serde(default)]
+  include_chain: bool,
+  #[serde(default = "crate::defaults::surface_max_depth")]
+  max_depth: usize,
+  #[serde(default)]
+  include_private: bool,
+  #[serde(default)]
+  lang: Option<String>,
+  #[serde(default)]
+  json: bool,
 }
 
 fn run_surface(args: Value) -> CallResult {
-    let a: SurfaceArgs = match serde_json::from_value(args) {
-        Ok(v) => v,
-        Err(e) => return CallResult::Error(format!("invalid arguments: {}", e)),
-    };
-    let lang_override = match a.lang {
-        Some(s) => match crate::surface::LangOverride::parse(&s) {
-            Some(l) => Some(l),
-            None => return CallResult::Error(format!("unknown lang: {}", s)),
-        },
-        None => None,
-    };
-    let output = if a.json {
-        crate::surface::OutputMode::Json { compact: false }
-    } else if a.tree {
-        crate::surface::OutputMode::Tree
-    } else {
-        crate::surface::OutputMode::Flat
-    };
-    let opts = crate::surface::SurfaceOptions {
-        output,
-        include_private: a.include_private,
-        max_depth: a.max_depth,
-        include_chain: a.include_chain,
-        lang_override,
-    };
-    match crate::surface::resolve_surface(&a.path, &opts) {
-        Ok(entries) => {
-            CallResult::Text(crate::surface::render::render(&entries, output, a.include_chain))
-        }
-        Err(e) => CallResult::Error(format!("{e}")),
-    }
+  let a: SurfaceArgs = match serde_json::from_value(args) {
+    Ok(v) => v,
+    Err(e) => return CallResult::Error(format!("invalid arguments: {}", e)),
+  };
+  let lang_override = match a.lang {
+    Some(s) => match crate::surface::LangOverride::parse(&s) {
+      Some(l) => Some(l),
+      None => return CallResult::Error(format!("unknown lang: {}", s)),
+    },
+    None => None,
+  };
+  let output = if a.json {
+    crate::surface::OutputMode::Json { compact: false }
+  } else if a.tree {
+    crate::surface::OutputMode::Tree
+  } else {
+    crate::surface::OutputMode::Flat
+  };
+  let opts = crate::surface::SurfaceOptions {
+    output,
+    include_private: a.include_private,
+    max_depth: a.max_depth,
+    include_chain: a.include_chain,
+    lang_override,
+  };
+  match crate::surface::resolve_surface(&a.path, &opts) {
+    Ok(entries) => CallResult::Text(crate::surface::render::render(
+      &entries,
+      output,
+      a.include_chain,
+    )),
+    Err(e) => CallResult::Error(format!("{e}")),
+  }
 }
 
 fn run_implements(args: Value) -> CallResult {
-    let a: ImplementsArgs = match serde_json::from_value(args) {
-        Ok(v) => v,
-        Err(e) => return CallResult::Error(format!("invalid arguments: {}", e)),
-    };
-    let (paths, missing) = match crate::resolve_paths_for_mcp("implements", &a.paths) {
-        Ok(pair) => pair,
-        Err(e) => return CallResult::Error(e),
-    };
-    let path_note = partial_note(&missing);
-    let results = crate::walk_and_parse(&paths, None);
-    let transitive = !a.direct;
-    let matches = core::find_implementations(&results, &a.target, transitive);
+  let a: ImplementsArgs = match serde_json::from_value(args) {
+    Ok(v) => v,
+    Err(e) => return CallResult::Error(format!("invalid arguments: {}", e)),
+  };
+  let (paths, missing) = match crate::resolve_paths_for_mcp("implements", &a.paths) {
+    Ok(pair) => pair,
+    Err(e) => return CallResult::Error(e),
+  };
+  let path_note = partial_note(&missing);
+  let results = crate::walk_and_parse(&paths, None);
+  let transitive = !a.direct;
+  let matches = core::find_implementations(&results, &a.target, transitive);
 
-    // Same gate as the CLI (#36): a 0-match answer is only reported for
-    // types that exist — "no such type anywhere" is a rejected call, and
-    // MCP's one error channel is `isError`.
-    if matches.is_empty() && !core::implements_target_exists(&results, &a.target) {
-        return CallResult::Error(format!(
-            "no type named '{}' in the given path(s); check the spelling or widen the search path",
-            a.target
-        ));
-    }
+  // Same gate as the CLI (#36): a 0-match answer is only reported for
+  // types that exist — "no such type anywhere" is a rejected call, and
+  // MCP's one error channel is `isError`.
+  if matches.is_empty() && !core::implements_target_exists(&results, &a.target) {
+    return CallResult::Error(format!(
+      "no type named '{}' in the given path(s); check the spelling or widen the search path",
+      a.target
+    ));
+  }
 
-    if a.json {
-        CallResult::Text(with_missing_paths(
-            core::render_json_implements(&a.target, &matches, transitive, true),
-            &missing,
-        ))
-    } else {
-        let mut out = String::new();
-        out.push_str(&format!(
-            "# {} match(es) for '{}'{}:\n",
-            matches.len(),
-            a.target,
-            if transitive { " (incl. transitive)" } else { "" }
-        ));
-        for m in &matches {
-            let via = if m.via.is_empty() {
-                String::new()
-            } else {
-                format!(" [via {}]", m.via.last().unwrap())
-            };
-            out.push_str(&format!("{}:{}  {} {}{}\n", m.path, m.start_line, m.kind, m.name, via));
-        }
-        with_note(&path_note, out)
+  if a.json {
+    CallResult::Text(with_missing_paths(
+      core::render_json_implements(&a.target, &matches, transitive, true),
+      &missing,
+    ))
+  } else {
+    let mut out = String::new();
+    out.push_str(&format!(
+      "# {} match(es) for '{}'{}:\n",
+      matches.len(),
+      a.target,
+      if transitive {
+        " (incl. transitive)"
+      } else {
+        ""
+      }
+    ));
+    for m in &matches {
+      let via = if m.via.is_empty() {
+        String::new()
+      } else {
+        format!(" [via {}]", m.via.last().unwrap())
+      };
+      out.push_str(&format!(
+        "{}:{}  {} {}{}\n",
+        m.path, m.start_line, m.kind, m.name, via
+      ));
     }
+    with_note(&path_note, out)
+  }
 }
 
 // ---- deps / reverse-deps / cycles / graph ----
 
 #[derive(Deserialize, Default)]
 struct DepsArgs {
-    file: PathBuf,
-    #[serde(default = "crate::defaults::file_depth")] depth: usize,
-    #[serde(default)] hide_external: bool,
-    #[serde(default)] rebuild: bool,
-    #[serde(default)] json: bool,
+  file: PathBuf,
+  #[serde(default = "crate::defaults::file_depth")]
+  depth: usize,
+  #[serde(default)]
+  hide_external: bool,
+  #[serde(default)]
+  rebuild: bool,
+  #[serde(default)]
+  json: bool,
 }
 
 #[derive(Deserialize, Default)]
 struct ReverseDepsArgs {
-    file: PathBuf,
-    #[serde(default = "crate::defaults::file_depth")] depth: usize,
-    #[serde(default = "crate::defaults::limit")] limit: usize,
-    #[serde(default)] rebuild: bool,
-    #[serde(default)] json: bool,
+  file: PathBuf,
+  #[serde(default = "crate::defaults::file_depth")]
+  depth: usize,
+  #[serde(default = "crate::defaults::limit")]
+  limit: usize,
+  #[serde(default)]
+  rebuild: bool,
+  #[serde(default)]
+  json: bool,
 }
 
 #[derive(Deserialize, Default)]
 struct CyclesArgs {
-    #[serde(default = "crate::defaults::root")] path: PathBuf,
-    #[serde(default = "crate::defaults::min_size")] min_size: usize,
-    #[serde(default)] include_refs: bool,
-    #[serde(default)] rebuild: bool,
-    #[serde(default)] json: bool,
+  #[serde(default = "crate::defaults::root")]
+  path: PathBuf,
+  #[serde(default = "crate::defaults::min_size")]
+  min_size: usize,
+  #[serde(default)]
+  include_refs: bool,
+  #[serde(default)]
+  rebuild: bool,
+  #[serde(default)]
+  json: bool,
 }
 
 #[derive(Deserialize, Default)]
 struct GraphArgs {
-    #[serde(default = "crate::defaults::root")] path: PathBuf,
-    #[serde(default)] json: bool,
-    #[serde(default)] hide_external: bool,
-    #[serde(default)] rebuild: bool,
+  #[serde(default = "crate::defaults::root")]
+  path: PathBuf,
+  #[serde(default)]
+  json: bool,
+  #[serde(default)]
+  hide_external: bool,
+  #[serde(default)]
+  rebuild: bool,
 }
 
 fn run_deps(mut args: Value) -> CallResult {
-    translate_renamed_bool(&mut args, "external", "hide_external");
-    let a: DepsArgs = match serde_json::from_value(args) {
-        Ok(v) => v,
-        Err(e) => return CallResult::Error(format!("invalid arguments: {}", e)),
-    };
-    let root = match crate::project_root::find_root_for(&a.file) {
-        Ok(r) => r,
-        Err(e) => return CallResult::Error(e),
-    };
-    let unified = if a.rebuild {
-        crate::graph_cache::shared::rebuild(&root)
-    } else {
-        crate::graph_cache::shared::get_or_init(&root)
-    };
-    let graph = match unified.map(|u| u.deps.clone()) {
-        Ok(g) => g,
-        Err(e) => return CallResult::Error(e.to_string()),
-    };
-    let canon = match a.file.canonicalize() {
-        Ok(c) => c,
-        Err(e) => return CallResult::Error(format!("cannot resolve {}: {}", a.file.display(), e)),
-    };
-    let depth = a.depth.max(1);
-    let walk = crate::deps::traverse::forward_info(&graph, &canon, depth);
-    if a.json {
-        CallResult::Text(crate::deps::render::render_deps_json(
-            &graph,
-            &canon,
-            &walk.hits,
-            walk.frontier_truncated,
-            !a.hide_external,
-            true,
-        ))
-    } else {
-        // MCP has no stderr channel, so the note the CLI prints there is
-        // prepended to the response text instead (issue #32).
-        CallResult::Text(format!(
-            "{}{}",
-            frontier_note_prefix("deps", depth, walk.frontier_truncated),
-            crate::deps::render::render_deps_text(&graph, &canon, &walk.hits, !a.hide_external)
-        ))
-    }
+  translate_renamed_bool(&mut args, "external", "hide_external");
+  let a: DepsArgs = match serde_json::from_value(args) {
+    Ok(v) => v,
+    Err(e) => return CallResult::Error(format!("invalid arguments: {}", e)),
+  };
+  let root = match crate::project_root::find_root_for(&a.file) {
+    Ok(r) => r,
+    Err(e) => return CallResult::Error(e),
+  };
+  let unified = if a.rebuild {
+    crate::graph_cache::shared::rebuild(&root)
+  } else {
+    crate::graph_cache::shared::get_or_init(&root)
+  };
+  let graph = match unified.map(|u| u.deps.clone()) {
+    Ok(g) => g,
+    Err(e) => return CallResult::Error(e.to_string()),
+  };
+  let canon = match a.file.canonicalize() {
+    Ok(c) => c,
+    Err(e) => return CallResult::Error(format!("cannot resolve {}: {}", a.file.display(), e)),
+  };
+  let depth = a.depth.max(1);
+  let walk = crate::deps::traverse::forward_info(&graph, &canon, depth);
+  if a.json {
+    CallResult::Text(crate::deps::render::render_deps_json(
+      &graph,
+      &canon,
+      &walk.hits,
+      walk.frontier_truncated,
+      !a.hide_external,
+      true,
+    ))
+  } else {
+    // MCP has no stderr channel, so the note the CLI prints there is
+    // prepended to the response text instead (issue #32).
+    CallResult::Text(format!(
+      "{}{}",
+      frontier_note_prefix("deps", depth, walk.frontier_truncated),
+      crate::deps::render::render_deps_text(&graph, &canon, &walk.hits, !a.hide_external)
+    ))
+  }
 }
 
 /// The shared frontier note as a response-text prefix (empty when the walk
 /// ran to the end of the graph). MCP's single channel is the response body.
 fn frontier_note_prefix(command: &str, depth: usize, frontier_truncated: bool) -> String {
-    crate::deps::render::frontier_note(command, depth, frontier_truncated)
-        .map(|n| format!("{n}\n"))
-        .unwrap_or_default()
+  crate::deps::render::frontier_note(command, depth, frontier_truncated)
+    .map(|n| format!("{n}\n"))
+    .unwrap_or_default()
 }
 
 fn run_reverse_deps(args: Value) -> CallResult {
-    let a: ReverseDepsArgs = match serde_json::from_value(args) {
-        Ok(v) => v,
-        Err(e) => return CallResult::Error(format!("invalid arguments: {}", e)),
-    };
-    let root = match crate::project_root::find_root_for(&a.file) {
-        Ok(r) => r,
-        Err(e) => return CallResult::Error(e),
-    };
-    let unified = if a.rebuild {
-        crate::graph_cache::shared::rebuild(&root)
-    } else {
-        crate::graph_cache::shared::get_or_init(&root)
-    };
-    let graph = match unified.map(|u| u.deps.clone()) {
-        Ok(g) => g,
-        Err(e) => return CallResult::Error(e.to_string()),
-    };
-    let canon = match a.file.canonicalize() {
-        Ok(c) => c,
-        Err(e) => return CallResult::Error(format!("cannot resolve {}: {}", a.file.display(), e)),
-    };
-    // Walk unbounded so the output reports the true total; `limit` trims
-    // the display (issue #32).
-    let depth = a.depth.max(1);
-    let walk =
-        crate::deps::traverse::reverse_info(&graph, &canon, depth, |_| true);
-    let mut hits = walk.hits;
-    let total = hits.len();
-    if hits.len() > a.limit {
-        hits.truncate(a.limit);
-    }
-    if a.json {
-        CallResult::Text(crate::deps::render::render_reverse_deps_json(
-            &graph,
-            &canon,
-            &hits,
-            total,
-            walk.frontier_truncated,
-            true,
-        ))
-    } else {
-        CallResult::Text(format!(
-            "{}{}",
-            frontier_note_prefix("reverse-deps", depth, walk.frontier_truncated),
-            crate::deps::render::render_reverse_deps_text(&graph, &canon, &hits, total, crate::deps::render::depth_cutoff(depth, walk.frontier_truncated))
-        ))
-    }
+  let a: ReverseDepsArgs = match serde_json::from_value(args) {
+    Ok(v) => v,
+    Err(e) => return CallResult::Error(format!("invalid arguments: {}", e)),
+  };
+  let root = match crate::project_root::find_root_for(&a.file) {
+    Ok(r) => r,
+    Err(e) => return CallResult::Error(e),
+  };
+  let unified = if a.rebuild {
+    crate::graph_cache::shared::rebuild(&root)
+  } else {
+    crate::graph_cache::shared::get_or_init(&root)
+  };
+  let graph = match unified.map(|u| u.deps.clone()) {
+    Ok(g) => g,
+    Err(e) => return CallResult::Error(e.to_string()),
+  };
+  let canon = match a.file.canonicalize() {
+    Ok(c) => c,
+    Err(e) => return CallResult::Error(format!("cannot resolve {}: {}", a.file.display(), e)),
+  };
+  // Walk unbounded so the output reports the true total; `limit` trims
+  // the display (issue #32).
+  let depth = a.depth.max(1);
+  let walk = crate::deps::traverse::reverse_info(&graph, &canon, depth, |_| true);
+  let mut hits = walk.hits;
+  let total = hits.len();
+  if hits.len() > a.limit {
+    hits.truncate(a.limit);
+  }
+  if a.json {
+    CallResult::Text(crate::deps::render::render_reverse_deps_json(
+      &graph,
+      &canon,
+      &hits,
+      total,
+      walk.frontier_truncated,
+      true,
+    ))
+  } else {
+    CallResult::Text(format!(
+      "{}{}",
+      frontier_note_prefix("reverse-deps", depth, walk.frontier_truncated),
+      crate::deps::render::render_reverse_deps_text(
+        &graph,
+        &canon,
+        &hits,
+        total,
+        crate::deps::render::depth_cutoff(depth, walk.frontier_truncated)
+      )
+    ))
+  }
 }
 
 fn run_cycles(args: Value) -> CallResult {
-    let a: CyclesArgs = match serde_json::from_value(args) {
-        Ok(v) => v,
-        Err(e) => return CallResult::Error(format!("invalid arguments: {}", e)),
-    };
-    let root = match a.path.canonicalize() {
-        Ok(r) => r,
-        Err(e) => return CallResult::Error(format!("cannot resolve {}: {}", a.path.display(), e)),
-    };
-    let unified = if a.rebuild {
-        crate::graph_cache::shared::rebuild(&root)
-    } else {
-        crate::graph_cache::shared::get_or_init(&root)
-    };
-    let graph = match unified.map(|u| u.deps.clone()) {
-        Ok(g) => g,
-        Err(e) => return CallResult::Error(e.to_string()),
-    };
-    let report = crate::deps::scc::report(&graph, a.min_size, a.include_refs, |_| true);
-    if a.json {
-        CallResult::Text(crate::deps::render::render_cycles_json(&graph, &report, true))
-    } else {
-        let note = crate::deps::render::ref_cycles_note(&report);
-        with_note(
-            &note,
-            crate::deps::render::render_cycles_text(&graph, &report.cycles),
-        )
-    }
+  let a: CyclesArgs = match serde_json::from_value(args) {
+    Ok(v) => v,
+    Err(e) => return CallResult::Error(format!("invalid arguments: {}", e)),
+  };
+  let root = match a.path.canonicalize() {
+    Ok(r) => r,
+    Err(e) => return CallResult::Error(format!("cannot resolve {}: {}", a.path.display(), e)),
+  };
+  let unified = if a.rebuild {
+    crate::graph_cache::shared::rebuild(&root)
+  } else {
+    crate::graph_cache::shared::get_or_init(&root)
+  };
+  let graph = match unified.map(|u| u.deps.clone()) {
+    Ok(g) => g,
+    Err(e) => return CallResult::Error(e.to_string()),
+  };
+  let report = crate::deps::scc::report(&graph, a.min_size, a.include_refs, |_| true);
+  if a.json {
+    CallResult::Text(crate::deps::render::render_cycles_json(
+      &graph, &report, true,
+    ))
+  } else {
+    let note = crate::deps::render::ref_cycles_note(&report);
+    with_note(
+      &note,
+      crate::deps::render::render_cycles_text(&graph, &report.cycles),
+    )
+  }
 }
 
 fn run_graph(mut args: Value) -> CallResult {
-    translate_renamed_bool(&mut args, "include_external", "hide_external");
-    let a: GraphArgs = match serde_json::from_value(args) {
-        Ok(v) => v,
-        Err(e) => return CallResult::Error(format!("invalid arguments: {}", e)),
-    };
-    let root = match a.path.canonicalize() {
-        Ok(r) => r,
-        Err(e) => return CallResult::Error(format!("cannot resolve {}: {}", a.path.display(), e)),
-    };
-    let unified = if a.rebuild {
-        crate::graph_cache::shared::rebuild(&root)
-    } else {
-        crate::graph_cache::shared::get_or_init(&root)
-    };
-    let graph = match unified.map(|u| u.deps.clone()) {
-        Ok(g) => g,
-        Err(e) => return CallResult::Error(e.to_string()),
-    };
-    let body = if a.json {
-        crate::deps::render::render_graph_json(&graph, !a.hide_external, true)
-    } else {
-        crate::deps::render::render_graph_text(&graph, !a.hide_external)
-    };
-    CallResult::Text(body)
+  translate_renamed_bool(&mut args, "include_external", "hide_external");
+  let a: GraphArgs = match serde_json::from_value(args) {
+    Ok(v) => v,
+    Err(e) => return CallResult::Error(format!("invalid arguments: {}", e)),
+  };
+  let root = match a.path.canonicalize() {
+    Ok(r) => r,
+    Err(e) => return CallResult::Error(format!("cannot resolve {}: {}", a.path.display(), e)),
+  };
+  let unified = if a.rebuild {
+    crate::graph_cache::shared::rebuild(&root)
+  } else {
+    crate::graph_cache::shared::get_or_init(&root)
+  };
+  let graph = match unified.map(|u| u.deps.clone()) {
+    Ok(g) => g,
+    Err(e) => return CallResult::Error(e.to_string()),
+  };
+  let body = if a.json {
+    crate::deps::render::render_graph_json(&graph, !a.hide_external, true)
+  } else {
+    crate::deps::render::render_graph_text(&graph, !a.hide_external)
+  };
+  CallResult::Text(body)
 }
 
 // ---- run (AST-aware pattern search + rewrite) ----
@@ -1216,582 +1271,601 @@ const MCP_MAX_FILE_BYTES: u64 = crate::run::RUN_MAX_FILE_BYTES;
 
 #[derive(Deserialize, Default)]
 struct RunArgs {
-    pattern: String,
-    #[serde(default)]
-    rewrite: Option<String>,
-    #[serde(default)]
-    lang: Option<String>,
-    #[serde(default)]
-    paths: Vec<PathBuf>,
-    #[serde(default)]
-    glob: Option<String>,
-    #[serde(default)]
-    write: bool,
-    #[serde(default)]
-    json: bool,
+  pattern: String,
+  #[serde(default)]
+  rewrite: Option<String>,
+  #[serde(default)]
+  lang: Option<String>,
+  #[serde(default)]
+  paths: Vec<PathBuf>,
+  #[serde(default)]
+  glob: Option<String>,
+  #[serde(default)]
+  write: bool,
+  #[serde(default)]
+  json: bool,
 }
 
 fn run_run(args: Value) -> CallResult {
-    let a: RunArgs = match serde_json::from_value(args) {
-        Ok(v) => v,
-        Err(e) => return CallResult::Error(format!("invalid arguments: {}", e)),
-    };
+  let a: RunArgs = match serde_json::from_value(args) {
+    Ok(v) => v,
+    Err(e) => return CallResult::Error(format!("invalid arguments: {}", e)),
+  };
 
-    // Validate pattern upfront when language is known, so an invalid
-    // pattern fails fast instead of after walking every file.
-    let (fixed_lang, compiled_pattern) = if let Some(ref l) = a.lang {
-        let lang = match crate::run::cli::parse_lang(l) {
-            Some(l) => l,
-            None => return CallResult::Error(format!("unsupported language '{}'", l)),
-        };
-        let pat = match ast_grep_core::Pattern::try_new(&a.pattern, lang) {
-            Ok(p) => p,
-            Err(e) => return CallResult::Error(format!("invalid pattern: {}", e)),
-        };
-        (Some(lang), Some(pat))
-    } else {
-        (None, None)
+  // Validate pattern upfront when language is known, so an invalid
+  // pattern fails fast instead of after walking every file.
+  let (fixed_lang, compiled_pattern) = if let Some(ref l) = a.lang {
+    let lang = match crate::run::cli::parse_lang(l) {
+      Some(l) => l,
+      None => return CallResult::Error(format!("unsupported language '{}'", l)),
     };
+    let pat = match ast_grep_core::Pattern::try_new(&a.pattern, lang) {
+      Ok(p) => p,
+      Err(e) => return CallResult::Error(format!("invalid pattern: {}", e)),
+    };
+    (Some(lang), Some(pat))
+  } else {
+    (None, None)
+  };
 
-    // An empty list means "the current directory" for `run` (the CLI's
-    // `resolve_optional_paths`), so there is nothing to miss in that case.
-    let (search_paths, missing) = if a.paths.is_empty() {
-        (vec![PathBuf::from(".")], Vec::new())
-    } else {
-        match crate::resolve_paths_for_mcp("run", &a.paths) {
-            Ok(pair) => pair,
-            Err(e) => return CallResult::Error(e),
-        }
-    };
-    let path_note = partial_note(&missing);
-    // Partial misses ride the text response; JSON gets `missing_paths`, so a
-    // report over three of four requested paths can't read as covering all
-    // four.
-    let note = |out: String| with_note(&path_note, out);
-    let files = crate::walk_paths(&search_paths, a.glob.as_deref());
-    
-    #[derive(serde::Serialize)]
-    struct RewriteRecord {
-        file: String,
-        status: &'static str,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        diff: Option<String>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        error: Option<String>,
+  // An empty list means "the current directory" for `run` (the CLI's
+  // `resolve_optional_paths`), so there is nothing to miss in that case.
+  let (search_paths, missing) = if a.paths.is_empty() {
+    (vec![PathBuf::from(".")], Vec::new())
+  } else {
+    match crate::resolve_paths_for_mcp("run", &a.paths) {
+      Ok(pair) => pair,
+      Err(e) => return CallResult::Error(e),
     }
+  };
+  let path_note = partial_note(&missing);
+  // Partial misses ride the text response; JSON gets `missing_paths`, so a
+  // report over three of four requested paths can't read as covering all
+  // four.
+  let note = |out: String| with_note(&path_note, out);
+  let files = crate::walk_paths(&search_paths, a.glob.as_deref());
 
-    let mut all_matches = Vec::new();
-    let mut output = String::new();
-    // Search-mode errors are kept out of `output` so the final report can
-    // group them in a clearly separated `--- errors ---` block after the
-    // match list, rather than interleaving error lines with results.
-    let mut search_errors: Vec<String> = Vec::new();
-    let mut rewrite_records: Vec<RewriteRecord> = Vec::new();
-    let mut rewrite_count: usize = 0;
-    let mut error_count: usize = 0;
-    let mut rewrite_capped = false;
-    let mut search_capped = false;
-    // How many files the walk reached with a language an adapter handles —
-    // the coverage of a "No matches found." answer, which is otherwise
-    // identical whether the walk saw four hundred files or four. It counts
-    // every such file including the ones that then errored out (oversize,
-    // unreadable, pattern uncompilable for that language), which is why a
-    // zero reported next to a non-zero `error_count` is not exhaustive.
-    let mut files_scanned: usize = 0;
-    // Cache compiled patterns per language when lang is auto-detected,
-    // so files of the same language reuse the compiled pattern.
-    // Stores Result<Pattern, String> — Err when the pattern is invalid for that language.
-    let mut pattern_cache: std::collections::HashMap<ast_grep_language::SupportLang, Result<ast_grep_core::Pattern, String>> = std::collections::HashMap::new();
+  #[derive(serde::Serialize)]
+  struct RewriteRecord {
+    file: String,
+    status: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    diff: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+  }
 
-    for path in &files {
-        // Detect language first to avoid reading non-source files.
-        let lang = if let Some(l) = fixed_lang {
-            l
+  let mut all_matches = Vec::new();
+  let mut output = String::new();
+  // Search-mode errors are kept out of `output` so the final report can
+  // group them in a clearly separated `--- errors ---` block after the
+  // match list, rather than interleaving error lines with results.
+  let mut search_errors: Vec<String> = Vec::new();
+  let mut rewrite_records: Vec<RewriteRecord> = Vec::new();
+  let mut rewrite_count: usize = 0;
+  let mut error_count: usize = 0;
+  let mut rewrite_capped = false;
+  let mut search_capped = false;
+  // How many files the walk reached with a language an adapter handles —
+  // the coverage of a "No matches found." answer, which is otherwise
+  // identical whether the walk saw four hundred files or four. It counts
+  // every such file including the ones that then errored out (oversize,
+  // unreadable, pattern uncompilable for that language), which is why a
+  // zero reported next to a non-zero `error_count` is not exhaustive.
+  let mut files_scanned: usize = 0;
+  // Cache compiled patterns per language when lang is auto-detected,
+  // so files of the same language reuse the compiled pattern.
+  // Stores Result<Pattern, String> — Err when the pattern is invalid for that language.
+  let mut pattern_cache: std::collections::HashMap<
+    ast_grep_language::SupportLang,
+    Result<ast_grep_core::Pattern, String>,
+  > = std::collections::HashMap::new();
+
+  for path in &files {
+    // Detect language first to avoid reading non-source files.
+    let lang = if let Some(l) = fixed_lang {
+      l
+    } else {
+      match crate::run::detect_lang(path) {
+        Some(l) => l,
+        None => continue,
+      }
+    };
+    files_scanned += 1;
+    // Cap file size before slurping into memory. Same error-reporting
+    // shape as read_to_string failures so the consumer sees a uniform
+    // skipped-file record.
+    if let Ok(meta) = std::fs::metadata(path) {
+      if meta.len() > MCP_MAX_FILE_BYTES {
+        let msg = format!(
+          "{}: skipped (size {} > cap {})",
+          path.display(),
+          meta.len(),
+          MCP_MAX_FILE_BYTES
+        );
+        if a.rewrite.is_some() {
+          rewrite_records.push(RewriteRecord {
+            file: path.display().to_string(),
+            status: "skipped_oversize",
+            diff: None,
+            error: Some(format!(
+              "size {} bytes exceeds cap {} bytes",
+              meta.len(),
+              MCP_MAX_FILE_BYTES
+            )),
+          });
+          output.push_str(&format!("{}\n", msg));
         } else {
-            match crate::run::detect_lang(path) {
-                Some(l) => l,
-                None => continue,
-            }
-        };
-        files_scanned += 1;
-        // Cap file size before slurping into memory. Same error-reporting
-        // shape as read_to_string failures so the consumer sees a uniform
-        // skipped-file record.
-        if let Ok(meta) = std::fs::metadata(path) {
-            if meta.len() > MCP_MAX_FILE_BYTES {
-                let msg = format!(
-                    "{}: skipped (size {} > cap {})",
-                    path.display(),
-                    meta.len(),
-                    MCP_MAX_FILE_BYTES
-                );
-                if a.rewrite.is_some() {
-                    rewrite_records.push(RewriteRecord {
-                        file: path.display().to_string(),
-                        status: "skipped_oversize",
-                        diff: None,
-                        error: Some(format!(
-                            "size {} bytes exceeds cap {} bytes",
-                            meta.len(),
-                            MCP_MAX_FILE_BYTES
-                        )),
-                    });
-                    output.push_str(&format!("{}\n", msg));
-                } else {
-                    search_errors.push(msg);
-                }
-                error_count += 1;
-                continue;
-            }
+          search_errors.push(msg);
         }
-        let source = match std::fs::read_to_string(path) {
-            Ok(s) => s,
-            Err(e) => {
-                let msg = format!("{}: read failed: {}", path.display(), e);
-                if a.rewrite.is_some() {
-                    rewrite_records.push(RewriteRecord {
-                        file: path.display().to_string(),
-                        status: "read_failed",
-                        diff: None,
-                        error: Some(e.to_string()),
-                    });
-                    output.push_str(&format!("{}\n", msg));
-                } else {
-                    search_errors.push(msg);
-                }
-                error_count += 1;
-                continue;
-            },
-        };
+        error_count += 1;
+        continue;
+      }
+    }
+    let source = match std::fs::read_to_string(path) {
+      Ok(s) => s,
+      Err(e) => {
+        let msg = format!("{}: read failed: {}", path.display(), e);
+        if a.rewrite.is_some() {
+          rewrite_records.push(RewriteRecord {
+            file: path.display().to_string(),
+            status: "read_failed",
+            diff: None,
+            error: Some(e.to_string()),
+          });
+          output.push_str(&format!("{}\n", msg));
+        } else {
+          search_errors.push(msg);
+        }
+        error_count += 1;
+        continue;
+      }
+    };
 
-        // Search-only mode (no rewrite template)
-        if a.rewrite.is_none() {
-            let result = if let Some(ref compiled) = compiled_pattern {
-                crate::run::search_with_pattern(&source, lang, compiled)
-            } else {
-                let compiled = pattern_cache.entry(lang).or_insert_with(|| {
-                    ast_grep_core::Pattern::try_new(&a.pattern, lang)
-                        .map_err(|e| format!("invalid pattern for {}: {}", lang, e))
-                });
-                match compiled {
-                    Ok(p) => crate::run::search_with_pattern(&source, lang, p),
-                    Err(e) => {
-                        search_errors.push(format!("{}: {}", path.display(), e));
-                        error_count += 1;
-                        continue;
-                    }
-                }
-            };
-            match result {
-                Ok(mut matches) => {
-                    if !matches.is_empty() {
-                        let file_str = path.to_string_lossy().to_string();
-                        for m in &mut matches {
-                            m.file = file_str.clone();
-                        }
-                        let remaining = MCP_SEARCH_MAX_MATCHES.saturating_sub(all_matches.len());
-                        if remaining == 0 {
-                            search_capped = true;
-                            break;
-                        }
-                        if matches.len() > remaining {
-                            matches.truncate(remaining);
-                        }
-                        all_matches.extend(matches);
-                        if all_matches.len() >= MCP_SEARCH_MAX_MATCHES {
-                            search_capped = true;
-                            break;
-                        }
-                    }
-                }
-                Err(e) => {
-                    search_errors.push(format!(
-                        "search failed for pattern {:?} ({}) in {}: {}",
-                        a.pattern,
-                        lang,
-                        path.display(),
-                        e,
-                    ));
-                    error_count += 1;
-                }
-            }
+    // Search-only mode (no rewrite template)
+    if a.rewrite.is_none() {
+      let result = if let Some(ref compiled) = compiled_pattern {
+        crate::run::search_with_pattern(&source, lang, compiled)
+      } else {
+        let compiled = pattern_cache.entry(lang).or_insert_with(|| {
+          ast_grep_core::Pattern::try_new(&a.pattern, lang)
+            .map_err(|e| format!("invalid pattern for {}: {}", lang, e))
+        });
+        match compiled {
+          Ok(p) => crate::run::search_with_pattern(&source, lang, p),
+          Err(e) => {
+            search_errors.push(format!("{}: {}", path.display(), e));
+            error_count += 1;
             continue;
+          }
         }
-
-        // Rewrite mode (dry-run or write)
-        let replacement = a.rewrite.as_deref().unwrap_or("");
-        let result = if let Some(ref compiled) = compiled_pattern {
-            crate::run::rewrite_with_pattern(&source, lang, compiled, replacement)
-        } else {
-            let compiled = pattern_cache.entry(lang).or_insert_with(|| {
-                ast_grep_core::Pattern::try_new(&a.pattern, lang)
-                    .map_err(|e| format!("invalid pattern for {}: {}", lang, e))
-            });
-            match compiled {
-                Ok(p) => crate::run::rewrite_with_pattern(&source, lang, p, replacement),
-                Err(e) => {
-                    let file_str = path.display().to_string();
-                    output.push_str(&format!("{}: {}\n", file_str, e));
-                    error_count += 1;
-                    rewrite_records.push(RewriteRecord {
-                        file: file_str,
-                        status: "rewrite_error",
-                        diff: None,
-                        error: Some(e.clone()),
-                    });
-                    continue;
-                }
+      };
+      match result {
+        Ok(mut matches) => {
+          if !matches.is_empty() {
+            let file_str = path.to_string_lossy().to_string();
+            for m in &mut matches {
+              m.file = file_str.clone();
             }
-        };
-        match result {
-            Ok(Some(new_source)) => {
-                let file_str = path.to_string_lossy().to_string();
-                if rewrite_count >= MCP_REWRITE_MAX_FILES {
-                    rewrite_capped = true;
-                    break;
-                }
-                if a.write {
-                    if let Err(e) = crate::run::atomic_write(path, new_source.as_bytes()) {
-                        output.push_str(&format!("{}: write failed: {}\n", file_str, e));
-                        error_count += 1;
-                        rewrite_records.push(RewriteRecord {
-                            file: file_str,
-                            status: "write_failed",
-                            diff: None,
-                            error: Some(e.to_string()),
-                        });
-                    } else {
-                        output.push_str(&format!("{}: rewritten\n", file_str));
-                        rewrite_count += 1;
-                        rewrite_records.push(RewriteRecord {
-                            file: file_str,
-                            status: "rewritten",
-                            diff: None,
-                            error: None,
-                        });
-                    }
-                } else {
-                    // Dry-run: show unified diff
-                    let diff = crate::run::cli::line_change_report(path, &source, &new_source);
-                    if !a.json {
-                        output.push_str(&diff);
-                    }
-                    rewrite_count += 1;
-                    rewrite_records.push(RewriteRecord {
-                        file: file_str,
-                        status: "diff",
-                        diff: Some(diff),
-                        error: None,
-                    });
-                }
+            let remaining = MCP_SEARCH_MAX_MATCHES.saturating_sub(all_matches.len());
+            if remaining == 0 {
+              search_capped = true;
+              break;
             }
-            Ok(None) => {} // no matches in this file
-            Err(e) => {
-                let file_str = path.to_string_lossy().to_string();
-                output.push_str(&format!("{}: {}\n", file_str, e));
-                error_count += 1;
-                rewrite_records.push(RewriteRecord {
-                    file: file_str,
-                    status: "rewrite_error",
-                    diff: None,
-                    error: Some(e.to_string()),
-                });
+            if matches.len() > remaining {
+              matches.truncate(remaining);
             }
+            all_matches.extend(matches);
+            if all_matches.len() >= MCP_SEARCH_MAX_MATCHES {
+              search_capped = true;
+              break;
+            }
+          }
         }
+        Err(e) => {
+          search_errors.push(format!(
+            "search failed for pattern {:?} ({}) in {}: {}",
+            a.pattern,
+            lang,
+            path.display(),
+            e,
+          ));
+          error_count += 1;
+        }
+      }
+      continue;
     }
 
-    // Rewrite mode: output already contains diffs or write confirmations
-    if a.rewrite.is_some() {
-        if a.json {
-            #[derive(serde::Serialize)]
-            struct RewriteDoc<'a> {
-                schema: &'static str,
-                mode: &'static str,
-                dry_run: bool,
-                rewrite_count: usize,
-                files_scanned: usize,
-                error_count: usize,
-                capped: bool,
-                cap_limit: usize,
-                files: &'a [RewriteRecord],
-            }
-            let doc = RewriteDoc {
-                schema: crate::core::JSON_SCHEMA_RUN,
-                mode: "rewrite",
-                dry_run: !a.write,
-                rewrite_count,
-                files_scanned,
-                error_count,
-                capped: rewrite_capped,
-                cap_limit: MCP_REWRITE_MAX_FILES,
-                files: &rewrite_records,
-            };
-            return CallResult::Text(with_missing_paths(
-                serde_json::to_string_pretty(&doc).unwrap_or_default(),
-                &missing,
-            ));
-        }
-        if rewrite_count == 0 && !rewrite_capped && error_count == 0 {
-            output.push_str(&format!(
-                "No matches found for rewrite ({} file(s) scanned).",
-                files_scanned
-            ));
-        }
-        if rewrite_capped {
-            output.push_str(&format!("\n# warning: reached safety cap of {} files; remaining files were not processed.", MCP_REWRITE_MAX_FILES));
-        }
-        if error_count > 0 {
-            output.push_str(&format!("\n({} files had errors)", error_count));
-        }
-        return note(output);
-    }
-
-    // Search-only mode
-    if a.json {
-        #[derive(serde::Serialize)]
-        struct SearchDoc<'a> {
-            schema: &'static str,
-            matches: &'a [crate::run::RunMatch],
-            errors: &'a [String],
-            files_scanned: usize,
-            error_count: usize,
-            capped: bool,
-            cap_limit: usize,
-        }
-        let doc = SearchDoc {
-            schema: crate::core::JSON_SCHEMA_RUN,
-            matches: &all_matches,
-            errors: &search_errors,
-            files_scanned,
-            error_count,
-            capped: search_capped,
-            cap_limit: MCP_SEARCH_MAX_MATCHES,
-        };
-        CallResult::Text(with_missing_paths(
-            serde_json::to_string_pretty(&doc).unwrap_or_default(),
-            &missing,
-        ))
+    // Rewrite mode (dry-run or write)
+    let replacement = a.rewrite.as_deref().unwrap_or("");
+    let result = if let Some(ref compiled) = compiled_pattern {
+      crate::run::rewrite_with_pattern(&source, lang, compiled, replacement)
     } else {
-        if all_matches.is_empty() {
-            // `files_scanned` includes the files that errored out, so quoting
-            // it alone makes a partial scan read as a complete one — the same
-            // overstated coverage the count exists to prevent.
-            output.push_str(&if error_count > 0 {
-                format!(
-                    "No matches found ({} file(s) scanned, {} errored, so this zero is not exhaustive).",
-                    files_scanned, error_count
-                )
-            } else {
-                format!("No matches found ({} file(s) scanned).", files_scanned)
+      let compiled = pattern_cache.entry(lang).or_insert_with(|| {
+        ast_grep_core::Pattern::try_new(&a.pattern, lang)
+          .map_err(|e| format!("invalid pattern for {}: {}", lang, e))
+      });
+      match compiled {
+        Ok(p) => crate::run::rewrite_with_pattern(&source, lang, p, replacement),
+        Err(e) => {
+          let file_str = path.display().to_string();
+          output.push_str(&format!("{}: {}\n", file_str, e));
+          error_count += 1;
+          rewrite_records.push(RewriteRecord {
+            file: file_str,
+            status: "rewrite_error",
+            diff: None,
+            error: Some(e.clone()),
+          });
+          continue;
+        }
+      }
+    };
+    match result {
+      Ok(Some(new_source)) => {
+        let file_str = path.to_string_lossy().to_string();
+        if rewrite_count >= MCP_REWRITE_MAX_FILES {
+          rewrite_capped = true;
+          break;
+        }
+        if a.write {
+          if let Err(e) = crate::run::atomic_write(path, new_source.as_bytes()) {
+            output.push_str(&format!("{}: write failed: {}\n", file_str, e));
+            error_count += 1;
+            rewrite_records.push(RewriteRecord {
+              file: file_str,
+              status: "write_failed",
+              diff: None,
+              error: Some(e.to_string()),
             });
+          } else {
+            output.push_str(&format!("{}: rewritten\n", file_str));
+            rewrite_count += 1;
+            rewrite_records.push(RewriteRecord {
+              file: file_str,
+              status: "rewritten",
+              diff: None,
+              error: None,
+            });
+          }
         } else {
-            let matched_files: std::collections::HashSet<&str> =
-                all_matches.iter().map(|m| m.file.as_str()).collect();
-            output.push_str(&format!("Found {} matches in {} files:\n", all_matches.len(), matched_files.len()));
-            for m in all_matches {
-                let first_line = m.matched_text.lines().next().unwrap_or("");
-                output.push_str(&format!("{}:{}:{}-{}:{}: {}\n", m.file, m.start_line, m.start_col, m.end_line, m.end_col, first_line));
-            }
+          // Dry-run: show unified diff
+          let diff = crate::run::cli::line_change_report(path, &source, &new_source);
+          if !a.json {
+            output.push_str(&diff);
+          }
+          rewrite_count += 1;
+          rewrite_records.push(RewriteRecord {
+            file: file_str,
+            status: "diff",
+            diff: Some(diff),
+            error: None,
+          });
         }
-        if !search_errors.is_empty() {
-            output.push_str("\n--- errors ---\n");
-            for line in &search_errors {
-                output.push_str(line);
-                output.push('\n');
-            }
-        }
-        if error_count > 0 {
-            output.push_str(&format!("\n(Skipped {} files due to errors)", error_count));
-        }
-        if search_capped {
-            output.push_str(&format!("\n# warning: reached safety cap of {} matches; remaining files were not processed.", MCP_SEARCH_MAX_MATCHES));
-        }
-        note(output)
+      }
+      Ok(None) => {} // no matches in this file
+      Err(e) => {
+        let file_str = path.to_string_lossy().to_string();
+        output.push_str(&format!("{}: {}\n", file_str, e));
+        error_count += 1;
+        rewrite_records.push(RewriteRecord {
+          file: file_str,
+          status: "rewrite_error",
+          diff: None,
+          error: Some(e.to_string()),
+        });
+      }
     }
+  }
+
+  // Rewrite mode: output already contains diffs or write confirmations
+  if a.rewrite.is_some() {
+    if a.json {
+      #[derive(serde::Serialize)]
+      struct RewriteDoc<'a> {
+        schema: &'static str,
+        mode: &'static str,
+        dry_run: bool,
+        rewrite_count: usize,
+        files_scanned: usize,
+        error_count: usize,
+        capped: bool,
+        cap_limit: usize,
+        files: &'a [RewriteRecord],
+      }
+      let doc = RewriteDoc {
+        schema: crate::core::JSON_SCHEMA_RUN,
+        mode: "rewrite",
+        dry_run: !a.write,
+        rewrite_count,
+        files_scanned,
+        error_count,
+        capped: rewrite_capped,
+        cap_limit: MCP_REWRITE_MAX_FILES,
+        files: &rewrite_records,
+      };
+      return CallResult::Text(with_missing_paths(
+        serde_json::to_string_pretty(&doc).unwrap_or_default(),
+        &missing,
+      ));
+    }
+    if rewrite_count == 0 && !rewrite_capped && error_count == 0 {
+      output.push_str(&format!(
+        "No matches found for rewrite ({} file(s) scanned).",
+        files_scanned
+      ));
+    }
+    if rewrite_capped {
+      output.push_str(&format!(
+        "\n# warning: reached safety cap of {} files; remaining files were not processed.",
+        MCP_REWRITE_MAX_FILES
+      ));
+    }
+    if error_count > 0 {
+      output.push_str(&format!("\n({} files had errors)", error_count));
+    }
+    return note(output);
+  }
+
+  // Search-only mode
+  if a.json {
+    #[derive(serde::Serialize)]
+    struct SearchDoc<'a> {
+      schema: &'static str,
+      matches: &'a [crate::run::RunMatch],
+      errors: &'a [String],
+      files_scanned: usize,
+      error_count: usize,
+      capped: bool,
+      cap_limit: usize,
+    }
+    let doc = SearchDoc {
+      schema: crate::core::JSON_SCHEMA_RUN,
+      matches: &all_matches,
+      errors: &search_errors,
+      files_scanned,
+      error_count,
+      capped: search_capped,
+      cap_limit: MCP_SEARCH_MAX_MATCHES,
+    };
+    CallResult::Text(with_missing_paths(
+      serde_json::to_string_pretty(&doc).unwrap_or_default(),
+      &missing,
+    ))
+  } else {
+    if all_matches.is_empty() {
+      // `files_scanned` includes the files that errored out, so quoting
+      // it alone makes a partial scan read as a complete one — the same
+      // overstated coverage the count exists to prevent.
+      output.push_str(&if error_count > 0 {
+        format!(
+          "No matches found ({} file(s) scanned, {} errored, so this zero is not exhaustive).",
+          files_scanned, error_count
+        )
+      } else {
+        format!("No matches found ({} file(s) scanned).", files_scanned)
+      });
+    } else {
+      let matched_files: std::collections::HashSet<&str> =
+        all_matches.iter().map(|m| m.file.as_str()).collect();
+      output.push_str(&format!(
+        "Found {} matches in {} files:\n",
+        all_matches.len(),
+        matched_files.len()
+      ));
+      for m in all_matches {
+        let first_line = m.matched_text.lines().next().unwrap_or("");
+        output.push_str(&format!(
+          "{}:{}:{}-{}:{}: {}\n",
+          m.file, m.start_line, m.start_col, m.end_line, m.end_col, first_line
+        ));
+      }
+    }
+    if !search_errors.is_empty() {
+      output.push_str("\n--- errors ---\n");
+      for line in &search_errors {
+        output.push_str(line);
+        output.push('\n');
+      }
+    }
+    if error_count > 0 {
+      output.push_str(&format!("\n(Skipped {} files due to errors)", error_count));
+    }
+    if search_capped {
+      output.push_str(&format!(
+        "\n# warning: reached safety cap of {} matches; remaining files were not processed.",
+        MCP_SEARCH_MAX_MATCHES
+      ));
+    }
+    note(output)
+  }
 }
 
 // ---- squeeze (log/text compression with a reversible legend) ----
 
 #[derive(Deserialize)]
 struct SqueezeArgs {
-    path: PathBuf,
-    #[serde(default)] start: Option<usize>,
-    #[serde(default)] end: Option<usize>,
-    #[serde(default)] raw: bool,
-    #[serde(default)] json: bool,
+  path: PathBuf,
+  #[serde(default)]
+  start: Option<usize>,
+  #[serde(default)]
+  end: Option<usize>,
+  #[serde(default)]
+  raw: bool,
+  #[serde(default)]
+  json: bool,
 }
 
 fn run_squeeze(args: Value) -> CallResult {
-    let a: SqueezeArgs = match serde_json::from_value(args) {
-        Ok(v) => v,
-        Err(e) => return CallResult::Error(format!("invalid arguments: {}", e)),
-    };
-    // Match the CLI's 1-indexed line-number validation even if an MCP client
-    // bypasses the JSON schema's `minimum: 1` constraint.
-    if a.start == Some(0) || a.end == Some(0) {
-        return CallResult::Error("line numbers are 1-indexed (got 0)".to_string());
+  let a: SqueezeArgs = match serde_json::from_value(args) {
+    Ok(v) => v,
+    Err(e) => return CallResult::Error(format!("invalid arguments: {}", e)),
+  };
+  // Match the CLI's 1-indexed line-number validation even if an MCP client
+  // bypasses the JSON schema's `minimum: 1` constraint.
+  if a.start == Some(0) || a.end == Some(0) {
+    return CallResult::Error("line numbers are 1-indexed (got 0)".to_string());
+  }
+  // Explicit single file → read directly, no walk / no file_filter.
+  // Non-UTF8 (read_to_string err) surfaces as a tool error rather than
+  // squeezing raw bytes.
+  let text = match std::fs::read_to_string(&a.path) {
+    Ok(s) => s,
+    Err(e) => return CallResult::Error(format!("could not read {}: {}", a.path.display(), e)),
+  };
+  let line_count = text.lines().count();
+  // Build the 1-indexed inclusive range. Both bounds absent → None (whole
+  // file). A partial bound defaults the other end to the file's natural
+  // extent (start→1, end→EOF), clamped before we serialize the report.
+  let range: Option<(usize, usize)> = match (a.start, a.end) {
+    (None, None) => None,
+    (s, e) => Some(crate::clamp_line_range(s.unwrap_or(1), e, line_count)),
+  };
+  // Match the CLI's `parse_line_range` validation so both front-ends agree on
+  // what an invalid range is (rather than silently returning an empty slice).
+  if let (Some(s), Some(e)) = (a.start, a.end) {
+    if s > e {
+      return CallResult::Error(format!("range start {} is after end {}", s, e));
     }
-    // Explicit single file → read directly, no walk / no file_filter.
-    // Non-UTF8 (read_to_string err) surfaces as a tool error rather than
-    // squeezing raw bytes.
-    let text = match std::fs::read_to_string(&a.path) {
-        Ok(s) => s,
-        Err(e) => return CallResult::Error(format!("could not read {}: {}", a.path.display(), e)),
-    };
-    let line_count = text.lines().count();
-    // Build the 1-indexed inclusive range. Both bounds absent → None (whole
-    // file). A partial bound defaults the other end to the file's natural
-    // extent (start→1, end→EOF), clamped before we serialize the report.
-    let range: Option<(usize, usize)> = match (a.start, a.end) {
-        (None, None) => None,
-        (s, e) => Some(crate::clamp_line_range(s.unwrap_or(1), e, line_count)),
-    };
-    // Match the CLI's `parse_line_range` validation so both front-ends agree on
-    // what an invalid range is (rather than silently returning an empty slice).
-    if let (Some(s), Some(e)) = (a.start, a.end) {
-        if s > e {
-            return CallResult::Error(format!("range start {} is after end {}", s, e));
-        }
-    }
-    let sliced = crate::squeeze::render::slice_lines(&text, range);
-    let path_str = a.path.to_string_lossy();
-    let report = crate::squeeze::render::SqueezeReport {
-        path: &path_str,
-        range,
-        raw: &sliced,
-        raw_requested: a.raw,
-    };
-    if a.json {
-        CallResult::Text(crate::squeeze::render::render_json(&report, true))
-    } else {
-        CallResult::Text(crate::squeeze::render::render_text(&report))
-    }
+  }
+  let sliced = crate::squeeze::render::slice_lines(&text, range);
+  let path_str = a.path.to_string_lossy();
+  let report = crate::squeeze::render::SqueezeReport {
+    path: &path_str,
+    range,
+    raw: &sliced,
+    raw_requested: a.raw,
+  };
+  if a.json {
+    CallResult::Text(crate::squeeze::render::render_json(&report, true))
+  } else {
+    CallResult::Text(crate::squeeze::render::render_text(&report))
+  }
 }
 
 #[cfg(test)]
 mod hint_tests {
-    use super::{digest_hint, DigestHintCall};
-    use crate::defaults::HINT_MAX_MEMBERS;
-    use std::path::PathBuf;
+  use super::{digest_hint, DigestHintCall};
+  use crate::defaults::HINT_MAX_MEMBERS;
+  use std::path::PathBuf;
 
-    /// The number written right after `key` in `hint`.
-    fn number_after(hint: &str, key: &str) -> usize {
-        let start = hint
-            .find(key)
-            .unwrap_or_else(|| panic!("no `{key}` in:\n{hint}"))
-            + key.len();
-        let digits: String = hint[start..]
-            .chars()
-            .take_while(char::is_ascii_digit)
-            .collect();
-        digits
-            .parse()
-            .unwrap_or_else(|_| panic!("no number after `{key}` in:\n{hint}"))
+  /// The number written right after `key` in `hint`.
+  fn number_after(hint: &str, key: &str) -> usize {
+    let start = hint
+      .find(key)
+      .unwrap_or_else(|| panic!("no `{key}` in:\n{hint}"))
+      + key.len();
+    let digits: String = hint[start..]
+      .chars()
+      .take_while(char::is_ascii_digit)
+      .collect();
+    digits
+      .parse()
+      .unwrap_or_else(|_| panic!("no number after `{key}` in:\n{hint}"))
+  }
+
+  /// The CLI and MCP hints both suggest the member cap `defaults` holds.
+  ///
+  /// Each surface builds its own suggestion, and the end-to-end tests look
+  /// for `--preset digest` rather than the number, so a cap restated as a
+  /// literal on either side would leave them green. A caller's cap above
+  /// the shared one comes back as the shared one, which pins the clamp too.
+  #[test]
+  fn both_hints_suggest_the_shared_member_cap() {
+    let paths = [PathBuf::from("a.rs"), PathBuf::from("b.rs")];
+    let payload = "x".repeat(crate::MAP_HINT_THRESHOLD_BYTES + 1);
+    for caller_cap in [None, Some(HINT_MAX_MEMBERS + 1)] {
+      let cli_call = crate::MapHintCall {
+        requested_paths: &paths,
+        glob: None,
+        max_members: caller_cap,
+        json: false,
+        compact: false,
+        no_attrs: false,
+        no_lines: false,
+        already_digest: false,
+      };
+      let cli = crate::map_directory_hint(&cli_call, paths.len(), payload.len())
+        .expect("a two-file answer over the bar is hinted");
+      assert_eq!(
+        number_after(&cli, "--max-members "),
+        HINT_MAX_MEMBERS,
+        "CLI hint, caller cap {caller_cap:?}"
+      );
+
+      let mcp_call = DigestHintCall {
+        requested_paths: &paths,
+        files_inspected: paths.len(),
+        glob: None,
+        max_members: caller_cap,
+        json: false,
+        no_attrs: false,
+        no_lines: false,
+        already_digest: false,
+      };
+      let mcp = digest_hint(&mcp_call, &payload).expect("a two-file answer over the bar is hinted");
+      assert_eq!(
+        number_after(&mcp, "\"max_members\":"),
+        HINT_MAX_MEMBERS,
+        "MCP hint, caller cap {caller_cap:?}"
+      );
     }
-
-    /// The CLI and MCP hints both suggest the member cap `defaults` holds.
-    ///
-    /// Each surface builds its own suggestion, and the end-to-end tests look
-    /// for `--preset digest` rather than the number, so a cap restated as a
-    /// literal on either side would leave them green. A caller's cap above
-    /// the shared one comes back as the shared one, which pins the clamp too.
-    #[test]
-    fn both_hints_suggest_the_shared_member_cap() {
-        let paths = [PathBuf::from("a.rs"), PathBuf::from("b.rs")];
-        let payload = "x".repeat(crate::MAP_HINT_THRESHOLD_BYTES + 1);
-        for caller_cap in [None, Some(HINT_MAX_MEMBERS + 1)] {
-            let cli_call = crate::MapHintCall {
-                requested_paths: &paths,
-                glob: None,
-                max_members: caller_cap,
-                json: false,
-                compact: false,
-                no_attrs: false,
-                no_lines: false,
-                already_digest: false,
-            };
-            let cli = crate::map_directory_hint(&cli_call, paths.len(), payload.len())
-                .expect("a two-file answer over the bar is hinted");
-            assert_eq!(
-                number_after(&cli, "--max-members "),
-                HINT_MAX_MEMBERS,
-                "CLI hint, caller cap {caller_cap:?}"
-            );
-
-            let mcp_call = DigestHintCall {
-                requested_paths: &paths,
-                files_inspected: paths.len(),
-                glob: None,
-                max_members: caller_cap,
-                json: false,
-                no_attrs: false,
-                no_lines: false,
-                already_digest: false,
-            };
-            let mcp =
-                digest_hint(&mcp_call, &payload).expect("a two-file answer over the bar is hinted");
-            assert_eq!(
-                number_after(&mcp, "\"max_members\":"),
-                HINT_MAX_MEMBERS,
-                "MCP hint, caller cap {caller_cap:?}"
-            );
-        }
-    }
+  }
 }
 
 #[cfg(test)]
 mod tests {
-    /// Every tool and every input property in `tools/list` carries a
-    /// description.
-    ///
-    /// `tools.rs` is a hand-written JSON literal, so nothing forces a
-    /// property to say what it does; 21 of them shipped blank until an agent
-    /// would have been the one to find out. The CLI has the same rule and its
-    /// own test, but that one walks `Cli::command()` and can never reach this
-    /// file — the two surfaces are documented separately and so are guarded
-    /// separately.
-    ///
-    /// A failure names `<tool>.<property>`. Fix it by describing the property
-    /// in the schema, not by listing it here.
-    #[test]
-    fn every_tool_and_property_documents_itself() {
-        let catalogue = super::list();
-        let tools = catalogue["tools"]
-            .as_array()
-            .expect("tools/list returns a tools array");
-        assert!(!tools.is_empty(), "the catalogue must not be empty");
+  /// Every tool and every input property in `tools/list` carries a
+  /// description.
+  ///
+  /// `tools.rs` is a hand-written JSON literal, so nothing forces a
+  /// property to say what it does; 21 of them shipped blank until an agent
+  /// would have been the one to find out. The CLI has the same rule and its
+  /// own test, but that one walks `Cli::command()` and can never reach this
+  /// file — the two surfaces are documented separately and so are guarded
+  /// separately.
+  ///
+  /// A failure names `<tool>.<property>`. Fix it by describing the property
+  /// in the schema, not by listing it here.
+  #[test]
+  fn every_tool_and_property_documents_itself() {
+    let catalogue = super::list();
+    let tools = catalogue["tools"]
+      .as_array()
+      .expect("tools/list returns a tools array");
+    assert!(!tools.is_empty(), "the catalogue must not be empty");
 
-        let mut bare = Vec::new();
-        for tool in tools {
-            let name = tool["name"].as_str().expect("every tool has a name");
-            if !has_text(&tool["description"]) {
-                bare.push(name.to_string());
-            }
-            // Demanded rather than probed: `as_object()` answers `None` for a
-            // key that is absent *and* for one that is misspelled, so treating
-            // `None` as "this tool takes no arguments" would let a typo in
-            // `inputSchema` drop a whole tool's properties past the check that
-            // exists to police them. Every tool here takes arguments; one that
-            // genuinely takes none says so with an empty object.
-            let props = tool["inputSchema"]["properties"]
-                .as_object()
-                .unwrap_or_else(|| panic!("tool `{name}` has no inputSchema.properties object"));
-            for (prop, spec) in props {
-                if !has_text(&spec["description"]) {
-                    bare.push(format!("{name}.{prop}"));
-                }
-            }
+    let mut bare = Vec::new();
+    for tool in tools {
+      let name = tool["name"].as_str().expect("every tool has a name");
+      if !has_text(&tool["description"]) {
+        bare.push(name.to_string());
+      }
+      // Demanded rather than probed: `as_object()` answers `None` for a
+      // key that is absent *and* for one that is misspelled, so treating
+      // `None` as "this tool takes no arguments" would let a typo in
+      // `inputSchema` drop a whole tool's properties past the check that
+      // exists to police them. Every tool here takes arguments; one that
+      // genuinely takes none says so with an empty object.
+      let props = tool["inputSchema"]["properties"]
+        .as_object()
+        .unwrap_or_else(|| panic!("tool `{name}` has no inputSchema.properties object"));
+      for (prop, spec) in props {
+        if !has_text(&spec["description"]) {
+          bare.push(format!("{name}.{prop}"));
         }
-        assert!(
-            bare.is_empty(),
-            "tools/list entries with no description (describe them in the schema): {bare:#?}"
-        );
+      }
     }
+    assert!(
+      bare.is_empty(),
+      "tools/list entries with no description (describe them in the schema): {bare:#?}"
+    );
+  }
 
-    /// Whitespace-only is the same defect as absent: the client renders the
-    /// key and the reader learns nothing. A non-string is also not a
-    /// description, so it fails here rather than passing as "present".
-    fn has_text(v: &serde_json::Value) -> bool {
-        v.as_str().is_some_and(|s| !s.trim().is_empty())
-    }
+  /// Whitespace-only is the same defect as absent: the client renders the
+  /// key and the reader learns nothing. A non-string is also not a
+  /// description, so it fails here rather than passing as "present".
+  fn has_text(v: &serde_json::Value) -> bool {
+    v.as_str().is_some_and(|s| !s.trim().is_empty())
+  }
 }

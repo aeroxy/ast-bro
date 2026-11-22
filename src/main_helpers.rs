@@ -23,148 +23,151 @@ use crate::core::ParseResult;
 /// For extensionless files, peeks at the shebang line before reading the
 /// full content — so scripts (#!/usr/bin/env python3, etc.) are detected.
 pub fn can_parse_for_hook(path: &Path) -> bool {
-    let ext = path
-        .extension()
-        .and_then(|o| o.to_str())
-        .unwrap_or("")
-        .to_ascii_lowercase();
-    if matches!(
-        ext.as_str(),
-        "sql" | "ddl" | "dml" | "md" | "markdown" | "mdx" | "mdown"
-    ) {
-        return true;
-    }
-    if let Some(lang) = SupportLang::from_path(path) {
-        return is_supported_adapter(lang);
-    }
-    // Extensionless file — check shebang
-    if path.extension().is_none() {
-        return crate::file_filter::detect_language(path)
-            .map(is_supported_adapter)
-            .unwrap_or(false);
-    }
-    false
+  let ext = path
+    .extension()
+    .and_then(|o| o.to_str())
+    .unwrap_or("")
+    .to_ascii_lowercase();
+  if matches!(
+    ext.as_str(),
+    "sql" | "ddl" | "dml" | "md" | "markdown" | "mdx" | "mdown"
+  ) {
+    return true;
+  }
+  if let Some(lang) = SupportLang::from_path(path) {
+    return is_supported_adapter(lang);
+  }
+  // Extensionless file — check shebang
+  if path.extension().is_none() {
+    return crate::file_filter::detect_language(path)
+      .map(is_supported_adapter)
+      .unwrap_or(false);
+  }
+  false
 }
 
 fn is_supported_adapter(lang: SupportLang) -> bool {
-    matches!(
-        lang,
-        SupportLang::Rust
-            | SupportLang::Python
-            | SupportLang::TypeScript
-            | SupportLang::Tsx
-            | SupportLang::JavaScript
-            | SupportLang::CSharp
-            | SupportLang::Go
-            | SupportLang::Java
-            | SupportLang::Kotlin
-            | SupportLang::Scala
-            | SupportLang::Cpp
-            | SupportLang::Ruby
-            | SupportLang::Php
-            | SupportLang::Elixir
-    )
+  matches!(
+    lang,
+    SupportLang::Rust
+      | SupportLang::Python
+      | SupportLang::TypeScript
+      | SupportLang::Tsx
+      | SupportLang::JavaScript
+      | SupportLang::CSharp
+      | SupportLang::Go
+      | SupportLang::Java
+      | SupportLang::Kotlin
+      | SupportLang::Scala
+      | SupportLang::Cpp
+      | SupportLang::Ruby
+      | SupportLang::Php
+      | SupportLang::Elixir
+  )
 }
 
 pub fn parse_file_for_hook(path: &Path) -> Option<ParseResult> {
-    let source = std::fs::read_to_string(path).ok()?;
-    // Lowercase to match can_parse_for_hook, so uppercase extensions
-    // (README.MD, schema.SQL) aren't accepted there yet rejected here.
-    let ext = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("")
-        .to_ascii_lowercase();
-    let ext = ext.as_str();
+  let source = std::fs::read_to_string(path).ok()?;
+  // Lowercase to match can_parse_for_hook, so uppercase extensions
+  // (README.MD, schema.SQL) aren't accepted there yet rejected here.
+  let ext = path
+    .extension()
+    .and_then(|e| e.to_str())
+    .unwrap_or("")
+    .to_ascii_lowercase();
+  let ext = ext.as_str();
 
-    // Handle SQL files (regex-based parsing). `parse_sql` takes `&str`
-    // directly — UTF-8 was already validated by `read_to_string` above.
-    if matches!(ext, "sql" | "ddl" | "dml") {
-        let mut r = crate::adapters::sql::parse_sql(path, &source);
-        crate::core::populate_markers(&mut r.declarations, r.language);
-        return Some(r);
-    }
+  // Handle SQL files (regex-based parsing). `parse_sql` takes `&str`
+  // directly — UTF-8 was already validated by `read_to_string` above.
+  if matches!(ext, "sql" | "ddl" | "dml") {
+    let mut r = crate::adapters::sql::parse_sql(path, &source);
+    crate::core::populate_markers(&mut r.declarations, r.language);
+    return Some(r);
+  }
 
-    if matches!(ext, "md" | "markdown" | "mdx" | "mdown") {
-        let mut r = crate::adapters::markdown::parse_markdown(path, source.as_bytes());
-        crate::core::populate_markers(&mut r.declarations, r.language);
-        return Some(r);
-    }
+  if matches!(ext, "md" | "markdown" | "mdx" | "mdown") {
+    let mut r = crate::adapters::markdown::parse_markdown(path, source.as_bytes());
+    crate::core::populate_markers(&mut r.declarations, r.language);
+    return Some(r);
+  }
 
-    // Try extension first; for extensionless files, fall back to shebang.
-    let lang = SupportLang::from_path(path)
-        .or_else(|| {
-            if path.extension().is_none() {
-                crate::file_filter::detect_language(path)
-            } else {
-                None
-            }
-        })
-        .filter(|&l| is_supported_adapter(l))?;
-    let mut result = match lang {
-        SupportLang::Rust => RustAdapter.parse(
-            path,
-            source.as_bytes(),
-            lang.ast_grep(source.clone()).root(),
-        ),
-        SupportLang::Python => PythonAdapter.parse(
-            path,
-            source.as_bytes(),
-            lang.ast_grep(source.clone()).root(),
-        ),
-        SupportLang::TypeScript | SupportLang::Tsx | SupportLang::JavaScript => {
-            TypeScriptAdapter.parse(path, source.as_bytes(), lang.ast_grep(source.clone()).root())
-        }
-        SupportLang::CSharp => CSharpAdapter.parse(
-            path,
-            source.as_bytes(),
-            lang.ast_grep(source.clone()).root(),
-        ),
-        SupportLang::Go => GoAdapter.parse(
-            path,
-            source.as_bytes(),
-            lang.ast_grep(source.clone()).root(),
-        ),
-        SupportLang::Java => JavaAdapter.parse(
-            path,
-            source.as_bytes(),
-            lang.ast_grep(source.clone()).root(),
-        ),
-        SupportLang::Kotlin => KotlinAdapter.parse(
-            path,
-            source.as_bytes(),
-            lang.ast_grep(source.clone()).root(),
-        ),
-        SupportLang::Scala => ScalaAdapter.parse(
-            path,
-            source.as_bytes(),
-            lang.ast_grep(source.clone()).root(),
-        ),
-        SupportLang::Cpp => CppAdapter.parse(
-            path,
-            source.as_bytes(),
-            lang.ast_grep(source.clone()).root(),
-        ),
-        SupportLang::Ruby => RubyAdapter.parse(
-            path,
-            source.as_bytes(),
-            lang.ast_grep(source.clone()).root(),
-        ),
-        SupportLang::Php => PhpAdapter.parse(
-            path,
-            source.as_bytes(),
-            lang.ast_grep(source.clone()).root(),
-        ),
-        SupportLang::Elixir => ElixirAdapter.parse(
-            path,
-            source.as_bytes(),
-            lang.ast_grep(source.clone()).root(),
-        ),
-        _ => return None,
-    };
-    // One central pass enriches every adapter's output with `native_kind`,
-    // `modifiers`, and `deprecated` derived from the language's source
-    // conventions. Adapters stay focused on tree traversal.
-    crate::core::populate_markers(&mut result.declarations, result.language);
-    Some(result)
+  // Try extension first; for extensionless files, fall back to shebang.
+  let lang = SupportLang::from_path(path)
+    .or_else(|| {
+      if path.extension().is_none() {
+        crate::file_filter::detect_language(path)
+      } else {
+        None
+      }
+    })
+    .filter(|&l| is_supported_adapter(l))?;
+  let mut result = match lang {
+    SupportLang::Rust => RustAdapter.parse(
+      path,
+      source.as_bytes(),
+      lang.ast_grep(source.clone()).root(),
+    ),
+    SupportLang::Python => PythonAdapter.parse(
+      path,
+      source.as_bytes(),
+      lang.ast_grep(source.clone()).root(),
+    ),
+    SupportLang::TypeScript | SupportLang::Tsx | SupportLang::JavaScript => TypeScriptAdapter
+      .parse(
+        path,
+        source.as_bytes(),
+        lang.ast_grep(source.clone()).root(),
+      ),
+    SupportLang::CSharp => CSharpAdapter.parse(
+      path,
+      source.as_bytes(),
+      lang.ast_grep(source.clone()).root(),
+    ),
+    SupportLang::Go => GoAdapter.parse(
+      path,
+      source.as_bytes(),
+      lang.ast_grep(source.clone()).root(),
+    ),
+    SupportLang::Java => JavaAdapter.parse(
+      path,
+      source.as_bytes(),
+      lang.ast_grep(source.clone()).root(),
+    ),
+    SupportLang::Kotlin => KotlinAdapter.parse(
+      path,
+      source.as_bytes(),
+      lang.ast_grep(source.clone()).root(),
+    ),
+    SupportLang::Scala => ScalaAdapter.parse(
+      path,
+      source.as_bytes(),
+      lang.ast_grep(source.clone()).root(),
+    ),
+    SupportLang::Cpp => CppAdapter.parse(
+      path,
+      source.as_bytes(),
+      lang.ast_grep(source.clone()).root(),
+    ),
+    SupportLang::Ruby => RubyAdapter.parse(
+      path,
+      source.as_bytes(),
+      lang.ast_grep(source.clone()).root(),
+    ),
+    SupportLang::Php => PhpAdapter.parse(
+      path,
+      source.as_bytes(),
+      lang.ast_grep(source.clone()).root(),
+    ),
+    SupportLang::Elixir => ElixirAdapter.parse(
+      path,
+      source.as_bytes(),
+      lang.ast_grep(source.clone()).root(),
+    ),
+    _ => return None,
+  };
+  // One central pass enriches every adapter's output with `native_kind`,
+  // `modifiers`, and `deprecated` derived from the language's source
+  // conventions. Adapters stay focused on tree traversal.
+  crate::core::populate_markers(&mut result.declarations, result.language);
+  Some(result)
 }

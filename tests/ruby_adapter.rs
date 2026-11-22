@@ -15,97 +15,106 @@ use std::path::PathBuf;
 use std::process::Command;
 
 fn bin() -> PathBuf {
-    PathBuf::from(env!("CARGO_BIN_EXE_ast-bro"))
+  PathBuf::from(env!("CARGO_BIN_EXE_ast-bro"))
 }
 
 const FIXTURE: &str = "tests/fixtures/ruby_adapter/sample.rb";
 
 fn run(args: &[&str]) -> String {
-    let out = Command::new(bin())
-        .args(args)
-        .env("NO_COLOR", "1")
-        .output()
-        .expect("run");
-    assert!(out.status.success(), "exit non-zero: {:?}", out);
-    String::from_utf8(out.stdout).expect("utf8")
+  let out = Command::new(bin())
+    .args(args)
+    .env("NO_COLOR", "1")
+    .output()
+    .expect("run");
+  assert!(out.status.success(), "exit non-zero: {:?}", out);
+  String::from_utf8(out.stdout).expect("utf8")
 }
 
 #[test]
 fn module_renders_as_namespace() {
-    let s = run(&["map", FIXTURE]);
-    assert!(s.contains("namespace Billing"), "module → namespace missing:\n{s}");
-    assert!(s.contains("class Account"), "nested class missing:\n{s}");
+  let s = run(&["map", FIXTURE]);
+  assert!(
+    s.contains("namespace Billing"),
+    "module → namespace missing:\n{s}"
+  );
+  assert!(s.contains("class Account"), "nested class missing:\n{s}");
 }
 
 #[test]
 fn private_and_protected_visibility_tracked() {
-    // The `private`/`protected` tokens between method definitions are
-    // not fields on the AST — the adapter tracks them as state in the
-    // class-body walk and applies them to every following method.
-    let s = run(&["map", FIXTURE]);
-    assert!(s.contains("private def secret"), "private method missing:\n{s}");
-    assert!(
-        s.contains("protected def helper"),
-        "protected method missing:\n{s}"
-    );
-    // Methods declared before `private` should not pick up the modifier.
-    assert!(
-        !s.contains("private def public_method") && !s.contains("private def initialize"),
-        "visibility leaked onto pre-private methods:\n{s}"
-    );
+  // The `private`/`protected` tokens between method definitions are
+  // not fields on the AST — the adapter tracks them as state in the
+  // class-body walk and applies them to every following method.
+  let s = run(&["map", FIXTURE]);
+  assert!(
+    s.contains("private def secret"),
+    "private method missing:\n{s}"
+  );
+  assert!(
+    s.contains("protected def helper"),
+    "protected method missing:\n{s}"
+  );
+  // Methods declared before `private` should not pick up the modifier.
+  assert!(
+    !s.contains("private def public_method") && !s.contains("private def initialize"),
+    "visibility leaked onto pre-private methods:\n{s}"
+  );
 }
 
 #[test]
 fn attr_macros_and_rails_associations_surface() {
-    let s = run(&["map", FIXTURE]);
-    assert!(s.contains("attr_accessor"), "attr_accessor missing:\n{s}");
-    assert!(s.contains("attr_reader"), "attr_reader missing:\n{s}");
-    assert!(s.contains("has_many"), "Rails association missing:\n{s}");
+  let s = run(&["map", FIXTURE]);
+  assert!(s.contains("attr_accessor"), "attr_accessor missing:\n{s}");
+  assert!(s.contains("attr_reader"), "attr_reader missing:\n{s}");
+  assert!(s.contains("has_many"), "Rails association missing:\n{s}");
 }
 
 #[test]
 fn constants_and_singleton_methods_render() {
-    let s = run(&["map", FIXTURE]);
-    assert!(s.contains("VERSION"), "constant missing:\n{s}");
-    assert!(s.contains("def self.find"), "singleton method missing:\n{s}");
+  let s = run(&["map", FIXTURE]);
+  assert!(s.contains("VERSION"), "constant missing:\n{s}");
+  assert!(
+    s.contains("def self.find"),
+    "singleton method missing:\n{s}"
+  );
 }
 
 #[test]
 fn class_inheritance_captured() {
-    let s = run(&["map", FIXTURE]);
-    // `class User < Account` — both names must appear in the same outline.
-    assert!(s.contains("class User"), "subclass missing:\n{s}");
-    assert!(s.contains("Account"), "superclass missing in outline:\n{s}");
+  let s = run(&["map", FIXTURE]);
+  // `class User < Account` — both names must appear in the same outline.
+  assert!(s.contains("class User"), "subclass missing:\n{s}");
+  assert!(s.contains("Account"), "superclass missing in outline:\n{s}");
 }
 
 #[test]
 fn camel_case_constant_receiver_is_a_scope() {
-    let s = run(&["map", "tests/fixtures/ruby_adapter/receivers.rb", "--json"]);
-    let doc: serde_json::Value = serde_json::from_str(&s).expect("valid json");
-    let calls = doc["files"][0]["declarations"][0]["calls"]
-        .as_array()
-        .expect("calls array");
-    let scoped: Vec<(&str, &str)> = calls
-        .iter()
-        .map(|c| {
-            (
-                c["receiver"].as_str().unwrap_or_default(),
-                c["receiver_scope"].as_str().unwrap_or("none"),
-            )
-        })
-        .collect();
-    // `Cart::build` calls `build` on the scope `Cart`, but its result is a
-    // value, and `ENV` may hold one: neither is a scope.
-    assert_eq!(
-        scoped,
-        vec![
-            ("Shop::Pricing", "lexical"),
-            ("::File", "absolute"),
-            ("Cart", "lexical"),
-            ("Cart::build", "none"),
-            ("Cart", "lexical"),
-            ("ENV", "none"),
-            ("list", "none"),
-        ]
-    );
+  let s = run(&["map", "tests/fixtures/ruby_adapter/receivers.rb", "--json"]);
+  let doc: serde_json::Value = serde_json::from_str(&s).expect("valid json");
+  let calls = doc["files"][0]["declarations"][0]["calls"]
+    .as_array()
+    .expect("calls array");
+  let scoped: Vec<(&str, &str)> = calls
+    .iter()
+    .map(|c| {
+      (
+        c["receiver"].as_str().unwrap_or_default(),
+        c["receiver_scope"].as_str().unwrap_or("none"),
+      )
+    })
+    .collect();
+  // `Cart::build` calls `build` on the scope `Cart`, but its result is a
+  // value, and `ENV` may hold one: neither is a scope.
+  assert_eq!(
+    scoped,
+    vec![
+      ("Shop::Pricing", "lexical"),
+      ("::File", "absolute"),
+      ("Cart", "lexical"),
+      ("Cart::build", "none"),
+      ("Cart", "lexical"),
+      ("ENV", "none"),
+      ("list", "none"),
+    ]
+  );
 }

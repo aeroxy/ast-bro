@@ -20,19 +20,19 @@ use std::path::{Path, PathBuf};
 /// Returns the resolved file path for a `mod foo;` reference declared in
 /// `containing_file`, or `None` if no candidate exists on disk.
 pub fn resolve_mod_file(containing_file: &Path, m: &ModRef) -> Option<PathBuf> {
-    let parent = containing_file.parent()?;
+  let parent = containing_file.parent()?;
 
-    if let Some(rel) = &m.path_attr {
-        let p = parent.join(rel);
-        if p.is_file() {
-            return Some(p);
-        }
+  if let Some(rel) = &m.path_attr {
+    let p = parent.join(rel);
+    if p.is_file() {
+      return Some(p);
     }
+  }
 
-    let candidates = [
-        parent.join(format!("{}.rs", m.name)),
-        parent.join(&m.name).join("mod.rs"),
-        parent.join(&m.name).join(format!("{}.rs", m.name)),
-    ];
-    candidates.into_iter().find(|c| c.is_file())
+  let candidates = [
+    parent.join(format!("{}.rs", m.name)),
+    parent.join(&m.name).join("mod.rs"),
+    parent.join(&m.name).join(format!("{}.rs", m.name)),
+  ];
+  candidates.into_iter().find(|c| c.is_file())
 }

@@ -32,14 +32,14 @@ type Registry = RwLock<HashMap<PathBuf, Arc<Index>>>;
 static REGISTRY: OnceLock<Registry> = OnceLock::new();
 
 fn registry() -> &'static Registry {
-    REGISTRY.get_or_init(|| RwLock::new(HashMap::new()))
+  REGISTRY.get_or_init(|| RwLock::new(HashMap::new()))
 }
 
 /// Canonicalise a repo root for use as a registry key, matching the home that
 /// `Index::open` resolves to. Falls back to the raw path when canonicalisation
 /// fails (e.g. a path that doesn't exist yet).
 fn key_for(root: &Path) -> PathBuf {
-    root.canonicalize().unwrap_or_else(|_| root.to_path_buf())
+  root.canonicalize().unwrap_or_else(|_| root.to_path_buf())
 }
 
 /// Open the index for `path_arg`, reusing a cached in-memory `Index` when the
@@ -47,41 +47,41 @@ fn key_for(root: &Path) -> PathBuf {
 /// [`Index::is_fresh`] reports the tree changed — falls back to
 /// [`Index::open`] (disk load + delta apply + persist) and caches the result.
 pub fn open_shared(path_arg: &Path, cwd: &Path) -> std::io::Result<Arc<Index>> {
-    let (home, _) = resolve_home(path_arg, cwd, Marker::SearchIndex);
-    let key = key_for(&home);
+  let (home, _) = resolve_home(path_arg, cwd, Marker::SearchIndex);
+  let key = key_for(&home);
 
-    // Fast path: cached + still fresh. Drop the read guard before the
-    // (FS-walking) freshness check so a concurrent `store` never blocks behind
-    // it.
-    let cached = registry().read().unwrap().get(&key).cloned();
-    if let Some(cached) = cached {
-        if cached.is_fresh() {
-            return Ok(cached);
-        }
+  // Fast path: cached + still fresh. Drop the read guard before the
+  // (FS-walking) freshness check so a concurrent `store` never blocks behind
+  // it.
+  let cached = registry().read().unwrap().get(&key).cloned();
+  if let Some(cached) = cached {
+    if cached.is_fresh() {
+      return Ok(cached);
     }
+  }
 
-    // Slow path: serialize concurrent loads/rebuilds. Without this, two threads
-    // that both saw the entry stale would each run `Index::open` and race on
-    // the on-disk write — a torn multi-file read forces a redundant full
-    // rebuild, and a lost update only self-heals on the next call. The MCP
-    // server is single-threaded today, but the registry is process-wide and
-    // concurrency-designed, so close the TOCTOU properly. A single global lock
-    // (vs per-root) is fine: the slow path is rare and single-threaded in
-    // practice, so cross-repo contention is moot.
-    static LOAD_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    let _guard = LOAD_LOCK.lock().unwrap();
+  // Slow path: serialize concurrent loads/rebuilds. Without this, two threads
+  // that both saw the entry stale would each run `Index::open` and race on
+  // the on-disk write — a torn multi-file read forces a redundant full
+  // rebuild, and a lost update only self-heals on the next call. The MCP
+  // server is single-threaded today, but the registry is process-wide and
+  // concurrency-designed, so close the TOCTOU properly. A single global lock
+  // (vs per-root) is fine: the slow path is rare and single-threaded in
+  // practice, so cross-repo contention is moot.
+  static LOAD_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+  let _guard = LOAD_LOCK.lock().unwrap();
 
-    // Double-check: another thread may have refreshed the entry while we waited.
-    let cached = registry().read().unwrap().get(&key).cloned();
-    if let Some(cached) = cached {
-        if cached.is_fresh() {
-            return Ok(cached);
-        }
+  // Double-check: another thread may have refreshed the entry while we waited.
+  let cached = registry().read().unwrap().get(&key).cloned();
+  if let Some(cached) = cached {
+    if cached.is_fresh() {
+      return Ok(cached);
     }
+  }
 
-    let fresh = Arc::new(Index::open(path_arg, cwd)?);
-    store(fresh.clone());
-    Ok(fresh)
+  let fresh = Arc::new(Index::open(path_arg, cwd)?);
+  store(fresh.clone());
+  Ok(fresh)
 }
 
 /// Insert (or replace) the cached entry for an index that was just built or
@@ -89,57 +89,57 @@ pub fn open_shared(path_arg: &Path, cwd: &Path) -> std::io::Result<Arc<Index>> {
 /// explicit `index` / `--rebuild` so a later `search` doesn't reuse a stale
 /// `Arc`.
 pub fn store(index: Arc<Index>) {
-    let key = key_for(&index.paths.root);
-    registry().write().unwrap().insert(key, index);
+  let key = key_for(&index.paths.root);
+  registry().write().unwrap().insert(key, index);
 }
 
 /// Drop the cached entry for `root` (tests only).
 #[cfg(test)]
 pub fn forget(root: &Path) {
-    let key = key_for(root);
-    registry().write().unwrap().remove(&key);
+  let key = key_for(root);
+  registry().write().unwrap().remove(&key);
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use std::fs;
-    use std::io::Write;
+  use super::*;
+  use std::fs;
+  use std::io::Write;
 
-    /// Reuse the cached `Arc` while the tree is unchanged; reload (new `Arc`)
-    /// after an edit. Network-gated — builds a real index (downloads the
-    /// model), so it's `#[ignore]`d in CI but documents the contract.
-    #[test]
-    #[ignore]
-    fn open_shared_reuses_until_files_change() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
-        fs::create_dir_all(root.join("src")).unwrap();
-        let write = |rel: &str, body: &str| {
-            let p = root.join(rel);
-            let mut f = fs::File::create(&p).unwrap();
-            f.write_all(body.as_bytes()).unwrap();
-        };
-        write("src/a.rs", "pub fn a() {}");
+  /// Reuse the cached `Arc` while the tree is unchanged; reload (new `Arc`)
+  /// after an edit. Network-gated — builds a real index (downloads the
+  /// model), so it's `#[ignore]`d in CI but documents the contract.
+  #[test]
+  #[ignore]
+  fn open_shared_reuses_until_files_change() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    fs::create_dir_all(root.join("src")).unwrap();
+    let write = |rel: &str, body: &str| {
+      let p = root.join(rel);
+      let mut f = fs::File::create(&p).unwrap();
+      f.write_all(body.as_bytes()).unwrap();
+    };
+    write("src/a.rs", "pub fn a() {}");
 
-        forget(root);
-        let first = open_shared(root, root).expect("build");
-        let second = open_shared(root, root).expect("reopen");
-        assert!(
-            Arc::ptr_eq(&first, &second),
-            "unchanged tree must reuse the cached Arc"
-        );
+    forget(root);
+    let first = open_shared(root, root).expect("build");
+    let second = open_shared(root, root).expect("reopen");
+    assert!(
+      Arc::ptr_eq(&first, &second),
+      "unchanged tree must reuse the cached Arc"
+    );
 
-        // Add a file → cache must reload (new Arc) and reflect the change.
-        std::thread::sleep(std::time::Duration::from_millis(10));
-        write("src/b.rs", "pub fn b() {}");
-        let third = open_shared(root, root).expect("reopen after edit");
-        assert!(
-            !Arc::ptr_eq(&first, &third),
-            "edited tree must reload into a fresh Arc"
-        );
-        assert!(third.chunk_count() >= second.chunk_count());
+    // Add a file → cache must reload (new Arc) and reflect the change.
+    std::thread::sleep(std::time::Duration::from_millis(10));
+    write("src/b.rs", "pub fn b() {}");
+    let third = open_shared(root, root).expect("reopen after edit");
+    assert!(
+      !Arc::ptr_eq(&first, &third),
+      "edited tree must reload into a fresh Arc"
+    );
+    assert!(third.chunk_count() >= second.chunk_count());
 
-        forget(root);
-    }
+    forget(root);
+  }
 }

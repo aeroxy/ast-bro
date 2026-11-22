@@ -20,53 +20,53 @@ use std::time::SystemTime;
 pub struct Qn(pub String);
 
 impl Qn {
-    pub fn new<S: Into<String>>(s: S) -> Self {
-        Self(s.into())
+  pub fn new<S: Into<String>>(s: S) -> Self {
+    Self(s.into())
+  }
+  pub fn as_str(&self) -> &str {
+    &self.0
+  }
+  /// Repo-relative file path component (everything before the first `::`).
+  pub fn file(&self) -> &str {
+    match self.0.find("::") {
+      Some(i) => &self.0[..i],
+      None => &self.0,
     }
-    pub fn as_str(&self) -> &str {
-        &self.0
+  }
+  /// Terminal symbol name (everything after the last `::`).
+  pub fn name(&self) -> &str {
+    match self.0.rfind("::") {
+      Some(i) => &self.0[i + 2..],
+      None => &self.0,
     }
-    /// Repo-relative file path component (everything before the first `::`).
-    pub fn file(&self) -> &str {
-        match self.0.find("::") {
-            Some(i) => &self.0[..i],
-            None => &self.0,
-        }
-    }
-    /// Terminal symbol name (everything after the last `::`).
-    pub fn name(&self) -> &str {
-        match self.0.rfind("::") {
-            Some(i) => &self.0[i + 2..],
-            None => &self.0,
-        }
-    }
+  }
 }
 
 impl std::fmt::Display for Qn {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
-    }
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.write_str(&self.0)
+  }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Confidence {
-    /// Resolved via single same-file or single-import match — high trust.
-    Exact,
-    /// Disambiguated via dep-graph filtering — likely-but-not-certain.
-    Inferred,
-    /// Multiple candidates, no disambiguation possible. Kept for grep-like
-    /// fallback; off by default in `callers --include-ambiguous`.
-    Ambiguous,
+  /// Resolved via single same-file or single-import match — high trust.
+  Exact,
+  /// Disambiguated via dep-graph filtering — likely-but-not-certain.
+  Inferred,
+  /// Multiple candidates, no disambiguation possible. Kept for grep-like
+  /// fallback; off by default in `callers --include-ambiguous`.
+  Ambiguous,
 }
 
 impl Confidence {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Self::Exact => "Exact",
-            Self::Inferred => "Inferred",
-            Self::Ambiguous => "Ambiguous",
-        }
+  pub fn as_str(&self) -> &'static str {
+    match self {
+      Self::Exact => "Exact",
+      Self::Inferred => "Inferred",
+      Self::Ambiguous => "Ambiguous",
     }
+  }
 }
 
 /// Resolved or unresolved callee. `Bare` survives when the resolver couldn't
@@ -74,67 +74,67 @@ impl Confidence {
 /// import to something outside the project (third-party crate, stdlib).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum CallTarget {
-    Resolved(Qn),
-    External(String),
-    Bare(String),
+  Resolved(Qn),
+  External(String),
+  Bare(String),
 }
 
 impl CallTarget {
-    pub fn display(&self) -> String {
-        match self {
-            Self::Resolved(qn) => qn.to_string(),
-            Self::External(s) => format!("[external] {}", s),
-            Self::Bare(s) => format!("[unresolved] {}", s),
-        }
+  pub fn display(&self) -> String {
+    match self {
+      Self::Resolved(qn) => qn.to_string(),
+      Self::External(s) => format!("[external] {}", s),
+      Self::Bare(s) => format!("[unresolved] {}", s),
     }
+  }
 
-    /// Bare callee identifier — the qn's terminal name when resolved, or
-    /// the raw string for External/Bare. Used by the incremental updater
-    /// to demote a stale Resolved edge back to Bare without losing the
-    /// originally observed callee text.
-    pub fn name_or_raw(&self) -> String {
-        match self {
-            Self::Resolved(qn) => qn.name().to_string(),
-            Self::External(s) | Self::Bare(s) => s.clone(),
-        }
+  /// Bare callee identifier — the qn's terminal name when resolved, or
+  /// the raw string for External/Bare. Used by the incremental updater
+  /// to demote a stale Resolved edge back to Bare without losing the
+  /// originally observed callee text.
+  pub fn name_or_raw(&self) -> String {
+    match self {
+      Self::Resolved(qn) => qn.name().to_string(),
+      Self::External(s) | Self::Bare(s) => s.clone(),
     }
+  }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CallEdge {
-    pub source: Qn,
-    pub target: CallTarget,
-    pub kind: CallKindCompat,
-    pub line: u32,
-    /// Repo-relative source file path for fast filtering / display.
-    pub file: PathBuf,
-    pub confidence: Confidence,
-    /// Receiver as written at the call site (`obj` for `obj.method()`,
-    /// `Foo` for `Foo::bar()` or `Foo.bar()` — i.e. the unit-struct value
-    /// case). Lets `callers <Type>` find usages where the type appears as
-    /// a receiver but no construction syntax was used.
-    ///
-    /// No `skip_serializing_if` — see `DepEdge::local_name` for the
-    /// bincode positional-encoding rationale. Skipping a field corrupts
-    /// the entire cache round-trip silently.
-    #[serde(default)]
-    pub receiver: Option<String>,
-    /// All candidates considered when `Confidence::Ambiguous`. Empty
-    /// otherwise. Same no-skip rule as `receiver`.
-    #[serde(default)]
-    pub candidates: Vec<Qn>,
-    /// Whether the receiver names a scope (`CallSite::receiver_scope`), so
-    /// the incremental update re-resolves the edge by the cold build's rule.
-    /// Same no-skip rule as `receiver`.
-    #[serde(default)]
-    pub receiver_scope: ReceiverScope,
-    /// `CallSite::imports`, so the incremental update re-resolves a bare
-    /// Elixir call as the cold build does. Same no-skip rule as `receiver`.
-    #[serde(default)]
-    pub imports: Vec<Imported>,
-    /// `CallSite::arity`. Same no-skip rule as `receiver`.
-    #[serde(default)]
-    pub arity: Option<usize>,
+  pub source: Qn,
+  pub target: CallTarget,
+  pub kind: CallKindCompat,
+  pub line: u32,
+  /// Repo-relative source file path for fast filtering / display.
+  pub file: PathBuf,
+  pub confidence: Confidence,
+  /// Receiver as written at the call site (`obj` for `obj.method()`,
+  /// `Foo` for `Foo::bar()` or `Foo.bar()` — i.e. the unit-struct value
+  /// case). Lets `callers <Type>` find usages where the type appears as
+  /// a receiver but no construction syntax was used.
+  ///
+  /// No `skip_serializing_if` — see `DepEdge::local_name` for the
+  /// bincode positional-encoding rationale. Skipping a field corrupts
+  /// the entire cache round-trip silently.
+  #[serde(default)]
+  pub receiver: Option<String>,
+  /// All candidates considered when `Confidence::Ambiguous`. Empty
+  /// otherwise. Same no-skip rule as `receiver`.
+  #[serde(default)]
+  pub candidates: Vec<Qn>,
+  /// Whether the receiver names a scope (`CallSite::receiver_scope`), so
+  /// the incremental update re-resolves the edge by the cold build's rule.
+  /// Same no-skip rule as `receiver`.
+  #[serde(default)]
+  pub receiver_scope: ReceiverScope,
+  /// `CallSite::imports`, so the incremental update re-resolves a bare
+  /// Elixir call as the cold build does. Same no-skip rule as `receiver`.
+  #[serde(default)]
+  pub imports: Vec<Imported>,
+  /// `CallSite::arity`. Same no-skip rule as `receiver`.
+  #[serde(default)]
+  pub arity: Option<usize>,
 }
 
 // `CallEdge::target.name_or_raw()` is the only consumer surface — kept on
@@ -147,45 +147,45 @@ pub struct CallEdge {
 /// schema stable when the IR enum grows new variants.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CallKindCompat {
-    Call,
-    Construct,
-    Macro,
-    Super,
-    Implement,
+  Call,
+  Construct,
+  Macro,
+  Super,
+  Implement,
 }
 
 impl From<CallKind> for CallKindCompat {
-    fn from(k: CallKind) -> Self {
-        match k {
-            CallKind::Call => Self::Call,
-            CallKind::Construct => Self::Construct,
-            CallKind::Macro => Self::Macro,
-            CallKind::Super => Self::Super,
-        }
+  fn from(k: CallKind) -> Self {
+    match k {
+      CallKind::Call => Self::Call,
+      CallKind::Construct => Self::Construct,
+      CallKind::Macro => Self::Macro,
+      CallKind::Super => Self::Super,
     }
+  }
 }
 
 impl CallKindCompat {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Self::Call => "call",
-            Self::Construct => "construct",
-            Self::Macro => "macro",
-            Self::Super => "super",
-            Self::Implement => "implement",
-        }
+  pub fn as_str(&self) -> &'static str {
+    match self {
+      Self::Call => "call",
+      Self::Construct => "construct",
+      Self::Macro => "macro",
+      Self::Super => "super",
+      Self::Implement => "implement",
     }
+  }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct GraphStats {
-    pub function_count: usize,
-    pub edge_count: usize,
-    pub resolved_edge_count: usize,
-    pub external_edge_count: usize,
-    pub ambiguous_edge_count: usize,
-    pub type_count: usize,
-    pub build_ms: u64,
+  pub function_count: usize,
+  pub edge_count: usize,
+  pub resolved_edge_count: usize,
+  pub external_edge_count: usize,
+  pub ambiguous_edge_count: usize,
+  pub type_count: usize,
+  pub build_ms: u64,
 }
 
 /// Per-callable file/line metadata. Cheaper than re-parsing on every
@@ -193,15 +193,15 @@ pub struct GraphStats {
 /// even for methods with no outgoing edges (trait sigs, abstract decls).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CallableMeta {
-    pub file: PathBuf,
-    pub line: u32,
-    /// `function` / `method` / `constructor` / `destructor` / `operator`
-    /// — lifted from `Declaration::kind.as_str()` at build time.
-    pub kind: String,
-    /// The argument counts each definition accepts, where the language
-    /// tells functions apart by it (Elixir). Empty elsewhere.
-    #[serde(default)]
-    pub arities: Vec<Arity>,
+  pub file: PathBuf,
+  pub line: u32,
+  /// `function` / `method` / `constructor` / `destructor` / `operator`
+  /// — lifted from `Declaration::kind.as_str()` at build time.
+  pub kind: String,
+  /// The argument counts each definition accepts, where the language
+  /// tells functions apart by it (Elixir). Empty elsewhere.
+  #[serde(default)]
+  pub arities: Vec<Arity>,
 }
 
 /// The argument counts one definition accepts, `min..=max`, and whether an
@@ -210,41 +210,41 @@ pub struct CallableMeta {
 /// so it takes no call.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Arity {
-    pub min: usize,
-    pub max: usize,
-    pub is_private: bool,
-    pub is_macro: bool,
-    pub is_callback: bool,
+  pub min: usize,
+  pub max: usize,
+  pub is_private: bool,
+  pub is_macro: bool,
+  pub is_callback: bool,
 }
 
 impl CallableMeta {
-    /// Whether a definition takes a call with `arity` arguments. `outside`
-    /// is a call from outside its module, through an `import` of those
-    /// kinds or a module receiver (`ImportOnly::Any`), which a private
-    /// definition does not take. A callable whose arities are unknown takes
-    /// any call.
-    pub(crate) fn accepts(&self, arity: Option<usize>, outside: Option<ImportOnly>) -> bool {
-        self.arities.is_empty()
-            || self.arities.iter().any(|a| {
-                !a.is_callback
-                    && arity.is_none_or(|n| (a.min..=a.max).contains(&n))
-                    && outside.is_none_or(|only| !a.is_private && only.admits(a.is_macro))
-            })
-    }
+  /// Whether a definition takes a call with `arity` arguments. `outside`
+  /// is a call from outside its module, through an `import` of those
+  /// kinds or a module receiver (`ImportOnly::Any`), which a private
+  /// definition does not take. A callable whose arities are unknown takes
+  /// any call.
+  pub(crate) fn accepts(&self, arity: Option<usize>, outside: Option<ImportOnly>) -> bool {
+    self.arities.is_empty()
+      || self.arities.iter().any(|a| {
+        !a.is_callback
+          && arity.is_none_or(|n| (a.min..=a.max).contains(&n))
+          && outside.is_none_or(|only| !a.is_private && only.admits(a.is_macro))
+      })
+  }
 }
 
 /// Record `meta` for `qn`. Elixir's `f/1` and `f/2` share a qn, so the
 /// arities of each definition add up.
 pub(crate) fn add_callable(
-    callable_meta: &mut HashMap<Qn, CallableMeta>,
-    qn: &Qn,
-    meta: &CallableMeta,
+  callable_meta: &mut HashMap<Qn, CallableMeta>,
+  qn: &Qn,
+  meta: &CallableMeta,
 ) {
-    let mut meta = meta.clone();
-    if let Some(old) = callable_meta.get(qn) {
-        meta.arities.extend(&old.arities);
-    }
-    callable_meta.insert(qn.clone(), meta);
+  let mut meta = meta.clone();
+  if let Some(old) = callable_meta.get(qn) {
+    meta.arities.extend(&old.arities);
+  }
+  callable_meta.insert(qn.clone(), meta);
 }
 
 /// Per-type metadata captured during the build walk. Lets `callers <Type>`
@@ -252,105 +252,103 @@ pub(crate) fn add_callable(
 /// callable nodes in the call graph proper.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TypeMeta {
-    /// Source-declaration kind: "class", "struct", "interface", "enum",
-    /// "record", or "trait" (Rust). Lifted from `Declaration::native_kind`
-    /// when present, else from `DeclarationKind`.
-    pub kind: String,
-    /// Repo-relative file path (for display + filtering).
-    pub file: PathBuf,
-    /// 1-indexed line of the type declaration.
-    pub line: u32,
-    /// Bases as written at the source — `Vec<String>` of the parent type
-    /// names. Used to invert into "what implements this type".
-    pub bases: Vec<String>,
+  /// Source-declaration kind: "class", "struct", "interface", "enum",
+  /// "record", or "trait" (Rust). Lifted from `Declaration::native_kind`
+  /// when present, else from `DeclarationKind`.
+  pub kind: String,
+  /// Repo-relative file path (for display + filtering).
+  pub file: PathBuf,
+  /// 1-indexed line of the type declaration.
+  pub line: u32,
+  /// Bases as written at the source — `Vec<String>` of the parent type
+  /// names. Used to invert into "what implements this type".
+  pub bases: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CallGraph {
-    /// Schema-version stamp; rides on top of `JSON_SCHEMA_GRAPH_INDEX` so a
-    /// breaking change to `CallEdge` shape forces a unified-cache rebuild.
-    pub schema: String,
-    /// All edges keyed by source qn. Empty `Vec` means "function exists but
-    /// has no calls" — preserved so `callees` of a leaf returns gracefully.
-    pub forward: HashMap<Qn, Vec<CallEdge>>,
-    /// Inverted adjacency: target qn → list of edges pointing to it.
-    /// Built once at the end of `build` so `callers` lookups are O(1).
-    pub reverse: HashMap<Qn, Vec<CallEdge>>,
-    /// Bare-name → list of qns map. The global symbol table from pass B,
-    /// kept around for re-resolution after future per-file invalidation
-    /// (not used in v1's full-rebuild model).
-    pub symbol_table: HashMap<String, Vec<Qn>>,
-    /// Per-callable file/line metadata, keyed by qn. Lets `callees <Type>`
-    /// (and any other consumer) print the right source location for
-    /// methods that have no outgoing edges (e.g. Rust trait method
-    /// signatures with no default body).
-    #[serde(default)]
-    pub callable_meta: HashMap<Qn, CallableMeta>,
-    /// Per-type metadata, keyed by qn. Powers the type-aware path of
-    /// `callers <Type>`: implementations come from the bases-reverse index,
-    /// constructions come from `forward` edges with `kind == Construct`.
-    #[serde(default)]
-    pub types: HashMap<Qn, TypeMeta>,
-    /// Namespace declarations. With `types`, they are the scopes a scope
-    /// receiver can name (`resolve::scope_paths`).
-    #[serde(default)]
-    pub namespaces: HashSet<Qn>,
-    /// Bare type-name → list of type qns. Lets `resolve_target_qns` find
-    /// `LanguageAdapter` even though traits aren't in `symbol_table`.
-    #[serde(default)]
-    pub type_by_name: HashMap<String, Vec<Qn>>,
-    /// Bare base-name → list of type qns that have it in their `bases`.
-    /// O(1) "what implements this type" lookup.
-    #[serde(default)]
-    pub implementors: HashMap<String, Vec<Qn>>,
-    pub root: PathBuf,
-    pub built_at: SystemTime,
-    pub stats: GraphStats,
+  /// Schema-version stamp; rides on top of `JSON_SCHEMA_GRAPH_INDEX` so a
+  /// breaking change to `CallEdge` shape forces a unified-cache rebuild.
+  pub schema: String,
+  /// All edges keyed by source qn. Empty `Vec` means "function exists but
+  /// has no calls" — preserved so `callees` of a leaf returns gracefully.
+  pub forward: HashMap<Qn, Vec<CallEdge>>,
+  /// Inverted adjacency: target qn → list of edges pointing to it.
+  /// Built once at the end of `build` so `callers` lookups are O(1).
+  pub reverse: HashMap<Qn, Vec<CallEdge>>,
+  /// Bare-name → list of qns map. The global symbol table from pass B,
+  /// kept around for re-resolution after future per-file invalidation
+  /// (not used in v1's full-rebuild model).
+  pub symbol_table: HashMap<String, Vec<Qn>>,
+  /// Per-callable file/line metadata, keyed by qn. Lets `callees <Type>`
+  /// (and any other consumer) print the right source location for
+  /// methods that have no outgoing edges (e.g. Rust trait method
+  /// signatures with no default body).
+  #[serde(default)]
+  pub callable_meta: HashMap<Qn, CallableMeta>,
+  /// Per-type metadata, keyed by qn. Powers the type-aware path of
+  /// `callers <Type>`: implementations come from the bases-reverse index,
+  /// constructions come from `forward` edges with `kind == Construct`.
+  #[serde(default)]
+  pub types: HashMap<Qn, TypeMeta>,
+  /// Namespace declarations. With `types`, they are the scopes a scope
+  /// receiver can name (`resolve::scope_paths`).
+  #[serde(default)]
+  pub namespaces: HashSet<Qn>,
+  /// Bare type-name → list of type qns. Lets `resolve_target_qns` find
+  /// `LanguageAdapter` even though traits aren't in `symbol_table`.
+  #[serde(default)]
+  pub type_by_name: HashMap<String, Vec<Qn>>,
+  /// Bare base-name → list of type qns that have it in their `bases`.
+  /// O(1) "what implements this type" lookup.
+  #[serde(default)]
+  pub implementors: HashMap<String, Vec<Qn>>,
+  pub root: PathBuf,
+  pub built_at: SystemTime,
+  pub stats: GraphStats,
 }
 
 impl CallGraph {
-    pub fn empty(root: PathBuf) -> Self {
-        Self {
-            schema: JSON_SCHEMA_GRAPH_INDEX.to_string(),
-            forward: HashMap::new(),
-            reverse: HashMap::new(),
-            symbol_table: HashMap::new(),
-            callable_meta: HashMap::new(),
-            types: HashMap::new(),
-            namespaces: HashSet::new(),
-            type_by_name: HashMap::new(),
-            implementors: HashMap::new(),
-            root,
-            built_at: SystemTime::now(),
-            stats: GraphStats::default(),
-        }
+  pub fn empty(root: PathBuf) -> Self {
+    Self {
+      schema: JSON_SCHEMA_GRAPH_INDEX.to_string(),
+      forward: HashMap::new(),
+      reverse: HashMap::new(),
+      symbol_table: HashMap::new(),
+      callable_meta: HashMap::new(),
+      types: HashMap::new(),
+      namespaces: HashSet::new(),
+      type_by_name: HashMap::new(),
+      implementors: HashMap::new(),
+      root,
+      built_at: SystemTime::now(),
+      stats: GraphStats::default(),
     }
+  }
 
-    /// The types that name `type_qn` among their bases.
-    pub fn implementors_of<'a>(&'a self, type_qn: &'a Qn) -> Option<impl Iterator<Item = &'a Qn>> {
-        let kind = self.types.get(type_qn).map_or("", |m| m.kind.as_str());
-        let impls = self.implementors.get(&type_key_of(type_qn, kind))?;
-        Some(impls.iter().filter(|qn| same_type_space(qn, type_qn)))
-    }
+  /// The types that name `type_qn` among their bases.
+  pub fn implementors_of<'a>(&'a self, type_qn: &'a Qn) -> Option<impl Iterator<Item = &'a Qn>> {
+    let kind = self.types.get(type_qn).map_or("", |m| m.kind.as_str());
+    let impls = self.implementors.get(&type_key_of(type_qn, kind))?;
+    Some(impls.iter().filter(|qn| same_type_space(qn, type_qn)))
+  }
 
-    /// Single-pass invert of `forward` into `reverse`. Called once after the
-    /// resolution passes complete.
-    pub fn rebuild_reverse(&mut self) {
-        let mut rev: HashMap<Qn, Vec<CallEdge>> = HashMap::new();
-        for edges in self.forward.values() {
-            for e in edges {
-                if let CallTarget::Resolved(qn) = &e.target {
-                    rev.entry(qn.clone()).or_default().push(e.clone());
-                }
-            }
+  /// Single-pass invert of `forward` into `reverse`. Called once after the
+  /// resolution passes complete.
+  pub fn rebuild_reverse(&mut self) {
+    let mut rev: HashMap<Qn, Vec<CallEdge>> = HashMap::new();
+    for edges in self.forward.values() {
+      for e in edges {
+        if let CallTarget::Resolved(qn) = &e.target {
+          rev.entry(qn.clone()).or_default().push(e.clone());
         }
-        for v in rev.values_mut() {
-            v.sort_by(|a, b| a.source.0.cmp(&b.source.0).then(a.line.cmp(&b.line)));
-        }
-        self.reverse = rev;
+      }
     }
-
-
+    for v in rev.values_mut() {
+      v.sort_by(|a, b| a.source.0.cmp(&b.source.0).then(a.line.cmp(&b.line)));
+    }
+    self.reverse = rev;
+  }
 }
 
 /// Whether a type of one qn may implement or extend the other's. Elixir
@@ -358,7 +356,7 @@ impl CallGraph {
 /// segment, so a one-segment Elixir `Service` and a Rust `Service` share a
 /// key without naming each other.
 pub(crate) fn same_type_space(a: &Qn, b: &Qn) -> bool {
-    (qn_lang(a) == Some(Lang::Elixir)) == (qn_lang(b) == Some(Lang::Elixir))
+  (qn_lang(a) == Some(Lang::Elixir)) == (qn_lang(b) == Some(Lang::Elixir))
 }
 
 /// The key the type `type_qn`, of kind `kind`, is indexed by. An Elixir
@@ -366,11 +364,11 @@ pub(crate) fn same_type_space(a: &Qn, b: &Qn) -> bool {
 /// segments (`shop.ex::Shop::Pricing` is `Shop.Pricing`); a `defimpl` names
 /// itself in full (`Inspect.Shop.Pricing`) wherever it is.
 pub(crate) fn type_key_of(type_qn: &Qn, kind: &str) -> String {
-    let lang = qn_lang(type_qn);
-    if lang == Some(Lang::Elixir) && kind != "impl" {
-        return type_qn.0.split("::").skip(1).collect::<Vec<_>>().join(".");
-    }
-    type_key(lang, type_qn.name())
+  let lang = qn_lang(type_qn);
+  if lang == Some(Lang::Elixir) && kind != "impl" {
+    return type_qn.0.split("::").skip(1).collect::<Vec<_>>().join(".");
+  }
+  type_key(lang, type_qn.name())
 }
 
 /// The key a type and a base are indexed by in `type_by_name` and
@@ -380,21 +378,21 @@ pub(crate) fn type_key_of(type_qn: &Qn, kind: &str) -> String {
 /// keeps its full name: its bases are written in full once aliases are
 /// expanded, and `Shop.Repo` is not `Ecto.Repo`.
 pub(crate) fn type_key(lang: Option<Lang>, name: &str) -> String {
-    let mut name = name.trim();
-    if lang == Some(Lang::Elixir) {
-        return name.to_string();
-    }
-    if let Some(i) = name.find('<') {
-        name = &name[..i];
-    }
-    if let Some(i) = name.find('[') {
-        name = &name[..i];
-    }
-    if let Some(i) = name.rfind('.') {
-        name = &name[i + 1..];
-    }
-    if let Some(i) = name.rfind("::") {
-        name = &name[i + 2..];
-    }
-    name.to_string()
+  let mut name = name.trim();
+  if lang == Some(Lang::Elixir) {
+    return name.to_string();
+  }
+  if let Some(i) = name.find('<') {
+    name = &name[..i];
+  }
+  if let Some(i) = name.find('[') {
+    name = &name[..i];
+  }
+  if let Some(i) = name.rfind('.') {
+    name = &name[i + 1..];
+  }
+  if let Some(i) = name.rfind("::") {
+    name = &name[i + 2..];
+  }
+  name.to_string()
 }
