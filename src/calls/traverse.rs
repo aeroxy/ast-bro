@@ -207,15 +207,17 @@ pub fn callers_multi<F: Fn(&CallEdge) -> bool>(
 /// means the name discriminates: an edge naming it can only have meant this
 /// symbol (or something outside the project). Nine (`new` in this repo) or
 /// thirty-nine (`close` in pgjdbc) means it names all of them equally, i.e.
-/// none of them in particular.
+/// none of them in particular. Only declarers in the target's language
+/// family count, as only a call from that family is listed (issue #96).
 pub fn name_declarers(graph: &CallGraph, targets: &[Qn]) -> usize {
+    use crate::calls::resolve::{can_reach, qn_lang};
     targets
         .iter()
         .map(|q| {
-            graph
-                .symbol_table
-                .get(q.name())
-                .map_or(1, |qns| qns.len().max(1))
+            let lang = qn_lang(q);
+            graph.symbol_table.get(q.name()).map_or(1, |qns| {
+                qns.iter().filter(|d| can_reach(lang, d)).count().max(1)
+            })
         })
         .max()
         .unwrap_or(0)
@@ -347,15 +349,22 @@ fn receiver_admits(
 
 /// How many project symbols an unattributed edge is spread across: its
 /// candidate count when pass C left one, otherwise the number of project
-/// symbols sharing the callee name. Lower is stronger evidence.
+/// symbols sharing the callee name in a language the call can reach. Lower
+/// is stronger evidence.
 fn ambiguity_breadth(graph: &CallGraph, e: &CallEdge) -> usize {
     if !e.candidates.is_empty() {
         return e.candidates.len();
     }
+    let lang = crate::deps::resolver::Lang::from_path(&e.file);
     graph
         .symbol_table
         .get(e.target.name_or_raw().as_str())
-        .map_or(1, |qns| qns.len().max(1))
+        .map_or(1, |qns| {
+            qns.iter()
+                .filter(|d| crate::calls::resolve::can_reach(lang, d))
+                .count()
+                .max(1)
+        })
 }
 
 /// All resolved + external + bare edges originating at `start`. Useful for
