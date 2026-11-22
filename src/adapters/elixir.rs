@@ -1836,10 +1836,15 @@ fn wrapped_bodies<'a, D: Doc>(node: &Node<'a, D>) -> Vec<Node<'a, D>> {
         .filter(|c| c.kind() == "else_block")
         .collect();
     let bodies: Vec<_> = std::iter::once(block).chain(elses).collect();
-    if bodies
-        .iter()
-        .any(|b| b.children().any(|c| _is_definition(&c)))
-    {
+    // An ExUnit `test` / `describe` / `setup` defines into the module too.
+    let defines = |c: &Node<'a, D>| {
+        _is_definition(c)
+            || _call_keyword(c).is_some_and(|k| {
+                matches!(k.as_str(), "test" | "describe" | "setup" | "setup_all")
+                    && _is_exunit_block(c, &k)
+            })
+    };
+    if bodies.iter().any(|b| b.children().any(|c| defines(&c))) {
         bodies
     } else {
         Vec::new()
@@ -2246,6 +2251,25 @@ mod tests {
         assert_eq!(got, vec![("def f(x)", 4), ("def unquote(n)()", 10)]);
         assert_eq!(a.children[0].end_line, 6);
         assert!(a.children[0].docs.is_empty(), "{:?}", a.children[0].docs);
+    }
+
+    #[test]
+    fn tests_inside_a_module_level_block_belong_to_the_module() {
+        let r = parse(
+            "defmodule T do\n  if c() do\n    test \"works\" do\n      Target.run()\n    end\n  end\n  for n <- [1, 2] do\n    describe \"group\" do\n      test \"each\", do: n\n    end\n  end\nend\n",
+        );
+        let got: Vec<&str> = r.declarations[0]
+            .children
+            .iter()
+            .map(|d| d.name.as_str())
+            .collect();
+        assert_eq!(got, vec!["test works", "describe group"]);
+        let calls: Vec<&str> = r.declarations[0].children[0]
+            .calls
+            .iter()
+            .map(|c| c.name.as_str())
+            .collect();
+        assert_eq!(calls, vec!["run"]);
     }
 
     #[test]
