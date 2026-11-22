@@ -23,6 +23,21 @@ defaults:
     shell: bash
 
 jobs:
+  fmt:
+    name: cargo fmt
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install the stable toolchain with rustfmt
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt --no-self-update
+          rustup default stable
+
+      - name: Check formatting
+        run: cargo fmt --all --check
+
   test:
     name: cargo test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
