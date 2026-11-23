@@ -1,7 +1,7 @@
 //! Static-embedding model loader (model2vec / potion-code-16M).
 //!
 //! `Embedder::open(model_dir)` mmaps `model.safetensors`, loads `tokenizer.json`
-//! via the HuggingFace `tokenizers` crate, and exposes `encode_one(text)` which
+//! into [`WordPiece`], and exposes `encode_one(text)` which
 //! returns a normalized `[f32; DIM]` for a single string.
 //!
 //! The model is a "static" embedder: no neural-net inference, just a `vocab × dim`
@@ -17,6 +17,7 @@
 //! downstream of `Embedder` (`row`, `all_rows`, `cosine_topk`) only ever deals
 //! with `f32`.
 
+use crate::search::wordpiece::WordPiece;
 use half::f16;
 use memmap2::Mmap;
 use safetensors::{Dtype, SafeTensors};
@@ -24,7 +25,6 @@ use std::fs::File;
 use std::io;
 use std::path::Path;
 use std::sync::Arc;
-use tokenizers::Tokenizer;
 
 /// Output dimension of `potion-code-16M`. Embedded as a const so callers can
 /// stack-allocate result buffers.
@@ -77,15 +77,14 @@ pub struct Embedder {
   vocab_size: usize,
   /// Row for each token id, when the model has a non-identity `mapping`.
   mapping: Option<Vec<u32>>,
-  tokenizer: Tokenizer,
+  tokenizer: WordPiece,
 }
 
 // SAFETY: both `Backing` variants are immutable after `Embedder::open` returns
 // (mmap'd file bytes, or a `Vec<f32>` nothing else holds a mutable reference
-// to), so shared reads from many threads are safe. The other field is the
-// HuggingFace `Tokenizer`, which is itself `Sync` and only ever used through
-// `&self` (`encode_one`), so concurrent encodes share it without interior
-// mutation — the raw pointer is the only reason these impls are needed at all.
+// to), so shared reads from many threads are safe. The other fields are plain
+// data read through `&self` — the raw pointer is the only reason these impls
+// are needed at all.
 unsafe impl Send for Embedder {}
 unsafe impl Sync for Embedder {}
 
@@ -93,7 +92,8 @@ impl Embedder {
   /// Open the cached model files from `model_dir`. Expects:
   /// - `<model_dir>/model.safetensors` containing a single `f32` or `f16`
   ///   tensor named `embeddings` with shape `[vocab_size, DIM]`.
-  /// - `<model_dir>/tokenizer.json` in HuggingFace tokenizers format.
+  /// - `<model_dir>/tokenizer.json` describing the BERT WordPiece pipeline
+  ///   [`WordPiece`] implements.
   pub fn open(model_dir: &Path) -> io::Result<Self> {
     let safetensors_path = model_dir.join("model.safetensors");
     let tokenizer_path = model_dir.join("tokenizer.json");
@@ -178,14 +178,9 @@ impl Embedder {
 
     let mapping = read_mapping(&st, vocab_size)?;
 
-    let tokenizer_err = |e: tokenizers::Error| {
-      io::Error::new(io::ErrorKind::InvalidData, format!("tokenizer.json: {e}"))
-    };
-    let mut tokenizer = Tokenizer::from_file(&tokenizer_path).map_err(tokenizer_err)?;
-    // `encode_one` applies MAX_EMBED_TOKENS itself. Left to `tokenizer.json`,
-    // the window would be whatever a model happens to ship.
-    tokenizer.with_truncation(None).map_err(tokenizer_err)?;
-    tokenizer.with_padding(None);
+    // `WordPiece` takes the vocabulary and added tokens from the file and
+    // ignores its truncation and padding: `encode_one` applies the window.
+    let tokenizer = WordPiece::load(&tokenizer_path)?;
 
     Ok(Self {
       _backing: backing,
@@ -241,18 +236,13 @@ impl Embedder {
       return out;
     }
 
-    let encoding = match self.tokenizer.encode(text, /* add_special_tokens */ false) {
-      Ok(e) => e,
-      Err(_) => return out,
-    };
-    let ids = encoding.get_ids();
-    let ids = &ids[..ids.len().min(MAX_EMBED_TOKENS)];
+    let ids = self.tokenizer.encode(text, MAX_EMBED_TOKENS);
     if ids.is_empty() {
       return out;
     }
 
     // Sum embeddings.
-    for &id in ids {
+    for &id in &ids {
       let row = self.token_row(id);
       for i in 0..DIM {
         out[i] += row[i];

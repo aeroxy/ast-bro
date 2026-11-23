@@ -77,7 +77,7 @@ Every `AST_BRO_*` variable on this page also answers to its pre-rename `AST_OUTL
 ```text
 ~/.cache/ast-bro/models/potion-code-16M/
 ├── config.json           # model config
-├── tokenizer.json        # huggingface tokenizers serialized form
+├── tokenizer.json        # vocabulary and pipeline, read by src/search/wordpiece.rs
 ├── model.safetensors     # ~64 MB of f32 weights, mmap'd at runtime
 └── manifest.json         # { "sha256": {...}, "stamps": {...}, "source": "hf" | "hf-mirror" | "custom" | "local" }
 ```

@@ -50,7 +50,11 @@ dirs = "5"
 similar = "2"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls-native-roots"] }
 sha2 = "0.10"
-tokenizers = { version = "0.21", default-features = false, features = ["onig"] }
+# The tokenizer `src/search/wordpiece.rs` implements needs the same Unicode
+# tables and matcher `tokenizers` uses, so the two agree on every character.
+unicode_categories = "0.1"
+unicode-normalization-alignments = "0.1"
+aho-corasick = "1"
 safetensors = "0.6"
 memmap2 = "0.9"
 half = "2"
@@ -64,3 +68,5 @@ glob = "0.3.3"
 
 [dev-dependencies]
 tempfile = "3"
+# The reference `src/search/wordpiece.rs` is checked against, id for id.
+tokenizers = { version = "0.21", default-features = false, features = ["onig"] }
