@@ -736,7 +736,12 @@ fn signature_of<D: ast_grep_core::Doc>(node: &ast_grep_core::Node<'_, D>, source
     Some(b) if b > range.start => b,
     _ => range.end,
   };
-  let slice = source.get(range.start..end).unwrap_or("");
+  one_line_signature(source.get(range.start..end).unwrap_or(""))
+}
+
+/// A signature as the outline writes it: on one line, capped at
+/// `MAX_SIGNATURE_CHARS`.
+fn one_line_signature(slice: &str) -> String {
   // Collapse the wrapping: a signature spread over five lines is still one
   // signature, and the outline is line-per-member.
   let mut flat = String::with_capacity(slice.len());
