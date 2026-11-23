@@ -197,7 +197,8 @@ src/search/
 ├── chunker.rs     chunking: ast-grep decls, tree-sitter-md sections (markdown),
 │                  blank-line paragraphs (toml / powershell)
 ├── chunker/elixir.rs  Elixir member walk, by macro name (no decl node kinds)
-├── download.rs    HF probe + hf-mirror fallback + sha256 manifest
+├── download.rs    HF probe + hf-mirror fallback, pinned commit + SHA-256s,
+│                  size/mtime-stamped manifest
 ├── embed.rs       safetensors mmap + tokenizer.json + cosine_topk (SIMD via wide)
 ├── fusion.rs      RRF (k=60) + alpha resolver
 ├── ranking.rs     boosting + penalties + greedy top-k
@@ -377,7 +378,7 @@ On `Index::open`, a non-empty delta is applied incrementally (`apply_delta`): th
 
 `ModelInfo::potion_code_16m()` is the only model wired in. To add another:
 
-1. Add a constructor to `download::ModelInfo` listing its files (config.json, tokenizer.json, model.safetensors).
+1. Add a constructor to `download::ModelInfo` naming the upstream commit to pin and the SHA-256 of each file at that commit (config.json, tokenizer.json, model.safetensors). The Hub API lists the LFS hashes (`/api/models/<id>/tree/<commit>`); hash the small non-LFS files yourself, from both huggingface.co and hf-mirror.com.
 2. Verify the embedding tensor inside the safetensors is named `embeddings` and is `f32` or `f16` (model2vec convention). `f16` tensors are decoded to `f32` once at open time (`decode_f16_le` in `embed.rs`); any other dtype is rejected.
 3. If the dimension differs from 256, the `DIM` constant in [`src/search/embed.rs`](../src/search/embed.rs) needs to follow. Most of the code is generic over `DIM`, but the const is the single source of truth — bumping it requires re-indexing existing repos (the schema check in `Meta::model.dim` will catch this and force a rebuild).
 
@@ -388,4 +389,4 @@ this model's dimension and teacher and scores higher on CoIR (NDCG@10 39.08 vs
 the pinned pgjdbc set. CoIR leans on docstring-to-function tasks, and these
 queries describe behaviour over a real codebase.
 
-The `AST_OUTLINE_MODEL_SOURCE` env var lets ops point at a custom HF-compatible mirror without code changes.
+The `AST_BRO_MODEL_SOURCE` env var lets ops point at a custom HF-compatible mirror without code changes; the mirror has to serve the pinned commit. See [network-security.md](network-security.md).
