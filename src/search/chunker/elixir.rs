@@ -14,9 +14,11 @@ use ast_grep_core::{Doc, Node};
 /// What one form in a body is to the member walk.
 enum Form {
   /// A module-like definition or an ExUnit `describe`: a member whose body
-  /// is walked, under its name.
+  /// is walked, under its name, in module `fqn` (a `describe`'s is its
+  /// module's).
   Module {
     name: String,
+    fqn: Option<String>,
     signature: String,
   },
   /// A function clause: a callable member, folded with its neighbours.
@@ -34,9 +36,19 @@ enum Form {
   Other,
 }
 
-fn form_of<D: Doc>(node: &Node<'_, D>, source: &str) -> Form {
-  match definition(node) {
-    Some(Definition::Module { name, signature }) => return Form::Module { name, signature },
+fn form_of<D: Doc>(node: &Node<'_, D>, source: &str, scope: &str) -> Form {
+  match definition(node, scope) {
+    Some(Definition::Module {
+      name,
+      fqn,
+      signature,
+    }) => {
+      return Form::Module {
+        name,
+        fqn: Some(fqn),
+        signature,
+      }
+    }
     Some(Definition::Function {
       keyword,
       name,
@@ -58,6 +70,7 @@ fn form_of<D: Doc>(node: &Node<'_, D>, source: &str) -> Form {
     Some(ExUnitBlock::Describe { name, signature }) => {
       return Form::Module {
         name,
+        fqn: None,
         signature: one_line_signature(&signature),
       }
     }
@@ -106,6 +119,19 @@ pub(super) fn collect_split_points<D: Doc>(
   trail: &mut Vec<String>,
   d: Descent,
 ) {
+  walk(node, source, plan, trail, "", d);
+}
+
+/// The member walk of a body in module `scope` (`""` at the top), whose
+/// full name `__MODULE__` stands for.
+fn walk<D: Doc>(
+  node: &Node<'_, D>,
+  source: &str,
+  plan: &mut SplitPlan,
+  trail: &mut Vec<String>,
+  scope: &str,
+  d: Descent,
+) {
   let source_len = source.len();
   // The function the previous clause belongs to, and its outline entry.
   let mut last: Option<((String, String, usize), usize)> = None;
@@ -115,13 +141,17 @@ pub(super) fn collect_split_points<D: Doc>(
     }
     let range = child.range();
     let too_big = range.end.saturating_sub(range.start) > MAX_CHARS;
-    let form = form_of(&child, source);
+    let form = form_of(&child, source, scope);
     if !matches!(form, Form::Clause { .. }) && child.kind() != "comment" && !is_attribute(&child) {
       last = None;
     }
 
     let member = match form {
-      Form::Module { name, signature } => {
+      Form::Module {
+        name,
+        fqn,
+        signature,
+      } => {
         let breadcrumb = join_trail(trail, Some(&name));
         plan.members.push(MemberSpan {
           start: range.start,
@@ -132,7 +162,14 @@ pub(super) fn collect_split_points<D: Doc>(
         if let Some(block) = do_block(&child).filter(|_| !d.exhausted()) {
           trail.push(name);
           let next = d.into_child(range.end.saturating_sub(range.start));
-          collect_split_points(&block, source, plan, trail, next);
+          walk(
+            &block,
+            source,
+            plan,
+            trail,
+            fqn.as_deref().unwrap_or(scope),
+            next,
+          );
           trail.pop();
         }
         true
@@ -177,7 +214,7 @@ pub(super) fn collect_split_points<D: Doc>(
         if !d.exhausted() {
           let next = d.into_child(range.end.saturating_sub(range.start));
           for block in wrapped_bodies(&child) {
-            collect_split_points(&block, source, plan, trail, next);
+            walk(&block, source, plan, trail, scope, next);
           }
         }
         false
@@ -432,5 +469,20 @@ mod tests {
     assert_eq!(crumbs(src), vec!["P.A", "P.A > f"]);
     let src = "defmodule A do\n  defimpl P do\n    def f(_), do: 1\n  end\nend\n";
     assert_eq!(crumbs(src), vec!["A", "A > P", "A > P > f"]);
+    // `__MODULE__` names the enclosing module, nested ones included, as in
+    // `map`.
+    let src = "defmodule Foo.Bar do\n  defmodule Baz do\n    defimpl Inspect, for: __MODULE__ do\n    end\n  end\n  defimpl P, for: [__MODULE__.Sub] do\n  end\nend\n";
+    assert_eq!(
+      crumbs(src),
+      vec![
+        "Foo.Bar",
+        "Foo.Bar > Baz",
+        "Foo.Bar > Baz > Inspect.Foo.Bar.Baz",
+        "Foo.Bar > P.Foo.Bar.Sub"
+      ]
+    );
+    // Outside a module it stays as written, as in `map`.
+    let src = "defimpl P, for: __MODULE__ do\nend\n";
+    assert_eq!(crumbs(src), vec!["P.__MODULE__"]);
   }
 }
