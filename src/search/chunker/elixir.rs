@@ -463,6 +463,13 @@ mod tests {
   }
 
   #[test]
+  fn a_wrapper_in_a_wrapper_is_opened() {
+    let src = "defmodule A do\n  if a do\n    if b do\n      def g, do: 1\n    end\n  end\nend\n";
+    let sigs: Vec<String> = members(src).into_iter().map(|(_, s)| s).collect();
+    assert_eq!(sigs, vec!["defmodule A", "def g"]);
+  }
+
+  #[test]
   fn a_quoted_definition_is_not_a_member() {
     // A quoted `def` is data: it defines nothing in `A`.
     let src = "defmodule A do\n  quote do\n    def g, do: 1\n  end\nend\n";

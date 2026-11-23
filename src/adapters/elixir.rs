@@ -1933,11 +1933,15 @@ pub(crate) fn wrapped_bodies<'a, D: Doc>(node: &Node<'a, D>) -> Vec<Node<'a, D>>
     .filter(|c| c.kind() == "else_block")
     .collect();
   let bodies: Vec<_> = std::iter::once(block).chain(elses).collect();
-  // An ExUnit `test` / `describe` / `setup` defines into the module too.
+  // An ExUnit `test` / `describe` / `setup` defines into the module too, and
+  // so does a wrapper inside this one (`if … do if … do def …`), but not a
+  // `quote`, whose code is data.
   let defines = |c: &Node<'a, D>| {
     definition(c, "").is_some()
-      || _call_keyword(c).is_some_and(|k| {
-        matches!(k.as_str(), "test" | "describe" | "setup" | "setup_all") && _is_exunit_block(c, &k)
+      || _call_keyword(c).is_some_and(|k| match k.as_str() {
+        "test" | "describe" | "setup" | "setup_all" => _is_exunit_block(c, &k),
+        "quote" => false,
+        _ => !wrapped_bodies(c).is_empty(),
       })
   };
   if bodies.iter().any(|b| b.children().any(|c| defines(&c))) {
@@ -2380,6 +2384,20 @@ mod tests {
     assert_eq!(got, vec![("def f(x)", 4), ("def unquote(n)()", 10)]);
     assert_eq!(a.children[0].end_line, 6);
     assert!(a.children[0].docs.is_empty(), "{:?}", a.children[0].docs);
+  }
+
+  #[test]
+  fn definitions_in_nested_blocks_belong_to_the_module() {
+    let r = parse(
+      "defmodule A do\n  if a() do\n    if b() do\n      def f, do: 1\n    end\n  end\n  if a() do\n    quote do\n      def injected, do: 1\n    end\n  end\nend\n",
+    );
+    let got: Vec<&str> = r.declarations[0]
+      .children
+      .iter()
+      .map(|d| d.signature.as_str())
+      .collect();
+    // An `if` holding only an `if` still wraps a definition; a `quote` does not.
+    assert_eq!(got, vec!["def f"]);
   }
 
   #[test]
