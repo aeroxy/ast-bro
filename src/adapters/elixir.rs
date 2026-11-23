@@ -797,10 +797,7 @@ impl<'s> Walker<'s> {
     out: &mut Body,
   ) {
     let args = _named_args(node);
-    let label = args
-      .first()
-      .filter(|a| a.kind() == "string")
-      .map(|a| _string_content(&_text(a)));
+    let label = _exunit_label(&args);
     let shown: Vec<String> = args
       .iter()
       .filter(|a| a.kind() != "keywords")
@@ -811,9 +808,6 @@ impl<'s> Walker<'s> {
     } else {
       format!("{} {}", keyword, shown.join(", "))
     };
-    // A qn joins its segments with `::`, so a label writes it `: :`
-    // (`test "Foo::bar"` is no function `bar`); the signature keeps it.
-    let label = label.unwrap_or_default().replace("::", ": :");
     let calls = if keyword == "describe" {
       Vec::new()
     } else {
@@ -1823,6 +1817,41 @@ fn _is_exunit_block<'a, D: Doc>(node: &Node<'a, D>, keyword: &str) -> bool {
       "test" | "describe" => args.first().is_some_and(|a| a.kind() == "string"),
       _ => true,
     }
+}
+
+/// The label of an ExUnit block as its name writes it. A qn joins its
+/// segments with `::`, so a label writes it `: :` (`test "Foo::bar"` is no
+/// function `bar`); the signature keeps it.
+fn _exunit_label<'a, D: Doc>(args: &[Node<'a, D>]) -> String {
+  args
+    .first()
+    .filter(|a| a.kind() == "string")
+    .map(|a| _string_content(&_text(a)))
+    .unwrap_or_default()
+    .replace("::", ": :")
+}
+
+/// An ExUnit block, as the search chunker sees it.
+pub(crate) enum ExUnitBlock {
+  /// A `describe`, with its name as `map` writes it.
+  Describe { name: String },
+  /// A `test` / `setup` / `setup_all`: one member, whatever its body holds.
+  Leaf,
+}
+
+/// Recognise `node` as an ExUnit block, as the module walk does.
+pub(crate) fn exunit_block<'a, D: Doc>(node: &Node<'a, D>) -> Option<ExUnitBlock> {
+  if node.kind() != "call" {
+    return None;
+  }
+  let keyword = _call_keyword(node)?;
+  match keyword.as_str() {
+    "describe" if _is_exunit_block(node, &keyword) => Some(ExUnitBlock::Describe {
+      name: format!("describe {}", _exunit_label(&_named_args(node))),
+    }),
+    "test" | "setup" | "setup_all" if _is_exunit_block(node, &keyword) => Some(ExUnitBlock::Leaf),
+    _ => None,
+  }
 }
 
 /// A string literal's text without its delimiters.
