@@ -8,7 +8,9 @@
 //! and any other `do`-block macro is a callable member, or a wrapper opened
 //! in place when its blocks hold definitions.
 use super::*;
-use crate::adapters::elixir::{definition, exunit_block, wrapped_bodies, Definition, ExUnitBlock};
+use crate::adapters::elixir::{
+  definition, exunit_block, module_forms, wrapped_bodies, Definition, ExUnitBlock,
+};
 use ast_grep_core::{Doc, Node};
 
 /// What one form in a body is to the member walk.
@@ -120,13 +122,13 @@ pub(super) fn collect_split_points<D: Doc>(
   trail: &mut Vec<String>,
   d: Descent,
 ) {
-  walk(node, source, plan, trail, "", d);
+  walk(node.children().collect(), source, plan, trail, "", d);
 }
 
-/// The member walk of a body in module `scope` (`""` at the top), whose
-/// full name `__MODULE__` stands for.
+/// The member walk of the forms of a body in module `scope` (`""` at the
+/// top), whose full name `__MODULE__` stands for.
 fn walk<D: Doc>(
-  node: &Node<'_, D>,
+  forms: Vec<Node<'_, D>>,
   source: &str,
   plan: &mut SplitPlan,
   trail: &mut Vec<String>,
@@ -136,7 +138,7 @@ fn walk<D: Doc>(
   let source_len = source.len();
   // The function the previous clause belongs to, and its outline entry.
   let mut last: Option<((String, String, usize), usize)> = None;
-  for child in node.children() {
+  for child in forms {
     if !child.is_named() {
       continue;
     }
@@ -160,11 +162,19 @@ fn walk<D: Doc>(
           breadcrumb,
           signature,
         });
-        if let Some(block) = do_block(&child).filter(|_| !d.exhausted()) {
+        // A module's body may be a `do:` value; a `describe`'s is read only
+        // from its `do` block, as in `map`.
+        let forms = match &fqn {
+          Some(_) => module_forms(&child),
+          None => do_block(&child)
+            .map(|b| b.children().collect())
+            .unwrap_or_default(),
+        };
+        if !forms.is_empty() && !d.exhausted() {
           trail.push(name);
           let next = d.into_child(range.end.saturating_sub(range.start));
           walk(
-            &block,
+            forms,
             source,
             plan,
             trail,
@@ -215,7 +225,7 @@ fn walk<D: Doc>(
         if !d.exhausted() {
           let next = d.into_child(range.end.saturating_sub(range.start));
           for block in wrapped_bodies(&child) {
-            walk(&block, source, plan, trail, scope, next);
+            walk(block.children().collect(), source, plan, trail, scope, next);
           }
         }
         false
@@ -459,6 +469,21 @@ mod tests {
     assert_eq!(
       sigs,
       vec!["defmodule A", "MyDsl.section \"x\"", "Kernel.if true"]
+    );
+  }
+
+  #[test]
+  fn a_keyword_bodied_module_is_opened() {
+    let src = "defmodule M, do: (def run(), do: :ok; def stop, do: :ok)\ndefmodule N, do: def(go(x), do: x)\n";
+    assert_eq!(
+      members(src),
+      vec![
+        ("M".to_string(), "defmodule M".to_string()),
+        ("M > run".to_string(), "def run()".to_string()),
+        ("M > stop".to_string(), "def stop".to_string()),
+        ("N".to_string(), "defmodule N".to_string()),
+        ("N > go".to_string(), "def go(x)".to_string()),
+      ]
     );
   }
 

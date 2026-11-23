@@ -352,20 +352,25 @@ impl<'s> Walker<'s> {
   }
 
   fn walk_body<'a, D: Doc>(&mut self, body: &Node<'a, D>, module_fqn: &str) -> Body {
+    self.walk_scoped(body.children().collect(), module_fqn)
+  }
+
+  /// Walk `forms` as one body, in a scope of their own.
+  fn walk_scoped<'a, D: Doc>(&mut self, forms: Vec<Node<'a, D>>, module_fqn: &str) -> Body {
     let scope = self.scopes.last().cloned().unwrap_or_default();
     self.scopes.push(scope);
-    let out = self.walk_forms(body, module_fqn);
+    let out = self.walk_forms(forms, module_fqn);
     self.scopes.pop();
     out
   }
 
-  fn walk_forms<'a, D: Doc>(&mut self, body: &Node<'a, D>, module_fqn: &str) -> Body {
+  fn walk_forms<'a, D: Doc>(&mut self, forms: Vec<Node<'a, D>>, module_fqn: &str) -> Body {
     let mut out = Body::default();
     let mut pending = Pending::default();
     let mut typedoc: Vec<String> = Vec::new();
     let mut last_fn: Option<LastFn> = None;
 
-    for child in body.children() {
+    for child in forms {
       if !child.is_named() || child.kind() == "comment" {
         continue;
       }
@@ -644,10 +649,7 @@ impl<'s> Walker<'s> {
     } else {
       self.defined.push(fqn.clone());
     }
-    let body = match node.children().find(|c| c.kind() == "do_block") {
-      Some(b) => self.walk_body(&b, &fqn),
-      None => Body::default(),
-    };
+    let body = self.walk_scoped(module_forms(node), &fqn);
     bases.extend(body.behaviours);
     let kind = if body.defines_struct && kind == DeclarationKind::Class && native == "module" {
       DeclarationKind::Struct
@@ -1751,6 +1753,20 @@ fn _push_children<'a, D: Doc>(stack: &mut Vec<Node<'a, D>>, node: &Node<'a, D>) 
   stack[start..].reverse();
 }
 
+/// The forms of a module's body: the children of its `do` block, or its
+/// `do:` value, a block of forms (`do: (def a …; def b …)`) or one form
+/// (`do: def(a, …)`).
+pub(crate) fn module_forms<'a, D: Doc>(node: &Node<'a, D>) -> Vec<Node<'a, D>> {
+  if let Some(block) = node.children().find(|c| c.kind() == "do_block") {
+    return block.children().collect();
+  }
+  match _keyword_value(&_named_args(node), "do") {
+    Some(v) if v.kind() == "block" => v.children().collect(),
+    Some(v) => vec![v],
+    None => Vec::new(),
+  }
+}
+
 /// A definition form, as the search chunker sees it.
 pub(crate) enum Definition {
   /// `defmodule` / `defprotocol` / `defimpl`, with the full name its body
@@ -2394,6 +2410,30 @@ mod tests {
     assert_eq!(got, vec![("def f(x)", 4), ("def unquote(n)()", 10)]);
     assert_eq!(a.children[0].end_line, 6);
     assert!(a.children[0].docs.is_empty(), "{:?}", a.children[0].docs);
+  }
+
+  #[test]
+  fn a_keyword_bodied_module_defines_its_functions() {
+    // `do:` is the same body as `do … end`, one form or a block of them.
+    let r = parse(
+      "defmodule M, do: (def run(), do: helper(); defp helper, do: :ok)\ndefmodule N, do: def(go(x), do: x)\n",
+    );
+    let names = |i: usize| -> Vec<&str> {
+      r.declarations[i]
+        .children
+        .iter()
+        .map(|d| d.name.as_str())
+        .collect()
+    };
+    assert_eq!(names(0), vec!["run", "helper"]);
+    assert_eq!(names(1), vec!["go"]);
+    // The calls in it are the function's, as in a `do` block.
+    let run = &r.declarations[0].children[0];
+    assert!(
+      run.calls.iter().any(|c| c.name == "helper"),
+      "{:?}",
+      run.calls
+    );
   }
 
   #[test]
