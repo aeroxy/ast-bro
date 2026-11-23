@@ -2470,6 +2470,16 @@ mod tests {
     let d = &r.declarations[0];
     assert_eq!(names(&d.children), vec!["describe group", "Helper"]);
     assert_eq!(names(&d.children[0].children), vec!["test group uses it"]);
+    // A protocol and an implementation are modules too.
+    let r = parse(
+      "defmodule D do\n  describe \"group\" do\n    defprotocol Proto do\n      def go(x)\n    end\n\n    defimpl Proto, for: Atom do\n      def go(_), do: :ok\n    end\n  end\nend\n",
+    );
+    let d = &r.declarations[0];
+    assert_eq!(
+      names(&d.children),
+      vec!["describe group", "Proto", "Proto.Atom"]
+    );
+    assert!(d.children[0].children.is_empty());
   }
 
   #[test]
