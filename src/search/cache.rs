@@ -179,7 +179,7 @@ pub fn hash_file(path: &Path) -> std::io::Result<u64> {
   Ok(hasher.digest())
 }
 
-fn mtime_nanos(meta: &fs::Metadata) -> i128 {
+pub(crate) fn mtime_nanos(meta: &fs::Metadata) -> i128 {
   let mtime = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
   match mtime.duration_since(SystemTime::UNIX_EPOCH) {
     Ok(d) => d.as_nanos() as i128,

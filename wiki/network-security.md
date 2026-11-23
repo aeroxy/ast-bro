@@ -10,9 +10,11 @@ A single embedding model:
 
 | Item | Source | Size |
 |---|---|---|
-| `config.json` | `https://huggingface.co/minishlab/potion-code-16M` | ~600 B |
-| `tokenizer.json` | same | ~2 MB |
+| `config.json` | `https://huggingface.co/minishlab/potion-code-16M` | 97 B |
+| `tokenizer.json` | same | ~1 MB |
 | `model.safetensors` | same | ~64 MB |
+
+All three come from one pinned commit of that repository, not from `main`, and ast-bro carries the SHA-256 each file has there (`ModelInfo::potion_code_16m` in `src/search/download.rs`). Every install therefore reads the same bytes, and a re-upload upstream cannot change the model under existing indexes.
 
 Stored under `~/.cache/ast-bro/models/potion-code-16M/` (see [cache layout](#cache-layout) below).
 
@@ -26,7 +28,7 @@ The model is `minishlab/potion-code-16M` — a static model2vec embedding (no ne
 2. If the probe fails (timeout, DNS failure, content-length anomaly from a captive portal), it transparently falls back to `https://hf-mirror.com/.../config.json`.
 3. `hf-mirror.com` is a community-run URL-rewrite mirror of HuggingFace — it serves the exact same bytes from a different domain.
 
-Both attempts share the same SHA-256 integrity check, so the fallback path produces a bit-identical local cache.
+Both are checked against the same pinned SHA-256s, so either path produces a bit-identical local cache.
 
 ## TLS verification policy (the unusual part)
 
@@ -39,15 +41,16 @@ This is intentional. The reason:
 Strict TLS verification fails universally there, because the corporate CA isn't in any standard trust store. We could refuse to work in those environments, or we could accept the trade-off. We picked the trade-off because:
 
 1. **Search is opt-in** — users who never run `search` never make any outbound request, so this policy has zero impact on them.
-2. **Integrity is enforced via SHA-256, not TLS** — after first download, ast-bro writes a `manifest.json` with a SHA-256 hash of every file. Subsequent loads verify each cached file against the manifest before using it. A network attacker who tampers with the *first* download will succeed; tampering with subsequent loads will be detected.
-3. **The bytes are reproducible** — anyone can verify the model files against HuggingFace's published hashes if they're paranoid about a first-time MITM.
+2. **Integrity is enforced by pinned SHA-256s, not TLS** — each file streams to a temporary file and is checked against the SHA-256 ast-bro carries for it before it enters the cache. A proxy or network attacker can block the download, but cannot substitute the model, including on the first download.
+3. **The bytes are reproducible** — the pinned commit and hashes are in the source, and HuggingFace publishes the same hashes for that commit.
 
 A loud stderr warning fires on every download in non-strict mode:
 
 ```text
 ast-bro: TLS certificate verification is DISABLED for model downloads
-(works through corp MITM proxies). Set AST_OUTLINE_TLS_STRICT=1 to enforce
-full chain verification. Integrity is checked via SHA-256 on subsequent loads.
+(works through corp MITM proxies). Set AST_BRO_TLS_STRICT=1 to enforce
+full chain verification. Every file is still checked against the SHA-256
+pinned in ast-bro before it is used.
 ```
 
 ### Opting back into strict TLS
@@ -56,16 +59,18 @@ Two env vars let you tighten the policy:
 
 | Env var | Effect |
 |---|---|
-| `AST_OUTLINE_TLS_STRICT=1` | Enforce full TLS chain verification. Will fail behind a corp MITM proxy unless the corp CA is in the OS trust store. |
-| `AST_OUTLINE_CA_BUNDLE=/path/to/ca.pem` | Add extra root CAs from a PEM file. Compatible with either strict or non-strict mode — most useful with strict, when you want to validate the corp MITM cert chain. |
+| `AST_BRO_TLS_STRICT=1` | Enforce full TLS chain verification. Will fail behind a corp MITM proxy unless the corp CA is in the OS trust store. |
+| `AST_BRO_CA_BUNDLE=/path/to/ca.pem` | Add extra root CAs from a PEM file. Compatible with either strict or non-strict mode — most useful with strict, when you want to validate the corp MITM cert chain. |
 
 For a security-conscious user behind a corp proxy:
 
 ```bash
-export AST_OUTLINE_TLS_STRICT=1
-export AST_OUTLINE_CA_BUNDLE=/usr/local/share/ca-certificates/corp-mitm.crt
+export AST_BRO_TLS_STRICT=1
+export AST_BRO_CA_BUNDLE=/usr/local/share/ca-certificates/corp-mitm.crt
 ast-bro search "anything" .   # validates against the corp CA
 ```
+
+Every `AST_BRO_*` variable on this page also answers to its pre-rename `AST_OUTLINE_*` name.
 
 ## Cache layout
 
@@ -74,21 +79,23 @@ ast-bro search "anything" .   # validates against the corp CA
 ├── config.json           # model config
 ├── tokenizer.json        # huggingface tokenizers serialized form
 ├── model.safetensors     # ~64 MB of f32 weights, mmap'd at runtime
-└── manifest.json         # { "sha256": {...}, "source": "hf" | "hf-mirror" }
+└── manifest.json         # { "sha256": {...}, "stamps": {...}, "source": "hf" | "hf-mirror" | "custom" | "local" }
 ```
 
-Cache root is `dirs::cache_dir()` (XDG-respecting) joined with `ast-bro/models`. Override with `AST_OUTLINE_MODEL_DIR=/some/path`.
+`stamps` records the size and mtime each file had when it was last verified. A load trusts a file whose stamp still matches and hashes anything else against its pinned SHA-256, so a truncated, partly written or edited file is caught without hashing 64 MB on every load. That hash used to run on every search and took most of a warm CLI search's time. A manifest from before stamps existed is hashed once and then gains them.
+
+Cache root is `dirs::cache_dir()` (XDG-respecting) joined with `ast-bro/models`. Override with `AST_BRO_MODEL_DIR=/some/path`. For an offline machine, copy the three files into `<that path>/potion-code-16M/`; they are hashed against the pinned values on first use, so no manifest is needed.
 
 ## Pinning the source
 
 If you don't want the auto-probe (e.g. CI where you know HF is reachable, or a closed network where only the mirror works), pin it:
 
-| `AST_OUTLINE_MODEL_SOURCE` value | Effect |
+| `AST_BRO_MODEL_SOURCE` value | Effect |
 |---|---|
 | *(unset)* | Default — probe HF, fall back to hf-mirror.com |
 | `hf` | Always use `https://huggingface.co` |
 | `hf-mirror` | Always use `https://hf-mirror.com` |
-| `https://your.mirror/` | Use a custom HF-compatible base URL |
+| `https://your.mirror/` | Use a custom HF-compatible base URL. It must serve `<id>/resolve/<commit>/<file>`, since ast-bro asks for the pinned commit rather than `main`. |
 
 ## What does NOT make network requests
 

@@ -1,16 +1,25 @@
 //! Model file downloader with HuggingFace → hf-mirror.com fallback.
 //!
-//! Behaviour (per the search plan):
-//! 1. If the cache already has all files and the cached SHA-256 manifest
-//!    matches the on-disk bytes, return immediately.
-//! 2. Otherwise probe `https://huggingface.co/<id>/resolve/main/config.json`
+//! The model is pinned: [`ModelInfo`] names the upstream commit and the
+//! SHA-256 each file has there, so every install reads the same bytes. TLS
+//! verification is off by default (see `build_client`), which makes the
+//! pinned hashes the integrity check a download actually gets.
+//!
+//! Behaviour:
+//! 1. If every cached file still has the size and mtime recorded when it was
+//!    last verified, return immediately. Hashing the 64 MB of weights on every
+//!    load took ~120 ms, most of a warm CLI search. A file whose size or mtime
+//!    changed, or that has no record (placed by hand), is hashed and must
+//!    match its pinned value.
+//! 2. Otherwise probe `https://huggingface.co/<id>/resolve/<rev>/config.json`
 //!    with a 3-second connect+TLS timeout. Probe success requires HTTP 200
-//!    AND a content-length within ±20% of the reference size — defends
-//!    against captive-portal redirects that 200 with HTML.
+//!    and a plausible content-length — defends against captive-portal
+//!    redirects that 200 with HTML.
 //! 3. On probe success, download from HuggingFace. Otherwise download from
-//!    `https://hf-mirror.com/<id>/resolve/main/<file>` (URL-rewrite mirror).
-//! 4. Atomic-rename each file into the cache dir; record SHA-256s in
-//!    `manifest.json` so subsequent loads can verify integrity.
+//!    `https://hf-mirror.com/<id>/resolve/<rev>/<file>` (URL-rewrite mirror).
+//! 4. Each file streams to a `.tmp`, is checked against its pinned SHA-256,
+//!    and only then renamed into the cache dir. `manifest.json` records the
+//!    hash plus the size and mtime it was verified at.
 //!
 //! Env overrides:
 //! - `AST_BRO_MODEL_DIR` (or legacy `AST_OUTLINE_MODEL_DIR`) — replace the
@@ -40,19 +49,52 @@ const PROBE_FILE: &str = "config.json";
 const PROBE_REFERENCE_SIZE: u64 = 600;
 const PROBE_SIZE_TOLERANCE: f64 = 5.0; // ±500%, generous — only catches obvious anomalies
 
-/// Files we expect every model to ship.
+/// One file of a pinned model, with the SHA-256 it has at
+/// [`ModelInfo::revision`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ModelFile {
+  pub name: &'static str,
+  pub sha256: &'static str,
+}
+
+/// A model pinned to one upstream commit.
 #[derive(Debug, Clone)]
 pub struct ModelInfo {
   pub id: String,
-  pub files: Vec<&'static str>,
+  /// The commit files are fetched from (`resolve/<revision>/…`). Following
+  /// `main` instead would let a re-upload change the model under existing
+  /// indexes, and leave nothing to check a download against.
+  pub revision: &'static str,
+  pub files: Vec<ModelFile>,
 }
 
 impl ModelInfo {
   pub fn potion_code_16m() -> Self {
     Self {
       id: "minishlab/potion-code-16M".to_string(),
-      files: vec!["config.json", "tokenizer.json", "model.safetensors"],
+      // `main` as of 2026-11-23. These are the bytes `main` has served since
+      // search shipped (2026-05), so pinning them re-downloads nothing.
+      revision: "1b0ff71095656b23306542bbad34a09109673720",
+      files: vec![
+        ModelFile {
+          name: "config.json",
+          sha256: "edf07552b5d768d556ded176d19f3a34f25360548de3a246d226ce8e28647914",
+        },
+        ModelFile {
+          name: "tokenizer.json",
+          sha256: "8e84217af15e70e8127c855435fc3d8a4cd91d7bbe686f72e75f188118ec78ae",
+        },
+        ModelFile {
+          name: "model.safetensors",
+          sha256: "ca6159081a6e96cebe4ad878e5e8437bfccc761e8db16223370149cd2faa6c0b",
+        },
+      ],
     }
+  }
+
+  /// Where `file` lives under `base` at the pinned revision.
+  fn url(&self, base: &str, file: &ModelFile) -> String {
+    format!("{base}/{}/resolve/{}/{}", self.id, self.revision, file.name)
   }
 }
 
@@ -81,12 +123,34 @@ impl<'a> Source<'a> {
   }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Default, Serialize, Deserialize)]
 struct Manifest {
   /// Map from filename -> hex sha256 string.
   sha256: HashMap<String, String>,
-  /// Which source populated this cache: "hf", "hf-mirror", or "custom".
+  /// Which source populated this cache: "hf", "hf-mirror", "custom", or
+  /// "local" for files placed by hand.
   source: String,
+  /// Size and mtime each file had when its hash was last verified. A file
+  /// whose stamp still matches is not hashed again. Manifests written before
+  /// stamps existed have none; their files are hashed once and gain one.
+  #[serde(default)]
+  stamps: HashMap<String, FileStamp>,
+}
+
+/// What a verified file looked like on disk.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+struct FileStamp {
+  size: u64,
+  mtime_ns: i64,
+}
+
+impl FileStamp {
+  fn of(meta: &fs::Metadata) -> Self {
+    Self {
+      size: meta.len(),
+      mtime_ns: crate::search::cache::mtime_nanos(meta) as i64,
+    }
+  }
 }
 
 /// Root of the model cache. Honours `AST_BRO_MODEL_DIR` (or legacy
@@ -166,24 +230,32 @@ pub fn ensure_model(info: &ModelInfo) -> io::Result<PathBuf> {
   );
 
   let client = build_client(DOWNLOAD_TIMEOUT)?;
-  let mut sha256: HashMap<String, String> = HashMap::new();
+  let mut manifest = Manifest {
+    source: source.label().to_string(),
+    ..Manifest::default()
+  };
 
   for file in &info.files {
-    let url = format!("{}/{}/resolve/main/{}", source.base_url(), info.id, file);
-    let dest = dir.join(file);
-    let hash = download_to(&client, &url, &dest)?;
-    sha256.insert(file.to_string(), hash);
+    let dest = dir.join(file.name);
+    download_to(
+      &client,
+      &info.url(source.base_url(), file),
+      &dest,
+      file.sha256,
+    )?;
+    manifest
+      .sha256
+      .insert(file.name.to_string(), file.sha256.to_string());
+    manifest
+      .stamps
+      .insert(file.name.to_string(), FileStamp::of(&fs::metadata(&dest)?));
   }
 
-  let manifest = Manifest {
-    sha256,
-    source: source.label().to_string(),
-  };
   write_manifest(&dir, &manifest)?;
   Ok(dir)
 }
 
-fn select_source<'a>(_info: &'a ModelInfo) -> Source<'a> {
+fn select_source<'a>(info: &'a ModelInfo) -> Source<'a> {
   let forced =
     std::env::var("AST_BRO_MODEL_SOURCE").or_else(|_| std::env::var("AST_OUTLINE_MODEL_SOURCE"));
   if let Ok(forced) = forced {
@@ -201,7 +273,7 @@ fn select_source<'a>(_info: &'a ModelInfo) -> Source<'a> {
       }
     };
   }
-  if probe_huggingface(&_info.id) {
+  if probe_huggingface(info) {
     Source::HuggingFace
   } else {
     eprintln!("ast-bro: HuggingFace unreachable, falling back to hf-mirror.com");
@@ -209,11 +281,14 @@ fn select_source<'a>(_info: &'a ModelInfo) -> Source<'a> {
   }
 }
 
-fn probe_huggingface(model_id: &str) -> bool {
+fn probe_huggingface(info: &ModelInfo) -> bool {
   let Ok(client) = build_client(PROBE_TIMEOUT) else {
     return false;
   };
-  let url = format!("{HF_BASE}/{model_id}/resolve/main/{PROBE_FILE}");
+  let url = format!(
+    "{HF_BASE}/{}/resolve/{}/{PROBE_FILE}",
+    info.id, info.revision
+  );
   let Ok(resp) = client.head(&url).send() else {
     return false;
   };
@@ -259,8 +334,8 @@ fn build_client(timeout: Duration) -> io::Result<reqwest::blocking::Client> {
   // TLS strictness policy:
   // - Default: accept any cert. Lets the downloader work behind corp TLS-MITM
   //   proxies without per-user CA configuration. Integrity is enforced by the
-  //   SHA-256 manifest written after first download — subsequent loads detect
-  //   tampering even if the original fetch was over a MITM channel.
+  //   SHA-256 pinned for each file in `ModelInfo`, checked before a download
+  //   is moved into the cache, so a MITM channel cannot substitute the model.
   // - `AST_BRO_TLS_STRICT=1` (or legacy `AST_OUTLINE_TLS_STRICT=1`) opts back
   //   into full chain verification.
   let strict = tls_strict();
@@ -290,13 +365,21 @@ fn warn_about_tls_policy() {
     eprintln!(
       "ast-bro: TLS certificate verification is DISABLED for model downloads \
              (works through corp MITM proxies). Set AST_BRO_TLS_STRICT=1 to enforce \
-             full chain verification. Integrity is checked via SHA-256 on subsequent loads."
+             full chain verification. Every file is still checked against the SHA-256 \
+             pinned in ast-bro before it is used."
     );
   }
 }
 
-/// Stream `url` to `dest` (via a `.tmp` + atomic rename) and return its hex sha256.
-fn download_to(client: &reqwest::blocking::Client, url: &str, dest: &Path) -> io::Result<String> {
+/// Stream `url` to `dest` via a `.tmp`, and rename it into place only if its
+/// SHA-256 is `expected`, so a substituted or truncated file never reaches
+/// the cache.
+fn download_to(
+  client: &reqwest::blocking::Client,
+  url: &str,
+  dest: &Path,
+  expected: &str,
+) -> io::Result<()> {
   let resp = client.get(url).send().map_err(|e| {
     // reqwest::Error eats the underlying source on Display; chase the
     // chain so TLS/proxy details surface in the error message.
@@ -332,8 +415,18 @@ fn download_to(client: &reqwest::blocking::Client, url: &str, dest: &Path) -> io
   file.sync_all()?;
   drop(file);
 
-  fs::rename(&tmp, dest)?;
-  Ok(hex_digest(hasher.finalize()))
+  let actual = hex_digest(hasher.finalize());
+  if actual != expected {
+    let _ = fs::remove_file(&tmp);
+    return Err(io::Error::new(
+      io::ErrorKind::InvalidData,
+      format!(
+        "GET {url}: got sha256 {actual}, but the pinned model has {expected}; \
+         the server or a proxy on the way sent different bytes, and nothing was cached"
+      ),
+    ));
+  }
+  fs::rename(&tmp, dest)
 }
 
 fn hex_digest<T: AsRef<[u8]>>(bytes: T) -> String {
@@ -351,7 +444,12 @@ fn manifest_path(dir: &Path) -> PathBuf {
 
 fn write_manifest(dir: &Path, manifest: &Manifest) -> io::Result<()> {
   let json = serde_json::to_vec_pretty(manifest).map_err(io::Error::other)?;
-  fs::write(manifest_path(dir), json)
+  // Written beside the manifest and renamed over it: two processes can
+  // verify the same cache at once, and a torn manifest would send both back
+  // to the network.
+  let tmp = dir.join(format!("manifest.json.{}.tmp", std::process::id()));
+  fs::write(&tmp, json)?;
+  fs::rename(&tmp, manifest_path(dir))
 }
 
 fn read_manifest(dir: &Path) -> io::Result<Manifest> {
@@ -359,7 +457,16 @@ fn read_manifest(dir: &Path) -> io::Result<Manifest> {
   serde_json::from_slice(&bytes).map_err(io::Error::other)
 }
 
+#[cfg(test)]
+thread_local! {
+  /// Files `sha256_file` has hashed on this thread, so tests can tell the
+  /// stamp fast path from a re-hash.
+  static HASHED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 fn sha256_file(path: &Path) -> io::Result<String> {
+  #[cfg(test)]
+  HASHED.with(|n| n.set(n.get() + 1));
   let mut file = fs::File::open(path)?;
   let mut hasher = Sha256::new();
   let mut buf = [0u8; 64 * 1024];
@@ -373,23 +480,48 @@ fn sha256_file(path: &Path) -> io::Result<String> {
   Ok(hex_digest(hasher.finalize()))
 }
 
+/// Whether every pinned file is in `dir` with the right bytes.
+///
+/// A file whose size and mtime match the stamp recorded when it was last
+/// verified is trusted without hashing; any other file is hashed and must
+/// match its pinned SHA-256. Hashing on every load caught nothing a stamp
+/// misses — it only ever compared against what had been downloaded — and
+/// cost ~120 ms per CLI search.
 fn cache_is_valid(dir: &Path, info: &ModelInfo) -> io::Result<bool> {
-  let Ok(manifest) = read_manifest(dir) else {
-    return Ok(false);
-  };
+  // Files placed by hand (an offline `AST_BRO_MODEL_DIR`) have no manifest
+  // yet; they are hashed against the pinned values like anything else.
+  let mut manifest = read_manifest(dir).unwrap_or_else(|_| Manifest {
+    source: "local".to_string(),
+    ..Manifest::default()
+  });
+  let mut verified = false;
   for file in &info.files {
-    let path = dir.join(file);
-    if !path.exists() {
-      return Ok(false);
-    }
-    let Some(expected) = manifest.sha256.get(*file) else {
+    let path = dir.join(file.name);
+    let Ok(meta) = fs::metadata(&path) else {
       return Ok(false);
     };
-    let actual = sha256_file(&path)?;
-    if &actual != expected {
-      eprintln!("ast-bro: cached {file} failed integrity check, will re-download");
+    let stamp = FileStamp::of(&meta);
+    let pinned = manifest.sha256.get(file.name).map(String::as_str) == Some(file.sha256);
+    if pinned && manifest.stamps.get(file.name) == Some(&stamp) {
+      continue;
+    }
+    if sha256_file(&path)? != file.sha256 {
+      eprintln!(
+        "ast-bro: cached {} does not match the pinned model, will re-download",
+        file.name
+      );
       return Ok(false);
     }
+    manifest
+      .sha256
+      .insert(file.name.to_string(), file.sha256.to_string());
+    manifest.stamps.insert(file.name.to_string(), stamp);
+    verified = true;
+  }
+  if verified {
+    // Best effort: in a read-only cache the files are still valid, they are
+    // just hashed again next time.
+    let _ = write_manifest(dir, &manifest);
   }
   Ok(true)
 }
@@ -399,11 +531,58 @@ mod tests {
   use super::*;
 
   #[test]
-  fn potion_info_lists_three_files() {
+  fn potion_info_pins_three_files() {
     let info = ModelInfo::potion_code_16m();
     assert_eq!(info.id, "minishlab/potion-code-16M");
-    assert_eq!(info.files.len(), 3);
-    assert!(info.files.contains(&"model.safetensors"));
+    let hex = |s: &str, len: usize| s.len() == len && s.bytes().all(|b| b.is_ascii_hexdigit());
+    assert!(hex(info.revision, 40), "revision must be a full commit sha");
+    let names: Vec<_> = info.files.iter().map(|f| f.name).collect();
+    assert_eq!(
+      names,
+      ["config.json", "tokenizer.json", "model.safetensors"]
+    );
+    for f in &info.files {
+      assert!(hex(f.sha256, 64), "{} needs a full sha256", f.name);
+    }
+  }
+
+  #[test]
+  fn urls_name_the_pinned_revision() {
+    let info = ModelInfo::potion_code_16m();
+    let url = info.url(HF_MIRROR_BASE, &info.files[2]);
+    assert_eq!(
+      url,
+      format!(
+        "https://hf-mirror.com/minishlab/potion-code-16M/resolve/{}/model.safetensors",
+        info.revision
+      )
+    );
+  }
+
+  /// A one-file model whose pinned hash is that of `pinned_content`.
+  fn fake_model(pinned_content: &[u8]) -> ModelInfo {
+    let sha = hex_digest(Sha256::digest(pinned_content));
+    ModelInfo {
+      id: "fake/model".to_string(),
+      revision: "0000000000000000000000000000000000000000",
+      files: vec![ModelFile {
+        name: "a.txt",
+        sha256: Box::leak(sha.into_boxed_str()),
+      }],
+    }
+  }
+
+  fn hashed() -> usize {
+    HASHED.with(|n| n.get())
+  }
+
+  /// Move `path`'s mtime well away from "now", so the change is visible on
+  /// filesystems with coarse timestamps.
+  fn shift_mtime(path: &Path, secs: u64) {
+    let file = fs::File::options().write(true).open(path).unwrap();
+    file
+      .set_modified(std::time::SystemTime::now() + Duration::from_secs(secs))
+      .unwrap();
   }
 
   /// One combined test for the two env-var-touching cases. Cargo runs unit
@@ -434,45 +613,98 @@ mod tests {
     assert!(!cache_is_valid(tmp.path(), &info).unwrap());
   }
 
+  /// The pinned hash decides, not the manifest: a manifest that vouches for
+  /// the wrong bytes doesn't make them valid.
   #[test]
-  fn cache_invalid_when_file_hash_mismatches() {
+  fn cache_invalid_when_file_does_not_match_the_pin() {
     let tmp = tempfile::tempdir().unwrap();
-    let info = ModelInfo {
-      id: "fake/model".to_string(),
-      files: vec!["a.txt"],
-    };
     let dir = tmp.path();
-    // Write a file and a manifest with a wrong hash.
-    fs::write(dir.join("a.txt"), b"hello").unwrap();
-    let manifest = Manifest {
-      sha256: [(
-        "a.txt".to_string(),
-        "deadbeef".repeat(8), // 64 hex chars, definitely wrong
-      )]
-      .into_iter()
-      .collect(),
-      source: "hf".to_string(),
-    };
+    let info = fake_model(b"pinned bytes");
+    fs::write(dir.join("a.txt"), b"other bytes").unwrap();
+    let mut manifest = Manifest::default();
+    let actual = sha256_file(&dir.join("a.txt")).unwrap();
+    manifest.sha256.insert("a.txt".to_string(), actual);
+    let meta = fs::metadata(dir.join("a.txt")).unwrap();
+    manifest
+      .stamps
+      .insert("a.txt".to_string(), FileStamp::of(&meta));
     write_manifest(dir, &manifest).unwrap();
     assert!(!cache_is_valid(dir, &info).unwrap());
   }
 
+  /// Files placed by hand, with no manifest, are hashed once against the pin
+  /// and stamped; after that, loading hashes nothing.
   #[test]
-  fn cache_valid_when_hash_matches() {
+  fn cache_hashes_once_then_trusts_the_stamp() {
     let tmp = tempfile::tempdir().unwrap();
-    let info = ModelInfo {
-      id: "fake/model".to_string(),
-      files: vec!["a.txt"],
-    };
     let dir = tmp.path();
+    let info = fake_model(b"hello");
     fs::write(dir.join("a.txt"), b"hello").unwrap();
-    let actual = sha256_file(&dir.join("a.txt")).unwrap();
-    let manifest = Manifest {
-      sha256: [("a.txt".to_string(), actual)].into_iter().collect(),
-      source: "hf".to_string(),
-    };
-    write_manifest(dir, &manifest).unwrap();
+
+    let before = hashed();
     assert!(cache_is_valid(dir, &info).unwrap());
+    assert_eq!(hashed() - before, 1, "first check hashes");
+    let manifest = read_manifest(dir).unwrap();
+    assert!(manifest.stamps.contains_key("a.txt"));
+    assert_eq!(manifest.source, "local");
+
+    let before = hashed();
+    assert!(cache_is_valid(dir, &info).unwrap());
+    assert!(cache_is_valid(dir, &info).unwrap());
+    assert_eq!(hashed() - before, 0, "a matching stamp skips the hash");
+  }
+
+  /// A size or mtime change sends the file back through the hash: a touched
+  /// file with the same bytes passes and is re-stamped, an edited one fails.
+  #[test]
+  fn cache_rehashes_a_file_whose_stamp_changed() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    let path = dir.join("a.txt");
+    let info = fake_model(b"hello");
+    fs::write(&path, b"hello").unwrap();
+    assert!(cache_is_valid(dir, &info).unwrap());
+
+    shift_mtime(&path, 3600);
+    let before = hashed();
+    assert!(cache_is_valid(dir, &info).unwrap());
+    assert_eq!(hashed() - before, 1, "a moved mtime is re-hashed");
+    let before = hashed();
+    assert!(cache_is_valid(dir, &info).unwrap());
+    assert_eq!(hashed() - before, 0, "and re-stamped");
+
+    fs::write(&path, b"hellO").unwrap();
+    shift_mtime(&path, 7200);
+    assert!(
+      !cache_is_valid(dir, &info).unwrap(),
+      "edited bytes fail the pin"
+    );
+  }
+
+  /// A manifest written before stamps existed still loads; its files are
+  /// hashed once and gain a stamp.
+  #[test]
+  fn manifest_without_stamps_is_upgraded() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    let info = fake_model(b"hello");
+    fs::write(dir.join("a.txt"), b"hello").unwrap();
+    let legacy = format!(
+      r#"{{ "sha256": {{ "a.txt": "{}" }}, "source": "hf-mirror" }}"#,
+      info.files[0].sha256
+    );
+    fs::write(manifest_path(dir), legacy).unwrap();
+
+    let before = hashed();
+    assert!(cache_is_valid(dir, &info).unwrap());
+    assert_eq!(hashed() - before, 1);
+    let manifest = read_manifest(dir).unwrap();
+    assert!(manifest.stamps.contains_key("a.txt"));
+    assert_eq!(manifest.source, "hf-mirror", "the recorded source survives");
+
+    let before = hashed();
+    assert!(cache_is_valid(dir, &info).unwrap());
+    assert_eq!(hashed() - before, 0);
   }
 
   #[test]
@@ -496,11 +728,13 @@ mod tests {
     std::env::set_var("AST_BRO_MODEL_DIR", tmp.path());
     let info = ModelInfo::potion_code_16m();
     let dir = ensure_model(&info).expect("download failed");
-    // Re-validate: should be a no-op because manifest now matches.
+    // Re-validate: the stamps written at download make this hash nothing.
+    let before = hashed();
     let dir2 = ensure_model(&info).expect("revalidate failed");
+    assert_eq!(hashed() - before, 0, "a fresh download is already stamped");
     assert_eq!(dir, dir2);
     for f in &info.files {
-      assert!(dir.join(f).exists(), "missing {f}");
+      assert!(dir.join(f.name).exists(), "missing {}", f.name);
     }
     std::env::remove_var("AST_BRO_MODEL_DIR");
   }
