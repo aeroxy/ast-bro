@@ -28,7 +28,7 @@
 //! tombstones exceed `AST_BRO_COMPACTION_RATIO` of all chunk slots.
 
 use crate::file_filter::{add_filters, should_skip_path};
-use crate::project_root::{relative_posix, resolve_home, Marker};
+use crate::project_root::{compare_corpus, relative_posix, resolve_home, CorpusRel, Marker};
 use crate::search::bm25::Bm25Index;
 use crate::search::cache::{compute_delta, hash_file, FileRecord, MAX_INDEX_FILE_BYTES};
 use crate::search::chunker::{chunk_file, is_indexable, Chunk, ChunkKind};
@@ -311,6 +311,15 @@ impl Index {
         }
         Err(e) => {
           eprintln!("ast-bro: index unreadable ({e}); rebuilding");
+          // The binaries may not decode (an older schema), but the meta
+          // still says what the index covered. Rebuilding only `path_arg`
+          // would shrink a whole-repo index to the subdirectory of the
+          // first search after an upgrade.
+          if let Ok(old) = read_meta(&paths.meta_json) {
+            let requested = relative_posix(path_arg, &home).unwrap_or_default();
+            let corpus = rebuild_corpus(&old.indexed_corpus, &requested);
+            return Self::build_with_corpus(path_arg, cwd, &corpus);
+          }
         }
       }
     }
@@ -1055,6 +1064,16 @@ fn path_starts_with(child: &str, parent: &str) -> bool {
   child.starts_with(parent) && child.as_bytes()[parent.len()] == b'/'
 }
 
+/// The corpus to rebuild an unreadable index with: the recorded one, widened
+/// to cover `requested` the way `ast-bro index` widens it.
+fn rebuild_corpus(recorded: &str, requested: &str) -> String {
+  match compare_corpus(recorded, requested) {
+    CorpusRel::Subset => recorded.to_string(),
+    CorpusRel::Superset => requested.to_string(),
+    CorpusRel::Sibling { common } => common,
+  }
+}
+
 /// Resolve the absolute directory we should walk for the given corpus.
 /// Empty corpus = the whole home.
 fn corpus_walk_dir(home: &Path, corpus: &str) -> PathBuf {
@@ -1404,6 +1423,18 @@ mod tests {
     assert_eq!(count(&enriched, "login"), 2);
     assert!(enriched.contains("src"));
     assert!(enriched.contains("auth"));
+  }
+
+  #[test]
+  fn an_unreadable_index_keeps_its_recorded_corpus() {
+    // A whole-repo index whose schema is old, opened by a search on a
+    // subdirectory: the rebuild still covers the whole repo.
+    assert_eq!(rebuild_corpus("", "lib/plug/conn"), "");
+    assert_eq!(rebuild_corpus("lib", "lib/plug"), "lib");
+    // A request outside the recorded corpus widens it, as `index` does.
+    assert_eq!(rebuild_corpus("lib/plug", ""), "");
+    assert_eq!(rebuild_corpus("lib/plug", "lib"), "lib");
+    assert_eq!(rebuild_corpus("lib/a", "lib/b"), "lib");
   }
 
   #[test]
