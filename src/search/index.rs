@@ -106,8 +106,9 @@ const MIN_CANDIDATES: usize = 100;
 // v2 adds `breadcrumb` and `kind` to `Chunk`, which changes the bincode layout
 // of chunks.bin. A v1 index cannot be decoded, so the loader rejects it and the
 // caller rebuilds. v3 chunks Elixir per definition: a v2 index keeps every
-// unchanged Elixir file as one chunk.
-const SCHEMA: &str = "ast-bro.search-index.v3";
+// unchanged Elixir file as one chunk. v4 adds the `ast_bro_version` check: a
+// binary from before it reads only the schema, and would read this index.
+const SCHEMA: &str = "ast-bro.search-index.v4";
 
 /// On-disk paths under a repo's `.ast-bro/index/` directory.
 #[derive(Debug, Clone)]
@@ -665,6 +666,19 @@ impl Index {
         format!(
           "model id {} != active {active_model_id} — reindex required",
           meta.model.id
+        ),
+      ));
+    }
+    // Another version's chunker may cut files differently, and a refresh
+    // re-chunks only the files that changed, so its index is rebuilt (#81).
+    // `SCHEMA` changes only with the layout.
+    if meta.ast_bro_version != env!("CARGO_PKG_VERSION") {
+      return Err(io::Error::new(
+        io::ErrorKind::InvalidData,
+        format!(
+          "index written by version {}, not {}; rebuild the index",
+          meta.ast_bro_version,
+          env!("CARGO_PKG_VERSION")
         ),
       ));
     }
@@ -1584,6 +1598,65 @@ mod tests {
     };
     assert_eq!(err.kind(), io::ErrorKind::InvalidData);
     assert!(err.to_string().contains("model id"), "got: {err}");
+  }
+
+  /// An index written by another version was chunked by other adapters:
+  /// files that did not change since would keep those chunks (#81).
+  #[test]
+  fn load_rejects_another_version() {
+    let dir = tmp_repo();
+    let paths = IndexPaths::from_repo(dir.path());
+    fs::create_dir_all(&paths.index_dir).unwrap();
+    let meta = Meta {
+      schema: SCHEMA.to_string(),
+      ast_bro_version: "0.0.0".to_string(),
+      model: ModelMeta {
+        id: ModelInfo::potion_code_16m().id.to_string(),
+        dim: DIM as u32,
+      },
+      created_unix: 0,
+      chunk_count: 0,
+      embedding_dtype: "f32_le".to_string(),
+      tombstones: Vec::new(),
+      indexed_corpus: String::new(),
+    };
+    write_meta(&paths.meta_json, &meta).unwrap();
+    let err = match Index::load_unlocked(&paths) {
+      Ok(_) => panic!("another version must error"),
+      Err(e) => e,
+    };
+    assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+    assert!(err.to_string().contains("version 0.0.0"), "got: {err}");
+  }
+
+  /// A binary from before the version check reads only the schema, so v4
+  /// keeps it off this index; and a v3 index from a `main` build, which
+  /// carries this version, holds the old Elixir chunks (#81).
+  #[test]
+  fn load_rejects_a_v3_index() {
+    let dir = tmp_repo();
+    let paths = IndexPaths::from_repo(dir.path());
+    fs::create_dir_all(&paths.index_dir).unwrap();
+    let meta = Meta {
+      schema: "ast-bro.search-index.v3".to_string(),
+      ast_bro_version: env!("CARGO_PKG_VERSION").to_string(),
+      model: ModelMeta {
+        id: ModelInfo::potion_code_16m().id.to_string(),
+        dim: DIM as u32,
+      },
+      created_unix: 0,
+      chunk_count: 0,
+      embedding_dtype: "f32_le".to_string(),
+      tombstones: Vec::new(),
+      indexed_corpus: String::new(),
+    };
+    write_meta(&paths.meta_json, &meta).unwrap();
+    let err = match Index::load_unlocked(&paths) {
+      Ok(_) => panic!("a v3 index must error"),
+      Err(e) => e,
+    };
+    assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+    assert!(err.to_string().contains("schema"), "got: {err}");
   }
 
   /// Full end-to-end: build, search, find_related against a tiny tmp repo.
