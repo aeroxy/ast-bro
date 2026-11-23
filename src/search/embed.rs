@@ -181,6 +181,7 @@ impl Embedder {
     // `WordPiece` takes the vocabulary and added tokens from the file and
     // ignores its truncation and padding: `encode_one` applies the window.
     let tokenizer = WordPiece::load(&tokenizer_path)?;
+    let mapping = cover_every_token(mapping, vocab_size, tokenizer.id_count())?;
 
     Ok(Self {
       _backing: backing,
@@ -265,12 +266,8 @@ impl Embedder {
   }
 }
 
-/// Decode a little-endian `f32` byte buffer, one value per 4-byte group —
-/// the aligned-copy fallback for a misaligned F32 tensor. The mmap fast
-/// path reads the same little-endian layout in place; keep the two in sync.
-/// Read model2vec's `mapping` tensor: `None` when it is absent or the
-/// identity (saving an indirection per token), and an error when it sends a
-/// token outside the `rows` embedding rows.
+/// Read model2vec's `mapping` tensor, or `None` when the model has none. An
+/// entry outside the `rows` embedding rows is an error.
 fn read_mapping(st: &SafeTensors, rows: usize) -> io::Result<Option<Vec<u32>>> {
   let invalid = |msg: String| io::Error::new(io::ErrorKind::InvalidData, msg);
   let Ok(tensor) = st.tensor(MAPPING_TENSOR) else {
@@ -302,10 +299,41 @@ fn read_mapping(st: &SafeTensors, rows: usize) -> io::Result<Option<Vec<u32>>> {
     }
     table.push(index as u32);
   }
-  let identity = table.iter().enumerate().all(|(i, &r)| r as usize == i);
-  Ok(if identity { None } else { Some(table) })
+  Ok(Some(table))
 }
 
+/// Check that every id the tokenizer can emit (`ids` of them) has a row:
+/// through `mapping` when the model has one, directly otherwise. A short
+/// table would send the ids past its end to whichever row shares their
+/// number, where model2vec fails on such a model instead. An identity
+/// mapping is dropped once checked, since it only adds an indirection.
+fn cover_every_token(
+  mapping: Option<Vec<u32>>,
+  rows: usize,
+  ids: usize,
+) -> io::Result<Option<Vec<u32>>> {
+  let invalid = |msg: String| io::Error::new(io::ErrorKind::InvalidData, msg);
+  match mapping {
+    Some(table) if table.len() < ids => Err(invalid(format!(
+      "`mapping` has {} entries, but the tokenizer emits ids up to {}",
+      table.len(),
+      ids - 1
+    ))),
+    Some(table) => {
+      let identity = table.iter().enumerate().all(|(i, &row)| row as usize == i);
+      Ok((!identity).then_some(table))
+    }
+    None if rows < ids => Err(invalid(format!(
+      "{rows} embedding rows, but the tokenizer emits ids up to {}",
+      ids - 1
+    ))),
+    None => Ok(None),
+  }
+}
+
+/// Decode a little-endian `f32` byte buffer, one value per 4-byte group —
+/// the aligned-copy fallback for a misaligned F32 tensor. The mmap fast
+/// path reads the same little-endian layout in place; keep the two in sync.
 fn decode_f32_le(bytes: &[u8]) -> Vec<f32> {
   bytes
     .chunks_exact(4)
@@ -646,22 +674,27 @@ mod tests {
     )
   }
 
-  /// A model directory whose tokens `[PAD]`, `[UNK]`, `a`, `b` have rows 0,
-  /// 0, e0 and e1, plus model2vec's optional `mapping` and `weights`.
+  /// A model directory for the tokens `[PAD]`, `[UNK]`, `a`, `b` (ids 0–3)
+  /// with `rows` embedding rows, row 2 being e0 and row 3 e1, plus
+  /// model2vec's optional `mapping` and `weights`.
   fn tiny_model(
     dir: &Path,
-    mapping: Option<[i64; 4]>,
-    weights: Option<[f64; 4]>,
+    rows: usize,
+    mapping: Option<&[i64]>,
+    weights: Option<&[f64]>,
     truncation: Option<usize>,
   ) {
-    let mut rows = vec![0f32; 4 * DIM];
-    rows[2 * DIM] = 1.0;
-    rows[3 * DIM + 1] = 1.0;
+    let mut matrix = vec![0f32; rows * DIM];
+    for (row, dim) in [(2, 0), (3, 1)] {
+      if row < rows {
+        matrix[row * DIM + dim] = 1.0;
+      }
+    }
     let mut tensors = vec![(
       "embeddings",
       "F32",
-      vec![4, DIM],
-      rows
+      vec![rows, DIM],
+      matrix
         .iter()
         .flat_map(|v| v.to_le_bytes())
         .collect::<Vec<u8>>(),
@@ -670,7 +703,7 @@ mod tests {
       tensors.push((
         "mapping",
         "I64",
-        vec![4],
+        vec![m.len()],
         m.iter().flat_map(|v| v.to_le_bytes()).collect(),
       ));
     }
@@ -678,7 +711,7 @@ mod tests {
       tensors.push((
         "weights",
         "F64",
-        vec![4],
+        vec![w.len()],
         w.iter().flat_map(|v| v.to_le_bytes()).collect(),
       ));
     }
@@ -689,7 +722,7 @@ mod tests {
   #[test]
   fn encode_averages_only_the_first_max_embed_tokens() {
     let dir = tempfile::tempdir().unwrap();
-    tiny_model(dir.path(), None, None, None);
+    tiny_model(dir.path(), 4, None, None, None);
     let emb = Embedder::open(dir.path()).unwrap();
     let text = format!("{}{}", "a ".repeat(MAX_EMBED_TOKENS), "b ".repeat(100));
     let v = emb.encode_one(&text);
@@ -704,7 +737,7 @@ mod tests {
   #[test]
   fn the_window_ignores_the_tokenizer_files_truncation() {
     let dir = tempfile::tempdir().unwrap();
-    tiny_model(dir.path(), None, None, Some(4));
+    tiny_model(dir.path(), 4, None, None, Some(4));
     let v = Embedder::open(dir.path()).unwrap().encode_one("a a a a b");
     assert!(
       v[1] > 0.0,
@@ -716,7 +749,7 @@ mod tests {
   #[test]
   fn mapping_sends_each_token_to_its_row() {
     let dir = tempfile::tempdir().unwrap();
-    tiny_model(dir.path(), Some([0, 1, 3, 2]), None, None);
+    tiny_model(dir.path(), 4, Some(&[0, 1, 3, 2]), None, None);
     let v = Embedder::open(dir.path()).unwrap().encode_one("a");
     assert_eq!((v[0], v[1]), (0.0, 1.0));
   }
@@ -725,19 +758,46 @@ mod tests {
   #[test]
   fn weights_are_ignored_on_purpose() {
     let dir = tempfile::tempdir().unwrap();
-    tiny_model(dir.path(), None, Some([0.0, 0.0, 0.0001, 1.0]), None);
+    tiny_model(dir.path(), 4, None, Some(&[0.0, 0.0, 0.0001, 1.0]), None);
     let v = Embedder::open(dir.path()).unwrap().encode_one("a b");
+    let half = std::f32::consts::FRAC_1_SQRT_2;
     assert!(
-      (v[0] - v[1]).abs() < 1e-6,
+      (v[0] - half).abs() < 1e-6 && (v[1] - half).abs() < 1e-6,
       "a and b must count equally: {:?}",
       &v[..2]
     );
   }
 
+  /// Every id the tokenizer can emit needs a row: a mapping that stops
+  /// short would send `b` (id 3) to row 3, which the table gives `a`.
+  #[test]
+  fn open_rejects_a_mapping_that_misses_a_token() {
+    let dir = tempfile::tempdir().unwrap();
+    tiny_model(dir.path(), 4, Some(&[0, 1, 3]), None, None);
+    let err = match Embedder::open(dir.path()) {
+      Err(e) => e,
+      Ok(_) => panic!("a mapping shorter than the vocabulary must be rejected"),
+    };
+    assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+    assert!(err.to_string().contains("has 3 entries"), "got: {err}");
+  }
+
+  #[test]
+  fn open_rejects_fewer_rows_than_token_ids() {
+    let dir = tempfile::tempdir().unwrap();
+    tiny_model(dir.path(), 3, None, None, None);
+    let err = match Embedder::open(dir.path()) {
+      Err(e) => e,
+      Ok(_) => panic!("a matrix without a row for every token must be rejected"),
+    };
+    assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+    assert!(err.to_string().contains("3 embedding rows"), "got: {err}");
+  }
+
   #[test]
   fn open_rejects_a_mapping_outside_the_rows() {
     let dir = tempfile::tempdir().unwrap();
-    tiny_model(dir.path(), Some([0, 1, 9, 3]), None, None);
+    tiny_model(dir.path(), 4, Some(&[0, 1, 9, 3]), None, None);
     let err = match Embedder::open(dir.path()) {
       Err(e) => e,
       Ok(_) => panic!("a mapping past the matrix must be rejected"),
