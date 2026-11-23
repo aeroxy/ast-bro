@@ -37,7 +37,8 @@ pub const JSON_SCHEMA_RUN: &str = "ast-bro.run.v1";
 /// v7 adds the definitions in module-level blocks, from user `def…` macros
 /// and in ExUnit tests, which a v6 cache leaves out of files that did not
 /// change; v8 keys a module defined in a `describe` under its module, where
-/// a v7 cache keeps it under the `describe`.
+/// a v7 cache keeps it under the `describe`, and adds the definitions in a
+/// block nested in a module-level block.
 pub const JSON_SCHEMA_GRAPH_INDEX: &str = "ast-bro.graph-index.v8";
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Copy, Default)]
