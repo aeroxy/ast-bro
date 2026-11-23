@@ -291,8 +291,8 @@ dev-dependency) holds it to that in CI. Run by hand with the real
 `tokenizer.json`, it matched on every file of this repository, semble and
 the five pinned corpora: 9,527 files and about 22.8 million tokens. `load`
 refuses a `tokenizer.json` describing any other pipeline, and added tokens it
-would not match as `tokenizers` does: two that match as the same text, or one
-that starts or ends with whitespace.
+would not match as `tokenizers` does: two that share an id or match as the
+same text, or one that starts or ends with whitespace.
 
 The reasons were cost, not behaviour. `Tokenizer::from_file` took 9–14 ms of
 every CLI search, against about 5 ms for reading just what WordPiece needs.
@@ -443,7 +443,7 @@ On `Index::open`, a non-empty delta is applied incrementally (`apply_delta`): th
 
 ## Concurrency
 
-`fs2` advisory lock at `.ast-bro/index/lock` — exclusive during writes. Two `search` calls at the same instant during a rebuild serialize; the loser sees the winner's update on its next read. Each file is written to `.tmp` and renamed into place, so no file is ever half-written, but the five are not replaced together. `meta.json` goes last, so a SIGKILL between two renames leaves the previous meta beside newer files; the loader rejects that mix when the encoder settings or the chunk count changed, and the next open rebuilds.
+`fs2` advisory lock at `.ast-bro/index/lock` — exclusive during writes. Two `search` calls at the same instant during a rebuild serialize; the loser sees the winner's update on its next read. Each file is written to `.tmp` and renamed into place, so no file is ever half-written, but the five are not replaced together. `meta.json` goes last, so a SIGKILL or a failed write between two renames leaves the previous meta beside newer files; the loader rejects that mix when the encoder settings or the chunk count changed, and the next open rebuilds. A mix that keeps both still loads, for instance new chunks beside the previous build's vectors (issue #119).
 
 ## Adding a new model
 
