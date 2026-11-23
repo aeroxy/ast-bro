@@ -25,7 +25,9 @@
 //! added-token matching from the same `aho-corasick` settings and `regex`
 //! patterns, so the two agree on every character rather than on most.
 //! [`WordPiece::load`] refuses a `tokenizer.json` describing any other
-//! pipeline, so another model cannot be tokenized wrong silently.
+//! pipeline, a post-processor included, so another model cannot be tokenized
+//! wrong silently. Truncation and padding are not part of the pipeline here:
+//! the embedder applies its own window (`MAX_EMBED_TOKENS`) and never pads.
 
 use aho_corasick::{AhoCorasick, AhoCorasickBuilder, MatchKind};
 use regex::Regex;
@@ -71,6 +73,10 @@ struct TokenizerJson {
   added_tokens: Vec<AddedTokenJson>,
   normalizer: Option<Value>,
   pre_tokenizer: Option<Value>,
+  /// Must be null: a post-processor can change the ids even with special
+  /// tokens off, since a template keeps every `$A` it names.
+  #[serde(default)]
+  post_processor: Option<Value>,
   model: ModelJson,
 }
 
@@ -119,6 +125,12 @@ impl WordPiece {
       return Err(invalid(format!(
         "pre_tokenizer {} is not the BertPreTokenizer this tokenizer implements",
         json.pre_tokenizer.unwrap_or(Value::Null)
+      )));
+    }
+    if let Some(processor) = &json.post_processor {
+      return Err(invalid(format!(
+        "post_processor {processor} is not supported; only null is, since a \
+         post-processor can change the ids even without special tokens"
       )));
     }
     if json.model.kind != "WordPiece" {
@@ -546,6 +558,31 @@ mod tests {
     }
   }
 
+  /// A `TemplateProcessing` post-processor whose single template is `$A $A`.
+  const REPEAT_A: &str = r#""post_processor":{"type":"TemplateProcessing",
+    "single":[{"Sequence":{"id":"A","type_id":0}},{"Sequence":{"id":"A","type_id":0}}],
+    "pair":[{"Sequence":{"id":"A","type_id":0}},{"Sequence":{"id":"B","type_id":1}}],
+    "special_tokens":{}}"#;
+
+  /// Why a post-processor is refused rather than ignored: `tokenizers` keeps
+  /// every `$A` a template names even with special tokens off, so this one
+  /// doubles the ids.
+  #[test]
+  fn a_template_post_processor_changes_the_ids_without_special_tokens() {
+    let json = fixture().replacen(r#""post_processor":null"#, REPEAT_A, 1);
+    let once = reference(&fixture())
+      .encode("hello world", false)
+      .unwrap()
+      .get_ids()
+      .to_vec();
+    let twice = reference(&json)
+      .encode("hello world", false)
+      .unwrap()
+      .get_ids()
+      .to_vec();
+    assert_eq!(twice, [once.clone(), once].concat());
+  }
+
   #[test]
   fn load_refuses_a_pipeline_it_does_not_implement() {
     let json = fixture();
@@ -566,6 +603,7 @@ mod tests {
         r#""unk_token":"[NOPE]""#,
         "unk_token",
       ),
+      (r#""post_processor":null"#, REPEAT_A, "post_processor"),
     ] {
       let changed = json.replacen(from, to, 1);
       assert_ne!(changed, json, "the fixture has no {from}");
