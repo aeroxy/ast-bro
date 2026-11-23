@@ -81,16 +81,17 @@ fn form_of<D: Doc>(node: &Node<'_, D>, source: &str, scope: &str) -> Form {
     }
     None => {}
   }
-  if node.kind() != "call"
-    || node
-      .field("target")
-      .is_none_or(|t| t.kind() != "identifier")
-  {
+  let Some(target) = node.field("target").filter(|_| node.kind() == "call") else {
+    return Form::Other;
+  };
+  // A remote call (`MyDsl.section "x" do … end`) is a block member like a
+  // bare one, but only a bare one is opened, as in the adapter, which also
+  // reads a quoted `def` as data that defines nothing here.
+  let bare = target.kind() == "identifier";
+  if !bare && target.kind() != "dot" {
     return Form::Other;
   }
-  // As in the adapter, a quoted `def` is data: it defines nothing here.
-  let quoted = node.field("target").is_some_and(|t| t.text() == "quote");
-  if !quoted && !wrapped_bodies(node).is_empty() {
+  if bare && target.text() != "quote" && !wrapped_bodies(node).is_empty() {
     return Form::Wrapper;
   }
   if do_block(node).is_none() {
@@ -447,6 +448,18 @@ mod tests {
     );
     let n = members(&src).len();
     assert!(n < depth, "{n} members for {depth} modules");
+  }
+
+  #[test]
+  fn a_remote_do_block_call_is_a_member() {
+    // As a bare `section "y" do … end` is. It is not opened, as `map` does
+    // not open it.
+    let src = "defmodule A do\n  MyDsl.section \"x\" do\n    :ok\n  end\n  Kernel.if true do\n    def f, do: 1\n  end\nend\n";
+    let sigs: Vec<String> = members(src).into_iter().map(|(_, s)| s).collect();
+    assert_eq!(
+      sigs,
+      vec!["defmodule A", "MyDsl.section \"x\"", "Kernel.if true"]
+    );
   }
 
   #[test]
