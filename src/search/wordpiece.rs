@@ -146,6 +146,26 @@ impl WordPiece {
       ))
     })?;
 
+    // `tokenizers` gives an added token its id from the vocabulary, warning
+    // and moving on when the two disagree; only agreeing ids are supported.
+    for token in &json.added_tokens {
+      match json.model.vocab.get(&token.content) {
+        Some(&id) if id == token.id => {}
+        Some(&id) => {
+          return Err(invalid(format!(
+            "added token {:?} has id {} in added_tokens but {id} in the vocabulary",
+            token.content, token.id
+          )))
+        }
+        None => {
+          return Err(invalid(format!(
+            "added token {:?} is not in the vocabulary",
+            token.content
+          )))
+        }
+      }
+    }
+
     let (raw, normalized): (Vec<_>, Vec<_>) =
       json.added_tokens.into_iter().partition(|t| !t.normalized);
     let raw = AddedTokens::new(raw.into_iter().map(|t| (t.content.clone(), t)))?;
@@ -159,6 +179,17 @@ impl WordPiece {
       raw,
       normalized,
     })
+  }
+
+  /// One past the largest id `encode` can return, so the embedder can check
+  /// it has a row for every one.
+  pub fn id_count(&self) -> usize {
+    let vocab = self.vocab.values().copied().max();
+    let added = (self.raw.tokens.iter())
+      .chain(&self.normalized.tokens)
+      .map(|t| t.id)
+      .max();
+    vocab.max(added).map_or(0, |id| id as usize + 1)
   }
 
   /// Token ids for `text`, stopping once `limit` are produced. Tokenization
@@ -270,18 +301,37 @@ impl WordPiece {
 }
 
 impl AddedTokens {
+  /// Index the added tokens by the pattern each is matched as. A pattern
+  /// that is empty, or starts or ends with whitespace, is refused: a match
+  /// could then begin inside whitespace an earlier `rstrip` consumed, where
+  /// `tokenizers` builds a reversed range, and with whitespace-free edges it
+  /// never can.
   fn new(tokens: impl Iterator<Item = (String, AddedTokenJson)>) -> io::Result<Self> {
-    let (patterns, tokens): (Vec<String>, Vec<AddedToken>) = tokens
-      .map(|(pattern, t)| {
-        let token = AddedToken {
-          id: t.id,
-          single_word: t.single_word,
-          lstrip: t.lstrip,
-          rstrip: t.rstrip,
-        };
-        (pattern, token)
-      })
-      .unzip();
+    let mut patterns = Vec::new();
+    let mut added = Vec::new();
+    for (pattern, t) in tokens {
+      if pattern.is_empty()
+        || pattern.starts_with(char::is_whitespace)
+        || pattern.ends_with(char::is_whitespace)
+      {
+        return Err(io::Error::new(
+          io::ErrorKind::InvalidData,
+          format!(
+            "tokenizer.json: added token {:?} is empty or starts or ends with whitespace, \
+             which this tokenizer does not match",
+            t.content
+          ),
+        ));
+      }
+      patterns.push(pattern);
+      added.push(AddedToken {
+        id: t.id,
+        single_word: t.single_word,
+        lstrip: t.lstrip,
+        rstrip: t.rstrip,
+      });
+    }
+    let tokens = added;
     let matcher = if patterns.is_empty() {
       None
     } else {
@@ -604,6 +654,11 @@ mod tests {
         "unk_token",
       ),
       (r#""post_processor":null"#, REPEAT_A, "post_processor"),
+      (
+        r#"{"id":1,"content":"[UNK]""#,
+        r#"{"id":2,"content":"[UNK]""#,
+        "in added_tokens but 1 in the vocabulary",
+      ),
     ] {
       let changed = json.replacen(from, to, 1);
       assert_ne!(changed, json, "the fixture has no {from}");
@@ -614,6 +669,31 @@ mod tests {
       assert_eq!(err.kind(), io::ErrorKind::InvalidData);
       assert!(err.to_string().contains(named), "{err}");
     }
+  }
+
+  /// A raw `x` that strips the whitespace after it, and a raw token that is
+  /// one space: `x  tail` used to give the second match a start past its
+  /// end, and slicing panicked. A whitespace-edged added token is refused
+  /// at load instead.
+  #[test]
+  fn load_refuses_an_added_token_edged_with_whitespace() {
+    let json = fixture()
+      .replacen(r#""vocab":{"#, r#""vocab":{" ":900,"#, 1)
+      .replacen(
+        r#""added_tokens":["#,
+        r#""added_tokens":[
+          {"id":89,"content":"x","single_word":false,"lstrip":false,"rstrip":true,"normalized":false,"special":true},
+          {"id":900,"content":" ","single_word":false,"lstrip":true,"rstrip":false,"normalized":false,"special":true},"#,
+        1,
+      );
+    let err = match WordPiece::from_json(json.as_bytes()) {
+      Err(e) => e,
+      Ok(_) => panic!("a whitespace-edged added token must be refused"),
+    };
+    assert!(
+      err.to_string().contains("starts or ends with whitespace"),
+      "{err}"
+    );
   }
 
   /// The real model's `tokenizer.json` against `tokenizers` over every text
@@ -635,12 +715,13 @@ mod tests {
     let root = std::env::var_os("AST_BRO_PARITY_DIR")
       .map(PathBuf::from)
       .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src"));
-    let files: Vec<PathBuf> = ignore::WalkBuilder::new(&root)
-      .build()
-      .flatten()
-      .filter(|e| e.file_type().is_some_and(|t| t.is_file()))
-      .map(|e| e.into_path())
-      .collect();
+    let mut files: Vec<PathBuf> = Vec::new();
+    for entry in ignore::WalkBuilder::new(&root).build() {
+      let entry = entry.unwrap_or_else(|e| panic!("walking {}: {e}", root.display()));
+      if entry.file_type().is_some_and(|t| t.is_file()) {
+        files.push(entry.into_path());
+      }
+    }
     let results: Vec<(usize, Option<String>)> = files
       .par_iter()
       .filter_map(|file| {
@@ -666,6 +747,11 @@ mod tests {
       })
       .collect();
     let tokens: usize = results.iter().map(|(n, _)| n).sum();
+    assert!(
+      tokens > 0,
+      "compared nothing under {}; is AST_BRO_PARITY_DIR right?",
+      root.display()
+    );
     let mismatches: Vec<&String> = results.iter().filter_map(|(_, m)| m.as_ref()).collect();
     eprintln!(
       "compared {} files, {tokens} tokens, under {}",

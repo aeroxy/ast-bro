@@ -238,7 +238,7 @@ pub fn ensure_model(info: &ModelInfo) -> io::Result<PathBuf> {
 
   for file in &info.files {
     let dest = dir.join(file.name);
-    download_to(
+    let stamp = download_to(
       &client,
       &info.url(source.base_url(), file),
       &dest,
@@ -247,9 +247,7 @@ pub fn ensure_model(info: &ModelInfo) -> io::Result<PathBuf> {
     manifest
       .sha256
       .insert(file.name.to_string(), file.sha256.to_string());
-    manifest
-      .stamps
-      .insert(file.name.to_string(), FileStamp::of(&fs::metadata(&dest)?));
+    manifest.stamps.insert(file.name.to_string(), stamp);
   }
 
   write_manifest(&dir, &manifest)?;
@@ -296,20 +294,31 @@ fn probe_huggingface(info: &ModelInfo) -> bool {
   if !resp.status().is_success() {
     return false;
   }
-  // Content-length sanity check: rejects captive portals that 200 with a
-  // large HTML login page. We only flag *upper* outliers; many CDNs return
-  // 0 or no content-length on HEAD requests (HF's behaviour) which is fine —
-  // the actual GET will stream the right bytes and we verify by SHA-256.
-  if let Some(len) = resp.content_length() {
-    let hi = (PROBE_REFERENCE_SIZE as f64 * (1.0 + PROBE_SIZE_TOLERANCE)) as u64;
-    if len > hi {
+  plausible_probe_size(resp.headers())
+}
+
+/// The probe's captive-portal check: a portal answers 200 with a large HTML
+/// login page. It reads the `Content-Length` header itself, since reqwest's
+/// `content_length()` is the size of the body, which a HEAD response does
+/// not have. Only *upper* outliers fail; a missing header is fine, as many
+/// CDNs send none on HEAD, and the download is checked against its pinned
+/// SHA-256 anyway.
+fn plausible_probe_size(headers: &reqwest::header::HeaderMap) -> bool {
+  let len = headers
+    .get(reqwest::header::CONTENT_LENGTH)
+    .and_then(|value| value.to_str().ok())
+    .and_then(|value| value.trim().parse::<u64>().ok());
+  let hi = (PROBE_REFERENCE_SIZE as f64 * (1.0 + PROBE_SIZE_TOLERANCE)) as u64;
+  match len {
+    Some(len) if len > hi => {
       eprintln!(
-                "ast-bro: HF probe returned implausibly large content-length {len} (expected ≤{hi}); likely a captive portal, falling back"
-            );
-      return false;
+        "ast-bro: HF probe returned implausibly large content-length {len} (expected ≤{hi}); \
+         likely a captive portal, falling back"
+      );
+      false
     }
+    _ => true,
   }
-  true
 }
 
 fn build_client(timeout: Duration) -> io::Result<reqwest::blocking::Client> {
@@ -421,12 +430,16 @@ impl Drop for TmpFile {
 /// or truncated file never reaches the cache. The digest covers the bytes
 /// this call wrote, and a file no other writer can open is what makes it
 /// the digest of the file that gets renamed.
+///
+/// Returns the stamp of that file, taken before the rename, which keeps size
+/// and mtime. Stamping `dest` afterwards would let another process's file,
+/// renamed over it in between, inherit the stamp of the verified one.
 fn download_to(
   client: &reqwest::blocking::Client,
   url: &str,
   dest: &Path,
   expected: &str,
-) -> io::Result<()> {
+) -> io::Result<FileStamp> {
   let resp = client.get(url).send().map_err(|e| {
     // reqwest::Error eats the underlying source on Display; chase the
     // chain so TLS/proxy details surface in the error message.
@@ -464,6 +477,7 @@ fn download_to(
   }
   file.sync_all()?;
   drop(file);
+  let stamp = FileStamp::of(&fs::metadata(&tmp.path)?);
 
   let actual = hex_digest(hasher.finalize());
   if actual != expected {
@@ -475,7 +489,8 @@ fn download_to(
       ),
     ));
   }
-  tmp.rename_to(dest)
+  tmp.rename_to(dest)?;
+  Ok(stamp)
 }
 
 fn hex_digest<T: AsRef<[u8]>>(bytes: T) -> String {
@@ -533,9 +548,9 @@ fn sha256_file(path: &Path) -> io::Result<String> {
 ///
 /// A file whose size and mtime match the stamp recorded when it was last
 /// verified is trusted without hashing; any other file is hashed and must
-/// match its pinned SHA-256. Hashing on every load caught nothing a stamp
-/// misses — it only ever compared against what had been downloaded — and
-/// cost ~120 ms per CLI search.
+/// match its pinned SHA-256. Hashing on every load cost ~120 ms per CLI
+/// search, and caught one case a stamp does not: a same-size edit that also
+/// puts back the recorded mtime, which takes deliberate effort.
 fn cache_is_valid(dir: &Path, info: &ModelInfo) -> io::Result<bool> {
   // Files placed by hand (an offline `AST_BRO_MODEL_DIR`) have no manifest
   // yet; they are hashed against the pinned values like anything else.
@@ -827,6 +842,36 @@ mod tests {
       1,
       "no temporary file is left"
     );
+  }
+
+  /// `download_to` stamps its own file before renaming it; that stamp only
+  /// matches the file at `dest` if a rename keeps size and mtime.
+  #[test]
+  fn a_rename_keeps_the_stamp() {
+    let dir = tempfile::tempdir().unwrap();
+    let (from, to) = (dir.path().join("a.tmp"), dir.path().join("a.txt"));
+    fs::write(&from, b"verified bytes").unwrap();
+    shift_mtime(&from, 3600);
+    let before = FileStamp::of(&fs::metadata(&from).unwrap());
+    fs::rename(&from, &to).unwrap();
+    assert_eq!(FileStamp::of(&fs::metadata(&to).unwrap()), before);
+  }
+
+  #[test]
+  fn the_probe_reads_the_content_length_header() {
+    use reqwest::header::{HeaderMap, HeaderValue, CONTENT_LENGTH};
+    let with = |value: &str| {
+      let mut headers = HeaderMap::new();
+      headers.insert(CONTENT_LENGTH, HeaderValue::from_str(value).unwrap());
+      headers
+    };
+    assert!(
+      !plausible_probe_size(&with("20000")),
+      "a login page's size is refused"
+    );
+    assert!(plausible_probe_size(&with("97")));
+    assert!(plausible_probe_size(&HeaderMap::new()), "no header is fine");
+    assert!(plausible_probe_size(&with("not a number")));
   }
 
   #[test]

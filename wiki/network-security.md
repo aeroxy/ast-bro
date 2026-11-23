@@ -59,7 +59,7 @@ Two env vars let you tighten the policy:
 
 | Env var | Effect |
 |---|---|
-| `AST_BRO_TLS_STRICT=1` | Enforce full TLS chain verification. Will fail behind a corp MITM proxy unless the corp CA is in the OS trust store. |
+| `AST_BRO_TLS_STRICT=1` | Enforce full TLS chain verification. Will fail behind a corp MITM proxy unless the corp CA is trusted, either in the OS trust store or through `AST_BRO_CA_BUNDLE` below. |
 | `AST_BRO_CA_BUNDLE=/path/to/ca.pem` | Add extra root CAs from a PEM file. Compatible with either strict or non-strict mode — most useful with strict, when you want to validate the corp MITM cert chain. |
 
 For a security-conscious user behind a corp proxy:
@@ -82,7 +82,7 @@ Every `AST_BRO_*` variable on this page also answers to its pre-rename `AST_OUTL
 └── manifest.json         # { "sha256": {...}, "stamps": {...}, "source": "hf" | "hf-mirror" | "custom" | "local" }
 ```
 
-`stamps` records the size and mtime each file had when it was last verified. A load trusts a file whose stamp still matches and hashes anything else against its pinned SHA-256, so a truncated, partly written or edited file is caught without hashing 64 MB on every load. That hash used to run on every search and took most of a warm CLI search's time. A manifest from before stamps existed is hashed once and then gains them.
+`stamps` records the size and mtime each file had when it was last verified. A load trusts a file whose stamp still matches and hashes anything else against its pinned SHA-256. A truncated, partly written or edited file normally changes its size or mtime, so it is hashed and caught without hashing 64 MB on every load; that hash used to run on every search and took most of a warm CLI search's time. The one case the stamp misses is a same-size edit that also puts back the recorded mtime: the stamp still matches, so the file is not hashed. A manifest from before stamps existed is hashed once and then gains them.
 
 Cache root is `dirs::cache_dir()` (XDG-respecting) joined with `ast-bro/models`. Override with `AST_BRO_MODEL_DIR=/some/path`. For an offline machine, copy the three files into `<that path>/potion-code-16M/`; they are hashed against the pinned values on first use, so no manifest is needed.
 
