@@ -2082,10 +2082,21 @@ fn _is_head<'a, D: Doc>(node: &Node<'a, D>) -> bool {
 /// argument list.
 fn _module_signature<'a, D: Doc>(node: &Node<'a, D>, keyword: &str, written: &str) -> String {
   if keyword == "defimpl" {
+    // The arguments up to a `do:` pair, which is the body, as a `do` block
+    // is in the other form.
+    let body = _keyword_value(&_named_args(node), "do")
+      .and_then(|v| v.parent())
+      .map(|pair| pair.range().start);
     let args_text = node
       .children()
       .find(|c| c.kind() == "arguments")
-      .map(|a| _text(&a))
+      .map(|a| {
+        let text = a.text();
+        let end = body.map_or(text.len(), |b| b.saturating_sub(a.range().start));
+        collapse_ws(text.get(..end).unwrap_or(&text))
+          .trim_end_matches(|c: char| c == ',' || c.is_whitespace())
+          .to_string()
+      })
       .unwrap_or_else(|| written.to_string());
     return format!("defimpl {}", args_text);
   }
@@ -2420,6 +2431,18 @@ mod tests {
     assert_eq!(got, vec![("def f(x)", 4), ("def unquote(n)()", 10)]);
     assert_eq!(a.children[0].end_line, 6);
     assert!(a.children[0].docs.is_empty(), "{:?}", a.children[0].docs);
+  }
+
+  #[test]
+  fn a_keyword_bodied_implementation_is_signed_without_its_body() {
+    // As the `do … end` form is: the `do:` pair is the body.
+    let r = parse("defimpl P, for: A, do: (def a(_), do: 1)\ndefimpl P, for: B do\nend\n");
+    let sigs: Vec<&str> = r
+      .declarations
+      .iter()
+      .map(|d| d.signature.as_str())
+      .collect();
+    assert_eq!(sigs, vec!["defimpl P, for: A", "defimpl P, for: B"]);
   }
 
   #[test]
