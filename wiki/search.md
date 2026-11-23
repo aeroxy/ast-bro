@@ -320,7 +320,7 @@ insertion order and demanding bit-identical scores.
     └── lock                 # advisory exclusive lock during writes
 ```
 
-Loader refuses if `meta.json.schema != "ast-bro.search-index.v3"`, model id mismatches, or `chunks.len() × 256 × 4 != len(embeddings.f32)`. Each binary is read via bincode with `serde::Deserialize`. Embeddings are read into memory (mmap is a later swap that won't change the format).
+Loader refuses if `meta.json.schema != "ast-bro.search-index.v4"`, model id mismatches, `ast_bro_version` differs from the binary, or `chunks.len() × 256 × 4 != len(embeddings.f32)`. Each binary is read via bincode with `serde::Deserialize`. Embeddings are read into memory (mmap is a later swap that won't change the format).
 
 Schema v2 adds `breadcrumb` and `kind` to `Chunk`, which changes the bincode
 layout of `chunks.bin`. A v1 index cannot be decoded, so the loader rejects it
@@ -331,6 +331,18 @@ is a cache.
 Schema v3 chunks Elixir per definition. The layout is unchanged, but a refresh
 re-chunks only the files that changed, so a v2 index would keep every unchanged
 Elixir module as one chunk until `--rebuild`.
+
+The loader also rejects an index that another version wrote: `meta.json`
+records `ast_bro_version`, and a chunker change reaches every file with the
+next release (issue #81). So the schema changes only with the layout now. Two
+builds of one version share an index; `ast-bro index --rebuild` covers that
+during review.
+
+Schema v4 marks that check. The layout is unchanged, but a binary from before
+it checks only the schema: after a downgrade it would read a v3 index that a
+newer version chunked, and keep those chunks for every file that did not
+change. A v3 index from a `main` build carries the same version as the next
+release, so the bump also rebuilds it once.
 
 A rebuild of a rejected index keeps the corpus that its `meta.json` records,
 widened to the request the way `ast-bro index` widens it. The meta decodes

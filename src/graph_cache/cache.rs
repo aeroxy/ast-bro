@@ -27,6 +27,10 @@ pub const CACHE_SCHEMA: &str = JSON_SCHEMA_GRAPH_INDEX;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CacheFile {
   pub schema: String,
+  /// The version of the binary that extracted `graph`. Another version's
+  /// adapters may extract differently, so its cache is rebuilt even when
+  /// `schema` matches (#81). `schema` changes only with the layout.
+  pub version: String,
   pub graph: UnifiedGraph,
   /// Mtime/size/hash records for delta detection. Reuses the search
   /// index's `FileRecord` to avoid a parallel implementation.
@@ -102,7 +106,7 @@ pub fn load_with_delta(root: &Path) -> LoadOutcome {
     Ok((cf, _)) => cf,
     Err(_) => return LoadOutcome::Missing,
   };
-  if cf.schema != CACHE_SCHEMA {
+  if cf.schema != CACHE_SCHEMA || cf.version != env!("CARGO_PKG_VERSION") {
     return LoadOutcome::Missing;
   }
   let delta = compute_delta(root, root, &cf.files);
@@ -190,6 +194,7 @@ pub fn save(root: &Path, graph: &UnifiedGraph, files: &[FileRecord]) -> std::io:
 
   let cf = CacheFile {
     schema: CACHE_SCHEMA.to_string(),
+    version: env!("CARGO_PKG_VERSION").to_string(),
     graph: graph.clone(),
     files: files.to_vec(),
   };
@@ -269,6 +274,71 @@ mod tests {
       fs::create_dir_all(parent).unwrap();
     }
     fs::write(p, body).unwrap();
+  }
+
+  fn cached_repo() -> tempfile::TempDir {
+    let tmp = tempfile::tempdir().unwrap();
+    write(&tmp.path().join("src/lib.rs"), "pub fn f() {}\n");
+    load_or_build_with_records(tmp.path(), false).expect("build");
+    assert!(matches!(
+      load_with_delta(tmp.path()),
+      LoadOutcome::Fresh { .. }
+    ));
+    tmp
+  }
+
+  /// A cache written by another version was extracted by other adapters:
+  /// files that did not change since would keep that answer (#81).
+  #[test]
+  fn a_cache_from_another_version_is_rebuilt() {
+    let tmp = cached_repo();
+    let bytes = fs::read(cache_path(tmp.path())).unwrap();
+    let (mut cf, _): (CacheFile, _) =
+      decode_from_slice(&bytes, bincode::config::standard()).unwrap();
+    cf.version = "0.0.0".to_string();
+    let bytes = encode_to_vec(&cf, bincode::config::standard()).unwrap();
+    fs::write(cache_path(tmp.path()), bytes).unwrap();
+    assert!(matches!(load_with_delta(tmp.path()), LoadOutcome::Missing));
+  }
+
+  /// A cache from before the version was stored does not decode, and is
+  /// rebuilt, so adding the field needs no schema bump.
+  #[test]
+  fn a_cache_with_no_version_is_rebuilt() {
+    #[derive(Serialize)]
+    struct Unversioned {
+      schema: String,
+      graph: UnifiedGraph,
+      files: Vec<FileRecord>,
+    }
+    let tmp = cached_repo();
+    let bytes = fs::read(cache_path(tmp.path())).unwrap();
+    let (cf, _): (CacheFile, _) = decode_from_slice(&bytes, bincode::config::standard()).unwrap();
+    let old = Unversioned {
+      schema: cf.schema,
+      graph: cf.graph,
+      files: cf.files,
+    };
+    let bytes = encode_to_vec(&old, bincode::config::standard()).unwrap();
+    fs::write(cache_path(tmp.path()), bytes).unwrap();
+    assert!(matches!(load_with_delta(tmp.path()), LoadOutcome::Missing));
+  }
+
+  /// A binary from before the version field reads `schema` first and then
+  /// `graph` where `version` now is. That misread usually fails, but bincode
+  /// does not reject trailing bytes, so only the schema makes the rejection
+  /// certain after a downgrade (#81).
+  #[test]
+  fn an_older_binary_rejects_this_cache_by_its_schema() {
+    #[derive(Deserialize)]
+    struct SchemaOnly {
+      schema: String,
+    }
+    let tmp = cached_repo();
+    let bytes = fs::read(cache_path(tmp.path())).unwrap();
+    let (head, _): (SchemaOnly, _) =
+      decode_from_slice(&bytes, bincode::config::standard()).unwrap();
+    assert_ne!(head.schema, "ast-bro.graph-index.v8");
   }
 
   /// Cold build → on-disk cache has `calls: None`. After `promote_calls`,
