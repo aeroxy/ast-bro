@@ -148,6 +148,27 @@ pub fn impact_mode() -> String {
   IMPACT_MODE.to_string()
 }
 
+/// Token window of a search index whose `meta.json` predates recording one.
+///
+/// A literal rather than `search::embed::MAX_EMBED_TOKENS`: it describes how
+/// those old indexes were built, so if the constant ever changes they must
+/// still read as 512 and be rebuilt, not pass for the new setting.
+pub const PRE_RECORDED_EMBED_TOKENS: u32 = 512;
+
+/// Pooling of a search index whose `meta.json` predates recording one. A
+/// literal for the same reason as [`PRE_RECORDED_EMBED_TOKENS`].
+pub const PRE_RECORDED_POOLING: &str = "mean";
+
+/// Serde form of [`PRE_RECORDED_EMBED_TOKENS`].
+pub fn pre_recorded_embed_tokens() -> u32 {
+  PRE_RECORDED_EMBED_TOKENS
+}
+
+/// Serde form of [`PRE_RECORDED_POOLING`].
+pub fn pre_recorded_pooling() -> String {
+  PRE_RECORDED_POOLING.to_string()
+}
+
 #[cfg(test)]
 mod tests {
   use std::fs;

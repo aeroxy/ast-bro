@@ -33,7 +33,7 @@ use crate::search::bm25::Bm25Index;
 use crate::search::cache::{compute_delta, hash_file, FileRecord, MAX_INDEX_FILE_BYTES};
 use crate::search::chunker::{chunk_file, is_indexable, Chunk, ChunkKind};
 use crate::search::download::{ensure_model, ModelInfo};
-use crate::search::embed::{cosine_topk, Embedder, DIM};
+use crate::search::embed::{cosine_topk, Embedder, DIM, MAX_EMBED_TOKENS, POOLING};
 use crate::search::fusion::{combine, resolve_alpha, rrf_scores};
 use crate::search::ranking::{apply_query_boost, boost_multi_chunk_files, rerank_topk};
 use crate::search::tokens::tokenize;
@@ -188,6 +188,24 @@ pub struct Meta {
 pub struct ModelMeta {
   pub id: String,
   pub dim: u32,
+  /// Tokens per text the vectors average ([`MAX_EMBED_TOKENS`]).
+  #[serde(default = "crate::defaults::pre_recorded_embed_tokens")]
+  pub max_tokens: u32,
+  /// How the token vectors were pooled ([`POOLING`]).
+  #[serde(default = "crate::defaults::pre_recorded_pooling")]
+  pub pooling: String,
+}
+
+impl ModelMeta {
+  /// The model and encoder settings this build embeds with.
+  pub fn current() -> Self {
+    Self {
+      id: ModelInfo::potion_code_16m().id,
+      dim: DIM as u32,
+      max_tokens: MAX_EMBED_TOKENS as u32,
+      pooling: POOLING.to_string(),
+    }
+  }
 }
 
 /// One search hit — a chunk with its final score.
@@ -431,10 +449,7 @@ impl Index {
     let meta = Meta {
       schema: SCHEMA.to_string(),
       ast_bro_version: env!("CARGO_PKG_VERSION").to_string(),
-      model: ModelMeta {
-        id: ModelInfo::potion_code_16m().id,
-        dim: DIM as u32,
-      },
+      model: ModelMeta::current(),
       created_unix: SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .map(|d| d.as_secs())
@@ -679,6 +694,19 @@ impl Index {
           "index written by version {}, not {}; rebuild the index",
           meta.ast_bro_version,
           env!("CARGO_PKG_VERSION")
+        ),
+      ));
+    }
+    // Same for how the vectors were made: query vectors from one encoder
+    // ranked against chunk vectors from another would look like a ranking
+    // change, not a stale index.
+    if meta.model.max_tokens as usize != MAX_EMBED_TOKENS || meta.model.pooling != POOLING {
+      return Err(io::Error::new(
+        io::ErrorKind::InvalidData,
+        format!(
+          "index embedded with a {}-token window and {} pooling, not {MAX_EMBED_TOKENS} and \
+           {POOLING} — reindex required",
+          meta.model.max_tokens, meta.model.pooling
         ),
       ));
     }
@@ -1148,13 +1176,15 @@ fn resolve_chunk(chunks: &[Chunk], file_path: &str, line: u32) -> Option<u32> {
 
 /// Above this, a chunk is indexed lexically but not embedded.
 ///
-/// `potion-code-16M` encodes a chunk as the mean of its token vectors, so the
-/// result drifts toward the centroid of the language as the chunk grows — a
-/// 40 KB class embeds as "generic Java" and matches everything weakly. Past
-/// this size the vector carries less signal than the noise it adds, so the
-/// chunk gets a non-finite vector, which `cosine_topk` drops, so only BM25 can
-/// retrieve it. Its `Part` chunks stay embedded, so the content is still
-/// reachable densely.
+/// Below it, a chunk's vector is the mean of its first
+/// [`MAX_EMBED_TOKENS`](crate::search::embed::MAX_EMBED_TOKENS) tokens, so the
+/// head of a long chunk stands for all of it (a 512-token window is often
+/// reached by 1.5–2 KB of code). Past this size, the chunk gets a non-finite
+/// vector instead, which `cosine_topk` drops, so only BM25 can retrieve it;
+/// its `Part` chunks stay embedded, so the content is still reachable densely.
+/// Whether the cap still helps under the window is unmeasured. It did when
+/// chunks were embedded in full, with model2vec's weights: dropping it then
+/// cost answered@8k 43 → 41 and @32k 48 → 46 of 150 on the pinned eval sets.
 ///
 /// A zero vector would not do: its dot product is a finite `0.0`, which ranks
 /// above every negative similarity and enters the pool whenever the corpus has
@@ -1541,7 +1571,7 @@ mod tests {
       ast_bro_version: env!("CARGO_PKG_VERSION").to_string(),
       model: ModelMeta {
         id: "m".into(),
-        dim: DIM as u32,
+        ..ModelMeta::current()
       },
       created_unix: 0,
       chunk_count: 1,
@@ -1581,7 +1611,7 @@ mod tests {
       ast_bro_version: "0.0.0".to_string(),
       model: ModelMeta {
         id: "someone/other-model".to_string(),
-        dim: DIM as u32,
+        ..ModelMeta::current()
       },
       created_unix: 0,
       chunk_count: 0,
@@ -1610,10 +1640,7 @@ mod tests {
     let meta = Meta {
       schema: SCHEMA.to_string(),
       ast_bro_version: "0.0.0".to_string(),
-      model: ModelMeta {
-        id: ModelInfo::potion_code_16m().id.to_string(),
-        dim: DIM as u32,
-      },
+      model: ModelMeta::current(),
       created_unix: 0,
       chunk_count: 0,
       embedding_dtype: "f32_le".to_string(),
@@ -1640,10 +1667,7 @@ mod tests {
     let meta = Meta {
       schema: "ast-bro.search-index.v3".to_string(),
       ast_bro_version: env!("CARGO_PKG_VERSION").to_string(),
-      model: ModelMeta {
-        id: ModelInfo::potion_code_16m().id.to_string(),
-        dim: DIM as u32,
-      },
+      model: ModelMeta::current(),
       created_unix: 0,
       chunk_count: 0,
       embedding_dtype: "f32_le".to_string(),
@@ -1657,6 +1681,50 @@ mod tests {
     };
     assert_eq!(err.kind(), io::ErrorKind::InvalidData);
     assert!(err.to_string().contains("schema"), "got: {err}");
+  }
+
+  /// A meta written before the encoder settings were recorded reads as what
+  /// built it, a 512-token window and mean pooling, so upgrading does not
+  /// force a rebuild while those are still the settings.
+  #[test]
+  fn meta_without_encoder_settings_reads_as_512_token_mean() {
+    let json = r#"{"schema":"ast-bro.search-index.v2","ast_bro_version":"4.6.0",
+      "model":{"id":"minishlab/potion-code-16M","dim":256},
+      "created_unix":0,"chunk_count":0,"embedding_dtype":"f32_le"}"#;
+    let meta: Meta = serde_json::from_str(json).unwrap();
+    assert_eq!(meta.model.max_tokens, 512);
+    assert_eq!(meta.model.pooling, "mean");
+  }
+
+  /// An index whose vectors were made with another window must be rebuilt,
+  /// even when the model is the same. Checked before the model load, so this
+  /// needs no network.
+  #[test]
+  fn load_rejects_a_different_encoder_window() {
+    let dir = tmp_repo();
+    let paths = IndexPaths::from_repo(dir.path());
+    fs::create_dir_all(&paths.index_dir).unwrap();
+    let meta = Meta {
+      schema: SCHEMA.to_string(),
+      ast_bro_version: env!("CARGO_PKG_VERSION").to_string(),
+      model: ModelMeta {
+        max_tokens: MAX_EMBED_TOKENS as u32 * 2,
+        ..ModelMeta::current()
+      },
+      created_unix: 0,
+      chunk_count: 0,
+      embedding_dtype: "f32_le".to_string(),
+      tombstones: Vec::new(),
+      indexed_corpus: String::new(),
+    };
+    write_meta(&paths.meta_json, &meta).unwrap();
+
+    let err = match Index::load_unlocked(&paths) {
+      Ok(_) => panic!("a different window must error"),
+      Err(e) => e,
+    };
+    assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+    assert!(err.to_string().contains("-token window"), "got: {err}");
   }
 
   /// Full end-to-end: build, search, find_related against a tiny tmp repo.

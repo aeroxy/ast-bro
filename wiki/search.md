@@ -91,6 +91,13 @@ brings that to 41%, and p90 chunk height from 196 lines to 57. Rust gains less
 (53% → 39%), since it already has many top-level items and only `impl` blocks
 are affected. Go and C barely change.
 
+Smaller is not better past that. Halving the size target to 750 characters,
+the figure semble moved to, measured clearly worse on the five pinned sets:
+recall@5 37 → 24 and MRR@10 0.170 → 0.095 over 150 queries (14 up, 34 down),
+answered@8k flat (47 → 48), and 1.6–1.9× as many chunks. Semble scores
+file-level relevance, where chunk size matters less; these sets score line
+spans against methods of 21–150 lines.
+
 Elixir has no declaration kinds to match (`defmodule`, `def` and `test "…" do`
 are all `call`s), so it gets its own walk (`chunker/elixir.rs`) that recognises
 members by macro name, as the `map` adapter does.
@@ -136,12 +143,18 @@ prior can only *raise* a file's score, so a file with no outline could not
 compete with one that had them, and documents lost to code on queries the
 document answered. The file type was deciding the ranking, not the relevance.
 
-A long outline is split at `OUTLINE_MAX_CHARS = 3000`, well under the
-embedder's own cap. An outline above that cap is dropped from the dense index
+A long outline is split at `OUTLINE_MAX_CHARS = 3000`, well under
+`MAX_EMBED_CHARS`. An outline above that cap is dropped from the dense index
 entirely, and the files with the longest outlines are the large central ones —
 leaving them unembedded made phase-one file retrieval miss exactly
 `QueryExecutorImpl`, `PgConnection` and `PgResultSet`. Splitting them raised
 phase-one file recall@5 from 33% to 60%, and top-1 from 23% to 40%.
+
+A piece is not under the embedder's token window, though: a third to a half of
+3000-char pieces run past `MAX_EMBED_TOKENS`, so their last signatures reach
+BM25 but not the vector. Sizing pieces to fit, at 1200 or 2000 characters,
+measured as noise: 5 up and 5 down, and 7 up and 5 down with recall@5 one
+lower.
 
 The pieces do not overlap. Carrying signatures across the boundary measured
 worse at every setting tried: an outline is a list of independent signatures
@@ -218,12 +231,45 @@ A "static" embedder — no neural-net inference, just a `vocab × 256` float32 l
 
 ```
 encode_one(text):
-  ids = tokenizer.encode(text, add_special_tokens=False)
-  mean = average(embeddings[id] for id in ids)
+  ids = tokenizer.encode(text, add_special_tokens=False)[:MAX_EMBED_TOKENS]   # 512
+  mean = average(embeddings[mapping[id]] for id in ids)                     # unweighted
   return L2_normalize(mean)
 ```
 
 That's it. Cost is dominated by tokenization (~10–100 µs); embedding lookup is essentially free. Output is always L2-normalized so cosine similarity reduces to a dot product.
+
+### Window and weights: what we measured
+
+That is not quite model2vec's own `encode`, in two ways, both on purpose.
+model2vec multiplies each row by the model's per-token `weights` tensor
+(punctuation near 0.01, identifiers near 1) and drops `[UNK]`; `encode_one`
+takes the unweighted mean. And the 512-token window is `MAX_EMBED_TOKENS` in
+`embed.rs`, applied by `encode_one`, not the truncation setting
+`tokenizer.json` happens to ship, so a model that ships none cannot quietly
+change ranking. `mapping`, model2vec's token-to-row table, is applied; it is
+the identity for potion-code-16M.
+
+Measured on all five pinned sets, 150 queries, IoU 0.3. Hybrid search, as
+users get it:
+
+| variant | recall@5 | MRR@10 | answered@8k | queries up / down |
+| --- | --- | --- | --- | --- |
+| **unweighted, 512 tokens (shipped)** | **37** | **0.170** | 47 | – |
+| window 256 / 384 / 768 | 37 / 37 / 36 | 0.153 / 0.161 / 0.168 | 46 / 47 / 46 | 12/17, 5/5, 7/5 |
+| no window | 34 | 0.163 | 45 | 7 / 9 |
+| model2vec's weights | 35 | 0.156 | 43 | 9 / 20 |
+| weights, no window (semble's setup) | 35 | 0.147 | 43 | 7 / 18 |
+
+Dense retrieval alone, cosine top-10 with nothing else, says the same about
+the weights, so it is not the ranking constants having been tuned to the
+unweighted vectors: MRR@10 0.152 unweighted, 0.123 weighted (14 up, 26 down).
+Without the window it is 0.152 too. Softening the weights to `weights^0.25`
+landed in the noise, and `^0.5` lost.
+
+`meta.json` records the window and the pooling with the model, and `load`
+rejects an index built with others, so changing either rebuilds rather than
+mixing vectors made two ways. A meta from before they were recorded reads as
+512 and `mean`, what built it.
 
 `Embedder::open(model_dir)` mmaps `model.safetensors` (~64 MB) — the matrix stays paged in but never copied. `vocab × 256 × 4 bytes` = ~64 MB regardless of repo size.
 
@@ -313,7 +359,7 @@ insertion order and demanding bit-identical scores.
 .ast-bro/
 ├── .gitignore               # auto-written: "*"
 └── index/
-    ├── meta.json            # ~2 KB — schema, model id+revision, chunk_count, tombstones
+    ├── meta.json            # ~2 KB — schema, model (id, dim, token window, pooling), chunk_count, tombstones
     ├── chunks.bin           # bincode Vec<Chunk> (~1.5 KB/chunk × N)
     ├── embeddings.f32       # N × 256 × 4 bytes, header-less, little-endian
     ├── bm25.bin             # bincode Bm25Index (vocab + idf + postings)
@@ -321,7 +367,7 @@ insertion order and demanding bit-identical scores.
     └── lock                 # advisory exclusive lock during writes
 ```
 
-Loader refuses if `meta.json.schema != "ast-bro.search-index.v4"`, model id mismatches, `ast_bro_version` differs from the binary, or `chunks.len() × 256 × 4 != len(embeddings.f32)`. Each binary is read via bincode with `serde::Deserialize`. Embeddings are read into memory (mmap is a later swap that won't change the format).
+Loader refuses if `meta.json.schema != "ast-bro.search-index.v4"`, the model id, token window or pooling mismatches, `ast_bro_version` differs from the binary, or `chunks.len() × 256 × 4 != len(embeddings.f32)`. Each binary is read via bincode with `serde::Deserialize`. Embeddings are read into memory (mmap is a later swap that won't change the format).
 
 Schema v2 adds `breadcrumb` and `kind` to `Chunk`, which changes the bincode
 layout of `chunks.bin`. A v1 index cannot be decoded, so the loader rejects it
@@ -355,11 +401,12 @@ A chunk above `MAX_EMBED_CHARS = 6000` gets a non-finite embedding rather than a
 real one, so `cosine_topk` drops it and only BM25 can retrieve it. A zero vector
 would not do: its dot product is a finite `0.0`, which outranks every negative
 similarity and enters the pool whenever the corpus is smaller than the pool.
-`potion-code-16M` encodes a chunk as the mean of its token vectors, so a 40 KB
-class drifts toward the centroid of the language and matches everything weakly —
-past that size the vector carries less signal than the noise it adds. The
-content stays reachable densely through the member's `Part` chunks. On pgjdbc
-this affects 1.4% of chunks.
+Below the cap, a chunk's vector averages its first 512 tokens, so a long chunk
+is represented by its head; 512 tokens is often 1.5–2 KB of code. The content
+past the cap stays reachable densely through the member's `Part` chunks. On
+pgjdbc the cap affects 1.4% of chunks. Whether it still helps under the window
+is unmeasured; with every chunk embedded in full and weighted, dropping it cost
+answered@8k 43 → 41 and @32k 48 → 46.
 
 `embeddings.f32` is row-major so a single chunk's vector is one cache-friendly slice — friendly to both the in-memory and future-mmap paths.
 
@@ -379,7 +426,7 @@ On `Index::open`, a non-empty delta is applied incrementally (`apply_delta`): th
 `ModelInfo::potion_code_16m()` is the only model wired in. To add another:
 
 1. Add a constructor to `download::ModelInfo` naming the upstream commit to pin and the SHA-256 of each file at that commit (config.json, tokenizer.json, model.safetensors). The Hub API lists the LFS hashes (`/api/models/<id>/tree/<commit>`); hash the small non-LFS files yourself, from both huggingface.co and hf-mirror.com.
-2. Verify the embedding tensor inside the safetensors is named `embeddings` and is `f32` or `f16` (model2vec convention). `f16` tensors are decoded to `f32` once at open time (`decode_f16_le` in `embed.rs`); any other dtype is rejected.
+2. Verify the embedding tensor inside the safetensors is named `embeddings` and is `f32` or `f16` (model2vec convention). `f16` tensors are decoded to `f32` once at open time (`decode_f16_le` in `embed.rs`); any other dtype is rejected. Check for model2vec's side tensors too: `mapping` is applied, and `weights` is ignored on purpose (see [Window and weights](#window-and-weights-what-we-measured)), so measure a model that ships them before assuming it reads as intended. Check the tokenizer's own truncation as well; `MAX_EMBED_TOKENS` overrides it.
 3. If the dimension differs from 256, the `DIM` constant in [`src/search/embed.rs`](../src/search/embed.rs) needs to follow. Most of the code is generic over `DIM`, but the const is the single source of truth — bumping it requires re-indexing existing repos (the schema check in `Meta::model.dim` will catch this and force a rebuild).
 
 Measure the swap on [tests/eval](../tests/eval/README.md) before taking it. A
@@ -387,6 +434,8 @@ better public benchmark is not enough on its own: `potion-code-16M-v2` shares
 this model's dimension and teacher and scores higher on CoIR (NDCG@10 39.08 vs
 37.05), yet dropped recall@5 from 27% to 17% and MRR@10 from 0.223 to 0.117 on
 the pinned pgjdbc set. CoIR leans on docstring-to-function tasks, and these
-queries describe behaviour over a real codebase.
+queries describe behaviour over a real codebase. That comparison read v2 as
+designed, since v2 bakes its weighting into the rows and ships no `weights`
+tensor, and v1 without its `weights`; reading v1 with them only scores lower.
 
 The `AST_BRO_MODEL_SOURCE` env var lets ops point at a custom HF-compatible mirror without code changes; the mirror has to serve the pinned commit. See [network-security.md](network-security.md).

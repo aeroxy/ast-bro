@@ -303,7 +303,7 @@ mod tests {
       ast_bro_version: "0.0.0".to_string(),
       model: ModelMeta {
         id: "m".into(),
-        dim: 256,
+        ..ModelMeta::current()
       },
       created_unix: 42,
       chunk_count: 7,
@@ -328,7 +328,7 @@ mod tests {
       ast_bro_version: "0.0.0".to_string(),
       model: ModelMeta {
         id: "m".into(),
-        dim: 256,
+        ..ModelMeta::current()
       },
       created_unix: 0,
       chunk_count: 0,

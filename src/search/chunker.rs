@@ -1121,11 +1121,16 @@ fn assign_breadcrumbs(plan: &SplitPlan, chunks: &mut [Chunk]) {
 
 /// How large one outline document may get before it is split in two.
 ///
-/// Well under the embedder's own size cap, because an outline that exceeds that
-/// cap is dropped from the dense index entirely — and the files with the
-/// longest outlines are the large, central ones a query is most likely to want.
+/// Well under `MAX_EMBED_CHARS` in `index.rs`, because an outline past that is
+/// dropped from the dense index entirely — and the files with the longest
+/// outlines are the large, central ones a query is most likely to want.
 /// Leaving them unembedded made file-level retrieval miss exactly
 /// `QueryExecutorImpl`, `PgConnection`, `PgResultSet` and their kind.
+///
+/// It is not under the embedder's token window: about a third to a half of
+/// 3000-char pieces run past `MAX_EMBED_TOKENS`, and only their head reaches
+/// the vector (BM25 still sees every signature). Sizing pieces to fit, at 1200
+/// or 2000 chars, measured as noise on the pinned eval sets.
 const OUTLINE_MAX_CHARS: usize = 3000;
 
 /// Synthesized signature-list chunks for a file, one per `OUTLINE_MAX_CHARS`.
