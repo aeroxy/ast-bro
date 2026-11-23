@@ -368,6 +368,15 @@ mod tests {
   }
 
   #[test]
+  fn a_describe_label_is_written_as_is_on_the_trail() {
+    // `: :` keeps a label out of a qn's `::` joins; a breadcrumb is no qn.
+    let src =
+      "defmodule T do\n  describe \"A::B handling\" do\n    test \"t\" do\n    end\n  end\nend\n";
+    let crumbs: Vec<String> = members(src).into_iter().map(|(b, _)| b).collect();
+    assert_eq!(crumbs[1], "T > describe A::B handling");
+  }
+
+  #[test]
   fn a_public_and_a_private_function_are_two_entries() {
     let src = "defmodule A do\n  def f(0), do: 1\n  defp f(n), do: n\nend\n";
     assert_eq!(members(src).len(), 3);

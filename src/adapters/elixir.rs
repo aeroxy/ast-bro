@@ -1829,17 +1829,22 @@ fn _exunit_signature<'a, D: Doc>(args: &[Node<'a, D>], keyword: &str) -> String 
 /// segments with `::`, so a label writes it `: :` (`test "Foo::bar"` is no
 /// function `bar`); the signature keeps it.
 fn _exunit_label<'a, D: Doc>(args: &[Node<'a, D>]) -> String {
+  _exunit_text(args).replace("::", ": :")
+}
+
+/// The label of an ExUnit block as written, for a breadcrumb, which is no qn.
+fn _exunit_text<'a, D: Doc>(args: &[Node<'a, D>]) -> String {
   args
     .first()
     .filter(|a| a.kind() == "string")
     .map(|a| _string_content(&_text(a)))
     .unwrap_or_default()
-    .replace("::", ": :")
 }
 
 /// An ExUnit block, as the search chunker sees it.
 pub(crate) enum ExUnitBlock {
-  /// A `describe`, with its name and signature as `map` writes them.
+  /// A `describe`, with its label as written (a breadcrumb is no qn) and
+  /// its signature as `map` writes it.
   Describe { name: String, signature: String },
   /// A `test` / `setup` / `setup_all`: one member, whatever its body holds.
   Leaf { signature: String },
@@ -1855,7 +1860,7 @@ pub(crate) fn exunit_block<'a, D: Doc>(node: &Node<'a, D>) -> Option<ExUnitBlock
   let signature = _exunit_signature(&args, &keyword);
   match keyword.as_str() {
     "describe" if _is_exunit_block(node, &keyword) => Some(ExUnitBlock::Describe {
-      name: format!("describe {}", _exunit_label(&args)),
+      name: format!("describe {}", _exunit_text(&args)),
       signature,
     }),
     "test" | "setup" | "setup_all" if _is_exunit_block(node, &keyword) => {
