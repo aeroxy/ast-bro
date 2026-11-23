@@ -332,6 +332,12 @@ Schema v3 chunks Elixir per definition. The layout is unchanged, but a refresh
 re-chunks only the files that changed, so a v2 index would keep every unchanged
 Elixir module as one chunk until `--rebuild`.
 
+A rebuild of a rejected index keeps the corpus that its `meta.json` records,
+widened to the request the way `ast-bro index` widens it. The meta decodes
+when the binaries do not. Without this, the first `search <dir>` after a schema
+bump rebuilt only `<dir>`, and later searches from the root missed every other
+file.
+
 A chunk above `MAX_EMBED_CHARS = 6000` gets a non-finite embedding rather than a
 real one, so `cosine_topk` drops it and only BM25 can retrieve it. A zero vector
 would not do: its dot product is a finite `0.0`, which outranks every negative
