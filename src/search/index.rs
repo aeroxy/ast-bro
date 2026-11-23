@@ -1437,6 +1437,27 @@ mod tests {
     assert_eq!(rebuild_corpus("lib/a", "lib/b"), "lib");
   }
 
+  /// The call site of `rebuild_corpus`: an index from an older schema,
+  /// opened by a search on a subdirectory, is rebuilt over the whole repo.
+  /// Needs the embedding model, like the other `network_` tests.
+  #[test]
+  #[ignore]
+  fn network_an_old_schema_index_is_rebuilt_over_its_corpus() {
+    let dir = tmp_repo();
+    let root = dir.path();
+    write_file(root, "lib/a/x.ex", "defmodule X do\n  def x, do: 1\nend\n");
+    write_file(root, "lib/b/y.ex", "defmodule Y do\n  def y, do: 2\nend\n");
+    Index::build(root, root).unwrap();
+    let paths = IndexPaths::from_repo(root);
+    let mut meta = read_meta(&paths.meta_json).unwrap();
+    meta.schema = "ast-bro.search-index.v2".to_string();
+    write_meta(&paths.meta_json, &meta).unwrap();
+
+    let index = Index::open(&root.join("lib/a"), root).unwrap();
+    assert_eq!(index.meta.indexed_corpus, "");
+    assert_eq!(index.file_count(), 2);
+  }
+
   #[test]
   fn resolve_chunk_finds_overlapping() {
     let mk = |sl, el| Chunk {
