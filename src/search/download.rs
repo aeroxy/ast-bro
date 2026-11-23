@@ -33,6 +33,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::OnceLock;
 use std::time::Duration;
 
@@ -371,9 +372,55 @@ fn warn_about_tls_policy() {
   }
 }
 
-/// Stream `url` to `dest` via a `.tmp`, and rename it into place only if its
-/// SHA-256 is `expected`, so a substituted or truncated file never reaches
-/// the cache.
+/// A temporary path beside `path` that no other write uses: the process id
+/// plus a counter. The model cache is shared by every repository, and
+/// nothing locks it, so two searches can download the same file at once,
+/// and an MCP server can do it from two threads.
+fn unique_tmp(path: &Path) -> PathBuf {
+  static NEXT: AtomicU64 = AtomicU64::new(0);
+  let n = NEXT.fetch_add(1, Ordering::Relaxed);
+  let name = path
+    .file_name()
+    .map(|name| name.to_string_lossy().into_owned())
+    .unwrap_or_default();
+  path.with_file_name(format!("{name}.{}.{n}.tmp", std::process::id()))
+}
+
+/// A temporary file that is deleted when dropped, unless it was renamed into
+/// place, so a failed download or write leaves nothing behind.
+struct TmpFile {
+  path: PathBuf,
+  renamed: bool,
+}
+
+impl TmpFile {
+  fn beside(path: &Path) -> Self {
+    Self {
+      path: unique_tmp(path),
+      renamed: false,
+    }
+  }
+
+  fn rename_to(mut self, dest: &Path) -> io::Result<()> {
+    fs::rename(&self.path, dest)?;
+    self.renamed = true;
+    Ok(())
+  }
+}
+
+impl Drop for TmpFile {
+  fn drop(&mut self) {
+    if !self.renamed {
+      let _ = fs::remove_file(&self.path);
+    }
+  }
+}
+
+/// Stream `url` to `dest` via a temporary file of this call's own, and
+/// rename it into place only if its SHA-256 is `expected`, so a substituted
+/// or truncated file never reaches the cache. The digest covers the bytes
+/// this call wrote, and a file no other writer can open is what makes it
+/// the digest of the file that gets renamed.
 fn download_to(
   client: &reqwest::blocking::Client,
   url: &str,
@@ -398,8 +445,11 @@ fn download_to(
     )));
   }
 
-  let tmp = dest.with_extension("tmp");
-  let mut file = fs::File::create(&tmp)?;
+  let tmp = TmpFile::beside(dest);
+  let mut file = fs::OpenOptions::new()
+    .write(true)
+    .create_new(true)
+    .open(&tmp.path)?;
   let mut hasher = Sha256::new();
 
   let mut reader = resp;
@@ -417,7 +467,6 @@ fn download_to(
 
   let actual = hex_digest(hasher.finalize());
   if actual != expected {
-    let _ = fs::remove_file(&tmp);
     return Err(io::Error::new(
       io::ErrorKind::InvalidData,
       format!(
@@ -426,7 +475,7 @@ fn download_to(
       ),
     ));
   }
-  fs::rename(&tmp, dest)
+  tmp.rename_to(dest)
 }
 
 fn hex_digest<T: AsRef<[u8]>>(bytes: T) -> String {
@@ -444,12 +493,12 @@ fn manifest_path(dir: &Path) -> PathBuf {
 
 fn write_manifest(dir: &Path, manifest: &Manifest) -> io::Result<()> {
   let json = serde_json::to_vec_pretty(manifest).map_err(io::Error::other)?;
-  // Written beside the manifest and renamed over it: two processes can
-  // verify the same cache at once, and a torn manifest would send both back
-  // to the network.
-  let tmp = dir.join(format!("manifest.json.{}.tmp", std::process::id()));
-  fs::write(&tmp, json)?;
-  fs::rename(&tmp, manifest_path(dir))
+  // Written beside the manifest and renamed over it: two processes, or two
+  // threads of one, can verify the same cache at once, and a torn manifest
+  // would send them back to the network.
+  let tmp = TmpFile::beside(&manifest_path(dir));
+  fs::write(&tmp.path, json)?;
+  tmp.rename_to(&manifest_path(dir))
 }
 
 fn read_manifest(dir: &Path) -> io::Result<Manifest> {
@@ -705,6 +754,79 @@ mod tests {
     let before = hashed();
     assert!(cache_is_valid(dir, &info).unwrap());
     assert_eq!(hashed() - before, 0);
+  }
+
+  #[test]
+  fn every_write_gets_its_own_temporary_file() {
+    let dest = Path::new("cache").join("model.safetensors");
+    let (a, b) = (unique_tmp(&dest), unique_tmp(&dest));
+    assert_ne!(a, b);
+    assert_eq!(
+      a.parent(),
+      dest.parent(),
+      "renaming must stay on one filesystem"
+    );
+    let name = a.file_name().unwrap().to_string_lossy().into_owned();
+    assert!(
+      name.starts_with("model.safetensors.") && name.ends_with(".tmp"),
+      "{name}"
+    );
+  }
+
+  #[test]
+  fn a_temporary_file_is_removed_unless_renamed_into_place() {
+    let dir = tempfile::tempdir().unwrap();
+    let dest = dir.path().join("a.txt");
+
+    let abandoned = TmpFile::beside(&dest);
+    fs::write(&abandoned.path, b"partial").unwrap();
+    let path = abandoned.path.clone();
+    drop(abandoned);
+    assert!(!path.exists(), "a failed write must leave nothing behind");
+
+    let finished = TmpFile::beside(&dest);
+    fs::write(&finished.path, b"whole").unwrap();
+    finished.rename_to(&dest).unwrap();
+    assert_eq!(fs::read(&dest).unwrap(), b"whole");
+    assert_eq!(
+      fs::read_dir(dir.path()).unwrap().count(),
+      1,
+      "only the file itself remains"
+    );
+  }
+
+  /// Threads of one process share a pid, so a name built from it alone let
+  /// one writer truncate or rename away another's temporary file. Unix only:
+  /// Windows can refuse a rename onto a target another rename is replacing.
+  #[cfg(unix)]
+  #[test]
+  fn concurrent_manifest_writes_leave_one_whole_manifest() {
+    let dir = tempfile::tempdir().unwrap();
+    std::thread::scope(|scope| {
+      for writer in 0..8 {
+        let dir = dir.path();
+        scope.spawn(move || {
+          for _ in 0..25 {
+            let manifest = Manifest {
+              source: format!("writer {writer}"),
+              ..Manifest::default()
+            };
+            write_manifest(dir, &manifest).unwrap();
+          }
+        });
+      }
+    });
+    let manifest = read_manifest(dir.path()).unwrap();
+    assert!(
+      manifest.source.starts_with("writer "),
+      "{}",
+      manifest.source
+    );
+    assert_eq!(
+      fs::read_dir(dir.path()).unwrap().count(),
+      1,
+      "no temporary file is left"
+    );
   }
 
   #[test]
