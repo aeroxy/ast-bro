@@ -5,9 +5,11 @@
 //! returns a normalized `[f32; DIM]` for a single string.
 //!
 //! The model is a "static" embedder: no neural-net inference, just a `vocab × dim`
-//! matrix. Encoding is `tokenize → mean-pool → L2-normalize`. Cost per call is
-//! dominated by tokenization (~10–100 µs depending on string length); the
-//! embedding lookup itself is essentially free.
+//! matrix. Encoding is `tokenize → first MAX_EMBED_TOKENS ids → unweighted
+//! mean → L2-normalize` (see [`Embedder::encode_one`] for why it is not quite
+//! model2vec's own `encode`). Cost per call is dominated by tokenization
+//! (~10–100 µs depending on string length); the embedding lookup itself is
+//! essentially free.
 //!
 //! The matrix ships as either `f32` or `f16` depending on the model (some
 //! model2vec exports ship `f16` to halve download/cache size). `f16` tensors
@@ -30,6 +32,25 @@ pub const DIM: usize = 256;
 
 /// Tensor name inside `model.safetensors`. model2vec's convention.
 const EMBEDDINGS_TENSOR: &str = "embeddings";
+
+/// model2vec's token-id → embedding-row table. The identity unless a model's
+/// vocabulary was quantized so that several tokens share a row.
+const MAPPING_TENSOR: &str = "mapping";
+
+/// Tokens per text that [`Embedder::encode_one`] averages: the head of
+/// anything longer.
+///
+/// potion-code-16M's `tokenizer.json` ships the same 512 as its truncation
+/// setting, but the window decides ranking, so it lives here rather than in a
+/// downloaded file another model could ship without. Measured on the five
+/// pinned eval sets (150 queries): 384–768 is a plateau, while 256 and no
+/// limit at all both rank worse (see wiki/search.md).
+pub const MAX_EMBED_TOKENS: usize = 512;
+
+/// How [`Embedder::encode_one`] pools token vectors: an unweighted mean.
+/// Recorded in the index meta with [`MAX_EMBED_TOKENS`], so changing either
+/// forces a rebuild instead of mixing vectors made two ways.
+pub const POOLING: &str = "mean";
 
 /// Backing memory for `Embedder::embeddings_ptr`. `F32` tensors are read
 /// zero-copy straight out of the mmap when 4-byte aligned, and decoded into
@@ -54,6 +75,8 @@ pub struct Embedder {
   /// Stored as a raw pointer + length so `Embedder` can be `Send + Sync`.
   embeddings_ptr: *const f32,
   vocab_size: usize,
+  /// Row for each token id, when the model has a non-identity `mapping`.
+  mapping: Option<Vec<u32>>,
   tokenizer: Tokenizer,
 }
 
@@ -153,13 +176,22 @@ impl Embedder {
       }
     };
 
-    let tokenizer = Tokenizer::from_file(&tokenizer_path)
-      .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("tokenizer.json: {e}")))?;
+    let mapping = read_mapping(&st, vocab_size)?;
+
+    let tokenizer_err = |e: tokenizers::Error| {
+      io::Error::new(io::ErrorKind::InvalidData, format!("tokenizer.json: {e}"))
+    };
+    let mut tokenizer = Tokenizer::from_file(&tokenizer_path).map_err(tokenizer_err)?;
+    // `encode_one` applies MAX_EMBED_TOKENS itself. Left to `tokenizer.json`,
+    // the window would be whatever a model happens to ship.
+    tokenizer.with_truncation(None).map_err(tokenizer_err)?;
+    tokenizer.with_padding(None);
 
     Ok(Self {
       _backing: backing,
       embeddings_ptr: ptr,
       vocab_size,
+      mapping,
       tokenizer,
     })
   }
@@ -176,18 +208,33 @@ impl Embedder {
     unsafe { std::slice::from_raw_parts(self.embeddings_ptr, self.vocab_size * DIM) }
   }
 
-  /// Look up the embedding row for a single token id. OOV ids are clamped
-  /// to the unknown-token row 0 (model2vec convention: vocab[0] is `[UNK]`).
-  fn row(&self, token_id: u32) -> &[f32] {
-    let id = (token_id as usize).min(self.vocab_size.saturating_sub(1));
+  /// Look up one embedding row. An index past the matrix is clamped to the
+  /// last row; the tokenizer never produces one for a matching model.
+  fn row(&self, index: u32) -> &[f32] {
+    let id = (index as usize).min(self.vocab_size.saturating_sub(1));
     let start = id * DIM;
     &self.all_rows()[start..start + DIM]
   }
 
-  /// Encode one string into a normalized `[f32; DIM]`.
+  /// The embedding row for a token: through `mapping` when the model has
+  /// one, else the token id itself.
+  fn token_row(&self, token_id: u32) -> &[f32] {
+    let index = match &self.mapping {
+      Some(m) => m.get(token_id as usize).copied().unwrap_or(token_id),
+      None => token_id,
+    };
+    self.row(index)
+  }
+
+  /// Encode one string into a normalized `[f32; DIM]`: the unweighted mean of
+  /// the rows of its first [`MAX_EMBED_TOKENS`] tokens, L2-normalized. Empty
+  /// input, or input with no tokens, returns the zero vector.
   ///
-  /// Implements model2vec's pipeline: tokenize → mean-pool → L2-normalize.
-  /// Empty input (or input that tokenizes to zero ids) returns the zero vector.
+  /// This departs from model2vec's own `encode` on purpose. model2vec scales
+  /// each row by the model's per-token `weights` tensor (punctuation near
+  /// 0.01, identifiers near 1) and drops `[UNK]`. Weighting measured worse
+  /// here: on the five pinned eval sets it took dense-only MRR from 0.152 to
+  /// 0.123, and hybrid recall@5 from 37 to 35 of 150 (see wiki/search.md).
   pub fn encode_one(&self, text: &str) -> [f32; DIM] {
     let mut out = [0.0f32; DIM];
     if text.is_empty() {
@@ -199,13 +246,14 @@ impl Embedder {
       Err(_) => return out,
     };
     let ids = encoding.get_ids();
+    let ids = &ids[..ids.len().min(MAX_EMBED_TOKENS)];
     if ids.is_empty() {
       return out;
     }
 
     // Sum embeddings.
     for &id in ids {
-      let row = self.row(id);
+      let row = self.token_row(id);
       for i in 0..DIM {
         out[i] += row[i];
       }
@@ -230,6 +278,44 @@ impl Embedder {
 /// Decode a little-endian `f32` byte buffer, one value per 4-byte group —
 /// the aligned-copy fallback for a misaligned F32 tensor. The mmap fast
 /// path reads the same little-endian layout in place; keep the two in sync.
+/// Read model2vec's `mapping` tensor: `None` when it is absent or the
+/// identity (saving an indirection per token), and an error when it sends a
+/// token outside the `rows` embedding rows.
+fn read_mapping(st: &SafeTensors, rows: usize) -> io::Result<Option<Vec<u32>>> {
+  let invalid = |msg: String| io::Error::new(io::ErrorKind::InvalidData, msg);
+  let Ok(tensor) = st.tensor(MAPPING_TENSOR) else {
+    return Ok(None);
+  };
+  let width = match tensor.dtype() {
+    Dtype::I64 => 8,
+    Dtype::I32 => 4,
+    other => {
+      return Err(invalid(format!(
+        "expected an I64 or I32 `mapping`, got {other:?}"
+      )))
+    }
+  };
+  let shape = tensor.shape();
+  if shape.len() != 1 || tensor.data().len() != shape[0] * width {
+    return Err(invalid(format!("`mapping` has shape {shape:?}")));
+  }
+  let mut table = Vec::with_capacity(shape[0]);
+  for bytes in tensor.data().chunks_exact(width) {
+    let index = match width {
+      8 => i64::from_le_bytes(bytes.try_into().expect("8 bytes")),
+      _ => i32::from_le_bytes(bytes.try_into().expect("4 bytes")) as i64,
+    };
+    if index < 0 || index as usize >= rows {
+      return Err(invalid(format!(
+        "`mapping` sends a token to row {index}, outside the {rows} embedding rows"
+      )));
+    }
+    table.push(index as u32);
+  }
+  let identity = table.iter().enumerate().all(|(i, &r)| r as usize == i);
+  Ok(if identity { None } else { Some(table) })
+}
+
 fn decode_f32_le(bytes: &[u8]) -> Vec<f32> {
   bytes
     .chunks_exact(4)
@@ -517,6 +603,159 @@ mod tests {
     assert!(
       err.to_string().contains("expected F32 or F16 embeddings"),
       "unexpected rejection message: {err}"
+    );
+  }
+
+  // ── encode_one: window, mapping, weights (tiny fixture, no network) ────
+
+  /// A safetensors file holding `tensors` as (name, dtype, shape, bytes).
+  fn safetensors_file(tensors: &[(&str, &str, Vec<usize>, Vec<u8>)]) -> Vec<u8> {
+    let mut header = String::from("{");
+    let mut data = Vec::new();
+    for (i, (name, dtype, shape, bytes)) in tensors.iter().enumerate() {
+      let start = data.len();
+      data.extend_from_slice(bytes);
+      if i > 0 {
+        header.push(',');
+      }
+      header.push_str(&format!(
+        r#""{name}":{{"dtype":"{dtype}","shape":{shape:?},"data_offsets":[{start},{}]}}"#,
+        data.len()
+      ));
+    }
+    header.push('}');
+    while header.len() % 8 != 0 {
+      header.push(' ');
+    }
+    let mut out = (header.len() as u64).to_le_bytes().to_vec();
+    out.extend_from_slice(header.as_bytes());
+    out.extend_from_slice(&data);
+    out
+  }
+
+  /// `tokenizer.json` shaped like potion-code-16M's, over four tokens.
+  /// `truncation` is the file's own window setting.
+  fn tokenizer_json(truncation: Option<usize>) -> String {
+    let truncation = match truncation {
+      Some(n) => {
+        format!(r#"{{"direction":"Right","max_length":{n},"strategy":"LongestFirst","stride":0}}"#)
+      }
+      None => "null".to_string(),
+    };
+    format!(
+      r###"{{"version":"1.0","truncation":{truncation},"padding":null,
+      "added_tokens":[
+        {{"id":0,"content":"[PAD]","single_word":true,"lstrip":true,"rstrip":true,"normalized":true,"special":true}},
+        {{"id":1,"content":"[UNK]","single_word":false,"lstrip":false,"rstrip":false,"normalized":false,"special":true}}],
+      "normalizer":{{"type":"BertNormalizer","clean_text":true,"handle_chinese_chars":true,"strip_accents":null,"lowercase":true}},
+      "pre_tokenizer":{{"type":"BertPreTokenizer"}},
+      "post_processor":null,
+      "decoder":{{"type":"WordPiece","prefix":"##","cleanup":true}},
+      "model":{{"type":"WordPiece","unk_token":"[UNK]","continuing_subword_prefix":"##",
+        "max_input_chars_per_word":100,"vocab":{{"[PAD]":0,"[UNK]":1,"a":2,"b":3}}}}}}"###
+    )
+  }
+
+  /// A model directory whose tokens `[PAD]`, `[UNK]`, `a`, `b` have rows 0,
+  /// 0, e0 and e1, plus model2vec's optional `mapping` and `weights`.
+  fn tiny_model(
+    dir: &Path,
+    mapping: Option<[i64; 4]>,
+    weights: Option<[f64; 4]>,
+    truncation: Option<usize>,
+  ) {
+    let mut rows = vec![0f32; 4 * DIM];
+    rows[2 * DIM] = 1.0;
+    rows[3 * DIM + 1] = 1.0;
+    let mut tensors = vec![(
+      "embeddings",
+      "F32",
+      vec![4, DIM],
+      rows
+        .iter()
+        .flat_map(|v| v.to_le_bytes())
+        .collect::<Vec<u8>>(),
+    )];
+    if let Some(m) = mapping {
+      tensors.push((
+        "mapping",
+        "I64",
+        vec![4],
+        m.iter().flat_map(|v| v.to_le_bytes()).collect(),
+      ));
+    }
+    if let Some(w) = weights {
+      tensors.push((
+        "weights",
+        "F64",
+        vec![4],
+        w.iter().flat_map(|v| v.to_le_bytes()).collect(),
+      ));
+    }
+    std::fs::write(dir.join("model.safetensors"), safetensors_file(&tensors)).unwrap();
+    std::fs::write(dir.join("tokenizer.json"), tokenizer_json(truncation)).unwrap();
+  }
+
+  #[test]
+  fn encode_averages_only_the_first_max_embed_tokens() {
+    let dir = tempfile::tempdir().unwrap();
+    tiny_model(dir.path(), None, None, None);
+    let emb = Embedder::open(dir.path()).unwrap();
+    let text = format!("{}{}", "a ".repeat(MAX_EMBED_TOKENS), "b ".repeat(100));
+    let v = emb.encode_one(&text);
+    assert_eq!(
+      (v[0], v[1]),
+      (1.0, 0.0),
+      "tokens past the window must not count"
+    );
+  }
+
+  /// The window is ast-bro's, whatever the model's `tokenizer.json` says.
+  #[test]
+  fn the_window_ignores_the_tokenizer_files_truncation() {
+    let dir = tempfile::tempdir().unwrap();
+    tiny_model(dir.path(), None, None, Some(4));
+    let v = Embedder::open(dir.path()).unwrap().encode_one("a a a a b");
+    assert!(
+      v[1] > 0.0,
+      "the fifth token is inside MAX_EMBED_TOKENS: {:?}",
+      &v[..2]
+    );
+  }
+
+  #[test]
+  fn mapping_sends_each_token_to_its_row() {
+    let dir = tempfile::tempdir().unwrap();
+    tiny_model(dir.path(), Some([0, 1, 3, 2]), None, None);
+    let v = Embedder::open(dir.path()).unwrap().encode_one("a");
+    assert_eq!((v[0], v[1]), (0.0, 1.0));
+  }
+
+  /// Weighting measured worse on the eval sets; see `encode_one`.
+  #[test]
+  fn weights_are_ignored_on_purpose() {
+    let dir = tempfile::tempdir().unwrap();
+    tiny_model(dir.path(), None, Some([0.0, 0.0, 0.0001, 1.0]), None);
+    let v = Embedder::open(dir.path()).unwrap().encode_one("a b");
+    assert!(
+      (v[0] - v[1]).abs() < 1e-6,
+      "a and b must count equally: {:?}",
+      &v[..2]
+    );
+  }
+
+  #[test]
+  fn open_rejects_a_mapping_outside_the_rows() {
+    let dir = tempfile::tempdir().unwrap();
+    tiny_model(dir.path(), Some([0, 1, 9, 3]), None, None);
+    let err = match Embedder::open(dir.path()) {
+      Err(e) => e,
+      Ok(_) => panic!("a mapping past the matrix must be rejected"),
+    };
+    assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+    assert!(
+      err.to_string().contains("outside the 4 embedding rows"),
+      "got: {err}"
     );
   }
 
