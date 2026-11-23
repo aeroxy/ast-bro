@@ -1781,9 +1781,23 @@ pub(crate) fn definition<'a, D: Doc>(node: &Node<'a, D>) -> Option<Definition> {
   match keyword.as_str() {
     "defmodule" | "defprotocol" | "defimpl" => {
       let written = _text(first);
+      // `defimpl P, for: T` defines `P.T`; a list form's body is walked
+      // under its first type, as in `map`.
+      let target = _keyword_value(&args, "for")
+        .filter(|_| keyword == "defimpl")
+        .and_then(|v| match v.kind().as_ref() {
+          "list" => v
+            .children()
+            .find(|c| c.is_named() && c.kind() != "comment")
+            .map(|c| _text(&c)),
+          _ => Some(_text(&v)),
+        });
       Some(Definition::Module {
         signature: _module_signature(node, &keyword, &written),
-        name: written,
+        name: match target {
+          Some(t) => format!("{}.{}", written, t),
+          None => written,
+        },
       })
     }
     k if DEF_MACROS.iter().any(|(kw, _, _)| *kw == k) || _is_def_like(node, k) => {
