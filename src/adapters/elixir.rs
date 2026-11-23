@@ -1791,6 +1791,11 @@ pub(crate) fn definition<'a, D: Doc>(node: &Node<'a, D>, enclosing: &str) -> Opt
           let name = format!("{}.{}", written, _expand_module(&t, enclosing));
           (name.clone(), name)
         }
+        // With no `for:`, a `defimpl` is for the module it is in.
+        None if keyword == "defimpl" && !enclosing.is_empty() => {
+          let name = format!("{}.{}", written, enclosing);
+          (name.clone(), name)
+        }
         None if keyword == "defimpl" || enclosing.is_empty() => (written.clone(), written),
         None if written.starts_with("__MODULE__") => {
           let fqn = _expand_module(&written, enclosing);

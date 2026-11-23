@@ -481,7 +481,7 @@ mod tests {
     let src = "defimpl P, for: [A, B] do\n  def f(_), do: 1\nend\n";
     assert_eq!(crumbs(src), vec!["P.A", "P.A > f"]);
     let src = "defmodule A do\n  defimpl P do\n    def f(_), do: 1\n  end\nend\n";
-    assert_eq!(crumbs(src), vec!["A", "A > P", "A > P > f"]);
+    assert_eq!(crumbs(src), vec!["A", "A > P.A", "A > P.A > f"]);
     // `__MODULE__` names the enclosing module, nested ones included, as in
     // `map`.
     let src = "defmodule Foo.Bar do\n  defmodule Baz do\n    defimpl Inspect, for: __MODULE__ do\n    end\n  end\n  defimpl P, for: [__MODULE__.Sub] do\n  end\nend\n";
