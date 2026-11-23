@@ -52,17 +52,18 @@ fn form_of<D: Doc>(node: &Node<'_, D>, source: &str) -> Form {
     None => {}
   }
   // As in the adapter, a `test` / `setup` is one member whatever its body
-  // defines, and a `describe` groups the tests in it.
+  // defines, and a `describe` groups the tests in it. The signature is the
+  // adapter's too, which ends before a `do:` body as well as a `do` block.
   match exunit_block(node) {
-    Some(ExUnitBlock::Describe { name }) => {
+    Some(ExUnitBlock::Describe { name, signature }) => {
       return Form::Module {
         name,
-        signature: signature_of(node, source),
+        signature: one_line_signature(&signature),
       }
     }
-    Some(ExUnitBlock::Leaf) => {
+    Some(ExUnitBlock::Leaf { signature }) => {
       return Form::Block {
-        signature: signature_of(node, source),
+        signature: one_line_signature(&signature),
       }
     }
     None => {}
@@ -312,6 +313,31 @@ mod tests {
       sigs,
       vec!["defmodule ATest", "test \"defines a module\"", "setup"]
     );
+  }
+
+  #[test]
+  fn a_keyword_bodied_test_keeps_only_its_header() {
+    // As in `map`: the signature ends before `do:`, not at 200 characters
+    // into the body.
+    let src = "defmodule T do\n  setup do: :ok\n  test \"works\", %{a: a}, do: assert(secret == a)\n  describe \"g\", do: test(\"t\", do: :ok)\n  test \"wrapped\", %{\n    b: b\n  } do\n  end\nend\n";
+    let sigs: Vec<String> = members(src).into_iter().map(|(_, s)| s).collect();
+    assert_eq!(
+      sigs,
+      vec![
+        "defmodule T",
+        "setup",
+        "test \"works\", %{a: a}",
+        "describe \"g\"",
+        // A wrapped header is still one line.
+        "test \"wrapped\", %{ b: b }"
+      ]
+    );
+    // A long label is capped like every other outline signature.
+    let label = "x".repeat(300);
+    let src = format!("defmodule T do\n  test \"{label}\" do\n  end\nend\n");
+    let sig = members(&src).pop().unwrap().1;
+    assert!(sig.ends_with('…'), "{sig}");
+    assert_eq!(sig.chars().count(), MAX_SIGNATURE_CHARS + 1, "{sig}");
   }
 
   #[test]

@@ -798,16 +798,7 @@ impl<'s> Walker<'s> {
   ) {
     let args = _named_args(node);
     let label = _exunit_label(&args);
-    let shown: Vec<String> = args
-      .iter()
-      .filter(|a| a.kind() != "keywords")
-      .map(|a| _text(a))
-      .collect();
-    let signature = if shown.is_empty() {
-      keyword.to_string()
-    } else {
-      format!("{} {}", keyword, shown.join(", "))
-    };
+    let signature = _exunit_signature(&args, keyword);
     let calls = if keyword == "describe" {
       Vec::new()
     } else {
@@ -1819,6 +1810,21 @@ fn _is_exunit_block<'a, D: Doc>(node: &Node<'a, D>, keyword: &str) -> bool {
     }
 }
 
+/// The header of an ExUnit block: its keyword and arguments, without a
+/// `do:` body.
+fn _exunit_signature<'a, D: Doc>(args: &[Node<'a, D>], keyword: &str) -> String {
+  let shown: Vec<String> = args
+    .iter()
+    .filter(|a| a.kind() != "keywords")
+    .map(|a| _text(a))
+    .collect();
+  if shown.is_empty() {
+    keyword.to_string()
+  } else {
+    format!("{} {}", keyword, shown.join(", "))
+  }
+}
+
 /// The label of an ExUnit block as its name writes it. A qn joins its
 /// segments with `::`, so a label writes it `: :` (`test "Foo::bar"` is no
 /// function `bar`); the signature keeps it.
@@ -1833,10 +1839,10 @@ fn _exunit_label<'a, D: Doc>(args: &[Node<'a, D>]) -> String {
 
 /// An ExUnit block, as the search chunker sees it.
 pub(crate) enum ExUnitBlock {
-  /// A `describe`, with its name as `map` writes it.
-  Describe { name: String },
+  /// A `describe`, with its name and signature as `map` writes them.
+  Describe { name: String, signature: String },
   /// A `test` / `setup` / `setup_all`: one member, whatever its body holds.
-  Leaf,
+  Leaf { signature: String },
 }
 
 /// Recognise `node` as an ExUnit block, as the module walk does.
@@ -1845,11 +1851,16 @@ pub(crate) fn exunit_block<'a, D: Doc>(node: &Node<'a, D>) -> Option<ExUnitBlock
     return None;
   }
   let keyword = _call_keyword(node)?;
+  let args = _named_args(node);
+  let signature = _exunit_signature(&args, &keyword);
   match keyword.as_str() {
     "describe" if _is_exunit_block(node, &keyword) => Some(ExUnitBlock::Describe {
-      name: format!("describe {}", _exunit_label(&_named_args(node))),
+      name: format!("describe {}", _exunit_label(&args)),
+      signature,
     }),
-    "test" | "setup" | "setup_all" if _is_exunit_block(node, &keyword) => Some(ExUnitBlock::Leaf),
+    "test" | "setup" | "setup_all" if _is_exunit_block(node, &keyword) => {
+      Some(ExUnitBlock::Leaf { signature })
+    }
     _ => None,
   }
 }
