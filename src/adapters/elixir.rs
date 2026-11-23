@@ -267,6 +267,10 @@ struct Walker<'s> {
   scan_references: bool,
   /// The `describe` label ExUnit puts in the name of the tests inside it.
   describe: Option<String>,
+  /// How many wrappers (`if … do def …`) the walk is inside. It enters at
+  /// most `MAX_WRAPPER_DEPTH`, as many as `wrapped_bodies` looks through,
+  /// so a chain where every level defines cannot exhaust the stack.
+  wrappers: usize,
 }
 
 /// A lexical scope: a module body, a function, or a block.
@@ -348,6 +352,7 @@ impl<'s> Walker<'s> {
       scopes: Vec::new(),
       scan_references: false,
       describe: None,
+      wrappers: 0,
     }
   }
 
@@ -531,10 +536,15 @@ impl<'s> Walker<'s> {
         // `if … do def … end` defines into this module. A clause
         // in the block joins the function's clauses around it, and
         // a clause after it still folds into those before.
-        k if k != "quote" && !wrapped_bodies(&child).is_empty() => {
+        k if k != "quote"
+          && self.wrappers < MAX_WRAPPER_DEPTH
+          && !wrapped_bodies(&child).is_empty() =>
+        {
           pending = Pending::default();
           for block in wrapped_bodies(&child) {
+            self.wrappers += 1;
             let inner = self.walk_body(&block, module_fqn);
+            self.wrappers -= 1;
             for d in inner.decls {
               _fold_clause(&mut out.decls, d);
             }
@@ -2464,6 +2474,21 @@ mod tests {
       let r = parse(&src);
       assert_eq!(r.declarations[0].name, "A");
     }
+    // Every level defines, so every level is a wrapper: the walk enters
+    // as many of them as the check looks through, and no more.
+    let depth = 3000;
+    let levels: String = (0..depth)
+      .map(|i| format!("if a() do\ndef f{i}, do: 1\n"))
+      .collect();
+    let src = format!("defmodule A do\n{levels}{}end\n", "end\n".repeat(depth));
+    let r = parse(&src);
+    let names: Vec<&str> = r.declarations[0]
+      .children
+      .iter()
+      .map(|d| d.name.as_str())
+      .collect();
+    assert_eq!(names.len(), MAX_WRAPPER_DEPTH, "{names:?}");
+    assert_eq!(names[0], "f0");
   }
 
   #[test]
