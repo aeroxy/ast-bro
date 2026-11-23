@@ -57,7 +57,9 @@ fn form_of<D: Doc>(node: &Node<'_, D>, source: &str) -> Form {
   {
     return Form::Other;
   }
-  if !wrapped_bodies(node).is_empty() {
+  // As in the adapter, a quoted `def` is data: it defines nothing here.
+  let quoted = node.field("target").is_some_and(|t| t.text() == "quote");
+  if !quoted && !wrapped_bodies(node).is_empty() {
     return Form::Wrapper;
   }
   if do_block(node).is_none() {
@@ -282,5 +284,27 @@ mod tests {
     let src = "defmodule A do\n  if true do\n    def g, do: 1\n  else\n    def h, do: 2\n  end\n  test \"t\" do\n    if x do\n      :ok\n    end\n  end\nend\n";
     let sigs: Vec<String> = members(src).into_iter().map(|(_, s)| s).collect();
     assert_eq!(sigs, vec!["defmodule A", "def g", "def h", "test \"t\""]);
+  }
+
+  #[test]
+  fn a_quoted_definition_is_not_a_member() {
+    // A quoted `def` is data: it defines nothing in `A`.
+    let src = "defmodule A do\n  quote do\n    def g, do: 1\n  end\nend\n";
+    let sigs: Vec<String> = members(src).into_iter().map(|(_, s)| s).collect();
+    assert_eq!(sigs, vec!["defmodule A", "quote"]);
+  }
+
+  #[test]
+  fn an_implementation_is_named_by_its_type() {
+    let crumbs = |src: &str| -> Vec<String> { members(src).into_iter().map(|(b, _)| b).collect() };
+    let src = "defimpl String.Chars, for: Db do\n  def to_string(_), do: \"db\"\nend\n";
+    assert_eq!(
+      crumbs(src),
+      vec!["String.Chars.Db", "String.Chars.Db > to_string"]
+    );
+    let src = "defimpl P, for: [A, B] do\n  def f(_), do: 1\nend\n";
+    assert_eq!(crumbs(src), vec!["P.A", "P.A > f"]);
+    let src = "defmodule A do\n  defimpl P do\n    def f(_), do: 1\n  end\nend\n";
+    assert_eq!(crumbs(src), vec!["A", "A > P", "A > P > f"]);
   }
 }
