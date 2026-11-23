@@ -148,6 +148,10 @@ impl WordPiece {
 
     // `tokenizers` gives an added token its id from the vocabulary, warning
     // and moving on when the two disagree; only agreeing ids are supported.
+    // It also looks a match's `single_word`, `lstrip` and `rstrip` up by id,
+    // so of two tokens sharing an id, both would match with the later one's
+    // flags; a shared id is refused.
+    let mut ids: HashMap<u32, &str> = HashMap::new();
     for token in &json.added_tokens {
       match json.model.vocab.get(&token.content) {
         Some(&id) if id == token.id => {}
@@ -163,6 +167,12 @@ impl WordPiece {
             token.content
           )))
         }
+      }
+      if let Some(other) = ids.insert(token.id, &token.content) {
+        return Err(invalid(format!(
+          "added tokens {other:?} and {:?} share id {}",
+          token.content, token.id
+        )));
       }
     }
 
@@ -735,6 +745,32 @@ mod tests {
       err
         .to_string()
         .contains(r#""HELLO" and "Hello" both match as "hello""#),
+      "{err}"
+    );
+  }
+
+  /// `QQ` and `ZZ` share id 901 with different `single_word` flags.
+  /// `tokenizers` looks the flags up by id, so both match as `ZZ` does:
+  /// `aQQb` stays one word there but splits around `QQ` here. A shared id
+  /// is refused at load instead.
+  #[test]
+  fn load_refuses_two_added_tokens_that_share_an_id() {
+    let json = fixture()
+      .replacen(r#""vocab":{"#, r#""vocab":{"QQ":901,"ZZ":901,"#, 1)
+      .replacen(
+        r#""added_tokens":["#,
+        r#""added_tokens":[
+          {"id":901,"content":"QQ","single_word":false,"lstrip":false,"rstrip":false,"normalized":false,"special":false},
+          {"id":901,"content":"ZZ","single_word":true,"lstrip":false,"rstrip":false,"normalized":false,"special":false},"#,
+        1,
+      );
+    let err = match WordPiece::from_json(json.as_bytes()) {
+      Err(e) => e,
+      Ok(_) => panic!("two added tokens sharing an id must be refused"),
+    };
+    assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+    assert!(
+      err.to_string().contains(r#""QQ" and "ZZ" share id 901"#),
       "{err}"
     );
   }

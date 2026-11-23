@@ -463,9 +463,10 @@ impl Index {
     write_bincode(&paths.files_bin, &files)?;
     write_bincode(&paths.bm25_bin, &bm25)?;
     write_embeddings(&paths.embeddings_f32, &embeddings)?;
-    // meta.json last, as `apply_delta` does: it records how the files above
-    // were made (schema, model, window, pooling), so a write that stops
-    // partway must leave the old meta, which loading then rejects.
+    // meta.json last, as `apply_delta` does, so a write that stops partway
+    // leaves the previous meta. Loading rejects that mix only when the
+    // encoder settings or the chunk count changed: the five files are not
+    // replaced together, and a mix that keeps both still loads (#119).
     write_meta(&paths.meta_json, &meta)?;
 
     eprintln!(
@@ -717,8 +718,8 @@ impl Index {
     let chunks: Vec<Chunk> = read_bincode(&paths.chunks_bin)?;
     // meta.json is written last, so a write that stopped partway leaves the
     // previous meta beside some newer files. The checks above catch that
-    // when the encoder settings changed; a chunk count that disagrees with
-    // chunks.bin catches most of the rest.
+    // when the encoder settings changed, and this one when the chunk count
+    // did; a mix that keeps both still loads (#119).
     if meta.chunk_count as usize != chunks.len() {
       return Err(io::Error::new(
         io::ErrorKind::InvalidData,
