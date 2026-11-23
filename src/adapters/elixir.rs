@@ -2082,22 +2082,31 @@ fn _is_head<'a, D: Doc>(node: &Node<'a, D>) -> bool {
 /// argument list.
 fn _module_signature<'a, D: Doc>(node: &Node<'a, D>, keyword: &str, written: &str) -> String {
   if keyword == "defimpl" {
-    // The arguments up to a `do:` pair, which is the body, as a `do` block
-    // is in the other form.
-    let body = _keyword_value(&_named_args(node), "do")
-      .and_then(|v| v.parent())
-      .map(|pair| pair.range().start);
-    let args_text = node
-      .children()
-      .find(|c| c.kind() == "arguments")
-      .map(|a| {
-        let text = a.text();
-        let end = body.map_or(text.len(), |b| b.saturating_sub(a.range().start));
-        collapse_ws(text.get(..end).unwrap_or(&text))
-          .trim_end_matches(|c: char| c == ',' || c.is_whitespace())
-          .to_string()
-      })
-      .unwrap_or_else(|| written.to_string());
+    // The arguments without a `do:` pair, which is the body, as a `do`
+    // block is in the other form.
+    let args = _named_args(node);
+    let mut parts: Vec<String> = Vec::new();
+    for arg in &args {
+      if arg.kind() == "keywords" {
+        parts.extend(
+          arg
+            .children()
+            .filter(|p| p.kind() == "pair")
+            .filter(|p| {
+              p.field("key")
+                .is_none_or(|k| k.text().trim().trim_end_matches(':') != "do")
+            })
+            .map(|p| _text(&p)),
+        );
+      } else {
+        parts.push(_text(arg));
+      }
+    }
+    let args_text = if parts.is_empty() {
+      written.to_string()
+    } else {
+      parts.join(", ")
+    };
     return format!("defimpl {}", args_text);
   }
   format!("{} {}", keyword, written)
@@ -2436,13 +2445,22 @@ mod tests {
   #[test]
   fn a_keyword_bodied_implementation_is_signed_without_its_body() {
     // As the `do … end` form is: the `do:` pair is the body.
-    let r = parse("defimpl P, for: A, do: (def a(_), do: 1)\ndefimpl P, for: B do\nend\n");
+    let r = parse(
+      "defimpl P, for: A, do: (def a(_), do: 1)\ndefimpl P, for: B do\nend\ndefimpl P, do: (def a(_), do: 1), for: C\n",
+    );
     let sigs: Vec<&str> = r
       .declarations
       .iter()
       .map(|d| d.signature.as_str())
       .collect();
-    assert_eq!(sigs, vec!["defimpl P, for: A", "defimpl P, for: B"]);
+    assert_eq!(
+      sigs,
+      vec![
+        "defimpl P, for: A",
+        "defimpl P, for: B",
+        "defimpl P, for: C"
+      ]
+    );
   }
 
   #[test]
@@ -2481,6 +2499,16 @@ mod tests {
       .collect();
     // An `if` holding only an `if` still wraps a definition; a `quote` does not.
     assert_eq!(got, vec!["def f"]);
+  }
+
+  #[test]
+  fn the_wrapper_limit_is_a_depth_not_a_count() {
+    // Twenty sibling wrappers are each one level deep, so all are entered.
+    let levels: String = (0..20)
+      .map(|i| format!("  if a() do\n    def f{i}, do: 1\n  end\n"))
+      .collect();
+    let r = parse(&format!("defmodule A do\n{levels}end\n"));
+    assert_eq!(r.declarations[0].children.len(), 20);
   }
 
   #[test]
