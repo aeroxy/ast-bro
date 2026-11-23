@@ -307,7 +307,8 @@ impl AddedTokens {
   /// `tokenizers` builds a reversed range, and with whitespace-free edges it
   /// never can.
   fn new(tokens: impl Iterator<Item = (String, AddedTokenJson)>) -> io::Result<Self> {
-    let mut patterns = Vec::new();
+    let mut patterns: Vec<String> = Vec::new();
+    let mut contents: Vec<String> = Vec::new();
     let mut added = Vec::new();
     for (pattern, t) in tokens {
       if pattern.is_empty()
@@ -323,6 +324,20 @@ impl AddedTokens {
           ),
         ));
       }
+      // Two tokens matched as the same pattern tie on every match.
+      // `tokenizers` gives the match to whichever it lists first, and it
+      // lists special tokens before the rest, so file order alone would
+      // not reproduce its choice.
+      if let Some(other) = patterns.iter().position(|p| *p == pattern) {
+        return Err(io::Error::new(
+          io::ErrorKind::InvalidData,
+          format!(
+            "tokenizer.json: added tokens {:?} and {:?} both match as {pattern:?}",
+            contents[other], t.content
+          ),
+        ));
+      }
+      contents.push(t.content.clone());
       patterns.push(pattern);
       added.push(AddedToken {
         id: t.id,
@@ -692,6 +707,34 @@ mod tests {
     };
     assert!(
       err.to_string().contains("starts or ends with whitespace"),
+      "{err}"
+    );
+  }
+
+  /// `HELLO` and `Hello` both normalize to `hello`, so as normalized added
+  /// tokens they tie on every match. `tokenizers` lists special tokens
+  /// before the rest, so the earlier one in the file need not win; the pair
+  /// is refused at load instead.
+  #[test]
+  fn load_refuses_two_added_tokens_that_match_alike() {
+    let json = fixture()
+      .replacen(r#""vocab":{"#, r#""vocab":{"HELLO":901,"Hello":902,"#, 1)
+      .replacen(
+        r#""added_tokens":["#,
+        r#""added_tokens":[
+          {"id":901,"content":"HELLO","single_word":false,"lstrip":false,"rstrip":false,"normalized":true,"special":false},
+          {"id":902,"content":"Hello","single_word":false,"lstrip":false,"rstrip":false,"normalized":true,"special":true},"#,
+        1,
+      );
+    let err = match WordPiece::from_json(json.as_bytes()) {
+      Err(e) => e,
+      Ok(_) => panic!("two added tokens that normalize alike must be refused"),
+    };
+    assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+    assert!(
+      err
+        .to_string()
+        .contains(r#""HELLO" and "Hello" both match as "hello""#),
       "{err}"
     );
   }

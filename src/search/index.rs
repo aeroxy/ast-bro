@@ -459,11 +459,14 @@ impl Index {
       tombstones: Vec::new(),
       indexed_corpus: corpus.to_string(),
     };
-    write_meta(&paths.meta_json, &meta)?;
     write_bincode(&paths.chunks_bin, &chunks)?;
     write_bincode(&paths.files_bin, &files)?;
     write_bincode(&paths.bm25_bin, &bm25)?;
     write_embeddings(&paths.embeddings_f32, &embeddings)?;
+    // meta.json last, as `apply_delta` does: it records how the files above
+    // were made (schema, model, window, pooling), so a write that stops
+    // partway must leave the old meta, which loading then rejects.
+    write_meta(&paths.meta_json, &meta)?;
 
     eprintln!(
       "ast-bro: index built in {:.1}s total",
@@ -712,6 +715,20 @@ impl Index {
     }
 
     let chunks: Vec<Chunk> = read_bincode(&paths.chunks_bin)?;
+    // meta.json is written last, so a write that stopped partway leaves the
+    // previous meta beside some newer files. The checks above catch that
+    // when the encoder settings changed; a chunk count that disagrees with
+    // chunks.bin catches most of the rest.
+    if meta.chunk_count as usize != chunks.len() {
+      return Err(io::Error::new(
+        io::ErrorKind::InvalidData,
+        format!(
+          "meta.json counts {} chunks but chunks.bin holds {}; a write was interrupted",
+          meta.chunk_count,
+          chunks.len()
+        ),
+      ));
+    }
     let files: Vec<FileRecord> = read_bincode(&paths.files_bin)?;
     let bm25: Bm25Index = read_bincode(&paths.bm25_bin)?;
     let embeddings = read_embeddings(&paths.embeddings_f32)?;
@@ -1725,6 +1742,41 @@ mod tests {
     };
     assert_eq!(err.kind(), io::ErrorKind::InvalidData);
     assert!(err.to_string().contains("-token window"), "got: {err}");
+  }
+
+  /// A build that stopped after chunks.bin but before meta.json leaves the
+  /// previous meta beside the new chunks, and the count it records gives
+  /// that away. Checked before the other files and the model load, so this
+  /// needs neither.
+  #[test]
+  fn load_rejects_a_meta_that_counts_other_chunks() {
+    let dir = tmp_repo();
+    let paths = IndexPaths::from_repo(dir.path());
+    fs::create_dir_all(&paths.index_dir).unwrap();
+    let meta = Meta {
+      schema: SCHEMA.to_string(),
+      ast_bro_version: env!("CARGO_PKG_VERSION").to_string(),
+      model: ModelMeta::current(),
+      created_unix: 0,
+      chunk_count: 2,
+      embedding_dtype: "f32_le".to_string(),
+      tombstones: Vec::new(),
+      indexed_corpus: String::new(),
+    };
+    write_meta(&paths.meta_json, &meta).unwrap();
+    write_bincode(&paths.chunks_bin, &Vec::<Chunk>::new()).unwrap();
+
+    let err = match Index::load_unlocked(&paths) {
+      Ok(_) => panic!("a count that disagrees with chunks.bin must error"),
+      Err(e) => e,
+    };
+    assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+    assert!(
+      err
+        .to_string()
+        .contains("counts 2 chunks but chunks.bin holds 0"),
+      "got: {err}"
+    );
   }
 
   /// Full end-to-end: build, search, find_related against a tiny tmp repo.

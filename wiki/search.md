@@ -290,7 +290,9 @@ every character. A fixture test against `tokenizers` (kept as a
 dev-dependency) holds it to that in CI. Run by hand with the real
 `tokenizer.json`, it matched on every file of this repository, semble and
 the five pinned corpora: 9,527 files and about 22.8 million tokens. `load`
-refuses a `tokenizer.json` describing any other pipeline.
+refuses a `tokenizer.json` describing any other pipeline, and added tokens it
+would not match as `tokenizers` does: two that match as the same text, or one
+that starts or ends with whitespace.
 
 The reasons were cost, not behaviour. `Tokenizer::from_file` took 9–14 ms of
 every CLI search, against about 5 ms for reading just what WordPiece needs.
@@ -389,7 +391,7 @@ insertion order and demanding bit-identical scores.
     └── lock                 # advisory exclusive lock during writes
 ```
 
-Loader refuses if `meta.json.schema != "ast-bro.search-index.v4"`, the model id, token window or pooling mismatches, `ast_bro_version` differs from the binary, or `chunks.len() × 256 × 4 != len(embeddings.f32)`. Each binary is read via bincode with `serde::Deserialize`. Embeddings are read into memory (mmap is a later swap that won't change the format).
+Loader refuses if `meta.json.schema != "ast-bro.search-index.v4"`, the model id, token window or pooling mismatches, `ast_bro_version` differs from the binary, `meta.json.chunk_count != chunks.len()`, or `chunks.len() × 256 × 4 != len(embeddings.f32)`. Each binary is read via bincode with `serde::Deserialize`. Embeddings are read into memory (mmap is a later swap that won't change the format).
 
 Schema v2 adds `breadcrumb` and `kind` to `Chunk`, which changes the bincode
 layout of `chunks.bin`. A v1 index cannot be decoded, so the loader rejects it
@@ -441,7 +443,7 @@ On `Index::open`, a non-empty delta is applied incrementally (`apply_delta`): th
 
 ## Concurrency
 
-`fs2` advisory lock at `.ast-bro/index/lock` — exclusive during writes. Two `search` calls at the same instant during a rebuild serialize; the loser sees the winner's update on its next read. All writes use `.tmp` + atomic rename so a SIGKILL mid-write leaves the previous index intact.
+`fs2` advisory lock at `.ast-bro/index/lock` — exclusive during writes. Two `search` calls at the same instant during a rebuild serialize; the loser sees the winner's update on its next read. Each file is written to `.tmp` and renamed into place, so no file is ever half-written, but the five are not replaced together. `meta.json` goes last, so a SIGKILL between two renames leaves the previous meta beside newer files; the loader rejects that mix when the encoder settings or the chunk count changed, and the next open rebuilds.
 
 ## Adding a new model
 
