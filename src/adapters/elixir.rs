@@ -1919,9 +1919,19 @@ fn _string_content(literal: &str) -> String {
   inner.trim().to_string()
 }
 
+/// How many wrappers deep `wrapped_bodies` looks for a definition. Unbounded,
+/// the check recursed once per level, so a few hundred nested `if`s
+/// exhausted the stack and the time grew with the square of the depth.
+const MAX_WRAPPER_DEPTH: usize = 16;
+
 /// The `do` and `else` blocks of a call that wraps definitions (`if … do def
 /// …`); empty when it wraps none.
 pub(crate) fn wrapped_bodies<'a, D: Doc>(node: &Node<'a, D>) -> Vec<Node<'a, D>> {
+  wrapped_bodies_within(node, MAX_WRAPPER_DEPTH)
+}
+
+/// `wrapped_bodies`, looking through at most `depth` more nested wrappers.
+fn wrapped_bodies_within<'a, D: Doc>(node: &Node<'a, D>, depth: usize) -> Vec<Node<'a, D>> {
   if node.kind() != "call" || definition(node, "").is_some() {
     return Vec::new();
   }
@@ -1941,7 +1951,7 @@ pub(crate) fn wrapped_bodies<'a, D: Doc>(node: &Node<'a, D>) -> Vec<Node<'a, D>>
       || _call_keyword(c).is_some_and(|k| match k.as_str() {
         "test" | "describe" | "setup" | "setup_all" => _is_exunit_block(c, &k),
         "quote" => false,
-        _ => !wrapped_bodies(c).is_empty(),
+        _ => depth > 0 && !wrapped_bodies_within(c, depth - 1).is_empty(),
       })
   };
   if bodies.iter().any(|b| b.children().any(|c| defines(&c))) {
@@ -2398,6 +2408,22 @@ mod tests {
       .collect();
     // An `if` holding only an `if` still wraps a definition; a `quote` does not.
     assert_eq!(got, vec!["def f"]);
+  }
+
+  #[test]
+  fn a_deep_stack_of_blocks_does_not_exhaust_the_stack() {
+    // The nested-wrapper check looks a bounded depth down. Unbounded, it
+    // recursed once per level and aborted on a few hundred nested `if`s.
+    for (depth, inner) in [(600, "def f, do: 1\n"), (1500, "")] {
+      let src = format!(
+        "defmodule A do\n{}{}{}end\n",
+        "if a() do\n".repeat(depth),
+        inner,
+        "end\n".repeat(depth)
+      );
+      let r = parse(&src);
+      assert_eq!(r.declarations[0].name, "A");
+    }
   }
 
   #[test]
