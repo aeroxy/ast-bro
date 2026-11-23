@@ -1744,8 +1744,13 @@ fn _push_children<'a, D: Doc>(stack: &mut Vec<Node<'a, D>>, node: &Node<'a, D>) 
 
 /// A definition form, as the search chunker sees it.
 pub(crate) enum Definition {
-  /// `defmodule` / `defprotocol` / `defimpl`.
-  Module { name: String, signature: String },
+  /// `defmodule` / `defprotocol` / `defimpl`, with the full name its body
+  /// is in (`fqn`), which aliases aside is the one `map` gives it.
+  Module {
+    name: String,
+    fqn: String,
+    signature: String,
+  },
   /// One clause of a `def`-family definition.
   Function {
     keyword: String,
@@ -1756,7 +1761,8 @@ pub(crate) enum Definition {
 }
 
 /// Recognise `node` as a definition form, by the macro name of its target.
-pub(crate) fn definition<'a, D: Doc>(node: &Node<'a, D>) -> Option<Definition> {
+/// `enclosing` is the full name of the module `node` is in, `""` at the top.
+pub(crate) fn definition<'a, D: Doc>(node: &Node<'a, D>, enclosing: &str) -> Option<Definition> {
   if node.kind() != "call" {
     return None;
   }
@@ -1777,12 +1783,31 @@ pub(crate) fn definition<'a, D: Doc>(node: &Node<'a, D>) -> Option<Definition> {
             .map(|c| _text(&c)),
           _ => Some(_text(&v)),
         });
-      Some(Definition::Module {
-        signature: _module_signature(node, &keyword, &written),
-        name: match target {
-          Some(t) => format!("{}.{}", written, t),
-          None => written,
+      let signature = _module_signature(node, &keyword, &written);
+      // As the module walk names it, aliases aside: `defimpl` names its
+      // module in full, a nested `defmodule` qualifies.
+      let (name, fqn) = match target {
+        Some(t) => {
+          let name = format!("{}.{}", written, _expand_module(&t, enclosing));
+          (name.clone(), name)
+        }
+        None if keyword == "defimpl" || enclosing.is_empty() => (written.clone(), written),
+        None if written.starts_with("__MODULE__") => {
+          let fqn = _expand_module(&written, enclosing);
+          (written, fqn)
+        }
+        None => match written.strip_prefix("Elixir.") {
+          Some(absolute) => (written.clone(), absolute.to_string()),
+          None => {
+            let fqn = format!("{}.{}", enclosing, written);
+            (written, fqn)
+          }
         },
+      };
+      Some(Definition::Module {
+        name,
+        fqn,
+        signature,
       })
     }
     k if DEF_MACROS.iter().any(|(kw, _, _)| *kw == k) || _is_def_like(node, k) => {
@@ -1883,7 +1908,7 @@ fn _string_content(literal: &str) -> String {
 /// The `do` and `else` blocks of a call that wraps definitions (`if … do def
 /// …`); empty when it wraps none.
 pub(crate) fn wrapped_bodies<'a, D: Doc>(node: &Node<'a, D>) -> Vec<Node<'a, D>> {
-  if node.kind() != "call" || definition(node).is_some() {
+  if node.kind() != "call" || definition(node, "").is_some() {
     return Vec::new();
   }
   let Some(block) = node.children().find(|c| c.kind() == "do_block") else {
@@ -1896,7 +1921,7 @@ pub(crate) fn wrapped_bodies<'a, D: Doc>(node: &Node<'a, D>) -> Vec<Node<'a, D>>
   let bodies: Vec<_> = std::iter::once(block).chain(elses).collect();
   // An ExUnit `test` / `describe` / `setup` defines into the module too.
   let defines = |c: &Node<'a, D>| {
-    definition(c).is_some()
+    definition(c, "").is_some()
       || _call_keyword(c).is_some_and(|k| {
         matches!(k.as_str(), "test" | "describe" | "setup" | "setup_all") && _is_exunit_block(c, &k)
       })
