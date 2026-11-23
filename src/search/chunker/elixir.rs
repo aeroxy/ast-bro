@@ -475,6 +475,12 @@ mod tests {
     let src = "defmodule A do\n  quote do\n    def g, do: 1\n  end\nend\n";
     let sigs: Vec<String> = members(src).into_iter().map(|(_, s)| s).collect();
     assert_eq!(sigs, vec!["defmodule A", "quote"]);
+    // Nor does it make the block around it a wrapper: the `if` is listed,
+    // not opened.
+    let src =
+      "defmodule A do\n  if a() do\n    quote do\n      def g, do: 1\n    end\n  end\nend\n";
+    let sigs: Vec<String> = members(src).into_iter().map(|(_, s)| s).collect();
+    assert_eq!(sigs, vec!["defmodule A", "if a()"]);
   }
 
   #[test]
