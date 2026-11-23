@@ -42,7 +42,7 @@ Strict TLS verification fails universally there, because the corporate CA isn't 
 
 1. **Search is opt-in** — users who never run `search` never make any outbound request, so this policy has zero impact on them.
 2. **Integrity is enforced by pinned SHA-256s, not TLS** — each file streams to a temporary file and is checked against the SHA-256 ast-bro carries for it before it enters the cache. A proxy or network attacker can block the download, but cannot substitute the model, including on the first download.
-3. **The bytes are reproducible** — the pinned commit and hashes are in the source, and HuggingFace publishes the same hashes for that commit.
+3. **The bytes are reproducible** — the pinned commit and hashes are in the source. HuggingFace lists the SHA-256 of `model.safetensors`, an LFS file, for that commit; `config.json` and `tokenizer.json` are plain git files, for which it shows only a git blob SHA-1, so download them from the same commit and hash them yourself.
 
 A loud stderr warning fires on every download in non-strict mode:
 
