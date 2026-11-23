@@ -21,3 +21,4 @@ pub mod query;
 pub mod ranking;
 pub mod shared;
 pub mod tokens;
+pub mod wordpiece;

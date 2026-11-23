@@ -213,6 +213,7 @@ src/search/
 ├── download.rs    HF probe + hf-mirror fallback, pinned commit + SHA-256s,
 │                  size/mtime-stamped manifest
 ├── embed.rs       safetensors mmap + tokenizer.json + cosine_topk (SIMD via wide)
+├── wordpiece.rs   the tokenizer: BERT WordPiece, id for id with `tokenizers`
 ├── fusion.rs      RRF (k=60) + alpha resolver
 ├── ranking.rs     boosting + penalties + greedy top-k
 ├── cache.rs       mtime + xxhash3 delta detection
@@ -277,6 +278,27 @@ mixing vectors made two ways. A meta from before they were recorded reads as
 open time, so nothing downstream of `Embedder` has to know the on-disk dtype.
 
 ### Tokenizer
+
+ast-bro tokenizes with its own WordPiece (`wordpiece.rs`), not the HuggingFace
+`tokenizers` crate. It reads the vocabulary and added tokens from the model's
+`tokenizer.json` and reproduces `tokenizers` 0.21's `encode` id for id:
+`[UNK]` cut from the raw text, `BertNormalizer`, `[PAD]` cut from the
+normalized text with its `single_word`, `lstrip` and `rstrip` rules,
+`BertPreTokenizer`, then greedy WordPiece. It uses the same Unicode table
+crates and the same `aho-corasick` and `regex` matching, so the two agree on
+every character. A fixture test against `tokenizers` (kept as a
+dev-dependency) holds it to that in CI. Run by hand with the real
+`tokenizer.json`, it matched on every file of this repository, semble and
+the five pinned corpora: 9,527 files and about 22.8 million tokens. `load`
+refuses a `tokenizer.json` describing any other pipeline.
+
+The reasons were cost, not behaviour. `Tokenizer::from_file` took 9–14 ms of
+every CLI search, against about 5 ms for reading just what WordPiece needs.
+Tokenization, which is 95% of embedding CPU, ran about five times faster on
+an ILSpy rebuild (embedding 1.0 s → 0.2 s). The binary also drops the
+Oniguruma C library and 1.8 MB. `encode` stops once it has
+`MAX_EMBED_TOKENS` ids, so a long chunk skips tokenizing a tail it would
+discard.
 
 WordPiece with `lowercase: true`, vocabulary ~62 k. Note the order: the
 normalizer lowercases *before* WordPiece splits, so `sendQueryCancel` becomes
