@@ -8,12 +8,13 @@
 //! and any other `do`-block macro is a callable member, or a wrapper opened
 //! in place when its blocks hold definitions.
 use super::*;
-use crate::adapters::elixir::{definition, wrapped_bodies, Definition};
+use crate::adapters::elixir::{definition, exunit_block, wrapped_bodies, Definition, ExUnitBlock};
 use ast_grep_core::{Doc, Node};
 
 /// What one form in a body is to the member walk.
 enum Form {
-  /// A module-like definition: a member whose body is walked.
+  /// A module-like definition or an ExUnit `describe`: a member whose body
+  /// is walked, under its name.
   Module {
     name: String,
     signature: String,
@@ -46,6 +47,22 @@ fn form_of<D: Doc>(node: &Node<'_, D>, source: &str) -> Form {
         key: (keyword, name.clone(), arity),
         name,
         signature,
+      }
+    }
+    None => {}
+  }
+  // As in the adapter, a `test` / `setup` is one member whatever its body
+  // defines, and a `describe` groups the tests in it.
+  match exunit_block(node) {
+    Some(ExUnitBlock::Describe { name }) => {
+      return Form::Module {
+        name,
+        signature: signature_of(node, source),
+      }
+    }
+    Some(ExUnitBlock::Leaf) => {
+      return Form::Block {
+        signature: signature_of(node, source),
       }
     }
     None => {}
@@ -284,6 +301,80 @@ mod tests {
     let src = "defmodule A do\n  if true do\n    def g, do: 1\n  else\n    def h, do: 2\n  end\n  test \"t\" do\n    if x do\n      :ok\n    end\n  end\nend\n";
     let sigs: Vec<String> = members(src).into_iter().map(|(_, s)| s).collect();
     assert_eq!(sigs, vec!["defmodule A", "def g", "def h", "test \"t\""]);
+  }
+
+  #[test]
+  fn a_test_that_defines_a_module_is_one_member() {
+    // As in `map`: the test is listed, the module in its body is not.
+    let src = "defmodule ATest do\n  use ExUnit.Case\n\n  test \"defines a module\" do\n    defmodule Inner do\n      def f, do: 1\n    end\n  end\n\n  setup do\n    defmodule S do\n    end\n  end\nend\n";
+    let sigs: Vec<String> = members(src).into_iter().map(|(_, s)| s).collect();
+    assert_eq!(
+      sigs,
+      vec!["defmodule ATest", "test \"defines a module\"", "setup"]
+    );
+  }
+
+  #[test]
+  fn a_describe_is_opened_and_named_on_the_trail() {
+    // phoenix_live_view's `async_test.exs` writes its tests in a `for`.
+    let src = "defmodule T do\n  describe \"x\" do\n    for n <- [1] do\n      test \"t#{n}\" do\n        :ok\n      end\n    end\n  end\nend\n";
+    assert_eq!(
+      members(src),
+      vec![
+        ("T".to_string(), "defmodule T".to_string()),
+        ("T > describe x".to_string(), "describe \"x\"".to_string()),
+        ("T > describe x".to_string(), "test \"t#{n}\"".to_string()),
+      ]
+    );
+    // Plug's `query_test.exs`: one test name in two groups.
+    let src = "defmodule Q do\n  describe \"decode\" do\n    test \"nested lists\" do\n    end\n  end\n  describe \"encode\" do\n    test \"nested lists\" do\n    end\n  end\nend\n";
+    let crumbs: Vec<String> = members(src).into_iter().map(|(b, _)| b).collect();
+    assert_eq!(
+      crumbs,
+      vec![
+        "Q",
+        "Q > describe decode",
+        "Q > describe decode",
+        "Q > describe encode",
+        "Q > describe encode"
+      ]
+    );
+  }
+
+  #[test]
+  fn a_public_and_a_private_function_are_two_entries() {
+    let src = "defmodule A do\n  def f(0), do: 1\n  defp f(n), do: n\nend\n";
+    assert_eq!(members(src).len(), 3);
+  }
+
+  #[test]
+  fn a_comment_between_clauses_does_not_end_the_run() {
+    let src = "defmodule A do\n  def f(0), do: 1\n  # the rest\n  def f(n), do: n\nend\n";
+    assert_eq!(members(src).len(), 2);
+  }
+
+  #[test]
+  fn a_module_splits_only_at_its_members() {
+    let src = "defmodule A do\n  use B\n  @x 1\n  def f, do: 1\n  plug :p\nend\n";
+    let plan = build_split_plan(src, SupportLang::Elixir);
+    let at = |s: &str| src.find(s).unwrap() + s.len();
+    // Inside the module only `def f` splits; then the module's end and the file's.
+    assert_eq!(
+      plan.member_points,
+      vec![0, at("def f, do: 1"), src.len() - 1, src.len()]
+    );
+  }
+
+  #[test]
+  fn deeply_nested_modules_stop_at_the_depth_limit() {
+    let depth = 80;
+    let src = format!(
+      "{}{}",
+      "defmodule M do\n".repeat(depth),
+      "end\n".repeat(depth)
+    );
+    let n = members(&src).len();
+    assert!(n < depth, "{n} members for {depth} modules");
   }
 
   #[test]
