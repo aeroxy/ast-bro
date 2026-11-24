@@ -694,12 +694,19 @@ fn cache_is_valid(dir: &Path, info: &ModelInfo) -> io::Result<bool> {
   let mut verified = false;
   for file in &info.files {
     let path = dir.join(file.name);
+    // Inspect the directory entry itself first: an actual directory blocks
+    // atomic rename and must be reported, whereas a symlink to a directory
+    // can be replaced by rename without touching its target.
+    let Ok(entry_meta) = fs::symlink_metadata(&path) else {
+      return Ok(false);
+    };
+    reject_model_directory(&path, &entry_meta)?;
+    // Follow any symlink to inspect the target: a broken symlink, a symlink
+    // to a directory, or a named pipe/device cannot be trusted or safely
+    // opened, and the downloader can replace it by rename.
     let Ok(meta) = fs::metadata(&path) else {
       return Ok(false);
     };
-    reject_model_directory(&path, &meta)?;
-    // A named pipe or device at a model path would block when opened. The
-    // downloader can replace it by rename, so treat it as a miss.
     if !meta.is_file() {
       return Ok(false);
     }
@@ -713,8 +720,10 @@ fn cache_is_valid(dir: &Path, info: &ModelInfo) -> io::Result<bool> {
       Err(e) => return Err(e),
     };
     let handle_meta = handle.metadata()?;
-    reject_model_directory(&path, &handle_meta)?;
     if !handle_meta.is_file() {
+      if let Ok(entry_meta) = fs::symlink_metadata(&path) {
+        reject_model_directory(&path, &entry_meta)?;
+      }
       return Ok(false);
     }
     let pinned = manifest.sha256.get(file.name).map(String::as_str) == Some(file.sha256);
@@ -921,6 +930,31 @@ mod tests {
       .expect("mkfifo should run on Unix");
     assert!(status.success(), "mkfifo failed: {status}");
     assert!(!cache_is_valid(dir, &info).unwrap());
+  }
+
+  /// A symlink to a directory does not block atomic rename (rename replaces
+  /// the link itself), so it is a cache miss; a symlink to a pinned regular
+  /// file still validates and loads.
+  #[cfg(unix)]
+  #[test]
+  fn a_symlink_to_a_directory_is_a_miss_and_to_a_regular_file_validates() {
+    use std::os::unix::fs::symlink;
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("cache");
+    fs::create_dir(&dir).unwrap();
+    let target_dir = tmp.path().join("some_dir");
+    fs::create_dir(&target_dir).unwrap();
+    let info = fake_model(b"pinned bytes");
+
+    let link = dir.join("a.txt");
+    symlink(&target_dir, &link).unwrap();
+    assert!(!cache_is_valid(&dir, &info).unwrap());
+
+    fs::remove_file(&link).unwrap();
+    let target_file = tmp.path().join("real.txt");
+    fs::write(&target_file, b"pinned bytes").unwrap();
+    symlink(&target_file, &link).unwrap();
+    assert!(cache_is_valid(&dir, &info).unwrap());
   }
 
   /// Files placed by hand, with no manifest, are hashed once against the pin
