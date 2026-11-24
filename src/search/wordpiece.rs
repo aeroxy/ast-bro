@@ -84,7 +84,39 @@ struct TokenizerJson {
   /// tokens off, since a template keeps every `$A` it names.
   #[serde(default)]
   post_processor: Option<Value>,
+  /// Padding is not applied, but a candidate file must still describe a
+  /// schema the reference can open, or the parity test cannot start.
+  #[serde(default)]
+  padding: Option<Value>,
   model: ModelJson,
+}
+
+/// Mirrors the reference's `PaddingParams` so a non-null padding object is
+/// checked with the same required fields and types. Never applied here.
+#[allow(dead_code)]
+#[derive(Deserialize)]
+struct PaddingJson {
+  strategy: PaddingStrategyJson,
+  direction: PaddingDirectionJson,
+  #[serde(default)]
+  pad_to_multiple_of: Option<usize>,
+  pad_id: u32,
+  pad_type_id: u32,
+  pad_token: String,
+}
+
+#[allow(dead_code)]
+#[derive(Deserialize)]
+enum PaddingStrategyJson {
+  BatchLongest,
+  Fixed(usize),
+}
+
+#[allow(dead_code)]
+#[derive(Deserialize)]
+enum PaddingDirectionJson {
+  Left,
+  Right,
 }
 
 #[derive(Deserialize)]
@@ -183,6 +215,10 @@ impl WordPiece {
           "unsupported tokenizer version {version:?}"
         )));
       }
+    }
+    if let Some(padding) = json.padding.as_ref().filter(|p| !p.is_null()) {
+      serde_json::from_value::<PaddingJson>(padding.clone())
+        .map_err(|e| invalid(format!("unsupported padding metadata: {e}")))?;
     }
     check_normalizer(json.normalizer.as_ref()).map_err(invalid)?;
     let pre_tokenizer = json.pre_tokenizer.as_ref().and_then(|p| p.get("type"));
@@ -933,6 +969,45 @@ mod tests {
       err
         .to_string()
         .contains(r#"unsupported tokenizer version "2.0""#),
+      "{err}"
+    );
+  }
+
+  /// Non-null padding is validated so a candidate cannot pass our preflight
+  /// and fail when the reference opens the same file. It is never applied.
+  #[test]
+  fn load_validates_padding_metadata_without_applying_it() {
+    let valid = fixture().replacen(
+      r#""padding":null"#,
+      r#""padding":{"strategy":"BatchLongest","direction":"Right","pad_to_multiple_of":null,"pad_id":0,"pad_type_id":0,"pad_token":"[PAD]"}"#,
+      1,
+    );
+    let theirs = reference(&valid);
+    let ours = WordPiece::from_json(valid.as_bytes()).unwrap();
+    for case in CASES {
+      assert_eq!(
+        ours.encode(case, usize::MAX),
+        theirs.encode(*case, false).unwrap().get_ids().to_vec(),
+        "{case:?}"
+      );
+    }
+
+    let incomplete = fixture().replacen(
+      r#""padding":null"#,
+      r#""padding":{"strategy":"BatchLongest"}"#,
+      1,
+    );
+    assert!(
+      incomplete.parse::<tokenizers::Tokenizer>().is_err(),
+      "the reference rejects incomplete padding too"
+    );
+    let err = match WordPiece::from_json(incomplete.as_bytes()) {
+      Err(e) => e,
+      Ok(_) => panic!("incomplete padding must be refused"),
+    };
+    assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+    assert!(
+      err.to_string().contains("unsupported padding metadata"),
       "{err}"
     );
   }
