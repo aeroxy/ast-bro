@@ -106,7 +106,7 @@ struct ModelJson {
   /// Old `tokenizer.json` files omit `type`; the four fields below are
   /// unambiguously WordPiece (WordLevel has only `unk_token` and `vocab`),
   /// which is how `tokenizers` recognizes the legacy shape too.
-  #[serde(rename = "type", default)]
+  #[serde(rename = "type", default, deserialize_with = "deserialize_model_type")]
   kind: Option<String>,
   unk_token: String,
   continuing_subword_prefix: String,
@@ -124,14 +124,31 @@ fn deserialize_version<'de, D>(deserializer: D) -> Result<Option<String>, D::Err
 where
   D: serde::Deserializer<'de>,
 {
+  deserialize_optional_string("version", deserializer)
+}
+
+fn deserialize_model_type<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+  D: serde::Deserializer<'de>,
+{
+  deserialize_optional_string("type", deserializer)
+}
+
+fn deserialize_optional_string<'de, D>(
+  field: &str,
+  deserializer: D,
+) -> Result<Option<String>, D::Error>
+where
+  D: serde::Deserializer<'de>,
+{
   match Option::<Value>::deserialize(deserializer)? {
-    Some(Value::String(version)) => Ok(Some(version)),
+    Some(Value::String(value)) => Ok(Some(value)),
     Some(other) => Err(serde::de::Error::custom(format!(
-      "version must be a string, got {other}"
+      "{field} must be a string, got {other}"
     ))),
-    None => Err(serde::de::Error::custom(
-      "version must be a string, not null",
-    )),
+    None => Err(serde::de::Error::custom(format!(
+      "{field} must be a string, not null"
+    ))),
   }
 }
 
@@ -942,6 +959,29 @@ mod tests {
     );
   }
 
+  /// A present `model.type` must be a string; null is not an omitted tag.
+  #[test]
+  fn load_refuses_a_null_model_type() {
+    let json = fixture().replacen(
+      r#""type":"WordPiece","unk_token""#,
+      r#""type":null,"unk_token""#,
+      1,
+    );
+    assert!(
+      json.parse::<tokenizers::Tokenizer>().is_err(),
+      "the reference requires a string when the key is present"
+    );
+    let err = match WordPiece::from_json(json.as_bytes()) {
+      Err(e) => e,
+      Ok(_) => panic!("a null model type must be refused"),
+    };
+    assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+    assert!(
+      err.to_string().contains("type must be a string, not null"),
+      "{err}"
+    );
+  }
+
   /// Old exports omit `model.type`. `tokenizers` recognizes WordPiece from
   /// the remaining fields, and so must we. Dropping the fields that make the
   /// shape unambiguous is refused by both.
@@ -1092,11 +1132,6 @@ mod tests {
       })
       .collect();
     let tokens: usize = results.iter().map(|(n, _, _)| n).sum();
-    assert!(
-      tokens > 0,
-      "compared nothing under {}; is AST_BRO_PARITY_DIR right?",
-      root.display()
-    );
     let mismatches: Vec<&String> = results.iter().filter_map(|(_, m, _)| m.as_ref()).collect();
     let oversized: Vec<&PathBuf> = results.iter().filter_map(|(_, _, p)| *p).collect();
     eprintln!(
@@ -1108,6 +1143,13 @@ mod tests {
     for path in &oversized {
       eprintln!("  skipped oversized: {}", path.display());
     }
+    // Report first: a corpus of only oversized files must say which ones
+    // were skipped, then still fail instead of passing an empty comparison.
+    assert!(
+      tokens > 0,
+      "compared nothing under {}; is AST_BRO_PARITY_DIR right?",
+      root.display()
+    );
     assert!(
       mismatches.is_empty(),
       "{} of {} files differ:\n{}",

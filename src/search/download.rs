@@ -100,15 +100,15 @@ impl ModelInfo {
   }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Source<'a> {
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Source {
   HuggingFace,
   HfMirror,
-  Custom(&'a str),
+  Custom(String),
 }
 
-impl<'a> Source<'a> {
-  fn base_url(self) -> &'a str {
+impl Source {
+  fn base_url(&self) -> &str {
     match self {
       Source::HuggingFace => HF_BASE,
       Source::HfMirror => HF_MIRROR_BASE,
@@ -116,7 +116,7 @@ impl<'a> Source<'a> {
     }
   }
 
-  fn label(self) -> &'static str {
+  fn label(&self) -> &'static str {
     match self {
       Source::HuggingFace => "hf",
       Source::HfMirror => "hf-mirror",
@@ -263,13 +263,14 @@ fn ensure_model_dir(dir: &Path, info: &ModelInfo) -> io::Result<PathBuf> {
 /// through yet answer a later file with a page of its own; the mirror may
 /// still serve the pinned bytes, and they are checked against the same pins.
 /// A source named in `AST_BRO_MODEL_SOURCE` is never switched.
-fn download_with_fallback<'a>(
-  source: Source<'a>,
+fn download_with_fallback(
+  source: Source,
   probed: bool,
-  mut download: impl FnMut(Source<'a>) -> io::Result<Manifest>,
+  mut download: impl FnMut(Source) -> io::Result<Manifest>,
 ) -> io::Result<Manifest> {
+  let can_fallback = probed && source == Source::HuggingFace;
   match download(source) {
-    Err(e) if probed && source == Source::HuggingFace && e.kind() == io::ErrorKind::InvalidData => {
+    Err(e) if can_fallback && e.kind() == io::ErrorKind::InvalidData => {
       eprintln!("ast-bro: {e}");
       eprintln!("ast-bro: trying hf-mirror.com instead");
       download(Source::HfMirror)
@@ -284,7 +285,7 @@ fn download_all(
   client: &reqwest::blocking::Client,
   info: &ModelInfo,
   dir: &Path,
-  source: Source<'_>,
+  source: Source,
 ) -> io::Result<Manifest> {
   let mut manifest = Manifest {
     source: source.label().to_string(),
@@ -308,7 +309,7 @@ fn download_all(
 
 /// The source to download from, and whether the probe picked it rather than
 /// `AST_BRO_MODEL_SOURCE`.
-fn select_source<'a>(info: &'a ModelInfo) -> (Source<'a>, bool) {
+fn select_source(info: &ModelInfo) -> (Source, bool) {
   let forced =
     std::env::var("AST_BRO_MODEL_SOURCE").or_else(|_| std::env::var("AST_OUTLINE_MODEL_SOURCE"));
   if let Ok(forced) = forced {
@@ -331,15 +332,12 @@ fn select_source<'a>(info: &'a ModelInfo) -> (Source<'a>, bool) {
 /// The source an `AST_BRO_MODEL_SOURCE` value names, or `None` for a value
 /// that names none. A custom base URL loses its trailing slashes, since
 /// `ModelInfo::url` puts one after it.
-fn parse_source(value: &str) -> Option<Source<'static>> {
+fn parse_source(value: &str) -> Option<Source> {
   match value {
     "hf" => Some(Source::HuggingFace),
     "hf-mirror" => Some(Source::HfMirror),
     url if url.starts_with("http://") || url.starts_with("https://") => {
-      // Leak the string so we can return a 'static borrow. Acceptable —
-      // happens once per process at most.
-      let base = url.trim_end_matches('/').to_string();
-      Some(Source::Custom(Box::leak(base.into_boxed_str())))
+      Some(Source::Custom(url.trim_end_matches('/').to_string()))
     }
     _ => None,
   }
@@ -1058,11 +1056,11 @@ mod tests {
     assert_eq!(parse_source("hf-mirror"), Some(Source::HfMirror));
     assert_eq!(
       parse_source("https://your.mirror/"),
-      Some(Source::Custom("https://your.mirror"))
+      Some(Source::Custom("https://your.mirror".to_string()))
     );
     assert_eq!(
       parse_source("http://10.0.0.5:8080"),
-      Some(Source::Custom("http://10.0.0.5:8080"))
+      Some(Source::Custom("http://10.0.0.5:8080".to_string()))
     );
     assert_eq!(parse_source("typo"), None);
     assert_eq!(parse_source("HF"), None);
@@ -1083,21 +1081,20 @@ mod tests {
   #[test]
   fn only_a_probed_huggingface_falls_back_to_the_mirror_on_a_pin_mismatch() {
     let mismatch = || io::Error::new(io::ErrorKind::InvalidData, "pin mismatch");
-    let run =
-      |source: Source<'static>, probed: bool, fail: &dyn Fn(Source) -> Option<io::Error>| {
-        let mut tried = Vec::new();
-        let got = download_with_fallback(source, probed, |s| {
-          tried.push(s.label());
-          match fail(s) {
-            Some(e) => Err(e),
-            None => Ok(Manifest {
-              source: s.label().to_string(),
-              ..Manifest::default()
-            }),
-          }
-        });
-        (tried, got.map(|m| m.source).map_err(|e| e.kind()))
-      };
+    let run = |source: Source, probed: bool, fail: &dyn Fn(Source) -> Option<io::Error>| {
+      let mut tried = Vec::new();
+      let got = download_with_fallback(source, probed, |s| {
+        tried.push(s.label());
+        match fail(s.clone()) {
+          Some(e) => Err(e),
+          None => Ok(Manifest {
+            source: s.label().to_string(),
+            ..Manifest::default()
+          }),
+        }
+      });
+      (tried, got.map(|m| m.source).map_err(|e| e.kind()))
+    };
     let hf_mismatch = |s: Source| (s == Source::HuggingFace).then(mismatch);
 
     assert_eq!(
