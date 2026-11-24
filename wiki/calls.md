@@ -280,7 +280,7 @@ Languages still emitting empty `Declaration::calls`: **none.** JavaScript is ser
 
 ## Unified graph cache
 
-The call graph does **not** get its own cache file. It rides inside a unified `UnifiedGraph { deps, calls: Option<CallGraph> }` at `.ast-bro/deps/graph.bin`. The schema constant is `JSON_SCHEMA_GRAPH_INDEX = "ast-bro.graph-index.v9"`. (The directory keeps its `deps/` name even though it now holds the call graph too — renaming would force every existing user to rebuild from a new path for no benefit.)
+The call graph does **not** get its own cache file. It rides inside a unified `UnifiedGraph { deps, calls: Option<CallGraph> }` at `.ast-bro/deps/graph.bin`. The schema constant is `JSON_SCHEMA_GRAPH_INDEX = "ast-bro.graph-index.v10"`. (The directory keeps its `deps/` name even though it now holds the call graph too — renaming would force every existing user to rebuild from a new path for no benefit.)
 
 ### Disk layout
 

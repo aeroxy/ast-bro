@@ -5,6 +5,10 @@
 //! in-memory graph, re-extract the changed files, and merge the result
 //! back. The deps half always patches; the calls half patches when present.
 //!
+//! The deps half parses only the changed files but resolves every file
+//! again, from the imports the cache keeps per file: a change to one file
+//! can move where an unchanged file's import resolves (#93).
+//!
 //! Stale-edge handling (calls half): edges originating from *unchanged*
 //! files that point to a qn defined in a *changed* file are validated after
 //! the re-extract (step 8) and demoted when their target no longer exists,
@@ -16,7 +20,7 @@
 //! means reusing the cold build's own rules — `resolve::disambiguate` for
 //! pass C — rather than approximating them here.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use rayon::prelude::*;
@@ -25,95 +29,52 @@ use crate::calls::build::extract_file;
 use crate::calls::graph::{add_callable, type_key, type_key_of, CallGraph, CallTarget};
 use crate::calls::pass::{file_rel, FilePass};
 use crate::calls::resolve;
-use crate::deps::extract::extract;
-use crate::deps::graph::{self as dep_graph, DepEdge};
+use crate::deps::extract::{extract, RawImport};
 use crate::deps::manifest::detect_aliases;
-use crate::deps::resolver::{build_suffix_index, resolve as resolve_spec, ResolveCtx};
-use crate::deps::{DepError, DepGraph};
+use crate::deps::resolver::build_suffix_index;
+use crate::deps::{resolve_all, DepError, DepGraph};
 use crate::search::cache::{hash_file, Delta, FileRecord};
 
-/// Drop entries for changed files from `deps` and re-extract+resolve any
-/// added/modified file. Suffix index is rebuilt fresh (one walk) since
-/// add/remove changes file membership; cost is bounded by the project size
-/// and is the same walk the full-rebuild path performs once.
+/// Parse the added and modified files again, keep the cached imports of
+/// every other file, and resolve every file against a fresh suffix index.
+///
+/// Every file resolves again, not only the changed ones: an added,
+/// removed, or edited file can change where an unchanged file's import
+/// lands — a deleted target, a new file that satisfies an external import
+/// or is nearer than the old target, an Elixir module that moved between
+/// two files (#93). Resolving is lookups against the index; parsing is
+/// the cost, and only changed files pay it.
 pub fn apply_delta_to_deps(
   deps: &mut DepGraph,
   root: &Path,
   delta: &Delta,
 ) -> Result<(), DepError> {
-  let to_process = changed_abs_paths(root, delta);
-  let removed_abs: Vec<PathBuf> = delta
-    .removed
-    .iter()
-    .map(|rel| root.join(rel.replace('/', std::path::MAIN_SEPARATOR_STR)))
-    .collect();
+  let changed: HashSet<PathBuf> = changed_abs_paths(root, delta).into_iter().collect();
+  let aliases = detect_aliases(root);
+  let idx = build_suffix_index(root);
 
-  for abs in &removed_abs {
-    deps.forward.remove(abs);
-    deps.external.remove(abs);
-  }
-  for abs in &to_process {
-    deps.forward.remove(abs);
-    deps.external.remove(abs);
-  }
-
-  if !to_process.is_empty() {
-    let aliases = detect_aliases(root);
-    let idx = build_suffix_index(root);
-
-    let resolved: Vec<(PathBuf, Vec<DepEdge>, Vec<String>)> = to_process
-      .par_iter()
-      .map(|file| {
-        let info = match idx.by_file.get(file) {
-          Some(i) => i,
-          None => return (file.clone(), Vec::new(), Vec::new()),
-        };
-        let raw_imports = extract(file, info.language);
-        let mut edges = Vec::new();
-        let mut external = Vec::new();
-        let ctx = ResolveCtx {
-          from_file: file,
-          lang: info.language,
-          path_aliases: &aliases.ts_path_aliases,
-          php_psr4: &aliases.php_psr4,
-        };
-        for ri in raw_imports {
-          match resolve_spec(&ri.spec, &ctx, &idx) {
-            Some(target) => {
-              if target == *file {
-                continue;
-              }
-              edges.push(DepEdge {
-                target,
-                kind: ri.kind,
-                line: ri.line,
-                local_name: ri.local_name,
-                raw_path: ri.raw_path,
-              });
-            }
-            None => external.push(ri.raw_path.unwrap_or(ri.spec)),
-          }
-        }
-        (file.clone(), edges, external)
-      })
-      .collect();
-
-    for (file, edges, external) in resolved {
-      // Always insert into `forward` so the file is known to the graph,
-      // even when it has zero outbound edges. Mirrors `build_graph`.
-      deps.forward.insert(file.clone(), edges);
-      if !external.is_empty() {
-        deps.external.insert(file, external);
+  // The index decides which files the graph holds, as in a cold build, so
+  // a removed file drops out here.
+  let mut cached = std::mem::take(&mut deps.imports);
+  let mut imports = HashMap::with_capacity(idx.by_file.len());
+  let mut to_extract = Vec::new();
+  for (file, info) in &idx.by_file {
+    match cached.remove(file) {
+      Some(kept) if !changed.contains(file) => {
+        imports.insert(file.clone(), kept);
       }
+      _ => to_extract.push((file, info.language)),
     }
   }
+  let fresh: Vec<(PathBuf, Vec<RawImport>)> = to_extract
+    .par_iter()
+    .map(|(file, lang)| ((*file).clone(), extract(file, *lang)))
+    .collect();
+  imports.extend(fresh);
+  deps.imports = imports;
 
-  dep_graph::dedup_edges(deps);
-  let edge_count: usize = deps.forward.values().map(|v| v.len()).sum();
-  let external_count: usize = deps.external.values().map(|v| v.len()).sum();
-  deps.stats.file_count = deps.forward.len();
-  deps.stats.edge_count = edge_count;
-  deps.stats.external_count = external_count;
+  // `build_ms` keeps the cold build's time.
+  resolve_all(deps, &idx, &aliases);
   Ok(())
 }
 

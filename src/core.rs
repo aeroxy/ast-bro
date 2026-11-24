@@ -39,13 +39,15 @@ pub const JSON_SCHEMA_RUN: &str = "ast-bro.run.v1";
 /// change; v8 keys a module defined in a `describe` under its module, where
 /// a v7 cache keeps it under the `describe`, and adds the definitions in a
 /// block nested in a module-level block; v9 adds `CacheFile::version`,
-/// which an older binary would read as the start of the graph.
+/// which an older binary would read as the start of the graph; v10 adds
+/// `DepGraph::imports`, so an incremental update can resolve unchanged
+/// files again (#93).
 ///
 /// Since v9 the cache also stores the crate version, and another version's
 /// cache is rebuilt (#81). So bump this only when the layout changes: an
 /// extraction change reaches every file with the next release. Two builds
 /// of one version share a cache; `--rebuild` covers that during review.
-pub const JSON_SCHEMA_GRAPH_INDEX: &str = "ast-bro.graph-index.v9";
+pub const JSON_SCHEMA_GRAPH_INDEX: &str = "ast-bro.graph-index.v10";
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Copy, Default)]
 pub enum DeclarationKind {

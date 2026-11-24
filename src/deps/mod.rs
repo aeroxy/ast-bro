@@ -28,8 +28,8 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use crate::deps::extract::extract;
-use crate::deps::manifest::detect_aliases;
-use crate::deps::resolver::{build_suffix_index, resolve, ResolveCtx};
+use crate::deps::manifest::{detect_aliases, ProjectAliases};
+use crate::deps::resolver::{build_suffix_index, resolve, ResolveCtx, SuffixIndex};
 
 /// Build a `DepGraph` from scratch by walking `root`, parsing every
 /// supported file, and resolving each import.
@@ -47,73 +47,71 @@ pub fn build_graph(root: &Path) -> Result<DepGraph, DepError> {
   let aliases = detect_aliases(&root_canon);
   let idx = build_suffix_index(&root_canon);
 
-  // Collect a list of files to process from the index (already filtered).
-  let files: Vec<_> = idx.by_file.keys().cloned().collect();
-
-  // Per-file extract + resolve in parallel.
-  let resolved: Vec<(PathBuf, Vec<DepEdge>, Vec<String>)> = files
+  // Per-file extract in parallel; the index has already filtered the walk.
+  let mut g = DepGraph::empty(root_canon.clone());
+  g.imports = idx
+    .by_file
     .par_iter()
-    .map(|file| {
-      let info = match idx.by_file.get(file) {
-        Some(i) => i,
-        None => return (file.clone(), Vec::new(), Vec::new()),
-      };
-      let raw_imports = extract(file, info.language);
+    .map(|(file, info)| (file.clone(), extract(file, info.language)))
+    .collect();
+  resolve_all(&mut g, &idx, &aliases);
+  g.stats.build_ms = start.elapsed().as_millis() as u64;
+  Ok(g)
+}
 
-      let mut edges = Vec::new();
-      let mut external = Vec::new();
+/// Derive `forward` and `external` from `graph.imports` against `idx`, and
+/// recount the stats. The cold build and the incremental update both end
+/// here, so an unchanged file resolves the same way in both (#93). Leaves
+/// `stats.build_ms` to the caller.
+pub(crate) fn resolve_all(graph: &mut DepGraph, idx: &SuffixIndex, aliases: &ProjectAliases) {
+  let resolved: Vec<(PathBuf, Vec<DepEdge>, Vec<String>)> = graph
+    .imports
+    .par_iter()
+    .map(|(file, imports)| {
+      let Some(info) = idx.by_file.get(file) else {
+        return (file.clone(), Vec::new(), Vec::new());
+      };
       let ctx = ResolveCtx {
         from_file: file,
         lang: info.language,
         path_aliases: &aliases.ts_path_aliases,
         php_psr4: &aliases.php_psr4,
       };
-      for ri in raw_imports {
-        match resolve(&ri.spec, &ctx, &idx) {
-          Some(target) => {
-            if target == *file {
-              // self-edge from path collisions — skip.
-              continue;
-            }
-            edges.push(DepEdge {
-              target,
-              kind: ri.kind,
-              line: ri.line,
-              local_name: ri.local_name,
-              raw_path: ri.raw_path,
-            });
-          }
-          None => external.push(ri.raw_path.unwrap_or(ri.spec)),
+      let mut edges = Vec::new();
+      let mut external = Vec::new();
+      for ri in imports {
+        match resolve(&ri.spec, &ctx, idx) {
+          // A self-edge from a path collision — skip.
+          Some(target) if target == *file => {}
+          Some(target) => edges.push(DepEdge {
+            target,
+            kind: ri.kind,
+            line: ri.line,
+            local_name: ri.local_name.clone(),
+            raw_path: ri.raw_path.clone(),
+          }),
+          None => external.push(ri.raw_path.clone().unwrap_or_else(|| ri.spec.clone())),
         }
       }
       (file.clone(), edges, external)
     })
     .collect();
 
-  let mut g = DepGraph::empty(root_canon.clone());
+  graph.forward.clear();
+  graph.external.clear();
   for (file, edges, external) in resolved {
-    if !edges.is_empty() {
-      g.forward.insert(file.clone(), edges);
-    } else {
-      // Insert empty list so the file is known to the graph.
-      g.forward.insert(file.clone(), Vec::new());
-    }
+    // Every file goes into `forward`, even with no edges, so the graph
+    // knows it.
     if !external.is_empty() {
-      g.external.insert(file, external);
+      graph.external.insert(file.clone(), external);
     }
+    graph.forward.insert(file, edges);
   }
-  graph::dedup_edges(&mut g);
+  graph::dedup_edges(graph);
 
-  let elapsed = start.elapsed();
-  let edge_count: usize = g.forward.values().map(|v| v.len()).sum();
-  let external_count: usize = g.external.values().map(|v| v.len()).sum();
-  g.stats = graph::GraphStats {
-    file_count: g.forward.len(),
-    edge_count,
-    external_count,
-    build_ms: elapsed.as_millis() as u64,
-  };
-  Ok(g)
+  graph.stats.file_count = graph.forward.len();
+  graph.stats.edge_count = graph.forward.values().map(|v| v.len()).sum();
+  graph.stats.external_count = graph.external.values().map(|v| v.len()).sum();
 }
 
 // `load_or_build` and `collect_file_records` moved to `crate::graph_cache::cache`

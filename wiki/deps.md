@@ -143,9 +143,9 @@ Cycles sort by member count descending; members within each cycle sort lexicogra
 
 Disk format: `.ast-bro/deps/graph.bin` (bincode-serialized `CacheFile = { schema, graph, files }`). Sibling to `.ast-bro/index/`. The `.ast-bro/.gitignore` written by the search subsystem (`*` content) covers it for free.
 
-Refresh strategy: load → run `search::cache::compute_delta` against the recorded `Vec<FileRecord>`. If any file's `(mtime, size)` changed (cheap path) or its `xxhash3-64` differs (expensive path, only on size/mtime mismatch) — full rebuild. Same "any-delta = full rebuild" simplification the search index uses today; partial-rebuild is a v2 swap-in.
+Refresh strategy: load → run `search::cache::compute_delta` against the recorded `Vec<FileRecord>`. A file changed when its `(mtime, size)` changed (cheap path) and its `xxhash3-64` differs (expensive path, only on size/mtime mismatch). `graph_cache::delta::apply_delta_to_deps` then parses only the added and modified files, and resolves *every* file again against a fresh suffix index, from the imports the cache keeps per file (`DepGraph::imports`). Resolving only the changed files is not enough (#93): a deleted target, a new file that satisfies an external import or sits nearer than the old target, or an Elixir module that moves between two edited files all change where an *unchanged* file's import lands. `build_graph` and the update share `deps::resolve_all`, so the two cannot drift.
 
-Schema constant: `JSON_SCHEMA_DEPS_INDEX = "ast-bro.deps-index.v1"`. Bumped on any `DepGraph` / `DepEdge` shape change to force a rebuild via the schema-mismatch branch in `cache::load_if_fresh`.
+Schema constant: the cache file is stamped with `JSON_SCHEMA_GRAPH_INDEX` (`src/core.rs`), which is bumped on any `DepGraph` / `DepEdge` shape change to force a rebuild via the schema-mismatch branch in `cache::load_with_delta`. `JSON_SCHEMA_DEPS_INDEX` only stamps `DepGraph::schema`.
 
 Concurrency: `fs2` advisory exclusive lock at `.ast-bro/deps/lock` during writes; atomic `.tmp` + rename so a SIGKILL mid-write leaves the previous cache intact. Same pattern as the search index.
 
