@@ -68,8 +68,11 @@ For a security-conscious user behind a corp proxy:
 ```bash
 export AST_BRO_TLS_STRICT=1
 export AST_BRO_CA_BUNDLE=/usr/local/share/ca-certificates/corp-mitm.crt
+export AST_BRO_MODEL_DIR=$(mktemp -d)   # cold cache: force a TLS download
 ast-bro search "anything" .   # validates against the corp CA
 ```
+
+A warm model cache needs no TLS connection, so without the fresh `AST_BRO_MODEL_DIR` the command does not exercise the CA at all.
 
 Every `AST_BRO_*` variable on this page also answers to its pre-rename `AST_OUTLINE_*` name.
 

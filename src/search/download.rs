@@ -660,9 +660,22 @@ fn cache_is_valid(dir: &Path, info: &ModelInfo) -> io::Result<bool> {
     let Ok(meta) = fs::metadata(&path) else {
       return Ok(false);
     };
+    // A named pipe or device at a model path would block or misbehave when
+    // read. The downloader can replace it by rename, so treat it as a miss.
+    if !meta.is_file() {
+      return Ok(false);
+    }
     let pinned = manifest.sha256.get(file.name).map(String::as_str) == Some(file.sha256);
     if pinned && manifest.stamps.get(file.name) == Some(&FileStamp::of(&meta)) {
-      continue;
+      // A permission change does not alter size or mtime, so a matching
+      // stamp alone does not mean the file can still be opened. Fail over
+      // to the recovery path below rather than letting `Embedder::open`
+      // fail later.
+      match fs::File::open(&path) {
+        Ok(_) => continue,
+        Err(e) if e.kind() == io::ErrorKind::PermissionDenied => return Ok(false),
+        Err(e) => return Err(e),
+      }
     }
     let (digest, stamp) = match sha256_file(&path) {
       Ok(hashed) => hashed,
@@ -812,7 +825,27 @@ mod tests {
     let path = dir.join("a.txt");
     fs::write(&path, b"pinned bytes").unwrap();
     fs::set_permissions(&path, fs::Permissions::from_mode(0o000)).unwrap();
+    // A privileged runner (e.g. CAP_DAC_OVERRIDE) can still read the file,
+    // which would make the fixture test nothing.
+    if !matches!(
+      fs::File::open(&path),
+      Err(e) if e.kind() == io::ErrorKind::PermissionDenied
+    ) {
+      eprintln!("skipping: this runner bypasses file permissions");
+      return;
+    }
 
+    assert!(!cache_is_valid(dir, &info).unwrap());
+  }
+
+  /// A regular file is required: a directory at a model path would otherwise
+  /// reach `sha256_file` and error instead of being replaced by download.
+  #[test]
+  fn a_non_regular_cached_entry_is_a_miss() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    let info = fake_model(b"pinned bytes");
+    fs::create_dir(dir.join("a.txt")).unwrap();
     assert!(!cache_is_valid(dir, &info).unwrap());
   }
 
@@ -836,6 +869,29 @@ mod tests {
     assert!(cache_is_valid(dir, &info).unwrap());
     assert!(cache_is_valid(dir, &info).unwrap());
     assert_eq!(hashed() - before, 0, "a matching stamp skips the hash");
+  }
+
+  /// Losing read permission changes neither size nor mtime, so a matching
+  /// stamp must not short-circuit into a valid cache. Unix only.
+  #[cfg(unix)]
+  #[test]
+  fn a_stamped_file_that_becomes_unreadable_is_a_miss() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    let info = fake_model(b"hello");
+    let path = dir.join("a.txt");
+    fs::write(&path, b"hello").unwrap();
+    assert!(cache_is_valid(dir, &info).unwrap());
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o000)).unwrap();
+    if !matches!(
+      fs::File::open(&path),
+      Err(e) if e.kind() == io::ErrorKind::PermissionDenied
+    ) {
+      eprintln!("skipping: this runner bypasses file permissions");
+      return;
+    }
+    assert!(!cache_is_valid(dir, &info).unwrap());
   }
 
   /// A size or mtime change sends the file back through the hash: a touched
