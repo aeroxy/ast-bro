@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use crate::core::JSON_SCHEMA_DEPS_INDEX;
+use crate::deps::extract::RawImport;
 
 /// What kind of import statement produced an edge. Used for filtering and
 /// human-readable output. Keep this enum stable across schema versions —
@@ -111,6 +112,12 @@ pub struct DepGraph {
   /// Imports that couldn't be resolved to a file in the project.
   /// Useful for `--external` reporting and debugging.
   pub external: HashMap<PathBuf, Vec<String>>,
+  /// Every file's imports before resolution, keyed like `forward`.
+  /// `forward` and `external` are derived from these: an incremental
+  /// update parses only the changed files and resolves every file again,
+  /// because an added, removed, or edited file can change where an
+  /// unchanged file's import resolves (#93).
+  pub imports: HashMap<PathBuf, Vec<RawImport>>,
   pub root: PathBuf,
   pub built_at: SystemTime,
   pub stats: GraphStats,
@@ -122,6 +129,7 @@ impl DepGraph {
       schema: JSON_SCHEMA_DEPS_INDEX.to_string(),
       forward: HashMap::new(),
       external: HashMap::new(),
+      imports: HashMap::new(),
       root,
       built_at: SystemTime::now(),
       stats: GraphStats::default(),
@@ -226,12 +234,19 @@ impl DepGraph {
       .filter(|(p, _)| self.in_scope(p, scope))
       .map(|(p, v)| (p.clone(), v.clone()))
       .collect();
+    let imports: HashMap<PathBuf, Vec<RawImport>> = self
+      .imports
+      .iter()
+      .filter(|(p, _)| self.in_scope(p, scope))
+      .map(|(p, v)| (p.clone(), v.clone()))
+      .collect();
     let edge_count: usize = forward.values().map(|v| v.len()).sum();
     let external_count: usize = external.values().map(|v| v.len()).sum();
     DepGraph {
       schema: self.schema.clone(),
       forward,
       external,
+      imports,
       root: self.root.clone(),
       built_at: self.built_at,
       stats: GraphStats {

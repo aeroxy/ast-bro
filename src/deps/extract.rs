@@ -8,6 +8,7 @@
 
 use ast_grep_core::{Doc, Node};
 use ast_grep_language::{LanguageExt, SupportLang};
+use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 use crate::deps::graph::ImportKind;
@@ -17,13 +18,18 @@ use crate::surface::imports as surface_imports;
 /// One extracted import. Targets are normalised slash-joined module
 /// paths (e.g. `com/foo/Bar`, `crate/net/client`); resolver does the
 /// final mapping to a file.
-#[derive(Debug, Clone)]
+///
+/// The cache keeps these per file (`DepGraph::imports`), so an incremental
+/// update resolves an unchanged file again without parsing it (#93).
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RawImport {
   pub spec: String,
   pub kind: ImportKind,
   pub line: u32,
-  /// Display-only: the original statement source line.
+  /// Display-only: the original statement source line. Not cached: no
+  /// reader uses it, and it would be most of the cached bytes.
   #[allow(dead_code)]
+  #[serde(skip)]
   pub statement: String,
   pub local_name: Option<String>,
   /// Source dotted path (preserves dots, no slashes).

@@ -880,3 +880,115 @@ fn reverse_deps_header_shapes_are_all_pinned() {
   assert!(header(&["--depth", "1", "--limit", "1"])
     .contains("(2 total within --depth 1; showing 1 — raise --limit to see the rest)"));
 }
+
+// ---- Incremental update parity (issue #93) ----
+//
+// An incremental update must give the answer a cold build gives. Each test
+// builds the cache, changes the tree, reads the graph through the update,
+// and compares it with `--rebuild`. The change never touches the importer,
+// so only resolving it again can move its edge.
+
+fn write_in(root: &std::path::Path, rel: &str, body: &str) {
+  let p = root.join(rel);
+  std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+  std::fs::write(p, body).unwrap();
+}
+
+/// Edges and external imports of `graph . --json`, the part of the answer
+/// an incremental update can get wrong.
+fn graph_answer(root: &std::path::Path, rebuild: bool) -> (serde_json::Value, serde_json::Value) {
+  let mut args = vec!["graph", ".", "--json"];
+  if rebuild {
+    args.push("--rebuild");
+  }
+  let (code, out, err) = run_in(root, &args);
+  assert_eq!(code, 0, "stdout: {}\nstderr: {}", out, err);
+  let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+  (v["edges"].clone(), v["external"].clone())
+}
+
+fn has_edge(edges: &serde_json::Value, from: &str, to: &str) -> bool {
+  edges
+    .as_array()
+    .unwrap()
+    .iter()
+    .any(|e| e["from"] == from && e["to"] == to)
+}
+
+/// Build the cache, apply `change`, then check the incremental answer
+/// against a cold build. Returns the incremental edges.
+fn incremental_matches_cold(
+  root: &std::path::Path,
+  change: impl FnOnce(&std::path::Path),
+) -> serde_json::Value {
+  std::fs::create_dir_all(root.join(".git")).unwrap();
+  graph_answer(root, true);
+  change(root);
+  let incremental = graph_answer(root, false);
+  let cold = graph_answer(root, true);
+  assert_eq!(
+    incremental, cold,
+    "incremental update differs from a cold build"
+  );
+  incremental.0
+}
+
+#[test]
+fn incremental_update_resolves_unchanged_files_after_an_add_and_a_delete() {
+  let tmp = tempfile::tempdir().unwrap();
+  let root = tmp.path();
+  write_in(root, "a.py", "import b\nimport c\nimport d\n");
+  write_in(root, "b.py", "X = 1\n");
+  write_in(root, "c.py", "Y = 2\n");
+  let edges = incremental_matches_cold(root, |root| {
+    write_in(root, "d.py", "Z = 3\n");
+    std::fs::remove_file(root.join("c.py")).unwrap();
+  });
+  assert!(has_edge(&edges, "a.py", "d.py"), "{}", edges);
+  assert!(!has_edge(&edges, "a.py", "c.py"), "{}", edges);
+}
+
+#[test]
+fn incremental_update_follows_an_elixir_module_to_its_new_file() {
+  // No file is added or deleted: the module moves between two files, and
+  // only their contents say where it is.
+  let tmp = tempfile::tempdir().unwrap();
+  let root = tmp.path();
+  write_in(root, "mix.exs", "defmodule App.MixProject do\nend\n");
+  write_in(root, "lib/a.ex", "defmodule A do\n  alias Foo.Bar\nend\n");
+  write_in(root, "lib/x.ex", "defmodule Foo.Bar do\nend\n");
+  write_in(root, "lib/y.ex", "defmodule Other do\nend\n");
+  let edges = incremental_matches_cold(root, |root| {
+    write_in(root, "lib/x.ex", "defmodule Other.Moved do\nend\n");
+    write_in(root, "lib/y.ex", "defmodule Foo.Bar do\n  # moved\nend\n");
+  });
+  assert!(has_edge(&edges, "lib/a.ex", "lib/y.ex"), "{}", edges);
+  assert!(!has_edge(&edges, "lib/a.ex", "lib/x.ex"), "{}", edges);
+}
+
+#[test]
+fn incremental_update_moves_an_edge_to_a_closer_new_file() {
+  // The importer's edge already resolves; a file added nearer to it wins
+  // the same suffix, as it does in a cold build.
+  let tmp = tempfile::tempdir().unwrap();
+  let root = tmp.path();
+  write_in(root, "x/src/util.rs", "pub fn f() {}\n");
+  write_in(
+    root,
+    "y/src/main.rs",
+    "use crate::util::f;\nfn main() { f(); }\n",
+  );
+  let edges = incremental_matches_cold(root, |root| {
+    write_in(root, "y/src/util.rs", "pub fn f() {}\n");
+  });
+  assert!(
+    has_edge(&edges, "y/src/main.rs", "y/src/util.rs"),
+    "{}",
+    edges
+  );
+  assert!(
+    !has_edge(&edges, "y/src/main.rs", "x/src/util.rs"),
+    "{}",
+    edges
+  );
+}
