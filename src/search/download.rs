@@ -1209,13 +1209,31 @@ mod tests {
     let tmp = tempfile::tempdir().unwrap();
     let info = ModelInfo::potion_code_16m();
     let dir = ensure_model_in(tmp.path(), &info).expect("download failed");
-    // Re-validate: the stamps written at download make this hash nothing.
+    // HASHED only counts validation hashes, not a second download. Prove
+    // the cache really validates, and that the second open rewrites no
+    // files even if it took some other path to a miss.
+    let before = hashed();
+    assert!(
+      cache_is_valid(&dir, &info).unwrap(),
+      "a fresh download is valid"
+    );
+    assert_eq!(hashed() - before, 0, "a fresh download is already stamped");
+    let stamps: Vec<_> = info
+      .files
+      .iter()
+      .map(|f| FileStamp::of(&fs::metadata(dir.join(f.name)).unwrap()))
+      .collect();
     let before = hashed();
     let dir2 = ensure_model_in(tmp.path(), &info).expect("revalidate failed");
-    assert_eq!(hashed() - before, 0, "a fresh download is already stamped");
+    assert_eq!(hashed() - before, 0);
     assert_eq!(dir, dir2);
-    for f in &info.files {
-      assert!(dir.join(f.name).exists(), "missing {}", f.name);
+    for (f, stamp) in info.files.iter().zip(stamps) {
+      assert_eq!(
+        FileStamp::of(&fs::metadata(dir.join(f.name)).unwrap()),
+        stamp,
+        "{} was downloaded again",
+        f.name
+      );
     }
   }
 }
