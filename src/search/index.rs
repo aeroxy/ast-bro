@@ -1192,7 +1192,8 @@ fn resolve_chunk(chunks: &[Chunk], file_path: &str, line: u32) -> Option<u32> {
   fallback
 }
 
-/// Above this, a chunk is indexed lexically but not embedded.
+/// Above this, a chunk is indexed lexically but not embedded. The count is
+/// UTF-8 bytes of content plus the breadcrumb and its newline, not chars.
 ///
 /// Below it, a chunk's vector is the mean of its first
 /// [`MAX_EMBED_TOKENS`](crate::search::embed::MAX_EMBED_TOKENS) tokens, so the

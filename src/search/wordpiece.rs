@@ -69,6 +69,10 @@ struct AddedTokens {
 
 #[derive(Deserialize)]
 struct TokenizerJson {
+  /// `tokenizers` accepts an absent version but rejects any explicit one
+  /// other than "1.0" before it reads the pipeline.
+  #[serde(default)]
+  version: Option<String>,
   #[serde(default)]
   added_tokens: Vec<AddedTokenJson>,
   normalizer: Option<Value>,
@@ -100,6 +104,12 @@ struct ModelJson {
   vocab: HashMap<String, u32>,
 }
 
+/// Whether the exclusive upper bound of `id` fits in a `usize` whose maximum
+/// is `usize_max`. Split out so the 32-bit case is testable on a 64-bit host.
+fn id_fits_usize(id: u32, usize_max: u64) -> bool {
+  u64::from(id) < usize_max
+}
+
 // The patterns `tokenizers` uses to place a `single_word` token and to strip
 // beside an `lstrip`/`rstrip` one.
 static STARTS_WITH_WORD: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\w").unwrap());
@@ -119,6 +129,13 @@ impl WordPiece {
     let invalid =
       |msg: String| io::Error::new(io::ErrorKind::InvalidData, format!("tokenizer.json: {msg}"));
     let json: TokenizerJson = serde_json::from_slice(bytes).map_err(|e| invalid(e.to_string()))?;
+    if let Some(version) = &json.version {
+      if version != "1.0" {
+        return Err(invalid(format!(
+          "unsupported tokenizer version {version:?}"
+        )));
+      }
+    }
     check_normalizer(json.normalizer.as_ref()).map_err(invalid)?;
     let pre_tokenizer = json.pre_tokenizer.as_ref().and_then(|p| p.get("type"));
     if pre_tokenizer.and_then(Value::as_str) != Some("BertPreTokenizer") {
@@ -145,6 +162,15 @@ impl WordPiece {
         json.model.unk_token
       ))
     })?;
+    // `id_count` computes `id as usize + 1`; on a 32-bit target u32::MAX
+    // would overflow that. Added tokens must agree with the vocabulary, so
+    // its largest id bounds both.
+    let largest_id = json.model.vocab.values().copied().max().unwrap_or(0);
+    if !id_fits_usize(largest_id, usize::MAX as u64) {
+      return Err(invalid(format!(
+        "token id {largest_id} has no exclusive bound in usize"
+      )));
+    }
 
     // `tokenizers` gives an added token its id from the vocabulary, warning
     // and moving on when the two disagree; only agreeing ids are supported.
@@ -773,6 +799,50 @@ mod tests {
       err.to_string().contains(r#""QQ" and "ZZ" share id 901"#),
       "{err}"
     );
+  }
+
+  /// `tokenizers` rejects any explicit version but "1.0" before reading the
+  /// pipeline; accepting one would let a candidate pass the native check and
+  /// then fail to start the parity test.
+  #[test]
+  fn load_refuses_a_newer_tokenizer_version() {
+    let json = fixture().replacen(r#""version":"1.0""#, r#""version":"2.0""#, 1);
+    assert!(
+      json.parse::<tokenizers::Tokenizer>().is_err(),
+      "the reference refuses it too"
+    );
+    let err = match WordPiece::from_json(json.as_bytes()) {
+      Err(e) => e,
+      Ok(_) => panic!("a new tokenizer version must be refused"),
+    };
+    assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+    assert!(
+      err
+        .to_string()
+        .contains(r#"unsupported tokenizer version "2.0""#),
+      "{err}"
+    );
+  }
+
+  /// An absent version is accepted by `tokenizers`, so it must be here too.
+  #[test]
+  fn load_accepts_a_versionless_tokenizer() {
+    let json = fixture().replacen(r#""version":"1.0","#, "", 1);
+    assert!(
+      json.parse::<tokenizers::Tokenizer>().is_ok(),
+      "the reference accepts it"
+    );
+    WordPiece::from_json(json.as_bytes())
+      .unwrap_or_else(|e| panic!("a versionless tokenizer must load: {e}"));
+  }
+
+  /// `id_count` computes `id as usize + 1`. On a 32-bit target u32::MAX has
+  /// no exclusive bound in usize; check both widths against the helper.
+  #[test]
+  fn token_ids_fit_an_exclusive_usize_bound() {
+    assert!(id_fits_usize(u32::MAX, u64::MAX), "64-bit");
+    assert!(!id_fits_usize(u32::MAX, u64::from(u32::MAX)), "32-bit");
+    assert!(id_fits_usize(0, u64::from(u32::MAX)), "32-bit, ordinary id");
   }
 
   /// The real model's `tokenizer.json` against `tokenizers` over every text
