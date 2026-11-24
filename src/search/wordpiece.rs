@@ -71,9 +71,10 @@ struct AddedTokens {
 
 #[derive(Deserialize)]
 struct TokenizerJson {
-  /// `tokenizers` accepts an absent version but rejects any explicit one
-  /// other than "1.0" before it reads the pipeline.
-  #[serde(default)]
+  /// `tokenizers` accepts an absent version but rejects an explicit null or
+  /// any other value before it reads the pipeline. The custom deserializer
+  /// keeps "absent" distinct from "present but not a string".
+  #[serde(default, deserialize_with = "deserialize_version")]
   version: Option<String>,
   #[serde(default)]
   added_tokens: Vec<AddedTokenJson>,
@@ -111,6 +112,23 @@ struct ModelJson {
   /// reference would dispatch to BPE, which is not a pipeline we implement.
   #[serde(default)]
   merges: Option<Value>,
+}
+
+/// A missing `version` is fine (`#[serde(default)]` handles it); an explicit
+/// null is not, even though `Option<String>` would silently accept it.
+fn deserialize_version<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+  D: serde::Deserializer<'de>,
+{
+  match Option::<Value>::deserialize(deserializer)? {
+    Some(Value::String(version)) => Ok(Some(version)),
+    Some(other) => Err(serde::de::Error::custom(format!(
+      "version must be a string, got {other}"
+    ))),
+    None => Err(serde::de::Error::custom(
+      "version must be a string, not null",
+    )),
+  }
 }
 
 /// Whether the exclusive upper bound of `id` fits in a `usize` whose maximum
@@ -640,6 +658,47 @@ mod tests {
     json.parse().expect("the fixture is a valid tokenizer.json")
   }
 
+  /// Every text file under an explicitly chosen corpus, including hidden
+  /// ones and ones an ignore file would normally drop.
+  fn parity_files(root: &Path) -> Vec<PathBuf> {
+    let mut walk = ignore::WalkBuilder::new(root);
+    walk
+      .hidden(false)
+      .parents(false)
+      .ignore(false)
+      .git_ignore(false)
+      .git_global(false)
+      .git_exclude(false)
+      .require_git(false);
+    walk
+      .build()
+      .filter_map(|entry| match entry {
+        Ok(entry) if entry.file_type().is_some_and(|t| t.is_file()) => Some(entry.into_path()),
+        Ok(_) => None,
+        Err(e) => panic!("walking {}: {e}", root.display()),
+      })
+      .collect()
+  }
+
+  #[test]
+  fn parity_corpus_includes_hidden_and_ignored_files() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.rs"), b"a").unwrap();
+    std::fs::write(dir.path().join(".hidden.rs"), b"b").unwrap();
+    std::fs::write(dir.path().join(".gitignore"), b"ignored.rs\n").unwrap();
+    std::fs::write(dir.path().join("ignored.rs"), b"c").unwrap();
+    let names: Vec<_> = parity_files(dir.path())
+      .iter()
+      .filter_map(|p| p.file_name().and_then(|n| n.to_str()).map(String::from))
+      .collect();
+    for name in ["a.rs", ".hidden.rs", "ignored.rs", ".gitignore"] {
+      assert!(
+        names.iter().any(|n| n == name),
+        "{name} was filtered out: {names:?}"
+      );
+    }
+  }
+
   #[test]
   fn matches_tokenizers_id_for_id() {
     let json = fixture();
@@ -836,6 +895,28 @@ mod tests {
     );
   }
 
+  /// A present `version` must be a string: `tokenizers` rejects null before
+  /// reading the pipeline, so must we.
+  #[test]
+  fn load_refuses_a_null_version() {
+    let json = fixture().replacen(r#""version":"1.0""#, r#""version":null"#, 1);
+    assert!(
+      json.parse::<tokenizers::Tokenizer>().is_err(),
+      "the reference refuses null"
+    );
+    let err = match WordPiece::from_json(json.as_bytes()) {
+      Err(e) => e,
+      Ok(_) => panic!("a null version must be refused"),
+    };
+    assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+    assert!(
+      err
+        .to_string()
+        .contains("version must be a string, not null"),
+      "{err}"
+    );
+  }
+
   /// Old exports omit `model.type`. `tokenizers` recognizes WordPiece from
   /// the remaining fields, and so must we. Dropping the fields that make the
   /// shape unambiguous is refused by both.
@@ -948,13 +1029,7 @@ mod tests {
     let root = std::env::var_os("AST_BRO_PARITY_DIR")
       .map(PathBuf::from)
       .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src"));
-    let mut files: Vec<PathBuf> = Vec::new();
-    for entry in ignore::WalkBuilder::new(&root).build() {
-      let entry = entry.unwrap_or_else(|e| panic!("walking {}: {e}", root.display()));
-      if entry.file_type().is_some_and(|t| t.is_file()) {
-        files.push(entry.into_path());
-      }
-    }
+    let files = parity_files(&root);
     let results: Vec<(usize, Option<String>, Option<&PathBuf>)> = files
       .par_iter()
       .filter_map(|file| {
