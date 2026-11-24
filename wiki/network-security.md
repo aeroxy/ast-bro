@@ -85,6 +85,8 @@ Every `AST_BRO_*` variable on this page also answers to its pre-rename `AST_OUTL
 
 `stamps` records the size and mtime each file had when it was last verified. A load trusts a file whose stamp still matches and hashes anything else against its pinned SHA-256. A truncated, partly written or edited file normally changes its size or mtime, so it is hashed and caught without hashing 64 MB on every load; that hash used to run on every search and took most of a warm CLI search's time. The one case the stamp misses is a same-size edit that also puts back the recorded mtime: the stamp still matches, so the file is not hashed. A manifest from before stamps existed is hashed once and then gains them.
 
+A download writes each file to a temporary name of its own beside it, with a random part so that concurrent downloads, even from containers that repeat pids, never share one, and renames it into place once its SHA-256 matches. A download killed partway leaves that file behind, so the next download first deletes any temporary file there that has gone ten minutes unwritten, twice the download timeout.
+
 Cache root is `dirs::cache_dir()` (XDG-respecting) joined with `ast-bro/models`. Override with `AST_BRO_MODEL_DIR=/some/path`. For an offline machine, copy the three files into `<that path>/potion-code-16M/`; they are hashed against the pinned values on first use, so no manifest is needed.
 
 ## Pinning the source
@@ -93,10 +95,10 @@ If you don't want the auto-probe (e.g. CI where you know HF is reachable, or a c
 
 | `AST_BRO_MODEL_SOURCE` value | Effect |
 |---|---|
-| *(unset)* | Default — probe HF, fall back to hf-mirror.com |
+| *(unset, or any value not listed here)* | Default — probe HF, fall back to hf-mirror.com. An unrecognized value is ignored with a warning. |
 | `hf` | Always use `https://huggingface.co` |
 | `hf-mirror` | Always use `https://hf-mirror.com` |
-| `https://your.mirror/` | Use a custom HF-compatible base URL. It must serve `<id>/resolve/<commit>/<file>`, since ast-bro asks for the pinned commit rather than `main`. |
+| `https://your.mirror` | Use a custom HF-compatible base URL (a trailing slash is ignored). It must serve `<id>/resolve/<commit>/<file>`, since ast-bro asks for the pinned commit rather than `main`. |
 
 ## What does NOT make network requests
 
