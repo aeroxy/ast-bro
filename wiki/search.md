@@ -153,10 +153,11 @@ leaving them unembedded made phase-one file retrieval miss exactly
 phase-one file recall@5 from 33% to 60%, and top-1 from 23% to 40%.
 
 A piece is not under the embedder's token window, though: a third to a half of
-3,000-byte pieces run past `MAX_EMBED_TOKENS`, so their last signatures reach
-BM25 but not the vector. Sizing pieces to fit, at 1,200 or 2,000 bytes,
-measured as noise: 5 up and 5 down, and 7 up and 5 down with recall@5 one
-lower.
+3,000-byte pieces run past `MAX_EMBED_TOKENS`, so their retained outline text
+beyond the window still reaches BM25 (any signature truncated while building
+the outline is missing from both) but not the vector. Sizing pieces to fit, at
+1,200 or 2,000 bytes, measured as noise: 5 up and 5 down, and 7 up and 5 down
+with recall@5 one lower.
 
 The pieces do not overlap. Carrying signatures across the boundary measured
 worse at every setting tried: an outline is a list of independent signatures
