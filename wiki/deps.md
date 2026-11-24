@@ -8,14 +8,15 @@ Four subcommands — `deps`, `reverse-deps`, `cycles`, `graph` — and a per-rep
 build_graph(root):
   detect_aliases(root)              # tsconfig paths, Cargo crate name, composer PSR-4
   build_suffix_index(root)          # one parallel walk → SuffixIndex { by_suffix, by_file, go_modules }
-  par_iter(files):                  # rayon: per-file extract + resolve
-    raw = extract(file, lang)       # tree-sitter pass; reuses surface/imports.rs where it can
-    for ri in raw:
+  par_iter(files):                  # rayon: per-file extract
+    imports[file] = extract(file, lang)  # tree-sitter pass; reuses surface/imports.rs where it can
+  resolve_all(graph, idx, aliases): # rayon: per-file resolve; shared with the incremental update
+    for ri in imports[file]:
       resolve(ri.spec, ctx, idx)    # one resolver, all 9 languages
         → match → DepEdge
         → no match → external bucket
-  dedup_edges(graph)                # collapse repeated (src, target) pairs
-  → DepGraph { forward, external, stats }
+    dedup_edges(graph)              # collapse repeated (src, target) pairs
+  → DepGraph { forward, external, imports, stats }
 
 deps <file>:                        forward BFS over `graph.forward`
 reverse-deps <file>:                graph.reverse_adjacency() (computed on-demand) + BFS
