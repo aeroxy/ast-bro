@@ -183,6 +183,23 @@ struct ModelJson {
   merges: Option<Value>,
 }
 
+/// BPE's `merges` array format in `tokenizers`: either pairs of strings or
+/// legacy space-separated strings. Non-array values (e.g. `42`) fail BPE
+/// deserialization so the reference falls through to WordPiece.
+#[allow(dead_code)]
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum BpeMergesJson {
+  Tuple(Vec<(String, String)>),
+  Legacy(Vec<String>),
+}
+
+/// Whether a `merges` value has BPE's array shape, so an untagged model would
+/// dispatch to BPE in `tokenizers` instead of WordPiece.
+fn is_bpe_merges(value: &Value) -> bool {
+  serde_json::from_value::<BpeMergesJson>(value.clone()).is_ok()
+}
+
 /// A missing `version` is fine (`#[serde(default)]` handles it); an explicit
 /// null is not, even though `Option<String>` would silently accept it.
 fn deserialize_version<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
@@ -278,10 +295,11 @@ impl WordPiece {
       if kind != "WordPiece" {
         return Err(invalid(format!("model type {kind} is not WordPiece")));
       }
-    } else if json.model.merges.is_some() {
-      // With no type, `tokenizers` tries BPE first: vocab + merges makes it
-      // a BPE model that tokenizes differently from the WordPiece we would
-      // build from the same fields.
+    } else if json.model.merges.as_ref().is_some_and(is_bpe_merges) {
+      // With no type, `tokenizers` tries BPE first: vocab + a BPE merges
+      // array makes it a BPE model that tokenizes differently from the
+      // WordPiece we would build from the same fields. Non-array values fail
+      // BPE deserialization and fall through to WordPiece in the reference.
       return Err(invalid(
         "a model without a type that defines BPE `merges` is not WordPiece".to_string(),
       ));
@@ -1313,6 +1331,21 @@ mod tests {
     assert!(
       WordPiece::from_json(with_merges.as_bytes()).is_err(),
       "our loader must not read the BPE shape as WordPiece"
+    );
+
+    // A non-array `merges` fails BPE deserialization in the reference, which
+    // then falls through to WordPiece and ignores the extra field.
+    let non_array_merges = legacy.replacen(
+      r#""max_input_chars_per_word":100,"#,
+      r#""max_input_chars_per_word":100,"merges":42,"#,
+      1,
+    );
+    let theirs = reference(&non_array_merges);
+    let ours = WordPiece::from_json(non_array_merges.as_bytes())
+      .unwrap_or_else(|e| panic!("non-array merges falls through to WordPiece: {e}"));
+    assert_eq!(
+      ours.encode("hello", usize::MAX),
+      theirs.encode("hello", false).unwrap().get_ids().to_vec()
     );
   }
 
