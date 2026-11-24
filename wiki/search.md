@@ -144,16 +144,17 @@ prior can only *raise* a file's score, so a file with no outline could not
 compete with one that had them, and documents lost to code on queries the
 document answered. The file type was deciding the ranking, not the relevance.
 
-A long outline is split at `OUTLINE_MAX_CHARS = 3000`, well under
-`MAX_EMBED_CHARS`. An outline above that cap is dropped from the dense index
+A long outline is split at `OUTLINE_MAX_CHARS = 3000` — a 3,000-**byte** budget,
+despite the name: the chunker measures paths and signatures with UTF-8 `.len()`.
+It is well under `MAX_EMBED_CHARS`. An outline above that cap is dropped from the dense index
 entirely, and the files with the longest outlines are the large central ones —
 leaving them unembedded made phase-one file retrieval miss exactly
 `QueryExecutorImpl`, `PgConnection` and `PgResultSet`. Splitting them raised
 phase-one file recall@5 from 33% to 60%, and top-1 from 23% to 40%.
 
 A piece is not under the embedder's token window, though: a third to a half of
-3000-char pieces run past `MAX_EMBED_TOKENS`, so their last signatures reach
-BM25 but not the vector. Sizing pieces to fit, at 1200 or 2000 characters,
+3,000-byte pieces run past `MAX_EMBED_TOKENS`, so their last signatures reach
+BM25 but not the vector. Sizing pieces to fit, at 1,200 or 2,000 bytes,
 measured as noise: 5 up and 5 down, and 7 up and 5 down with recall@5 one
 lower.
 
