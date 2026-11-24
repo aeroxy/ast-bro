@@ -777,15 +777,21 @@ mod tests {
 
   /// The real model's `tokenizer.json` against `tokenizers` over every text
   /// file under `AST_BRO_PARITY_DIR` (default: this crate's `src/`), each
-  /// tokenized whole. Downloads the model on first run, so it is ignored by
+  /// tokenized whole. `AST_BRO_PARITY_TOKENIZER` names another
+  /// `tokenizer.json`, such as a candidate model's; without it the pinned
+  /// model is used, downloaded on first run, so the test is ignored by
   /// default: `cargo test --lib wordpiece -- --ignored --nocapture`.
   #[test]
   #[ignore]
   fn network_matches_tokenizers_on_real_text() {
     use crate::search::download::{ensure_model, ModelInfo};
-    let path = ensure_model(&ModelInfo::potion_code_16m())
-      .expect("model download")
-      .join("tokenizer.json");
+    let path = match std::env::var_os("AST_BRO_PARITY_TOKENIZER") {
+      Some(path) => PathBuf::from(path),
+      None => ensure_model(&ModelInfo::potion_code_16m())
+        .expect("model download")
+        .join("tokenizer.json"),
+    };
+    eprintln!("tokenizer: {}", path.display());
     let ours = WordPiece::load(&path).unwrap();
     let mut theirs = tokenizers::Tokenizer::from_file(&path).unwrap();
     theirs.with_truncation(None).unwrap();

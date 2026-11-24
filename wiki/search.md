@@ -426,8 +426,11 @@ real one, so `cosine_topk` drops it and only BM25 can retrieve it. A zero vector
 would not do: its dot product is a finite `0.0`, which outranks every negative
 similarity and enters the pool whenever the corpus is smaller than the pool.
 Below the cap, a chunk's vector averages its first 512 tokens, so a long chunk
-is represented by its head; 512 tokens is often 1.5–2 KB of code. The content
-past the cap stays reachable densely through the member's `Part` chunks. On
+is represented by its head; 512 tokens is often 1.5–2 KB of code. Past the
+cap, content stays reachable densely only where the member's `Part` chunks
+re-cover it, and only within each part's window. A chunk with no parts, such
+as a paragraph of a file with no grammar (a TOML table with no blank line in
+it), is reachable only through BM25. On
 pgjdbc the cap affects 1.4% of chunks. Whether it still helps under the window
 is unmeasured; with every chunk embedded in full and weighted, dropping it cost
 answered@8k 43 → 41 and @32k 48 → 46.
@@ -452,7 +455,7 @@ On `Index::open`, a non-empty delta is applied incrementally (`apply_delta`): th
 1. Add a constructor to `download::ModelInfo` naming the upstream commit to pin and the SHA-256 of each file at that commit (config.json, tokenizer.json, model.safetensors). The Hub API lists the LFS hashes (`/api/models/<id>/tree/<commit>`); hash the small non-LFS files yourself, from both huggingface.co and hf-mirror.com.
 2. Verify the embedding tensor inside the safetensors is named `embeddings` and is `f32` or `f16` (model2vec convention). `f16` tensors are decoded to `f32` once at open time (`decode_f16_le` in `embed.rs`); any other dtype is rejected. Check for model2vec's side tensors too: `mapping` is applied, and `weights` is ignored on purpose (see [Window and weights](#window-and-weights-what-we-measured)), so measure a model that ships them before assuming it reads as intended. Check the tokenizer's own truncation as well; `MAX_EMBED_TOKENS` overrides it.
 3. If the dimension differs from 256, the `DIM` constant in [`src/search/embed.rs`](../src/search/embed.rs) needs to follow. Most of the code is generic over `DIM`, but the const is the single source of truth — bumping it requires re-indexing existing repos (the schema check in `Meta::model.dim` will catch this and force a rebuild).
-4. Load the candidate's `tokenizer.json` with `WordPiece::load` before benchmarking anything. It refuses any pipeline but BERT WordPiece with potion-code-16M's settings (another normalizer, pre-tokenizer or a post-processor, or added tokens that disagree with the vocabulary), and such a model needs a compatible export or a tokenizer change first. If it loads, run the ignored `network_matches_tokenizers_on_real_text` test against it to confirm id-for-id parity with `tokenizers`.
+4. Load the candidate's `tokenizer.json` with `WordPiece::load` before benchmarking anything. It refuses any pipeline but BERT WordPiece with potion-code-16M's settings (another normalizer, pre-tokenizer or a post-processor, or added tokens that disagree with the vocabulary), and such a model needs a compatible export or a tokenizer change first. If it loads, run the ignored `network_matches_tokenizers_on_real_text` test with `AST_BRO_PARITY_TOKENIZER` set to its path, to confirm id-for-id parity with `tokenizers`; without that variable the test checks the pinned model.
 
 Measure the swap on [tests/eval](../tests/eval/README.md) before taking it. A
 better public benchmark is not enough on its own: `potion-code-16M-v2` shares

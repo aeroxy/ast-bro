@@ -27,8 +27,9 @@ The model is `minishlab/potion-code-16M` — a static model2vec embedding (no ne
 1. ast-bro first probes `https://huggingface.co/.../config.json` with a 3-second timeout.
 2. If the probe fails (timeout, DNS failure, content-length anomaly from a captive portal), it transparently falls back to `https://hf-mirror.com/.../config.json`.
 3. `hf-mirror.com` is a community-run URL-rewrite mirror of HuggingFace — it serves the exact same bytes from a different domain.
+4. If the probe picked HuggingFace and a file then fails its pinned SHA-256, ast-bro downloads the files again from `hf-mirror.com`. A network can let the small probe through and still answer a later file with a page of its own, for example when it blocks the CDN that serves `model.safetensors`.
 
-Both are checked against the same pinned SHA-256s, so either path produces a bit-identical local cache.
+Both are checked against the same pinned SHA-256s, so either path produces a bit-identical local cache. A source set with `AST_BRO_MODEL_SOURCE` (below) is never switched.
 
 ## TLS verification policy (the unusual part)
 

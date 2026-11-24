@@ -222,7 +222,7 @@ pub fn ensure_model(info: &ModelInfo) -> io::Result<PathBuf> {
   }
 
   warn_about_tls_policy();
-  let source = select_source(info);
+  let (source, probed) = select_source(info);
   eprintln!(
     "ast-bro: downloading model {} via {} ({} files)",
     info.id,
@@ -231,15 +231,50 @@ pub fn ensure_model(info: &ModelInfo) -> io::Result<PathBuf> {
   );
 
   let client = build_client(DOWNLOAD_TIMEOUT)?;
+  let manifest = download_with_fallback(source, probed, |source| {
+    download_all(&client, info, &dir, source)
+  })?;
+  write_manifest(&dir, &manifest)?;
+  Ok(dir)
+}
+
+/// Run `download` from `source`, and once more from hf-mirror.com when
+/// `source` is HuggingFace picked by the probe and a file failed its pin.
+/// The probe only fetched `config.json`'s headers, and a network can let that
+/// through yet answer a later file with a page of its own; the mirror may
+/// still serve the pinned bytes, and they are checked against the same pins.
+/// A source named in `AST_BRO_MODEL_SOURCE` is never switched.
+fn download_with_fallback<'a>(
+  source: Source<'a>,
+  probed: bool,
+  mut download: impl FnMut(Source<'a>) -> io::Result<Manifest>,
+) -> io::Result<Manifest> {
+  match download(source) {
+    Err(e) if probed && source == Source::HuggingFace && e.kind() == io::ErrorKind::InvalidData => {
+      eprintln!("ast-bro: {e}");
+      eprintln!("ast-bro: trying hf-mirror.com instead");
+      download(Source::HfMirror)
+    }
+    result => result,
+  }
+}
+
+/// Download every file of `info` from `source` into `dir`, each checked
+/// against its pin, and return the manifest that records them.
+fn download_all(
+  client: &reqwest::blocking::Client,
+  info: &ModelInfo,
+  dir: &Path,
+  source: Source<'_>,
+) -> io::Result<Manifest> {
   let mut manifest = Manifest {
     source: source.label().to_string(),
     ..Manifest::default()
   };
-
   for file in &info.files {
     let dest = dir.join(file.name);
     let stamp = download_to(
-      &client,
+      client,
       &info.url(source.base_url(), file),
       &dest,
       file.sha256,
@@ -249,16 +284,16 @@ pub fn ensure_model(info: &ModelInfo) -> io::Result<PathBuf> {
       .insert(file.name.to_string(), file.sha256.to_string());
     manifest.stamps.insert(file.name.to_string(), stamp);
   }
-
-  write_manifest(&dir, &manifest)?;
-  Ok(dir)
+  Ok(manifest)
 }
 
-fn select_source<'a>(info: &'a ModelInfo) -> Source<'a> {
+/// The source to download from, and whether the probe picked it rather than
+/// `AST_BRO_MODEL_SOURCE`.
+fn select_source<'a>(info: &'a ModelInfo) -> (Source<'a>, bool) {
   let forced =
     std::env::var("AST_BRO_MODEL_SOURCE").or_else(|_| std::env::var("AST_OUTLINE_MODEL_SOURCE"));
   if let Ok(forced) = forced {
-    return match forced.as_str() {
+    let source = match forced.as_str() {
       "hf" => Source::HuggingFace,
       "hf-mirror" => Source::HfMirror,
       url if url.starts_with("http://") || url.starts_with("https://") => {
@@ -271,12 +306,13 @@ fn select_source<'a>(info: &'a ModelInfo) -> Source<'a> {
         Source::HuggingFace
       }
     };
+    return (source, false);
   }
   if probe_huggingface(info) {
-    Source::HuggingFace
+    (Source::HuggingFace, true)
   } else {
     eprintln!("ast-bro: HuggingFace unreachable, falling back to hf-mirror.com");
-    Source::HfMirror
+    (Source::HfMirror, true)
   }
 }
 
@@ -381,10 +417,12 @@ fn warn_about_tls_policy() {
   }
 }
 
-/// A temporary path beside `path` that no other write uses: the process id
-/// plus a counter. The model cache is shared by every repository, and
-/// nothing locks it, so two searches can download the same file at once,
-/// and an MCP server can do it from two threads.
+/// A temporary path beside `path`: the process id plus a counter. The model
+/// cache is shared by every repository, and nothing locks it, so two searches
+/// can download the same file at once, and an MCP server can do it from two
+/// threads. No two writes of one process draw the same name; two processes
+/// can, since containers sharing a cache repeat pids, which is why
+/// `TmpFile::create` opens the name exclusively and draws again if it is taken.
 fn unique_tmp(path: &Path) -> PathBuf {
   static NEXT: AtomicU64 = AtomicU64::new(0);
   let n = NEXT.fetch_add(1, Ordering::Relaxed);
@@ -402,12 +440,47 @@ struct TmpFile {
   renamed: bool,
 }
 
+/// Names `TmpFile::create` draws before giving up. A taken name means another
+/// process drew the same pid and counter, so a second collision in a row is
+/// already unlikely.
+const TMP_NAME_ATTEMPTS: usize = 8;
+
 impl TmpFile {
-  fn beside(path: &Path) -> Self {
-    Self {
-      path: unique_tmp(path),
-      renamed: false,
+  /// Create a temporary file beside `path` that this call alone opened, with
+  /// the guard that deletes it. A taken name is another writer's file: it is
+  /// left alone and a fresh name drawn, so the guard only ever covers a file
+  /// this call created.
+  fn create(path: &Path) -> io::Result<(Self, fs::File)> {
+    Self::create_first(std::iter::repeat_with(|| unique_tmp(path)).take(TMP_NAME_ATTEMPTS))
+  }
+
+  /// The first of `candidates` that does not exist yet, created as `create`
+  /// does it.
+  fn create_first(candidates: impl IntoIterator<Item = PathBuf>) -> io::Result<(Self, fs::File)> {
+    let mut taken = None;
+    for path in candidates {
+      match fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+      {
+        Ok(file) => {
+          let guard = Self {
+            path,
+            renamed: false,
+          };
+          return Ok((guard, file));
+        }
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => taken = Some(e),
+        Err(e) => return Err(e),
+      }
     }
+    Err(taken.unwrap_or_else(|| {
+      io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        "no temporary file name was free",
+      )
+    }))
   }
 
   fn rename_to(mut self, dest: &Path) -> io::Result<()> {
@@ -458,11 +531,7 @@ fn download_to(
     )));
   }
 
-  let tmp = TmpFile::beside(dest);
-  let mut file = fs::OpenOptions::new()
-    .write(true)
-    .create_new(true)
-    .open(&tmp.path)?;
+  let (tmp, mut file) = TmpFile::create(dest)?;
   let mut hasher = Sha256::new();
 
   let mut reader = resp;
@@ -511,8 +580,10 @@ fn write_manifest(dir: &Path, manifest: &Manifest) -> io::Result<()> {
   // Written beside the manifest and renamed over it: two processes, or two
   // threads of one, can verify the same cache at once, and a torn manifest
   // would send them back to the network.
-  let tmp = TmpFile::beside(&manifest_path(dir));
-  fs::write(&tmp.path, json)?;
+  let (tmp, mut file) = TmpFile::create(&manifest_path(dir))?;
+  file.write_all(&json)?;
+  file.sync_all()?;
+  drop(file);
   tmp.rename_to(&manifest_path(dir))
 }
 
@@ -793,20 +864,97 @@ mod tests {
     let dir = tempfile::tempdir().unwrap();
     let dest = dir.path().join("a.txt");
 
-    let abandoned = TmpFile::beside(&dest);
-    fs::write(&abandoned.path, b"partial").unwrap();
+    let (abandoned, mut file) = TmpFile::create(&dest).unwrap();
+    file.write_all(b"partial").unwrap();
+    drop(file);
     let path = abandoned.path.clone();
     drop(abandoned);
     assert!(!path.exists(), "a failed write must leave nothing behind");
 
-    let finished = TmpFile::beside(&dest);
-    fs::write(&finished.path, b"whole").unwrap();
+    let (finished, mut file) = TmpFile::create(&dest).unwrap();
+    file.write_all(b"whole").unwrap();
+    drop(file);
     finished.rename_to(&dest).unwrap();
     assert_eq!(fs::read(&dest).unwrap(), b"whole");
     assert_eq!(
       fs::read_dir(dir.path()).unwrap().count(),
       1,
       "only the file itself remains"
+    );
+  }
+
+  /// Two containers sharing a cache can draw the same pid and counter. The
+  /// name another writer already created is its file: drawing it must not
+  /// arm a guard that deletes it, and the next name is used instead.
+  #[test]
+  fn a_taken_temporary_name_is_left_alone() {
+    let dir = tempfile::tempdir().unwrap();
+    let (theirs, ours) = (dir.path().join("a.1.0.tmp"), dir.path().join("a.1.1.tmp"));
+    fs::write(&theirs, b"another writer's bytes").unwrap();
+
+    let (guard, mut file) = TmpFile::create_first([theirs.clone(), ours.clone()]).unwrap();
+    assert_eq!(guard.path, ours);
+    file.write_all(b"ours").unwrap();
+    drop(file);
+    drop(guard);
+    assert!(!ours.exists(), "our own file is still cleaned up");
+    assert_eq!(fs::read(&theirs).unwrap(), b"another writer's bytes");
+
+    let err = match TmpFile::create_first([theirs.clone()]) {
+      Ok(_) => panic!("a taken name must not be opened"),
+      Err(e) => e,
+    };
+    assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
+    assert_eq!(fs::read(&theirs).unwrap(), b"another writer's bytes");
+  }
+
+  /// HuggingFace picked by the probe, then a file that fails its pin: the
+  /// mirror gets one try. A named source, another error, or the mirror
+  /// itself failing is reported as it is.
+  #[test]
+  fn only_a_probed_huggingface_falls_back_to_the_mirror_on_a_pin_mismatch() {
+    let mismatch = || io::Error::new(io::ErrorKind::InvalidData, "pin mismatch");
+    let run =
+      |source: Source<'static>, probed: bool, fail: &dyn Fn(Source) -> Option<io::Error>| {
+        let mut tried = Vec::new();
+        let got = download_with_fallback(source, probed, |s| {
+          tried.push(s.label());
+          match fail(s) {
+            Some(e) => Err(e),
+            None => Ok(Manifest {
+              source: s.label().to_string(),
+              ..Manifest::default()
+            }),
+          }
+        });
+        (tried, got.map(|m| m.source).map_err(|e| e.kind()))
+      };
+    let hf_mismatch = |s: Source| (s == Source::HuggingFace).then(mismatch);
+
+    assert_eq!(
+      run(Source::HuggingFace, true, &hf_mismatch),
+      (vec!["hf", "hf-mirror"], Ok("hf-mirror".to_string()))
+    );
+    assert_eq!(
+      run(Source::HuggingFace, false, &hf_mismatch),
+      (vec!["hf"], Err(io::ErrorKind::InvalidData)),
+      "AST_BRO_MODEL_SOURCE=hf stays on HuggingFace"
+    );
+    assert_eq!(
+      run(Source::HuggingFace, true, &|_| Some(io::Error::other(
+        "HTTP 503"
+      ))),
+      (vec!["hf"], Err(io::ErrorKind::Other)),
+      "only a pin mismatch switches source; other failures are reported as they are"
+    );
+    assert_eq!(
+      run(Source::HfMirror, true, &|_| Some(mismatch())),
+      (vec!["hf-mirror"], Err(io::ErrorKind::InvalidData))
+    );
+    assert_eq!(
+      run(Source::HuggingFace, true, &|_| Some(mismatch())),
+      (vec!["hf", "hf-mirror"], Err(io::ErrorKind::InvalidData)),
+      "the mirror is checked against the same pins"
     );
   }
 
