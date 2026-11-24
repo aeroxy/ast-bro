@@ -299,8 +299,9 @@ every CLI search, against about 5 ms for reading just what WordPiece needs.
 Tokenization, which is 95% of embedding CPU, ran about five times faster on
 an ILSpy rebuild (embedding 1.0 s → 0.2 s). The binary also drops the
 Oniguruma C library and 1.8 MB. `encode` stops once it has
-`MAX_EMBED_TOKENS` ids, so a long chunk skips tokenizing a tail it would
-discard.
+`MAX_EMBED_TOKENS` ids, so a long chunk skips WordPiece work on the words
+it would discard. Raw-text splitting and normalization still scan the whole
+chunk.
 
 WordPiece with `lowercase: true`, vocabulary ~62 k. Note the order: the
 normalizer lowercases *before* WordPiece splits, so `sendQueryCancel` becomes

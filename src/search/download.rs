@@ -203,10 +203,16 @@ pub fn cache_root() -> io::Result<PathBuf> {
 
 /// Local directory for a single model. Created on demand by `ensure_model`.
 pub fn model_dir(info: &ModelInfo) -> io::Result<PathBuf> {
+  model_dir_in(&cache_root()?, info)
+}
+
+/// `model_dir` under an explicit cache root, so tests can use a cold cache
+/// without changing the process-wide `AST_BRO_MODEL_DIR`.
+fn model_dir_in(root: &Path, info: &ModelInfo) -> io::Result<PathBuf> {
   // Model id like "minishlab/potion-code-16M" -> use only the repo name as
   // the leaf so we don't have to escape the slash.
   let leaf = info.id.split('/').next_back().unwrap_or(&info.id);
-  Ok(cache_root()?.join(leaf))
+  Ok(root.join(leaf))
 }
 
 /// Make sure all `info.files` exist locally and pass integrity checks.
@@ -215,11 +221,19 @@ pub fn model_dir(info: &ModelInfo) -> io::Result<PathBuf> {
 /// Will download from HuggingFace (or fall back to hf-mirror.com / a custom
 /// mirror) on first call, or whenever cached files fail integrity checks.
 pub fn ensure_model(info: &ModelInfo) -> io::Result<PathBuf> {
-  let dir = model_dir(info)?;
-  fs::create_dir_all(&dir)?;
+  ensure_model_dir(&model_dir(info)?, info)
+}
 
-  if cache_is_valid(&dir, info)? {
-    return Ok(dir);
+/// `ensure_model` under an explicit cache root.
+fn ensure_model_in(root: &Path, info: &ModelInfo) -> io::Result<PathBuf> {
+  ensure_model_dir(&model_dir_in(root, info)?, info)
+}
+
+fn ensure_model_dir(dir: &Path, info: &ModelInfo) -> io::Result<PathBuf> {
+  fs::create_dir_all(dir)?;
+
+  if cache_is_valid(dir, info)? {
+    return Ok(dir.to_path_buf());
   }
 
   warn_about_tls_policy();
@@ -236,7 +250,7 @@ pub fn ensure_model(info: &ModelInfo) -> io::Result<PathBuf> {
     download_all(&client, info, &dir, source)
   })?;
   write_manifest(&dir, &manifest)?;
-  Ok(dir)
+  Ok(dir.to_path_buf())
 }
 
 /// Run `download` from `source`, and once more from hf-mirror.com when
@@ -620,13 +634,18 @@ thread_local! {
 }
 
 /// The SHA-256 of the file at `path`, with the stamp of the file it hashed.
-/// Both come from one open handle: stamping the path separately could pair
-/// this digest with a file renamed over it in between, and a stamp that
-/// vouches for bytes nobody hashed.
+#[cfg(test)]
 fn sha256_file(path: &Path) -> io::Result<(String, FileStamp)> {
+  let mut file = fs::File::open(path)?;
+  hash_handle(&mut file)
+}
+
+/// Hash an already-open handle and stamp it from that same handle. A caller
+/// that checked a stamp can hand over the handle it opened, so a rename
+/// between the check and the hash cannot swap in bytes nobody verified.
+fn hash_handle(file: &mut fs::File) -> io::Result<(String, FileStamp)> {
   #[cfg(test)]
   HASHED.with(|n| n.set(n.get() + 1));
-  let mut file = fs::File::open(path)?;
   let stamp = FileStamp::of(&file.metadata()?);
   let mut hasher = Sha256::new();
   let mut buf = [0u8; 64 * 1024];
@@ -660,24 +679,29 @@ fn cache_is_valid(dir: &Path, info: &ModelInfo) -> io::Result<bool> {
     let Ok(meta) = fs::metadata(&path) else {
       return Ok(false);
     };
-    // A named pipe or device at a model path would block or misbehave when
-    // read. The downloader can replace it by rename, so treat it as a miss.
+    // A named pipe or device at a model path would block when opened. The
+    // downloader can replace it by rename, so treat it as a miss.
     if !meta.is_file() {
       return Ok(false);
     }
-    let pinned = manifest.sha256.get(file.name).map(String::as_str) == Some(file.sha256);
-    if pinned && manifest.stamps.get(file.name) == Some(&FileStamp::of(&meta)) {
-      // A permission change does not alter size or mtime, so a matching
-      // stamp alone does not mean the file can still be opened. Fail over
-      // to the recovery path below rather than letting `Embedder::open`
-      // fail later.
-      match fs::File::open(&path) {
-        Ok(_) => continue,
-        Err(e) if e.kind() == io::ErrorKind::PermissionDenied => return Ok(false),
-        Err(e) => return Err(e),
-      }
+    // Open once and take the stamp from the handle. A rename after the path
+    // check cannot then swap in a replacement whose bytes were never
+    // checked against the pin. An unreadable file is a miss: a writable
+    // cache can replace it by download.
+    let mut handle = match fs::File::open(&path) {
+      Ok(f) => f,
+      Err(e) if e.kind() == io::ErrorKind::PermissionDenied => return Ok(false),
+      Err(e) => return Err(e),
+    };
+    let handle_meta = handle.metadata()?;
+    if !handle_meta.is_file() {
+      return Ok(false);
     }
-    let (digest, stamp) = match sha256_file(&path) {
+    let pinned = manifest.sha256.get(file.name).map(String::as_str) == Some(file.sha256);
+    if pinned && manifest.stamps.get(file.name) == Some(&FileStamp::of(&handle_meta)) {
+      continue;
+    }
+    let (digest, stamp) = match hash_handle(&mut handle) {
       Ok(hashed) => hashed,
       // A file placed by hand but unreadable cannot be trusted, and a
       // writable cache can replace it by download. A read-only cache will
@@ -1182,17 +1206,15 @@ mod tests {
   #[ignore]
   fn network_real_download() {
     let tmp = tempfile::tempdir().unwrap();
-    std::env::set_var("AST_BRO_MODEL_DIR", tmp.path());
     let info = ModelInfo::potion_code_16m();
-    let dir = ensure_model(&info).expect("download failed");
+    let dir = ensure_model_in(tmp.path(), &info).expect("download failed");
     // Re-validate: the stamps written at download make this hash nothing.
     let before = hashed();
-    let dir2 = ensure_model(&info).expect("revalidate failed");
+    let dir2 = ensure_model_in(tmp.path(), &info).expect("revalidate failed");
     assert_eq!(hashed() - before, 0, "a fresh download is already stamped");
     assert_eq!(dir, dir2);
     for f in &info.files {
       assert!(dir.join(f.name).exists(), "missing {}", f.name);
     }
-    std::env::remove_var("AST_BRO_MODEL_DIR");
   }
 }
