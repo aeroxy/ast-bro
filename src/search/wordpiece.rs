@@ -926,6 +926,9 @@ mod tests {
   /// `tokenizer.json`, such as a candidate model's; without it the pinned
   /// model is used, downloaded on first run, so the test is ignored by
   /// default: `cargo test --lib wordpiece -- --ignored --nocapture`.
+  /// Non-UTF-8 files and files over 2 MB are skipped; the latter are printed
+  /// by path so a large file cannot silently go uncompared. Raise the
+  /// `2_000_000` cutoff in the test to include them.
   #[test]
   #[ignore]
   fn network_matches_tokenizers_on_real_text() {
@@ -952,7 +955,7 @@ mod tests {
         files.push(entry.into_path());
       }
     }
-    let results: Vec<(usize, Option<String>)> = files
+    let results: Vec<(usize, Option<String>, Option<&PathBuf>)> = files
       .par_iter()
       .filter_map(|file| {
         let text = match std::fs::read_to_string(file) {
@@ -963,7 +966,7 @@ mod tests {
           Err(e) => panic!("reading {}: {e}", file.display()),
         };
         if text.len() > 2_000_000 {
-          return None;
+          return Some((0, None, Some(file)));
         }
         let want = theirs
           .encode(text.as_str(), false)
@@ -979,21 +982,26 @@ mod tests {
             want.len()
           )
         });
-        Some((want.len(), mismatch))
+        Some((want.len(), mismatch, None))
       })
       .collect();
-    let tokens: usize = results.iter().map(|(n, _)| n).sum();
+    let tokens: usize = results.iter().map(|(n, _, _)| n).sum();
     assert!(
       tokens > 0,
       "compared nothing under {}; is AST_BRO_PARITY_DIR right?",
       root.display()
     );
-    let mismatches: Vec<&String> = results.iter().filter_map(|(_, m)| m.as_ref()).collect();
+    let mismatches: Vec<&String> = results.iter().filter_map(|(_, m, _)| m.as_ref()).collect();
+    let oversized: Vec<&PathBuf> = results.iter().filter_map(|(_, _, p)| *p).collect();
     eprintln!(
-      "compared {} files, {tokens} tokens, under {}",
-      results.len(),
-      root.display()
+      "compared {} files, {tokens} tokens, under {}; skipped {} files over 2,000,000 bytes",
+      results.len() - oversized.len(),
+      root.display(),
+      oversized.len()
     );
+    for path in &oversized {
+      eprintln!("  skipped oversized: {}", path.display());
+    }
     assert!(
       mismatches.is_empty(),
       "{} of {} files differ:\n{}",
