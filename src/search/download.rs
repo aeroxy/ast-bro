@@ -223,7 +223,6 @@ pub fn ensure_model(info: &ModelInfo) -> io::Result<PathBuf> {
   }
 
   warn_about_tls_policy();
-  remove_stale_tmp_files(&dir);
   let (source, probed) = select_source(info);
   eprintln!(
     "ast-bro: downloading model {} via {} ({} files)",
@@ -448,34 +447,11 @@ fn unique_tmp(path: &Path) -> PathBuf {
   path.with_file_name(format!("{name}.{}.{n}.{salt:016x}.tmp", std::process::id()))
 }
 
-/// How long a temporary file in the model directory can go unwritten before
-/// a new download deletes it. A live download writes every chunk it reads,
-/// and a read that waits `DOWNLOAD_TIMEOUT` fails, so a file twice that old
-/// was left by a process that is gone.
-const STALE_TMP_AGE: Duration = Duration::from_secs(2 * DOWNLOAD_TIMEOUT.as_secs());
-
-/// Delete the temporary files killed downloads left in `dir`. Nothing runs
-/// a destructor on Ctrl-C or SIGKILL, and each attempt draws a new name, so
-/// without this every interrupted download would leave its partial file.
-fn remove_stale_tmp_files(dir: &Path) {
-  let Ok(entries) = fs::read_dir(dir) else {
-    return;
-  };
-  for entry in entries.flatten() {
-    let path = entry.path();
-    if path.extension().is_none_or(|ext| ext != "tmp") {
-      continue;
-    }
-    let age = entry
-      .metadata()
-      .and_then(|meta| meta.modified())
-      .ok()
-      .and_then(|modified| modified.elapsed().ok());
-    if age.is_some_and(|age| age > STALE_TMP_AGE) {
-      let _ = fs::remove_file(&path);
-    }
-  }
-}
+// A download killed by Ctrl-C or SIGKILL leaves its temporary file behind,
+// since no destructor runs to remove it. We do not sweep those files by age:
+// a writer suspended mid-download could resume after a long pause, and a
+// stale-looking file is not proof its writer is gone. The random part in
+// `unique_tmp` means a later download never reuses the name.
 
 /// A temporary file that is deleted when dropped, unless it was renamed into
 /// place, so a failed download or write leaves nothing behind.
@@ -688,7 +664,14 @@ fn cache_is_valid(dir: &Path, info: &ModelInfo) -> io::Result<bool> {
     if pinned && manifest.stamps.get(file.name) == Some(&FileStamp::of(&meta)) {
       continue;
     }
-    let (digest, stamp) = sha256_file(&path)?;
+    let (digest, stamp) = match sha256_file(&path) {
+      Ok(hashed) => hashed,
+      // A file placed by hand but unreadable cannot be trusted, and a
+      // writable cache can replace it by download. A read-only cache will
+      // fail at the write with a clearer error if it cannot.
+      Err(e) if e.kind() == io::ErrorKind::PermissionDenied => return Ok(false),
+      Err(e) => return Err(e),
+    };
     if digest != file.sha256 {
       eprintln!(
         "ast-bro: cached {} does not match the pinned model, will re-download",
@@ -813,6 +796,23 @@ mod tests {
       .stamps
       .insert("a.txt".to_string(), FileStamp::of(&meta));
     write_manifest(dir, &manifest).unwrap();
+    assert!(!cache_is_valid(dir, &info).unwrap());
+  }
+
+  /// A pinned file that cannot be read is a cache miss, not a hard error: a
+  /// writable cache can replace it by download. Unix only — Windows file
+  /// permissions do not follow the same model.
+  #[cfg(unix)]
+  #[test]
+  fn an_unreadable_cached_file_is_a_miss() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    let info = fake_model(b"pinned bytes");
+    let path = dir.join("a.txt");
+    fs::write(&path, b"pinned bytes").unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o000)).unwrap();
+
     assert!(!cache_is_valid(dir, &info).unwrap());
   }
 
@@ -962,34 +962,6 @@ mod tests {
     };
     assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
     assert_eq!(fs::read(&theirs).unwrap(), b"another writer's bytes");
-  }
-
-  /// Killed downloads leave temporary files under names no later attempt
-  /// draws. A new download deletes those old enough that no live download
-  /// can own them, and nothing else.
-  #[test]
-  fn a_download_deletes_only_stale_temporary_files() {
-    let dir = tempfile::tempdir().unwrap();
-    let age = |path: &Path, secs: u64| {
-      let file = fs::File::options().write(true).open(path).unwrap();
-      file
-        .set_modified(std::time::SystemTime::now() - Duration::from_secs(secs))
-        .unwrap();
-    };
-    let stale = dir.path().join("model.safetensors.7.2.00ff.tmp");
-    let live = dir.path().join("model.safetensors.8.2.ff00.tmp");
-    let model = dir.path().join("model.safetensors");
-    for path in [&stale, &live, &model] {
-      fs::write(path, b"bytes").unwrap();
-    }
-    age(&stale, STALE_TMP_AGE.as_secs() + 60);
-    age(&live, STALE_TMP_AGE.as_secs() - 60);
-    age(&model, STALE_TMP_AGE.as_secs() * 10);
-
-    remove_stale_tmp_files(dir.path());
-    assert!(!stale.exists(), "a stale temporary file is deleted");
-    assert!(live.exists(), "one a live download may own is kept");
-    assert!(model.exists(), "only temporary files are touched");
   }
 
   /// An unrecognized `AST_BRO_MODEL_SOURCE` reads as unset, so the probe

@@ -425,6 +425,9 @@ A chunk above `MAX_EMBED_CHARS = 6000` gets a non-finite embedding rather than a
 real one, so `cosine_topk` drops it and only BM25 can retrieve it. A zero vector
 would not do: its dot product is a finite `0.0`, which outranks every negative
 similarity and enters the pool whenever the corpus is smaller than the pool.
+The cap counts UTF-8 **bytes** of the chunk content plus its breadcrumb and the
+newline after it — not characters or tokens — so e.g. 2001 copies of `界` are
+already over it. This byte cutoff is separate from the 512-token window below.
 Below the cap, a chunk's vector averages its first 512 tokens, so a long chunk
 is represented by its head; 512 tokens is often 1.5–2 KB of code. Past the
 cap, content stays reachable densely only where the member's `Part` chunks
@@ -456,6 +459,7 @@ On `Index::open`, a non-empty delta is applied incrementally (`apply_delta`): th
 2. Verify the embedding tensor inside the safetensors is named `embeddings` and is `f32` or `f16` (model2vec convention). `f16` tensors are decoded to `f32` once at open time (`decode_f16_le` in `embed.rs`); any other dtype is rejected. Check for model2vec's side tensors too: `mapping` is applied, and `weights` is ignored on purpose (see [Window and weights](#window-and-weights-what-we-measured)), so measure a model that ships them before assuming it reads as intended. Check the tokenizer's own truncation as well; `MAX_EMBED_TOKENS` overrides it.
 3. If the dimension differs from 256, the `DIM` constant in [`src/search/embed.rs`](../src/search/embed.rs) needs to follow. Most of the code is generic over `DIM`, but the const is the single source of truth — bumping it requires re-indexing existing repos (the schema check in `Meta::model.dim` will catch this and force a rebuild).
 4. Load the candidate's `tokenizer.json` with `WordPiece::load` before benchmarking anything. It refuses any pipeline but BERT WordPiece with potion-code-16M's settings (another normalizer, pre-tokenizer or a post-processor, or added tokens that disagree with the vocabulary), and such a model needs a compatible export or a tokenizer change first. If it loads, run the ignored `network_matches_tokenizers_on_real_text` test with `AST_BRO_PARITY_TOKENIZER` set to its path, to confirm id-for-id parity with `tokenizers`; without that variable the test checks the pinned model.
+5. Select the candidate at every site that currently calls `ModelInfo::potion_code_16m()` — the full build, both load-path calls (the id check and the embedder open), and `ModelMeta::current()` — and rebuild the evaluation indexes with it. Parity only proves the tokenizer agrees; a benchmark run against stock weights measures the wrong model.
 
 Measure the swap on [tests/eval](../tests/eval/README.md) before taking it. A
 better public benchmark is not enough on its own: `potion-code-16M-v2` shares

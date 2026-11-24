@@ -266,6 +266,14 @@ impl Embedder {
   }
 }
 
+/// A `mapping` entry as a row index, or `None` if it cannot be one. Narrowing
+/// to `u32` first matters on 32-bit targets, where a large `i64` would wrap
+/// to a small `usize` and then pass the bounds check as row 0.
+fn mapping_row(index: i64, rows: usize) -> Option<u32> {
+  let row = u32::try_from(index).ok()?;
+  ((row as usize) < rows).then_some(row)
+}
+
 /// Read model2vec's `mapping` tensor, or `None` when the model has none. An
 /// entry outside the `rows` embedding rows is an error.
 fn read_mapping(st: &SafeTensors, rows: usize) -> io::Result<Option<Vec<u32>>> {
@@ -292,12 +300,12 @@ fn read_mapping(st: &SafeTensors, rows: usize) -> io::Result<Option<Vec<u32>>> {
       8 => i64::from_le_bytes(bytes.try_into().expect("8 bytes")),
       _ => i32::from_le_bytes(bytes.try_into().expect("4 bytes")) as i64,
     };
-    if index < 0 || index as usize >= rows {
+    let Some(row) = mapping_row(index, rows) else {
       return Err(invalid(format!(
         "`mapping` sends a token to row {index}, outside the {rows} embedding rows"
       )));
-    }
-    table.push(index as u32);
+    };
+    table.push(row);
   }
   Ok(Some(table))
 }
@@ -506,6 +514,16 @@ mod tests {
     // and the SHA-256 manifest verification fast-paths.
     let info = ModelInfo::potion_code_16m();
     ensure_model(&info).expect("model download failed; see network-security wiki")
+  }
+
+  /// A mapping entry must become a `u32` before its row is range-checked: on
+  /// a 32-bit host `i64::from(u32::MAX) + 1` would cast to row 0.
+  #[test]
+  fn mapping_rejects_rows_outside_u32() {
+    assert_eq!(mapping_row(3, 4), Some(3));
+    assert_eq!(mapping_row(4, 4), None);
+    assert_eq!(mapping_row(-1, usize::MAX), None);
+    assert_eq!(mapping_row(i64::from(u32::MAX) + 1, usize::MAX), None);
   }
 
   #[test]
