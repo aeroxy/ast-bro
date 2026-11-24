@@ -91,8 +91,9 @@ brings that to 41%, and p90 chunk height from 196 lines to 57. Rust gains less
 (53% → 39%), since it already has many top-level items and only `impl` blocks
 are affected. Go and C barely change.
 
-Smaller is not better past that. Halving the size target to 750 characters,
-the figure semble moved to, measured clearly worse on the five pinned sets:
+Smaller is not better past that. Halving ast-bro's size target to 750
+characters — the figure Semble moved to — measured clearly worse on the five
+pinned sets:
 recall@5 37 → 24 and MRR@10 0.170 → 0.095 over 150 queries (14 up, 34 down),
 answered@8k flat (47 → 48), and 1.6–1.9× as many chunks. Semble scores
 file-level relevance, where chunk size matters less; these sets score line
