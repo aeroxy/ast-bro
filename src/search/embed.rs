@@ -204,10 +204,16 @@ impl Embedder {
     unsafe { std::slice::from_raw_parts(self.embeddings_ptr, self.vocab_size * DIM) }
   }
 
-  /// Look up one embedding row. An index past the matrix is clamped to the
-  /// last row; the tokenizer never produces one for a matching model.
+  /// Look up one embedding row. `Embedder::open` checks that every token id
+  /// maps into `0..vocab_size`, so an out-of-range index fails loudly rather
+  /// than silently clamping to another row.
   fn row(&self, index: u32) -> &[f32] {
-    let id = (index as usize).min(self.vocab_size.saturating_sub(1));
+    let id = index as usize;
+    assert!(
+      id < self.vocab_size,
+      "embedding row {id} out of range for {} rows",
+      self.vocab_size
+    );
     let start = id * DIM;
     &self.all_rows()[start..start + DIM]
   }
@@ -216,7 +222,7 @@ impl Embedder {
   /// one, else the token id itself.
   fn token_row(&self, token_id: u32) -> &[f32] {
     let index = match &self.mapping {
-      Some(m) => m.get(token_id as usize).copied().unwrap_or(token_id),
+      Some(m) => m[token_id as usize],
       None => token_id,
     };
     self.row(index)
