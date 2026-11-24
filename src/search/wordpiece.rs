@@ -98,8 +98,11 @@ struct AddedTokenJson {
 
 #[derive(Deserialize)]
 struct ModelJson {
-  #[serde(rename = "type")]
-  kind: String,
+  /// Old `tokenizer.json` files omit `type`; the four fields below are
+  /// unambiguously WordPiece (WordLevel has only `unk_token` and `vocab`),
+  /// which is how `tokenizers` recognizes the legacy shape too.
+  #[serde(rename = "type", default)]
+  kind: Option<String>,
   unk_token: String,
   continuing_subword_prefix: String,
   max_input_chars_per_word: usize,
@@ -152,11 +155,10 @@ impl WordPiece {
          post-processor can change the ids even without special tokens"
       )));
     }
-    if json.model.kind != "WordPiece" {
-      return Err(invalid(format!(
-        "model type {} is not WordPiece",
-        json.model.kind
-      )));
+    if let Some(kind) = &json.model.kind {
+      if kind != "WordPiece" {
+        return Err(invalid(format!("model type {kind} is not WordPiece")));
+      }
     }
     let unk_id = *json.model.vocab.get(&json.model.unk_token).ok_or_else(|| {
       invalid(format!(
@@ -821,6 +823,34 @@ mod tests {
         .contains(r#"unsupported tokenizer version "2.0""#),
       "{err}"
     );
+  }
+
+  /// Old exports omit `model.type`. `tokenizers` recognizes WordPiece from
+  /// the remaining fields, and so must we. Dropping the fields that make the
+  /// shape unambiguous is refused by both.
+  #[test]
+  fn load_accepts_a_legacy_wordpiece_model() {
+    let json = fixture().replacen(
+      r#""model":{"type":"WordPiece","unk_token""#,
+      r#""model":{"unk_token""#,
+      1,
+    );
+    assert!(json.contains(r#""model":{"unk_token""#));
+    let theirs = reference(&json);
+    let ours = WordPiece::from_json(json.as_bytes())
+      .unwrap_or_else(|e| panic!("a legacy WordPiece model must load: {e}"));
+    for case in CASES {
+      let want = theirs.encode(*case, false).unwrap().get_ids().to_vec();
+      assert_eq!(ours.encode(case, usize::MAX), want, "{case:?}");
+    }
+
+    let ambiguous = json
+      .replacen(r###""continuing_subword_prefix":"##","###, "", 1)
+      .replacen(r#""max_input_chars_per_word":100,"#, "", 1);
+    // With those fields gone, the reference's untagged fallback can read the
+    // object as a different model (BPE is first in its enum). That is not a
+    // pipeline we implement, so we must refuse it rather than guess.
+    assert!(WordPiece::from_json(ambiguous.as_bytes()).is_err());
   }
 
   /// An absent version is accepted by `tokenizers`, so it must be here too.
