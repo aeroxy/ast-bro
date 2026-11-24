@@ -250,7 +250,10 @@ fn ensure_model_dir(dir: &Path, info: &ModelInfo) -> io::Result<PathBuf> {
   let manifest = download_with_fallback(source, probed, |source| {
     download_all(&client, info, dir, source)
   })?;
-  write_manifest(dir, &manifest)?;
+  // The files are installed and pinned; a manifest we cannot write only
+  // costs re-hashing on the next load, as `cache_is_valid` already treats
+  // its own manifest write. Do not fail a completed download over it.
+  let _ = write_manifest(dir, &manifest);
   Ok(dir.to_path_buf())
 }
 
