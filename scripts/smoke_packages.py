@@ -74,7 +74,6 @@ def cleanup_processes(processes: list[subprocess.Popen[str]]) -> None:
                         [str(taskkill), "/PID", str(process.pid), "/T", "/F"],
                         capture_output=True,
                         timeout=10,
-                        shell=False,
                         check=False,
                     )
                 else:
@@ -204,7 +203,6 @@ else:
                         stdout=subprocess.PIPE,
                         stderr=subprocess.PIPE,
                         text=True,
-                        shell=False,
                     )
                 )
                 assert entered[index].wait(timeout=30), (
