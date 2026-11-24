@@ -21,14 +21,22 @@ from package_release import ROOT, release_version
 
 def run(command: list[str], env: dict[str, str], expected: int = 0) -> str:
     """Run a package command with bounded execution and useful failure output."""
-    # cmd /s strips one outer quote pair; retain the quotes around each argument.
+    # Pass cmd and every argument as separate items; no shell string is built
+    # from the command, so paths and flags stay single arguments.
     invocation = (
-        'cmd.exe /d /s /c "' + subprocess.list2cmdline(command[3:]) + '"'
+        ["cmd.exe", "/d", "/s", "/c", *command[3:]]
         if command[0] == "cmd.exe"
         else command
     )
     result = subprocess.run(
-        invocation, env=env, cwd=ROOT, capture_output=True, text=True, timeout=180, check=False
+        invocation,
+        env=env,
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        timeout=180,
+        shell=False,
+        check=False,
     )
     if result.returncode != expected:
         raise RuntimeError(
@@ -66,6 +74,7 @@ def cleanup_processes(processes: list[subprocess.Popen[str]]) -> None:
                         [str(taskkill), "/PID", str(process.pid), "/T", "/F"],
                         capture_output=True,
                         timeout=10,
+                        shell=False,
                         check=False,
                     )
                 else:
@@ -195,6 +204,7 @@ else:
                         stdout=subprocess.PIPE,
                         stderr=subprocess.PIPE,
                         text=True,
+                        shell=False,
                     )
                 )
                 assert entered[index].wait(timeout=30), (

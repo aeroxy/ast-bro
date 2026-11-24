@@ -124,5 +124,6 @@ def main() -> None:
         print(f"Failed to install ast-bro binary: {error}", file=sys.stderr)
         sys.exit(1)
     args = sys.argv[1:]
-    result = subprocess.run([str(binary)] + args, cwd=os.getcwd(), check=False)
+    # Pass every argument separately: no shell interprets caller input.
+    result = subprocess.run([str(binary), *args], cwd=os.getcwd(), shell=False, check=False)
     sys.exit(result.returncode)
