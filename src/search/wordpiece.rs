@@ -95,6 +95,10 @@ struct AddedTokenJson {
   lstrip: bool,
   rstrip: bool,
   normalized: bool,
+  /// The reference requires this to be a boolean. We do not use the flag,
+  /// but must reject files that omit it or give it another type.
+  #[serde(rename = "special")]
+  _special: bool,
 }
 
 #[derive(Deserialize)]
@@ -562,6 +566,7 @@ mod tests {
   use super::*;
   use rayon::prelude::*;
   use std::collections::HashSet;
+  use std::io::Read;
   use std::path::PathBuf;
 
   /// Strings that exercise every step: accents and decompositions, case
@@ -872,6 +877,26 @@ mod tests {
     );
   }
 
+  /// The reference requires `special` on every added token. A file missing
+  /// it passes our loader today but fails when the parity test opens it.
+  #[test]
+  fn load_refuses_an_added_token_without_a_special_flag() {
+    let json = fixture().replacen(
+      r#""id":0,"content":"[PAD]","single_word":true,"lstrip":true,"rstrip":true,"normalized":true,"special":true"#,
+      r#""id":0,"content":"[PAD]","single_word":true,"lstrip":true,"rstrip":true,"normalized":true"#,
+      1,
+    );
+    assert!(
+      json.parse::<tokenizers::Tokenizer>().is_err(),
+      "the reference requires the flag"
+    );
+    let err = match WordPiece::from_json(json.as_bytes()) {
+      Err(e) => e,
+      Ok(_) => panic!("an added token without `special` must be refused"),
+    };
+    assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+  }
+
   /// `tokenizers` rejects any explicit version but "1.0" before reading the
   /// pipeline; accepting one would let a candidate pass the native check and
   /// then fail to start the parity test.
@@ -1033,16 +1058,22 @@ mod tests {
     let results: Vec<(usize, Option<String>, Option<&PathBuf>)> = files
       .par_iter()
       .filter_map(|file| {
-        let text = match std::fs::read_to_string(file) {
-          Ok(text) => text,
-          // Non-UTF-8 files are intentionally outside a text-only parity
-          // check. Any other I/O failure must not silently drop a file.
-          Err(e) if e.kind() == std::io::ErrorKind::InvalidData => return None,
-          Err(e) => panic!("reading {}: {e}", file.display()),
-        };
-        if text.len() > 2_000_000 {
+        // Read one byte past the limit, not the whole file: a huge file must
+        // be reported, not allocated first and then skipped.
+        let mut bytes = Vec::new();
+        std::fs::File::open(file)
+          .unwrap_or_else(|e| panic!("reading {}: {e}", file.display()))
+          .take(2_000_001)
+          .read_to_end(&mut bytes)
+          .unwrap_or_else(|e| panic!("reading {}: {e}", file.display()));
+        if bytes.len() > 2_000_000 {
           return Some((0, None, Some(file)));
         }
+        let text = match String::from_utf8(bytes) {
+          Ok(text) => text,
+          // Non-UTF-8 files are intentionally outside a text-only check.
+          Err(_) => return None,
+        };
         let want = theirs
           .encode(text.as_str(), false)
           .unwrap()

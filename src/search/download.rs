@@ -592,7 +592,8 @@ fn download_to(
       io::ErrorKind::InvalidData,
       format!(
         "GET {url}: got sha256 {actual}, but the pinned model has {expected}; \
-         the server or a proxy on the way sent different bytes, and nothing was cached"
+         the server or a proxy on the way sent different bytes; {} was not installed",
+        dest.display()
       ),
     ));
   }
