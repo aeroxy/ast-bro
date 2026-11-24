@@ -662,6 +662,21 @@ fn hash_handle(file: &mut fs::File) -> io::Result<(String, FileStamp)> {
   Ok((hex_digest(hasher.finalize()), stamp))
 }
 
+/// A directory at a model path cannot be replaced by the downloader's
+/// atomic rename, so report it instead of looping through failed installs.
+fn reject_model_directory(path: &Path, meta: &fs::Metadata) -> io::Result<()> {
+  if meta.is_dir() {
+    return Err(io::Error::new(
+      io::ErrorKind::InvalidData,
+      format!(
+        "{} is a directory; move it aside so the model file can be installed",
+        path.display()
+      ),
+    ));
+  }
+  Ok(())
+}
+
 /// Whether every pinned file is in `dir` with the right bytes.
 ///
 /// A file whose size and mtime match the stamp recorded when it was last
@@ -682,6 +697,7 @@ fn cache_is_valid(dir: &Path, info: &ModelInfo) -> io::Result<bool> {
     let Ok(meta) = fs::metadata(&path) else {
       return Ok(false);
     };
+    reject_model_directory(&path, &meta)?;
     // A named pipe or device at a model path would block when opened. The
     // downloader can replace it by rename, so treat it as a miss.
     if !meta.is_file() {
@@ -697,6 +713,7 @@ fn cache_is_valid(dir: &Path, info: &ModelInfo) -> io::Result<bool> {
       Err(e) => return Err(e),
     };
     let handle_meta = handle.metadata()?;
+    reject_model_directory(&path, &handle_meta)?;
     if !handle_meta.is_file() {
       return Ok(false);
     }
@@ -865,14 +882,44 @@ mod tests {
     assert!(!cache_is_valid(dir, &info).unwrap());
   }
 
-  /// A regular file is required: a directory at a model path would otherwise
-  /// reach `sha256_file` and error instead of being replaced by download.
+  /// A directory cannot be renamed over, so it is an error with a clear
+  /// instruction rather than a cache miss the downloader cannot recover from.
   #[test]
-  fn a_non_regular_cached_entry_is_a_miss() {
+  fn a_directory_at_a_model_path_is_an_error() {
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path();
     let info = fake_model(b"pinned bytes");
-    fs::create_dir(dir.join("a.txt")).unwrap();
+    let blocker = dir.join("a.txt");
+    fs::create_dir(&blocker).unwrap();
+    let err = match cache_is_valid(dir, &info) {
+      Err(e) => e,
+      Ok(_) => panic!("a directory at a model path must be reported"),
+    };
+    assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+    assert!(
+      err.to_string().contains(&blocker.display().to_string()),
+      "error should name the blocking directory: {err}"
+    );
+    assert!(
+      err.to_string().contains("is a directory; move it aside"),
+      "{err}"
+    );
+  }
+
+  /// A named pipe at a model path would block on open; it can be replaced by
+  /// rename, so it must be reported as a cache miss without opening it.
+  #[cfg(unix)]
+  #[test]
+  fn a_named_pipe_at_a_model_path_is_a_miss() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    let info = fake_model(b"pinned bytes");
+    let fifo = dir.join("a.txt");
+    let status = std::process::Command::new("mkfifo")
+      .arg(&fifo)
+      .status()
+      .expect("mkfifo should run on Unix");
+    assert!(status.success(), "mkfifo failed: {status}");
     assert!(!cache_is_valid(dir, &info).unwrap());
   }
 

@@ -6,6 +6,7 @@ import argparse
 import json
 import os
 import queue
+import re
 import shutil
 import subprocess
 import sys
@@ -14,7 +15,7 @@ import threading
 import venv
 import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 from package_release import ROOT, release_version
 
@@ -45,6 +46,23 @@ def verify(commands: list[list[str]], fixture: Path, env: dict[str, str]) -> Non
         output = run(command + ["map", str(fixture), "--json"], env)
         assert "greet" in json.dumps(json.loads(output)), output
         run(command + ["--definitely-invalid"], env, expected=2)
+
+
+def windows_npm_shim_target(shim: Path) -> Path:
+    """Resolve the packaged entry point targeted by an npm-generated .cmd shim."""
+    if not shim.is_file():
+        raise AssertionError(f"Missing Windows npm alias shim: {shim}")
+    content = shim.read_text(encoding="utf-8")
+    match = re.search(r'"%dp0%[\\/]?([^"]+)"\s+%\*', content)
+    if not match:
+        raise AssertionError(f"Could not find target in Windows npm shim {shim}:\n{content}")
+    rel = PureWindowsPath(match.group(1))
+    if rel.is_absolute():
+        raise AssertionError(f"Unexpected absolute target in Windows npm shim {shim}: {rel}")
+    target = Path(shim.parent, *rel.parts).resolve()
+    if not target.is_file():
+        raise AssertionError(f"Windows npm shim {shim} targets missing file: {target}")
+    return target
 
 
 def cleanup_processes(processes: list[subprocess.Popen[str]]) -> None:
@@ -276,14 +294,20 @@ else:
                 ],
                 env,
             )
-            commands = []
-            for name in ("ast-bro", "ast-outline", "sb"):
-                if os.name == "nt":
-                    # Invoke the installed package directly: cmd.exe /c would
-                    # need a shell-quoted command string for paths with spaces.
-                    commands.append([node, str(prefix / "node_modules/@ast-bro/cli/bin/ast-bro.js")])
-                else:
-                    commands.append([str(prefix / "bin" / name)])
+            if os.name == "nt":
+                expected_entry = (prefix / "node_modules/@ast-bro/cli/bin/ast-bro.js").resolve()
+                for name in ("ast-bro", "ast-outline", "sb"):
+                    target = windows_npm_shim_target(prefix / f"{name}.cmd")
+                    assert target == expected_entry, (
+                        f"{name}.cmd targets {target}, expected {expected_entry}"
+                    )
+                # Invoke the installed JS entry directly: cmd.exe /c would
+                # need a shell-quoted command string for paths with spaces.
+                commands = [[node, str(expected_entry)]]
+            else:
+                commands = [
+                    [str(prefix / "bin" / name)] for name in ("ast-bro", "ast-outline", "sb")
+                ]
             before = len(requests)
             verify(commands, fixture, env)
             assert len(requests) == before + (2 if skip_scripts else 0), requests
