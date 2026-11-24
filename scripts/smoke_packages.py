@@ -21,15 +21,8 @@ from package_release import ROOT, release_version
 
 def run(command: list[str], env: dict[str, str], expected: int = 0) -> str:
     """Run a package command with bounded execution and useful failure output."""
-    # Pass cmd and every argument as separate items; no shell string is built
-    # from the command, so paths and flags stay single arguments.
-    invocation = (
-        ["cmd.exe", "/d", "/s", "/c", *command[3:]]
-        if command[0] == "cmd.exe"
-        else command
-    )
     result = subprocess.run(
-        invocation,
+        command,
         env=env,
         cwd=ROOT,
         capture_output=True,
@@ -286,7 +279,9 @@ else:
             commands = []
             for name in ("ast-bro", "ast-outline", "sb"):
                 if os.name == "nt":
-                    commands.append(["cmd.exe", "/d", "/c", str(prefix / f"{name}.cmd")])
+                    # Invoke the installed package directly: cmd.exe /c would
+                    # need a shell-quoted command string for paths with spaces.
+                    commands.append([node, str(prefix / "node_modules/@ast-bro/cli/bin/ast-bro.js")])
                 else:
                     commands.append([str(prefix / "bin" / name)])
             before = len(requests)
