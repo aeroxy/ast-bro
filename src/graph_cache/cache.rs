@@ -401,4 +401,37 @@ mod tests {
       "reload from disk must see promoted calls"
     );
   }
+
+  /// The incremental update resolves an unchanged file from the imports
+  /// the cache holds, without parsing it again (#93). The cached imports of
+  /// `a.py` are changed to name `c` while the file still says `b`: only an
+  /// update that decoded them and kept them can give `a.py → c.py`. A
+  /// failed decode rebuilds, and a re-parse reads the file; both give
+  /// `a.py → b.py`.
+  #[test]
+  fn an_incremental_update_resolves_an_unchanged_file_from_its_cached_imports() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().canonicalize().unwrap();
+    write(&root.join("a.py"), "import b\n");
+    write(&root.join("b.py"), "X = 1\n");
+    write(&root.join("c.py"), "Y = 1\n");
+    load_or_build_with_records(&root, false).expect("build");
+
+    let a = root.join("a.py");
+    let bytes = fs::read(cache_path(&root)).unwrap();
+    let (mut cf, _): (CacheFile, _) =
+      decode_from_slice(&bytes, bincode::config::standard()).unwrap();
+    let imports = cf.graph.deps.imports.get_mut(&a).expect("a.py cached");
+    assert_eq!(imports.len(), 1);
+    imports[0].spec = "c".to_string();
+    let bytes = encode_to_vec(&cf, bincode::config::standard()).unwrap();
+    fs::write(cache_path(&root), bytes).unwrap();
+
+    // A change elsewhere, so the load takes the incremental path.
+    write(&root.join("b.py"), "X = 22\n");
+    assert!(matches!(load_with_delta(&root), LoadOutcome::Stale { .. }));
+    let (graph, _) = load_or_build_with_records(&root, false).expect("update");
+    let targets: Vec<&PathBuf> = graph.deps.forward[&a].iter().map(|e| &e.target).collect();
+    assert_eq!(targets, vec![&root.join("c.py")]);
+  }
 }
