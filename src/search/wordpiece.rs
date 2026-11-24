@@ -43,6 +43,8 @@ use unicode_normalization_alignments::UnicodeNormalization;
 /// A loaded WordPiece tokenizer.
 pub struct WordPiece {
   vocab: HashMap<String, u32>,
+  /// One past the largest id; computed and checked once at load.
+  id_count: usize,
   unk_id: u32,
   /// Marks a continuation piece in the vocabulary: `##`.
   prefix: String,
@@ -171,6 +173,7 @@ impl WordPiece {
         "token id {largest_id} has no exclusive bound in usize"
       )));
     }
+    let id_count = largest_id as usize + 1;
 
     // `tokenizers` gives an added token its id from the vocabulary, warning
     // and moving on when the two disagree; only agreeing ids are supported.
@@ -209,6 +212,7 @@ impl WordPiece {
 
     Ok(Self {
       vocab: json.model.vocab,
+      id_count,
       unk_id,
       prefix: json.model.continuing_subword_prefix,
       max_chars: json.model.max_input_chars_per_word,
@@ -220,12 +224,7 @@ impl WordPiece {
   /// One past the largest id `encode` can return, so the embedder can check
   /// it has a row for every one.
   pub fn id_count(&self) -> usize {
-    let vocab = self.vocab.values().copied().max();
-    let added = (self.raw.tokens.iter())
-      .chain(&self.normalized.tokens)
-      .map(|t| t.id)
-      .max();
-    vocab.max(added).map_or(0, |id| id as usize + 1)
+    self.id_count
   }
 
   /// Token ids for `text`, stopping once `limit` are produced. Tokenization
@@ -880,7 +879,13 @@ mod tests {
     let results: Vec<(usize, Option<String>)> = files
       .par_iter()
       .filter_map(|file| {
-        let text = std::fs::read_to_string(file).ok()?;
+        let text = match std::fs::read_to_string(file) {
+          Ok(text) => text,
+          // Non-UTF-8 files are intentionally outside a text-only parity
+          // check. Any other I/O failure must not silently drop a file.
+          Err(e) if e.kind() == std::io::ErrorKind::InvalidData => return None,
+          Err(e) => panic!("reading {}: {e}", file.display()),
+        };
         if text.len() > 2_000_000 {
           return None;
         }
