@@ -107,6 +107,10 @@ struct ModelJson {
   continuing_subword_prefix: String,
   max_input_chars_per_word: usize,
   vocab: HashMap<String, u32>,
+  /// BPE-only field. Without an explicit `type`, its presence means the
+  /// reference would dispatch to BPE, which is not a pipeline we implement.
+  #[serde(default)]
+  merges: Option<Value>,
 }
 
 /// Whether the exclusive upper bound of `id` fits in a `usize` whose maximum
@@ -159,6 +163,13 @@ impl WordPiece {
       if kind != "WordPiece" {
         return Err(invalid(format!("model type {kind} is not WordPiece")));
       }
+    } else if json.model.merges.is_some() {
+      // With no type, `tokenizers` tries BPE first: vocab + merges makes it
+      // a BPE model that tokenizes differently from the WordPiece we would
+      // build from the same fields.
+      return Err(invalid(
+        "a model without a type that defines BPE `merges` is not WordPiece".to_string(),
+      ));
     }
     let unk_id = *json.model.vocab.get(&json.model.unk_token).ok_or_else(|| {
       invalid(format!(
@@ -851,6 +862,41 @@ mod tests {
     // object as a different model (BPE is first in its enum). That is not a
     // pipeline we implement, so we must refuse it rather than guess.
     assert!(WordPiece::from_json(ambiguous.as_bytes()).is_err());
+  }
+
+  /// An untagged model with `merges` is BPE to `tokenizers`, which tokenizes
+  /// differently from the WordPiece its other fields describe. Refuse it
+  /// rather than silently producing different ids.
+  #[test]
+  fn load_refuses_an_untagged_model_with_bpe_merges() {
+    let legacy = fixture().replacen(
+      r#""model":{"type":"WordPiece","unk_token""#,
+      r#""model":{"unk_token""#,
+      1,
+    );
+    let with_merges = legacy.replacen(
+      r#""max_input_chars_per_word":100,"#,
+      r#""max_input_chars_per_word":100,"merges":[],"#,
+      1,
+    );
+    let wordpiece = reference(&legacy)
+      .encode("hello", false)
+      .unwrap()
+      .get_ids()
+      .to_vec();
+    let bpe = reference(&with_merges)
+      .encode("hello", false)
+      .unwrap()
+      .get_ids()
+      .to_vec();
+    assert_ne!(
+      wordpiece, bpe,
+      "the reference dispatches to different models"
+    );
+    assert!(
+      WordPiece::from_json(with_merges.as_bytes()).is_err(),
+      "our loader must not read the BPE shape as WordPiece"
+    );
   }
 
   /// An absent version is accepted by `tokenizers`, so it must be here too.
