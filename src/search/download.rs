@@ -224,7 +224,8 @@ pub fn ensure_model(info: &ModelInfo) -> io::Result<PathBuf> {
   ensure_model_dir(&model_dir(info)?, info)
 }
 
-/// `ensure_model` under an explicit cache root.
+/// `ensure_model` under an explicit cache root, for the cold-cache test.
+#[cfg(test)]
 fn ensure_model_in(root: &Path, info: &ModelInfo) -> io::Result<PathBuf> {
   ensure_model_dir(&model_dir_in(root, info)?, info)
 }
@@ -247,9 +248,9 @@ fn ensure_model_dir(dir: &Path, info: &ModelInfo) -> io::Result<PathBuf> {
 
   let client = build_client(DOWNLOAD_TIMEOUT)?;
   let manifest = download_with_fallback(source, probed, |source| {
-    download_all(&client, info, &dir, source)
+    download_all(&client, info, dir, source)
   })?;
-  write_manifest(&dir, &manifest)?;
+  write_manifest(dir, &manifest)?;
   Ok(dir.to_path_buf())
 }
 
