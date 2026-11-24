@@ -31,6 +31,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fs;
+use std::hash::{BuildHasher, RandomState};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -222,6 +223,7 @@ pub fn ensure_model(info: &ModelInfo) -> io::Result<PathBuf> {
   }
 
   warn_about_tls_policy();
+  remove_stale_tmp_files(&dir);
   let (source, probed) = select_source(info);
   eprintln!(
     "ast-bro: downloading model {} via {} ({} files)",
@@ -293,26 +295,36 @@ fn select_source<'a>(info: &'a ModelInfo) -> (Source<'a>, bool) {
   let forced =
     std::env::var("AST_BRO_MODEL_SOURCE").or_else(|_| std::env::var("AST_OUTLINE_MODEL_SOURCE"));
   if let Ok(forced) = forced {
-    let source = match forced.as_str() {
-      "hf" => Source::HuggingFace,
-      "hf-mirror" => Source::HfMirror,
-      url if url.starts_with("http://") || url.starts_with("https://") => {
-        // Leak the string so we can return a 'static borrow. Acceptable —
-        // happens once per process at most.
-        Source::Custom(Box::leak(url.to_string().into_boxed_str()))
+    match parse_source(&forced) {
+      Some(source) => return (source, false),
+      // Ignored means as if unset: probed, so the mirror fallback applies.
+      None => {
+        eprintln!("ast-bro: ignoring AST_BRO_MODEL_SOURCE={forced:?} (use hf, hf-mirror, or a URL)")
       }
-      other => {
-        eprintln!("ast-bro: ignoring AST_BRO_MODEL_SOURCE={other:?} (use hf, hf-mirror, or a URL)");
-        Source::HuggingFace
-      }
-    };
-    return (source, false);
+    }
   }
   if probe_huggingface(info) {
     (Source::HuggingFace, true)
   } else {
     eprintln!("ast-bro: HuggingFace unreachable, falling back to hf-mirror.com");
     (Source::HfMirror, true)
+  }
+}
+
+/// The source an `AST_BRO_MODEL_SOURCE` value names, or `None` for a value
+/// that names none. A custom base URL loses its trailing slashes, since
+/// `ModelInfo::url` puts one after it.
+fn parse_source(value: &str) -> Option<Source<'static>> {
+  match value {
+    "hf" => Some(Source::HuggingFace),
+    "hf-mirror" => Some(Source::HfMirror),
+    url if url.starts_with("http://") || url.starts_with("https://") => {
+      // Leak the string so we can return a 'static borrow. Acceptable —
+      // happens once per process at most.
+      let base = url.trim_end_matches('/').to_string();
+      Some(Source::Custom(Box::leak(base.into_boxed_str())))
+    }
+    _ => None,
   }
 }
 
@@ -426,11 +438,43 @@ fn warn_about_tls_policy() {
 fn unique_tmp(path: &Path) -> PathBuf {
   static NEXT: AtomicU64 = AtomicU64::new(0);
   let n = NEXT.fetch_add(1, Ordering::Relaxed);
+  // `RandomState` keys come from the OS, so a process that restarts with the
+  // same pid (a container) does not draw the names its predecessor left.
+  let salt = RandomState::new().hash_one(n);
   let name = path
     .file_name()
     .map(|name| name.to_string_lossy().into_owned())
     .unwrap_or_default();
-  path.with_file_name(format!("{name}.{}.{n}.tmp", std::process::id()))
+  path.with_file_name(format!("{name}.{}.{n}.{salt:016x}.tmp", std::process::id()))
+}
+
+/// How long a temporary file in the model directory can go unwritten before
+/// a new download deletes it. A live download writes every chunk it reads,
+/// and a read that waits `DOWNLOAD_TIMEOUT` fails, so a file twice that old
+/// was left by a process that is gone.
+const STALE_TMP_AGE: Duration = Duration::from_secs(2 * DOWNLOAD_TIMEOUT.as_secs());
+
+/// Delete the temporary files killed downloads left in `dir`. Nothing runs
+/// a destructor on Ctrl-C or SIGKILL, and each attempt draws a new name, so
+/// without this every interrupted download would leave its partial file.
+fn remove_stale_tmp_files(dir: &Path) {
+  let Ok(entries) = fs::read_dir(dir) else {
+    return;
+  };
+  for entry in entries.flatten() {
+    let path = entry.path();
+    if path.extension().is_none_or(|ext| ext != "tmp") {
+      continue;
+    }
+    let age = entry
+      .metadata()
+      .and_then(|meta| meta.modified())
+      .ok()
+      .and_then(|modified| modified.elapsed().ok());
+    if age.is_some_and(|age| age > STALE_TMP_AGE) {
+      let _ = fs::remove_file(&path);
+    }
+  }
 }
 
 /// A temporary file that is deleted when dropped, unless it was renamed into
@@ -599,10 +643,15 @@ thread_local! {
   static HASHED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
-fn sha256_file(path: &Path) -> io::Result<String> {
+/// The SHA-256 of the file at `path`, with the stamp of the file it hashed.
+/// Both come from one open handle: stamping the path separately could pair
+/// this digest with a file renamed over it in between, and a stamp that
+/// vouches for bytes nobody hashed.
+fn sha256_file(path: &Path) -> io::Result<(String, FileStamp)> {
   #[cfg(test)]
   HASHED.with(|n| n.set(n.get() + 1));
   let mut file = fs::File::open(path)?;
+  let stamp = FileStamp::of(&file.metadata()?);
   let mut hasher = Sha256::new();
   let mut buf = [0u8; 64 * 1024];
   loop {
@@ -612,7 +661,7 @@ fn sha256_file(path: &Path) -> io::Result<String> {
     }
     hasher.update(&buf[..n]);
   }
-  Ok(hex_digest(hasher.finalize()))
+  Ok((hex_digest(hasher.finalize()), stamp))
 }
 
 /// Whether every pinned file is in `dir` with the right bytes.
@@ -635,12 +684,12 @@ fn cache_is_valid(dir: &Path, info: &ModelInfo) -> io::Result<bool> {
     let Ok(meta) = fs::metadata(&path) else {
       return Ok(false);
     };
-    let stamp = FileStamp::of(&meta);
     let pinned = manifest.sha256.get(file.name).map(String::as_str) == Some(file.sha256);
-    if pinned && manifest.stamps.get(file.name) == Some(&stamp) {
+    if pinned && manifest.stamps.get(file.name) == Some(&FileStamp::of(&meta)) {
       continue;
     }
-    if sha256_file(&path)? != file.sha256 {
+    let (digest, stamp) = sha256_file(&path)?;
+    if digest != file.sha256 {
       eprintln!(
         "ast-bro: cached {} does not match the pinned model, will re-download",
         file.name
@@ -757,7 +806,7 @@ mod tests {
     let info = fake_model(b"pinned bytes");
     fs::write(dir.join("a.txt"), b"other bytes").unwrap();
     let mut manifest = Manifest::default();
-    let actual = sha256_file(&dir.join("a.txt")).unwrap();
+    let (actual, _) = sha256_file(&dir.join("a.txt")).unwrap();
     manifest.sha256.insert("a.txt".to_string(), actual);
     let meta = fs::metadata(dir.join("a.txt")).unwrap();
     manifest
@@ -857,6 +906,13 @@ mod tests {
       name.starts_with("model.safetensors.") && name.ends_with(".tmp"),
       "{name}"
     );
+    // A random part, so a restarted process with the same pid and a fresh
+    // counter does not draw the names its predecessor left behind.
+    let salt = name.trim_end_matches(".tmp").rsplit('.').next().unwrap();
+    assert!(
+      salt.len() == 16 && salt.bytes().all(|b| b.is_ascii_hexdigit()),
+      "{name}"
+    );
   }
 
   #[test]
@@ -906,6 +962,62 @@ mod tests {
     };
     assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
     assert_eq!(fs::read(&theirs).unwrap(), b"another writer's bytes");
+  }
+
+  /// Killed downloads leave temporary files under names no later attempt
+  /// draws. A new download deletes those old enough that no live download
+  /// can own them, and nothing else.
+  #[test]
+  fn a_download_deletes_only_stale_temporary_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let age = |path: &Path, secs: u64| {
+      let file = fs::File::options().write(true).open(path).unwrap();
+      file
+        .set_modified(std::time::SystemTime::now() - Duration::from_secs(secs))
+        .unwrap();
+    };
+    let stale = dir.path().join("model.safetensors.7.2.00ff.tmp");
+    let live = dir.path().join("model.safetensors.8.2.ff00.tmp");
+    let model = dir.path().join("model.safetensors");
+    for path in [&stale, &live, &model] {
+      fs::write(path, b"bytes").unwrap();
+    }
+    age(&stale, STALE_TMP_AGE.as_secs() + 60);
+    age(&live, STALE_TMP_AGE.as_secs() - 60);
+    age(&model, STALE_TMP_AGE.as_secs() * 10);
+
+    remove_stale_tmp_files(dir.path());
+    assert!(!stale.exists(), "a stale temporary file is deleted");
+    assert!(live.exists(), "one a live download may own is kept");
+    assert!(model.exists(), "only temporary files are touched");
+  }
+
+  /// An unrecognized `AST_BRO_MODEL_SOURCE` reads as unset, so the probe
+  /// and its mirror fallback still run. A custom base loses trailing
+  /// slashes, since `ModelInfo::url` adds one.
+  #[test]
+  fn model_source_values() {
+    assert_eq!(parse_source("hf"), Some(Source::HuggingFace));
+    assert_eq!(parse_source("hf-mirror"), Some(Source::HfMirror));
+    assert_eq!(
+      parse_source("https://your.mirror/"),
+      Some(Source::Custom("https://your.mirror"))
+    );
+    assert_eq!(
+      parse_source("http://10.0.0.5:8080"),
+      Some(Source::Custom("http://10.0.0.5:8080"))
+    );
+    assert_eq!(parse_source("typo"), None);
+    assert_eq!(parse_source("HF"), None);
+    let info = ModelInfo::potion_code_16m();
+    let url = info.url(
+      parse_source("https://your.mirror//").unwrap().base_url(),
+      &info.files[0],
+    );
+    assert!(
+      url.starts_with("https://your.mirror/minishlab/potion-code-16M/resolve/"),
+      "{url}"
+    );
   }
 
   /// HuggingFace picked by the probe, then a file that fails its pin: the
@@ -1028,10 +1140,12 @@ mod tests {
     let path = tmp.path().join("v.txt");
     fs::write(&path, b"abc").unwrap();
     // sha256("abc") = ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad
+    let (digest, stamp) = sha256_file(&path).unwrap();
     assert_eq!(
-      sha256_file(&path).unwrap(),
+      digest,
       "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
     );
+    assert_eq!(stamp, FileStamp::of(&fs::metadata(&path).unwrap()));
   }
 
   /// End-to-end download test, ignored by default because it hits the network.
