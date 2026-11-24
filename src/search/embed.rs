@@ -748,12 +748,23 @@ mod tests {
     let dir = tempfile::tempdir().unwrap();
     tiny_model(dir.path(), 4, None, None, None);
     let emb = Embedder::open(dir.path()).unwrap();
-    let text = format!("{}{}", "a ".repeat(MAX_EMBED_TOKENS), "b ".repeat(100));
-    let v = emb.encode_one(&text);
+    let n_a = (MAX_EMBED_TOKENS - 1) as f32;
+    let at_boundary = format!("{}b", "a ".repeat(MAX_EMBED_TOKENS - 1));
+    let v = emb.encode_one(&at_boundary);
+    let norm = (n_a * n_a + 1.0).sqrt();
+    assert!(
+      (v[0] - n_a / norm).abs() < 1e-6 && (v[1] - 1.0 / norm).abs() < 1e-6,
+      "token {MAX_EMBED_TOKENS} must be included in the mean: got ({}, {}), expected ({}, {})",
+      v[0],
+      v[1],
+      n_a / norm,
+      1.0 / norm
+    );
+    let past_boundary = format!("{at_boundary} {}", "b ".repeat(100));
     assert_eq!(
-      (v[0], v[1]),
-      (1.0, 0.0),
-      "tokens past the window must not count"
+      emb.encode_one(&past_boundary),
+      v,
+      "tokens past {MAX_EMBED_TOKENS} must not change the vector"
     );
   }
 
