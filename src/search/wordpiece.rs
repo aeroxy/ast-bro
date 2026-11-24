@@ -88,7 +88,40 @@ struct TokenizerJson {
   /// schema the reference can open, or the parity test cannot start.
   #[serde(default)]
   padding: Option<Value>,
+  /// Neither truncation nor the decoder is applied here, but the reference
+  /// deserializes both when it opens the file, so malformed metadata must
+  /// fail our preflight rather than the parity test.
+  #[serde(default)]
+  truncation: Option<Value>,
+  #[serde(default)]
+  decoder: Option<Value>,
   model: ModelJson,
+}
+
+#[allow(dead_code)]
+#[derive(Deserialize)]
+struct TruncationJson {
+  #[serde(default)]
+  direction: TruncationDirectionJson,
+  max_length: usize,
+  strategy: TruncationStrategyJson,
+  stride: usize,
+}
+
+#[allow(dead_code)]
+#[derive(Default, Deserialize)]
+enum TruncationDirectionJson {
+  Left,
+  #[default]
+  Right,
+}
+
+#[allow(dead_code)]
+#[derive(Deserialize)]
+enum TruncationStrategyJson {
+  LongestFirst,
+  OnlyFirst,
+  OnlySecond,
 }
 
 /// Mirrors the reference's `PaddingParams` so a non-null padding object is
@@ -219,6 +252,13 @@ impl WordPiece {
     if let Some(padding) = json.padding.as_ref().filter(|p| !p.is_null()) {
       serde_json::from_value::<PaddingJson>(padding.clone())
         .map_err(|e| invalid(format!("unsupported padding metadata: {e}")))?;
+    }
+    if let Some(truncation) = json.truncation.as_ref().filter(|t| !t.is_null()) {
+      serde_json::from_value::<TruncationJson>(truncation.clone())
+        .map_err(|e| invalid(format!("unsupported truncation metadata: {e}")))?;
+    }
+    if let Some(decoder) = json.decoder.as_ref().filter(|d| !d.is_null()) {
+      check_decoder(decoder).map_err(invalid)?;
     }
     check_normalizer(json.normalizer.as_ref()).map_err(invalid)?;
     let pre_tokenizer = json.pre_tokenizer.as_ref().and_then(|p| p.get("type"));
@@ -522,6 +562,64 @@ impl AddedTokens {
     }
     if done < text.len() {
       out.push((&text[done..], None));
+    }
+  }
+}
+
+/// Check that a non-null `decoder` value matches a decoder object `tokenizers`
+/// can deserialize, without applying it. Rejects non-objects, unknown or null
+/// types, empty objects, and malformed fields on common decoders.
+fn check_decoder(decoder: &Value) -> Result<(), String> {
+  let err = || format!("unsupported decoder metadata: {decoder}");
+  let Some(map) = decoder.as_object() else {
+    return Err(err());
+  };
+  let is_str = |k: &str| map.get(k).is_some_and(Value::is_string);
+  let is_bool = |k: &str| map.get(k).is_some_and(Value::is_boolean);
+  let is_uint = |k: &str| map.get(k).and_then(Value::as_u64).is_some();
+  let is_char = |k: &str| {
+    map
+      .get(k)
+      .and_then(Value::as_str)
+      .is_some_and(|s| s.chars().count() == 1)
+  };
+  let is_wordpiece = || is_str("prefix") && is_bool("cleanup");
+  let is_bpe = || is_str("suffix");
+  let is_ctc = || is_str("pad_token") && is_str("word_delimiter_token") && is_bool("cleanup");
+  let is_strip = || is_char("content") && is_uint("start") && is_uint("stop");
+
+  match map.get("type") {
+    Some(Value::String(kind)) => match kind.as_str() {
+      "WordPiece" if is_wordpiece() => Ok(()),
+      "BPEDecoder" if is_bpe() => Ok(()),
+      "CTC" if is_ctc() => Ok(()),
+      "Strip" if is_strip() => Ok(()),
+      "ByteLevel"
+        if is_bool("add_prefix_space")
+          && is_bool("trim_offsets")
+          && map.get("use_regex").is_none_or(Value::is_boolean) =>
+      {
+        Ok(())
+      }
+      "Sequence" => {
+        let Some(items) = map.get("decoders").and_then(Value::as_array) else {
+          return Err(err());
+        };
+        for item in items {
+          check_decoder(item)?;
+        }
+        Ok(())
+      }
+      "Fuse" | "ByteFallback" | "Metaspace" | "Replace" => Ok(()),
+      _ => Err(err()),
+    },
+    Some(_) => Err(err()),
+    None => {
+      if is_wordpiece() || is_bpe() || is_ctc() || is_strip() {
+        Ok(())
+      } else {
+        Err(err())
+      }
     }
   }
 }
@@ -973,17 +1071,115 @@ mod tests {
     );
   }
 
+  /// Truncation and decoder metadata are checked without being applied: a
+  /// candidate must fail our preflight before the reference parser rejects
+  /// the same file.
+  #[test]
+  fn load_validates_truncation_and_decoder_metadata() {
+    let valid = fixture().replacen(
+      r#""truncation":null"#,
+      r#""truncation":{"strategy":"LongestFirst","max_length":2,"stride":0}"#,
+      1,
+    );
+    let mut theirs = reference(&valid);
+    let ours = WordPiece::from_json(valid.as_bytes()).unwrap();
+    let truncated = theirs
+      .encode("hello world unable tokenizer", false)
+      .unwrap()
+      .get_ids()
+      .to_vec();
+    let bare = ours.encode("hello world unable tokenizer", usize::MAX);
+    assert_eq!(
+      truncated.len(),
+      2,
+      "truncation must shorten reference output"
+    );
+    assert!(
+      bare.len() > 2,
+      "native encode must not apply JSON truncation"
+    );
+    theirs.with_truncation(None).unwrap();
+    assert_eq!(
+      bare,
+      theirs
+        .encode("hello world unable tokenizer", false)
+        .unwrap()
+        .get_ids()
+        .to_vec()
+    );
+
+    let bad_truncation = fixture().replacen(r#""truncation":null"#, r#""truncation":{}"#, 1);
+    assert!(
+      bad_truncation.parse::<tokenizers::Tokenizer>().is_err(),
+      "the reference rejects empty truncation too"
+    );
+    let err = match WordPiece::from_json(bad_truncation.as_bytes()) {
+      Err(e) => e,
+      Ok(_) => panic!("empty truncation must be refused"),
+    };
+    assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+    assert!(
+      err.to_string().contains("unsupported truncation metadata"),
+      "{err}"
+    );
+
+    // Null and omitted decoders are both valid in the reference.
+    let null_decoder = fixture().replacen(
+      r###""decoder":{"type":"WordPiece","prefix":"##","cleanup":true}"###,
+      r#""decoder":null"#,
+      1,
+    );
+    reference(&null_decoder);
+    WordPiece::from_json(null_decoder.as_bytes()).unwrap();
+
+    for bad in [
+      r#""decoder":42"#,
+      r#""decoder":{}"#,
+      r#""decoder":{"type":"Bogus"}"#,
+    ] {
+      let json = fixture().replacen(
+        r###""decoder":{"type":"WordPiece","prefix":"##","cleanup":true}"###,
+        bad,
+        1,
+      );
+      assert!(
+        json.parse::<tokenizers::Tokenizer>().is_err(),
+        "the reference rejects {bad} too"
+      );
+      let err = match WordPiece::from_json(json.as_bytes()) {
+        Err(e) => e,
+        Ok(_) => panic!("{bad} must be refused"),
+      };
+      assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+      assert!(
+        err.to_string().contains("unsupported decoder metadata"),
+        "{err}"
+      );
+    }
+  }
+
   /// Non-null padding is validated so a candidate cannot pass our preflight
   /// and fail when the reference opens the same file. It is never applied.
   #[test]
   fn load_validates_padding_metadata_without_applying_it() {
     let valid = fixture().replacen(
       r#""padding":null"#,
-      r#""padding":{"strategy":"BatchLongest","direction":"Right","pad_to_multiple_of":null,"pad_id":0,"pad_type_id":0,"pad_token":"[PAD]"}"#,
+      r#""padding":{"strategy":{"Fixed":20},"direction":"Right","pad_to_multiple_of":null,"pad_id":0,"pad_type_id":0,"pad_token":"[PAD]"}"#,
       1,
     );
-    let theirs = reference(&valid);
+    let mut theirs = reference(&valid);
     let ours = WordPiece::from_json(valid.as_bytes()).unwrap();
+    let padded = theirs.encode("hello", false).unwrap().get_ids().to_vec();
+    let bare = ours.encode("hello", usize::MAX);
+    assert!(
+      padded.len() > bare.len(),
+      "fixed padding must add ids: {padded:?}"
+    );
+    assert!(
+      padded.iter().skip(bare.len()).all(|&id| id == 0),
+      "{padded:?}"
+    );
+    theirs.with_padding(None);
     for case in CASES {
       assert_eq!(
         ours.encode(case, usize::MAX),

@@ -6,6 +6,7 @@ import io
 import os
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, call, patch
@@ -80,6 +81,43 @@ class SmokeCleanupTests(unittest.TestCase):
         ), self.assertRaisesRegex(RuntimeError, "process cleanup failed"):
             smoke_packages.cleanup_processes([failed, other])
         other.communicate.assert_called_once_with(timeout=30)
+
+
+class WindowsNpmShimTests(unittest.TestCase):
+    """Windows npm alias shims must exist and resolve to the packaged entry point."""
+
+    def test_valid_cmd_shim_resolves_to_packaged_entry_point(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            prefix = Path(directory)
+            entry = prefix / "node_modules/@ast-bro/cli/bin/ast-bro.js"
+            entry.parent.mkdir(parents=True)
+            entry.write_text("#!/usr/bin/env node\n", encoding="utf-8")
+            shim = prefix / "sb.cmd"
+            shim.write_text(
+                '@ECHO off\r\n'
+                'endLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & '
+                '"%_prog%"  "%dp0%\\node_modules\\@ast-bro\\cli\\bin\\ast-bro.js" %*\r\n',
+                encoding="utf-8",
+            )
+            self.assertEqual(smoke_packages.windows_npm_shim_target(shim), entry.resolve())
+
+    def test_missing_shim_or_missing_target_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            prefix = Path(directory)
+            with self.assertRaisesRegex(AssertionError, "Missing Windows npm alias shim"):
+                smoke_packages.windows_npm_shim_target(prefix / "sb.cmd")
+
+            shim = prefix / "sb.cmd"
+            shim.write_text(
+                '"%_prog%"  "%dp0%\\node_modules\\@ast-bro\\cli\\bin\\wrong.js" %*\r\n',
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(AssertionError, "targets missing file"):
+                smoke_packages.windows_npm_shim_target(shim)
+
+            shim.write_text("@ECHO off\r\n", encoding="utf-8")
+            with self.assertRaisesRegex(AssertionError, "Could not find target"):
+                smoke_packages.windows_npm_shim_target(shim)
 
 
 if __name__ == "__main__":
