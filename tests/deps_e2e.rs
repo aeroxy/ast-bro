@@ -894,9 +894,12 @@ fn write_in(root: &std::path::Path, rel: &str, body: &str) {
   std::fs::write(p, body).unwrap();
 }
 
-/// Edges and external imports of `graph . --json`, the part of the answer
-/// an incremental update can get wrong.
-fn graph_answer(root: &std::path::Path, rebuild: bool) -> (serde_json::Value, serde_json::Value) {
+/// File count, edges, and external imports of `graph . --json`, the part
+/// of the answer an incremental update can get wrong.
+fn graph_answer(
+  root: &std::path::Path,
+  rebuild: bool,
+) -> (serde_json::Value, serde_json::Value, serde_json::Value) {
   let mut args = vec!["graph", ".", "--json"];
   if rebuild {
     args.push("--rebuild");
@@ -904,7 +907,11 @@ fn graph_answer(root: &std::path::Path, rebuild: bool) -> (serde_json::Value, se
   let (code, out, err) = run_in(root, &args);
   assert_eq!(code, 0, "stdout: {}\nstderr: {}", out, err);
   let v: serde_json::Value = serde_json::from_str(&out).unwrap();
-  (v["edges"].clone(), v["external"].clone())
+  (
+    v["file_count"].clone(),
+    v["edges"].clone(),
+    v["external"].clone(),
+  )
 }
 
 fn has_edge(edges: &serde_json::Value, from: &str, to: &str) -> bool {
@@ -930,7 +937,7 @@ fn incremental_matches_cold(
     incremental, cold,
     "incremental update differs from a cold build"
   );
-  incremental.0
+  incremental.1
 }
 
 #[test]
@@ -991,4 +998,38 @@ fn incremental_update_moves_an_edge_to_a_closer_new_file() {
     "{}",
     edges
   );
+}
+
+#[test]
+fn incremental_update_parses_an_edited_file_again() {
+  // The edited file's own imports change, so its cached imports must not
+  // be kept: one import line replaced, one added.
+  let tmp = tempfile::tempdir().unwrap();
+  let root = tmp.path();
+  write_in(root, "a.py", "import b\n");
+  write_in(root, "b.py", "X = 1\n");
+  write_in(root, "c.py", "Y = 2\n");
+  write_in(root, "d.py", "Z = 3\n");
+  let edges = incremental_matches_cold(root, |root| {
+    write_in(root, "a.py", "import c\nimport d\n");
+  });
+  assert!(has_edge(&edges, "a.py", "c.py"), "{}", edges);
+  assert!(has_edge(&edges, "a.py", "d.py"), "{}", edges);
+  assert!(!has_edge(&edges, "a.py", "b.py"), "{}", edges);
+}
+
+#[test]
+fn incremental_update_drops_a_deleted_importer() {
+  // The deleted file imports something, so a graph that kept its entry or
+  // its cached imports would still show its edge and count it.
+  let tmp = tempfile::tempdir().unwrap();
+  let root = tmp.path();
+  write_in(root, "a.py", "import b\n");
+  write_in(root, "b.py", "X = 1\n");
+  write_in(root, "gone.py", "import b\nimport missing\n");
+  let edges = incremental_matches_cold(root, |root| {
+    std::fs::remove_file(root.join("gone.py")).unwrap();
+  });
+  assert!(has_edge(&edges, "a.py", "b.py"), "{}", edges);
+  assert!(!has_edge(&edges, "gone.py", "b.py"), "{}", edges);
 }
