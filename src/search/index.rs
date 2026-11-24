@@ -1198,8 +1198,10 @@ fn resolve_chunk(chunks: &[Chunk], file_path: &str, line: u32) -> Option<u32> {
 /// [`MAX_EMBED_TOKENS`](crate::search::embed::MAX_EMBED_TOKENS) tokens, so the
 /// head of a long chunk stands for all of it (a 512-token window is often
 /// reached by 1.5–2 KB of code). Past this size, the chunk gets a non-finite
-/// vector instead, which `cosine_topk` drops, so only BM25 can retrieve it;
-/// its `Part` chunks stay embedded, so the content is still reachable densely.
+/// vector instead, which `cosine_topk` drops, so only BM25 can retrieve it.
+/// Its content stays reachable densely only where `Part` chunks re-cover it,
+/// within each part's window; a chunk with no parts, such as a paragraph of a
+/// file with no grammar, is BM25-only.
 /// Whether the cap still helps under the window is unmeasured. It did when
 /// chunks were embedded in full, with model2vec's weights: dropping it then
 /// cost answered@8k 43 → 41 and @32k 48 → 46 of 150 on the pinned eval sets.
