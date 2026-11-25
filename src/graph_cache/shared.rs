@@ -73,7 +73,7 @@ pub fn get_or_init(root: &Path) -> std::io::Result<Arc<UnifiedGraph>> {
   // walk, and (critically) never held into a later `store` write lock.
   let cached = registry().read().unwrap().get(&key).cloned();
   if let Some(entry) = cached {
-    let delta = compute_graph_delta(root, entry.records.as_slice());
+    let delta = compute_graph_delta(&key, entry.records.as_slice());
     if !delta.requires_rebuild() {
       return Ok(entry.graph);
     }
@@ -92,14 +92,14 @@ pub fn get_or_init(root: &Path) -> std::io::Result<Arc<UnifiedGraph>> {
   // (holding a read guard into a write() on the same thread self-deadlocks).
   let cached = registry().read().unwrap().get(&key).cloned();
   if let Some(entry) = cached {
-    let delta = compute_graph_delta(root, entry.records.as_slice());
+    let delta = compute_graph_delta(&key, entry.records.as_slice());
     if !delta.requires_rebuild() {
       return Ok(entry.graph);
     }
     // Stale: patch the in-memory graph and swap. On patch failure, fall
     // through to a disk reload / full rebuild.
     if let Some((graph, records)) =
-      patch_in_memory(&entry.graph, entry.records.as_slice(), root, &key, &delta)
+      patch_in_memory(&entry.graph, entry.records.as_slice(), &key, &delta)
     {
       let arc = Arc::new(graph);
       store(key, arc.clone(), records);
@@ -118,18 +118,17 @@ pub fn get_or_init(root: &Path) -> std::io::Result<Arc<UnifiedGraph>> {
 /// graph + refreshed fingerprints. `None` signals the deps patch failed and
 /// the caller should fall back to a full rebuild.
 ///
-/// `root` is the working-tree base the delta was computed against; `key` is
-/// the canonicalised registry key used as the persist target so the on-disk
-/// write matches every other save site (cold load / `rebuild` / `promote_calls`).
+/// `key` is the canonical root: the walk, the delta, the patch, and the
+/// save all use it, as the cold build does, so a file keys the same way in
+/// all of them whatever path the caller named the root by.
 fn patch_in_memory(
   graph: &UnifiedGraph,
   prev_records: &[FileRecord],
-  root: &Path,
   key: &Path,
   delta: &Delta,
 ) -> Option<(UnifiedGraph, Arc<Vec<FileRecord>>)> {
   let mut g = graph.clone();
-  let new_records = cache::patch(&mut g, prev_records.to_vec(), root, delta)?;
+  let new_records = cache::patch(&mut g, prev_records.to_vec(), key, delta)?;
   let _ = cache::save(key, &g, &new_records);
   Some((g, Arc::new(new_records)))
 }
@@ -168,15 +167,18 @@ where
   // CLI is one-shot), so the entry is still `current` here and the records
   // match. Deliberately NOT re-collecting fresh records on a hypothetical Arc
   // swap: records describing the *live tree* would mask stale `promoted.deps`
-  // and defeat the next re-validation. The `collect` fallback only covers an
-  // evicted slot. (A cross-thread promote would need the CAS-retry the
-  // `get_or_init` TOCTOU lock uses; not reachable today, so not paid for.)
+  // and defeat the next re-validation. For the same reason an evicted slot
+  // gets no records at all rather than fresh ones taken after the build read
+  // the files: nothing then tells which contents `promoted` reflects, and
+  // empty records make the next check update the whole graph once. (A
+  // cross-thread promote would need the CAS-retry the `get_or_init` TOCTOU
+  // lock uses; not reachable today, so not paid for.)
   let records = registry()
     .read()
     .unwrap()
     .get(&key)
     .map(|e| e.records.clone())
-    .unwrap_or_else(|| Arc::new(cache::collect_file_records(&key).unwrap_or_default()));
+    .unwrap_or_default();
   store(key.clone(), promoted.clone(), records.clone());
   // Best-effort persist; failure is non-fatal — the in-memory state is
   // still correct for the rest of the session.
@@ -282,6 +284,41 @@ mod tests {
     write(&h, "import y\n");
     let second = get_or_init(&root).expect("revalidate after edit");
     assert_eq!(targets(&second), vec![root.join("y.py")]);
+    forget(&root);
+  }
+
+  /// A session may name the root by a path that is not canonical (a temp
+  /// directory behind a symlink, `.`). The patch then keys files as the
+  /// cold build does, so an edit reaches the call graph: here `f` comes to
+  /// call `h`.
+  #[test]
+  fn a_patch_through_a_non_canonical_root_updates_the_call_graph() {
+    let tmp = tempfile::tempdir().unwrap();
+    let canon = tmp.path().canonicalize().unwrap();
+    let root = canon.join("sub").join("..");
+    write(
+      &canon.join("m.py"),
+      "def g():\n    return 1\n\ndef h():\n    return 2\n\ndef f():\n    return g()\n",
+    );
+    forget(&root);
+    let build = |g: &UnifiedGraph| crate::calls::build::build_call_graph(&canon, &g.deps);
+    std::fs::create_dir_all(canon.join("sub")).unwrap();
+    promote_calls(&root, build).expect("promote");
+    write(
+      &canon.join("m.py"),
+      "def g():\n    return 1\n\ndef h():\n    return 2\n\ndef f():\n    return h()\n",
+    );
+    let g = get_or_init(&root).expect("revalidate after edit");
+    let calls = g.calls.as_ref().expect("calls half kept");
+    let f = crate::calls::graph::Qn("m.py::f".to_string());
+    let targets: Vec<String> = crate::calls::traverse::callees_one_hop(calls, &f)
+      .iter()
+      .map(|e| match &e.target {
+        crate::calls::graph::CallTarget::Resolved(q) => q.0.clone(),
+        other => format!("{other:?}"),
+      })
+      .collect();
+    assert_eq!(targets, vec!["m.py::h".to_string()]);
     forget(&root);
   }
 }
