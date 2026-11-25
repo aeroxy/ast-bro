@@ -1483,7 +1483,13 @@ fn _flatten_types(
       if d.visibility == "private" && !opts.include_private {
         continue;
       }
-      let new_prefix = if prefix.is_empty() {
+      let parents: Vec<String> = prefix
+        .strip_suffix('.')
+        .map(|p| vec![p.to_string()])
+        .unwrap_or_default();
+      let new_prefix = if let Some(path) = qualified_path(language, &parents, d) {
+        format!("{}.", path.join("."))
+      } else if prefix.is_empty() {
         format!("{}.", d.name)
       } else {
         format!("{}{}.", prefix, d.name)

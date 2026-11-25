@@ -1543,11 +1543,14 @@ impl<'s> Walker<'s> {
               (false, true) => Some(ImportOnly::Functions),
               _ => None,
             };
+            // A list's conditional import is added once; a later
+            // `except:` extends it like every other earlier import.
+            let conditional = earlier.iter().any(|i| !i.unless_listed.is_empty());
             for mut i in earlier {
               // An earlier `only:` list keeps each kind it named to the
               // list, and lets in whole each kind it named nothing of.
               // Which kinds it named, only the resolver can tell.
-              if let Some(listed) = i.only.clone() {
+              if let Some(listed) = i.only.clone().filter(|_| !conditional) {
                 scope.imports.push(Import {
                   module: module.clone(),
                   only: None,
@@ -2946,6 +2949,20 @@ mod tests {
       .map(|m| m.children[0].calls[0].receiver.clone().unwrap_or_default())
       .collect();
     assert_eq!(receivers, vec!["P.A", "P.B"]);
+    // Its dependencies are the body's, recorded once however many modules
+    // it defines.
+    let (defined, directives) =
+      scan("defimpl P, for: [A, B] do\n  import X\n  def f(x), do: x\nend\n");
+    assert_eq!(defined, vec!["P.A", "P.B"]);
+    assert_eq!(
+      directives,
+      vec![
+        ("impl", "P".to_string()),
+        ("import", "X".to_string()),
+        ("reference", "A".to_string()),
+        ("reference", "B".to_string())
+      ]
+    );
   }
 
   #[test]
