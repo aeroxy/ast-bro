@@ -1107,6 +1107,31 @@ fn incremental_update_sees_an_edit_to_tsconfig_json() {
 }
 
 #[test]
+fn incremental_update_sees_an_edit_to_a_gitignored_tsconfig_json() {
+  // The walk skips an ignored file, but the alias reader opens the root
+  // manifests by name, so the freshness check adds them by name too.
+  let tmp = tempfile::tempdir().unwrap();
+  let root = tmp.path();
+  std::fs::create_dir_all(root.join(".git")).unwrap();
+  write_in(root, ".gitignore", "tsconfig.json\n");
+  write_in(
+    root,
+    "tsconfig.json",
+    r#"{ "compilerOptions": { "paths": { "@old/*": ["lib/*"] } } }"#,
+  );
+  write_in(root, "a.ts", "import { u } from \"@lib/u\";\n");
+  write_in(root, "lib/u.ts", "export const u = 1;\n");
+  let edges = incremental_matches_cold(root, |root| {
+    write_in(
+      root,
+      "tsconfig.json",
+      r#"{ "compilerOptions": { "paths": { "@lib/*": ["lib/*"] } } }"#,
+    );
+  });
+  assert!(has_edge(&edges, "a.ts", "lib/u.ts"), "{}", edges);
+}
+
+#[test]
 fn incremental_update_sees_an_edit_to_composer_json() {
   // Two classes share a name, so only the PSR-4 mapping decides which one
   // `use Vendor\Account;` reaches.

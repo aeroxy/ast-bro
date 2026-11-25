@@ -1569,8 +1569,6 @@ mod tests {
     assert_eq!(top[2].0, 4);
   }
 
-  /// Smoke test of the persistence round-trip without touching the embedder.
-  /// Builds tiny structures by hand, writes, reads back, asserts equality.
   /// A touched file's record takes the metadata the delta hashed it under.
   /// An edit after the hash then still differs from the record, and the
   /// next delta hashes the file again.
@@ -1591,6 +1589,8 @@ mod tests {
     assert_eq!(refresh.get("a.rs"), Some(&(42, 5)));
   }
 
+  /// Smoke test of the persistence round-trip without touching the embedder.
+  /// Builds tiny structures by hand, writes, reads back, asserts equality.
   #[test]
   fn persistence_roundtrip() {
     let dir = tmp_repo();
