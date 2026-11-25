@@ -1233,7 +1233,7 @@ fn _digest_one(result: &ParseResult, opts: &DigestOptions) -> Vec<String> {
     return lines;
   }
 
-  let types = _flatten_types(&result.declarations, "", opts);
+  let types = _flatten_types(&result.declarations, "", result.language, opts);
   let free_functions = _flatten_free_functions(&result.declarations, opts);
 
   if types.is_empty() && free_functions.is_empty() {
@@ -1440,7 +1440,29 @@ fn _format_inline_attrs(attrs: &[String]) -> String {
   joined.dimmed().to_string()
 }
 
-fn _flatten_types(decls: &[Declaration], prefix: &str, opts: &DigestOptions) -> Vec<Declaration> {
+/// The qualified path of `d` under `parents` when its language does not
+/// name it `parents` + `d.name`: an Elixir `defimpl` or
+/// `defmodule Elixir.Top` is not in the module it is written in. `None`:
+/// the usual path. Every reader that builds a qualified name from the
+/// nesting asks this first — `digest`, `show`, and the call graph — so the
+/// declaration can stay where `map` outlines it.
+pub(crate) fn qualified_path(
+  language: &str,
+  parents: &[String],
+  d: &Declaration,
+) -> Option<Vec<String>> {
+  match language {
+    "elixir" => crate::adapters::elixir::qualified_path(parents, d),
+    _ => None,
+  }
+}
+
+fn _flatten_types(
+  decls: &[Declaration],
+  prefix: &str,
+  language: &str,
+  opts: &DigestOptions,
+) -> Vec<Declaration> {
   use DeclarationKind::*;
   let mut out = Vec::new();
   for d in decls {
@@ -1456,18 +1478,24 @@ fn _flatten_types(decls: &[Declaration], prefix: &str, opts: &DigestOptions) -> 
       } else {
         format!("{}{}.", prefix, d.name)
       };
-      out.extend(_flatten_types(&d.children, &new_prefix, opts));
+      out.extend(_flatten_types(&d.children, &new_prefix, language, opts));
     } else if matches!(d.kind, Class | Struct | Interface | Record | Enum) {
       if d.visibility == "private" && !opts.include_private {
         continue;
       }
       let mut qualified = d.clone();
-      if !prefix.is_empty() {
+      let parents: Vec<String> = prefix
+        .strip_suffix('.')
+        .map(|p| vec![p.to_string()])
+        .unwrap_or_default();
+      if let Some(path) = qualified_path(language, &parents, d) {
+        qualified.name = path.join(".");
+      } else if !prefix.is_empty() {
         qualified.name = format!("{}{}", prefix, d.name);
       }
       let new_prefix = format!("{}.", qualified.name);
       out.push(qualified);
-      out.extend(_flatten_types(&d.children, &new_prefix, opts));
+      out.extend(_flatten_types(&d.children, &new_prefix, language, opts));
     }
   }
   out
@@ -1558,6 +1586,7 @@ pub fn find_symbols(result: &ParseResult, symbol: &str) -> Vec<SymbolMatch> {
   _search_walk(
     &result.declarations,
     &result.source,
+    result.language,
     Vec::new(),
     Vec::new(),
     &parts,
@@ -1569,6 +1598,7 @@ pub fn find_symbols(result: &ParseResult, symbol: &str) -> Vec<SymbolMatch> {
 fn _search_walk(
   decls: &[Declaration],
   src: &[u8],
+  language: &str,
   trail: Vec<String>,
   ancestors: Vec<&Declaration>,
   parts: &[&str],
@@ -1576,7 +1606,13 @@ fn _search_walk(
 ) {
   for d in decls {
     let mut new_trail = trail.clone();
-    if d.kind == DeclarationKind::Heading {
+    if let Some(path) = qualified_path(language, &trail, d) {
+      new_trail = path
+        .iter()
+        .flat_map(|p| p.split('.').filter(|s| !s.is_empty()))
+        .map(str::to_string)
+        .collect();
+    } else if d.kind == DeclarationKind::Heading {
       // A heading is prose: `v1.2 Release` is one segment.
       if !d.name.is_empty() {
         new_trail.push(d.name.clone());
@@ -1626,7 +1662,15 @@ fn _search_walk(
     if !d.children.is_empty() {
       let mut new_ancestors = ancestors.clone();
       new_ancestors.push(d);
-      _search_walk(&d.children, src, new_trail, new_ancestors, parts, out);
+      _search_walk(
+        &d.children,
+        src,
+        language,
+        new_trail,
+        new_ancestors,
+        parts,
+        out,
+      );
     }
   }
 }

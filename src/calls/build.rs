@@ -117,6 +117,7 @@ pub fn extract_file(root: &Path, file: &Path) -> Option<FilePass> {
   walk(
     &parse.declarations,
     &rel,
+    parse.language,
     Vec::new(),
     &mut defined,
     &mut callable_locations,
@@ -141,9 +142,11 @@ pub fn extract_file(root: &Path, file: &Path) -> Option<FilePass> {
 /// - one `RawEdge` per `CallSite` attached to a callable declaration.
 /// - one `(Qn, TypeMeta)` per type declaration (class / struct / interface
 ///   / enum / record — Rust traits land here as `Interface` via the adapter).
+#[allow(clippy::too_many_arguments)]
 fn walk(
   decls: &[Declaration],
   rel_file: &str,
+  language: &str,
   parents: Vec<String>,
   defined: &mut Vec<Qn>,
   callable_locations: &mut Vec<CallableMeta>,
@@ -152,10 +155,13 @@ fn walk(
   namespaces: &mut Vec<Qn>,
 ) {
   for d in decls {
-    let mut next_parents = parents.clone();
-    if !d.name.is_empty() {
-      next_parents.push(d.name.clone());
-    }
+    let next_parents = crate::core::qualified_path(language, &parents, d).unwrap_or_else(|| {
+      let mut path = parents.clone();
+      if !d.name.is_empty() {
+        path.push(d.name.clone());
+      }
+      path
+    });
 
     if is_callable(d) && !d.name.is_empty() {
       let qn = qn_from(rel_file, &next_parents);
@@ -188,6 +194,7 @@ fn walk(
       walk(
         &d.children,
         rel_file,
+        language,
         next_parents,
         defined,
         callable_locations,
