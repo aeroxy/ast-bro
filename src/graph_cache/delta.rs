@@ -195,9 +195,16 @@ pub fn apply_delta_to_calls(calls: &mut CallGraph, deps: &DepGraph, root: &Path,
   // 8. Validate Resolved edges against the post-update qn population.
   //    Any whose target qn no longer exists (deleted or renamed) gets
   //    demoted to Bare with the original callee name preserved. The
-  //    next pass tries to re-resolve those bare names.
-  let known_callable: HashSet<crate::calls::graph::Qn> =
-    calls.callable_meta.keys().cloned().collect();
+  //    next pass tries to re-resolve those bare names. A construction
+  //    targets its type's qn, so types count as well as callables: with
+  //    callables alone, every construction of a Rust struct or a TS class
+  //    looked like a deleted target after any change (#128).
+  let known_targets: HashSet<crate::calls::graph::Qn> = calls
+    .callable_meta
+    .keys()
+    .chain(calls.types.keys())
+    .cloned()
+    .collect();
   for edges in calls.forward.values_mut() {
     for e in edges.iter_mut() {
       // Step 9 re-resolves every Elixir edge from its whole target,
@@ -207,7 +214,7 @@ pub fn apply_delta_to_calls(calls: &mut CallGraph, deps: &DepGraph, root: &Path,
       {
         continue;
       }
-      let demote = matches!(&e.target, CallTarget::Resolved(qn) if !known_callable.contains(qn));
+      let demote = matches!(&e.target, CallTarget::Resolved(qn) if !known_targets.contains(qn));
       if demote {
         let bare = e.target.name_or_raw();
         e.target = CallTarget::Bare(bare);

@@ -3963,6 +3963,93 @@ fn calls_partial_invalidation_demotes_stale_target() {
   assert_eq!(code3, 0, "renamed lookup failed: {out3}");
 }
 
+/// A Rust struct literal and a TS `new`, each in another file than its type.
+/// Both constructions resolve to the type's qn, not to a callable.
+fn construction_project() -> tempfile::TempDir {
+  let tmp = tempfile::tempdir().unwrap();
+  let root = tmp.path();
+  write(
+    &root.join("Cargo.toml"),
+    "[package]\nname=\"x\"\nversion=\"0.0.0\"\nedition=\"2021\"\n",
+  );
+  write(&root.join("src/lib.rs"), "pub mod a;\npub mod b;\n");
+  write(&root.join("src/a.rs"), "pub struct Foo { pub x: u8 }\n");
+  write(
+    &root.join("src/b.rs"),
+    "use crate::a::Foo;\npub fn make() -> Foo { Foo { x: 1 } }\n",
+  );
+  write(&root.join("web/a.ts"), "export class Bar {}\n");
+  write(
+    &root.join("web/b.ts"),
+    "import { Bar } from \"./a\"\nexport function build() { return new Bar() }\n",
+  );
+  tmp
+}
+
+#[test]
+fn incremental_update_keeps_constructions_of_types() {
+  // Step 8 of `apply_delta_to_calls` checked `Resolved` targets against the
+  // callables alone, so after any change it took every construction for one
+  // of a deleted type and demoted it, in every file, until `--rebuild`
+  // (#128). Java and C# `new` resolve to the constructor, a callable, and
+  // were never affected.
+  let tmp = construction_project();
+  let root = tmp.path();
+  let rust = vec![("src/a.rs::Foo".to_string(), "Exact".to_string())];
+  let ts = vec![("web/a.ts::Bar".to_string(), "Exact".to_string())];
+  assert_eq!(callee_targets(root, "make", true), rust, "premise");
+  assert_eq!(callee_targets(root, "build", false), ts, "premise");
+
+  // A new file that has nothing to do with either type.
+  write(&root.join("src/z.rs"), "pub fn z() {}\n");
+  assert_eq!(
+    callee_targets(root, "make", false),
+    rust,
+    "after an added file"
+  );
+  assert_eq!(
+    callee_targets(root, "build", false),
+    ts,
+    "after an added file"
+  );
+
+  // An edit to the constructing file itself.
+  write(
+    &root.join("src/b.rs"),
+    "use crate::a::Foo;\n\npub fn make() -> Foo { Foo { x: 2 } }\n",
+  );
+  assert_eq!(callee_targets(root, "make", false), rust, "after an edit");
+  assert_eq!(callee_targets(root, "build", false), ts, "after an edit");
+
+  assert_eq!(
+    callee_targets(root, "make", true),
+    rust,
+    "a cold build of the same content"
+  );
+}
+
+#[test]
+fn incremental_update_demotes_a_construction_of_a_deleted_type() {
+  // Types count as targets only while they exist: step 3 drops a changed
+  // file's types before step 8 runs, so a struct that is gone takes its
+  // constructions' target with it. (A cold build still names
+  // `src/a.rs::Foo` here, from the import alone: #127.)
+  let tmp = construction_project();
+  let root = tmp.path();
+  assert_eq!(
+    callee_targets(root, "make", true),
+    vec![("src/a.rs::Foo".to_string(), "Exact".to_string())],
+    "premise"
+  );
+
+  write(&root.join("src/a.rs"), "pub struct Renamed { pub x: u8 }\n");
+  let after = callee_targets(root, "make", false);
+  assert!(
+    !after.iter().any(|(t, _)| t == "src/a.rs::Foo"),
+    "a deleted struct kept its construction: {after:?}"
+  );
+}
+
 #[test]
 fn calls_partial_invalidation_picks_up_new_caller() {
   let tmp = tempfile::tempdir().unwrap();
