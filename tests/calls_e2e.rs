@@ -6064,3 +6064,34 @@ end
     );
   }
 }
+
+#[test]
+fn ruby_a_class_named_from_the_top_is_not_in_its_module() {
+  // `class ::Top` inside `module Outer` defines `Top`, not `Outer::Top`
+  // (`ruby -e` agrees). `map` keeps it where it is written; the names the
+  // call graph, `digest` and `show` build are Ruby's.
+  let tmp = tempfile::tempdir().unwrap();
+  let root = tmp.path();
+  std::fs::create_dir_all(root.join(".git")).unwrap();
+  write(
+    &root.join("lib/outer.rb"),
+    "module Outer\n  class ::Top\n    def self.b(x)\n      x\n    end\n  end\n\n  class Inner\n    def self.c(x)\n      x\n    end\n  end\nend\n",
+  );
+  write(
+    &root.join("lib/user.rb"),
+    "class User\n  def go(x)\n    Top.b(x)\n    Outer::Inner.c(x)\n  end\nend\n",
+  );
+  let targets = callee_targets(root, "User.go", true);
+  let got: Vec<&str> = targets.iter().map(|(t, _)| t.as_str()).collect();
+  assert_eq!(
+    got,
+    vec!["lib/outer.rb::Outer::Inner::c", "lib/outer.rb::Top::b"],
+    "{targets:?}"
+  );
+  let (out, _) = run_in(root, &["digest", "lib/outer.rb"]);
+  assert!(out.contains("class Top  L2-6"), "{out}");
+  let (out, code) = run_in(root, &["show", "lib/outer.rb", "Top.b"]);
+  assert_eq!(code, 0, "{out}");
+  let (out, _) = run_in(root, &["map", "lib/outer.rb"]);
+  assert!(out.contains("    class ::Top  L2-6"), "{out}");
+}

@@ -178,6 +178,8 @@ pub struct ImportBinding {
 
 `Declaration::calls` is attached to the enclosing declaration so the source/caller relationship is implicit (the caller is the declaration that owns the list). This gives correct nesting semantics for free in languages where one function is defined inside another (Python closures, JS arrows, Rust nested fns).
 
+A qn is the file plus the path of names the declaration is nested in. Where a language declares a name in one scope that belongs to another — Ruby's `class ::Top` inside a module, Elixir's `defmodule Elixir.Top`, `defmodule __MODULE__.Sub` or a `defimpl` inside a module — `core::qualified_path` gives the real path, from a rule beside the adapter. The call graph, `digest` and `show` all build names through it, so they agree, while `map` keeps outlining the source with each declaration where it is written. Rust's `impl crate::model::Cart` in another module and C++'s out-of-line `int outer::Inner::c()` have the same shape but are not covered yet: their adapters first need to keep the path the declaration names.
+
 ## Three-pass resolver
 
 The single biggest source of grep noise is homonyms — `helper`, `init`, `parse`, `validate` exist in dozens of files. The three passes attack the problem in increasing order of cost. (Elixir names its call targets statically, so its edges skip them: a module receiver is a [scope receiver](#scope-receivers), and `elixir.rs` looks the other calls up by module. Its types and their bases are indexed by full module name, since `Shop.Repo` and `Ecto.Repo` are two modules; other languages index them by last segment, #77. A one-segment Elixir module and another language's type can share that key, so an Elixir type pairs only with Elixir code as an implementor, ancestor or construction.)
