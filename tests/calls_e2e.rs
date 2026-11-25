@@ -1977,6 +1977,14 @@ defmodule Shop.KernelIf do
   import Kernel, except: [unless: 2]
   def k(x), do: if(x, do: 1)
 end
+
+defmodule Shop.NoKernel do
+  def u do
+    import Kernel, only: []
+    import Shop.MyMacros, only: [if: 2]
+    if(true, :ok)
+  end
+end
 "#,
   );
   let callees = |sym: &str| run_in(root, &["callees", sym, ".", "--rebuild"]).0;
@@ -2007,6 +2015,10 @@ end
   let out = callees("Shop.OwnIf.u");
   assert!(out.contains("Shop.MyMacros::if  (Exact)"), "{}", out);
   let out = callees("Shop.AnyIf.u");
+  assert!(out.contains("Shop.MyMacros::if  (Exact)"), "{}", out);
+  // So is one after `import Kernel, only: []`, which imports nothing of
+  // Kernel.
+  let out = callees("Shop.NoKernel.u");
   assert!(out.contains("Shop.MyMacros::if  (Exact)"), "{}", out);
   // Kernel's own `if` is not.
   let out = callees("Shop.KernelIf.k");

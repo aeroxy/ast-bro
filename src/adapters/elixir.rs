@@ -1542,10 +1542,17 @@ impl<'s> Walker<'s> {
           // A module imported again replaces its earlier import,
           // except that `except:` alone filters it, per kind: a
           // kind it did not import comes in minus `except:`.
-          let (earlier, rest): (Vec<Import>, Vec<Import>) = std::mem::take(&mut scope.imports)
+          let (mut earlier, rest): (Vec<Import>, Vec<Import>) = std::mem::take(&mut scope.imports)
             .into_iter()
             .partition(|i| i.module == module);
           scope.imports = rest;
+          // `only: []` imports nothing, and Elixir drops the module from
+          // the imports, so an `except:` after it starts from the whole
+          // module. It is kept until then: for `Kernel`, imported
+          // unasked, it is what excludes `if` (`kernel_excludes`).
+          if only_arg.is_none() {
+            earlier.retain(|i| i.only.as_ref().is_none_or(|listed| !listed.is_empty()));
+          }
           if only_arg.is_none() && !except.is_empty() && !earlier.is_empty() {
             let has = |k| {
               earlier
@@ -1585,10 +1592,7 @@ impl<'s> Walker<'s> {
                 unless_listed: Vec::new(),
               });
             }
-          } else if only.as_ref().is_none_or(|listed| !listed.is_empty()) {
-            // `only: []` imports nothing: Elixir drops the module from
-            // the imports, so a later `except:` starts from the whole
-            // module.
+          } else {
             scope.imports.push(Import {
               module: module.clone(),
               only,
