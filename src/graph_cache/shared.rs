@@ -28,7 +28,6 @@ use std::sync::{Arc, OnceLock, RwLock};
 
 use crate::graph_cache::cache;
 use crate::graph_cache::cache::compute_graph_delta;
-use crate::graph_cache::delta::{apply_delta_to_calls, apply_delta_to_deps, refresh_records};
 use crate::graph_cache::UnifiedGraph;
 use crate::search::cache::{Delta, FileRecord};
 
@@ -130,15 +129,7 @@ fn patch_in_memory(
   delta: &Delta,
 ) -> Option<(UnifiedGraph, Arc<Vec<FileRecord>>)> {
   let mut g = graph.clone();
-  if apply_delta_to_deps(&mut g.deps, root, delta).is_err() {
-    return None;
-  }
-  // Disjoint field borrow: `&mut g.calls` and `&g.deps` are different fields,
-  // so no snapshot clone of the (post-delta) dep graph is needed.
-  if let Some(calls) = g.calls.as_mut() {
-    apply_delta_to_calls(calls, &g.deps, root, delta);
-  }
-  let new_records = refresh_records(prev_records.to_vec(), root, delta);
+  let new_records = cache::patch(&mut g, prev_records.to_vec(), root, delta)?;
   let _ = cache::save(key, &g, &new_records);
   Some((g, Arc::new(new_records)))
 }

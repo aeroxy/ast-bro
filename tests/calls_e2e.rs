@@ -6340,3 +6340,21 @@ fn incremental_update_sees_a_call_change_in_a_hidden_file() {
     "f now calls h: {cold:?}"
   );
 }
+
+#[test]
+fn incremental_update_parses_only_files_the_graph_holds() {
+  // A delta also carries files whose existence alone counts. Parsing one
+  // of them into the call graph would add what a cold build never has: a
+  // SQL file's tables, for one.
+  let tmp = tempfile::tempdir().unwrap();
+  let root = tmp.path();
+  std::fs::create_dir_all(root.join(".git")).unwrap();
+  write(&root.join("a.py"), "def users():\n    return 1\n");
+  let (_, code) = run_in(root, &["callers", "users", ".", "--rebuild"]);
+  assert_eq!(code, 0);
+  write(&root.join("schema.sql"), "CREATE TABLE orders (id INT);\n");
+  let (incremental, code) = run_in(root, &["callers", "orders", "."]);
+  assert_eq!(code, 2, "a table no cold build holds:\n{incremental}");
+  let (_, code) = run_in(root, &["callers", "orders", ".", "--rebuild"]);
+  assert_eq!(code, 2);
+}

@@ -109,17 +109,19 @@ pub fn compute_delta(walk_root: &Path, strip_root: &Path, cached_files: &[FileRe
     if meta.len() > MAX_INDEX_FILE_BYTES {
       return None;
     }
-    Some((entry.into_path(), meta))
+    Some((entry.into_path(), Some(meta)))
   });
   delta_from_files(files, strip_root, cached_files)
 }
 
-/// Compare `files` — each a path with its metadata — against
-/// `cached_files`. The walk decides which files count; this decides what
-/// changed. `compute_delta` walks the search corpus; the graph cache walks
-/// the files the deps graph reads, and both compare here.
+/// Compare `files` against `cached_files`. The walk decides which files
+/// count; this decides what changed. A file comes with its metadata when
+/// its contents count, or with `None` when only its existence does: then
+/// it can be added or removed, and an edit to it is no change.
+/// `compute_delta` walks the search corpus; the graph cache walks the files
+/// the deps graph reads, and both compare here.
 pub fn delta_from_files(
-  files: impl IntoIterator<Item = (PathBuf, fs::Metadata)>,
+  files: impl IntoIterator<Item = (PathBuf, Option<fs::Metadata>)>,
   strip_root: &Path,
   cached_files: &[FileRecord],
 ) -> Delta {
@@ -130,7 +132,6 @@ pub fn delta_from_files(
   let mut seen: HashSet<String> = HashSet::with_capacity(cached.len());
 
   for (path, meta) in files {
-    let size = meta.len();
     delta.seen_count += 1;
 
     let rel = match path.strip_prefix(strip_root) {
@@ -139,6 +140,13 @@ pub fn delta_from_files(
     };
     seen.insert(rel.clone());
 
+    let Some(meta) = meta else {
+      if !cached.contains_key(rel.as_str()) {
+        delta.added.push(path);
+      }
+      continue;
+    };
+    let size = meta.len();
     let mtime_ns = mtime_nanos(&meta);
 
     match cached.get(rel.as_str()) {

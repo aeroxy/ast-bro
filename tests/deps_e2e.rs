@@ -1129,3 +1129,27 @@ fn incremental_update_sees_an_edit_to_composer_json() {
   });
   assert!(has_edge(&edges, "User.php", "b/Account.php"), "{}", edges);
 }
+
+#[test]
+fn incremental_update_sees_a_non_source_import_target_come_and_go() {
+  // A relative import may name any file, and the resolver checks that it
+  // exists. The graph depends on those files existing, whatever they hold.
+  let tmp = tempfile::tempdir().unwrap();
+  let root = tmp.path();
+  write_in(
+    root,
+    "a.ts",
+    "import d from \"./data.json\";\nimport l from \"./later.json\";\n",
+  );
+  write_in(root, "data.json", "{}\n");
+  write_in(root, "b.ts", "import s from \"./logo.svg\";\n");
+  write_in(root, "logo.svg", "<svg/>\n");
+  let edges = incremental_matches_cold(root, |root| {
+    std::fs::remove_file(root.join("data.json")).unwrap();
+    std::fs::remove_file(root.join("logo.svg")).unwrap();
+    write_in(root, "later.json", "{}\n");
+  });
+  assert!(has_edge(&edges, "a.ts", "later.json"), "{}", edges);
+  assert!(!has_edge(&edges, "a.ts", "data.json"), "{}", edges);
+  assert!(!has_edge(&edges, "b.ts", "logo.svg"), "{}", edges);
+}
