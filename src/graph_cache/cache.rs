@@ -714,6 +714,38 @@ mod tests {
     assert!(matches!(load_with_delta(&root), LoadOutcome::Stale { .. }));
   }
 
+  fn set_mtime(p: &Path, secs: u64) {
+    let file = fs::File::options().write(true).open(p).unwrap();
+    file
+      .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(secs))
+      .unwrap();
+  }
+
+  /// A file touched with no change is not parsed again. An editor saves it
+  /// after the load hashed it and before the patch: its record must still
+  /// describe what the load hashed, so the next load sees the edit.
+  #[test]
+  fn an_edit_to_a_touched_file_before_the_patch_is_seen_by_the_next_load() {
+    let (_tmp, root) = race_tree();
+    load_or_build_with_records(&root, false).expect("build");
+    set_mtime(&root.join("a.py"), 1_000_000);
+    write(&root.join("c.py"), "Y = 2\n");
+    let LoadOutcome::Stale {
+      mut graph,
+      delta,
+      prev_records,
+    } = load_with_delta(&root)
+    else {
+      panic!("the edit to c.py is a delta");
+    };
+    assert_eq!(delta.mtime_only.len(), 1, "premise: a.py is touched only");
+    write(&root.join("a.py"), "import c\n");
+    set_mtime(&root.join("a.py"), 2_000_000);
+    let records = patch(&mut graph, prev_records, &root, &delta).expect("patch");
+    save(&root, &graph, &records).unwrap();
+    assert!(matches!(load_with_delta(&root), LoadOutcome::Stale { .. }));
+  }
+
   /// The same during a patch: the edit after the patch read the file must
   /// stay visible to the next load.
   #[test]

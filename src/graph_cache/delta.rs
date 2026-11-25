@@ -328,29 +328,37 @@ pub fn apply_delta_to_calls(calls: &mut CallGraph, deps: &DepGraph, root: &Path,
 
 /// Update the on-disk fingerprint table to reflect the new state of disk
 /// after a partial update. Entries for removed files are dropped; added
-/// and modified entries are re-stat-and-hashed; mtime-only entries get
-/// their mtime refreshed without a re-hash; unchanged entries pass through.
+/// and modified entries are re-stat-and-hashed; mtime-only entries keep
+/// their hash and take the mtime and size the delta hashed them under
+/// (`MtimeOnly`), as they are not parsed again; unchanged entries pass
+/// through.
 pub fn refresh_records(prev: Vec<FileRecord>, root: &Path, delta: &Delta) -> Vec<FileRecord> {
   let removed: HashSet<&str> = delta.removed.iter().map(|s| s.as_str()).collect();
   let touched: HashSet<String> = delta
     .added
     .iter()
     .chain(delta.modified.iter())
-    .chain(delta.mtime_only.iter())
     .map(|p| rel_posix(root, p))
+    .collect();
+  let seen: HashMap<String, (i128, u64)> = delta
+    .mtime_only
+    .iter()
+    .map(|t| (rel_posix(root, &t.path), (t.mtime_ns, t.size)))
     .collect();
 
   let mut out: Vec<FileRecord> = prev
     .into_iter()
     .filter(|r| !removed.contains(r.path.as_str()) && !touched.contains(&r.path))
+    .map(|mut r| {
+      if let Some(&(mtime_ns, size)) = seen.get(&r.path) {
+        r.mtime_ns = mtime_ns;
+        r.size = size;
+      }
+      r
+    })
     .collect();
 
-  for path in delta
-    .added
-    .iter()
-    .chain(delta.modified.iter())
-    .chain(delta.mtime_only.iter())
-  {
+  for path in delta.added.iter().chain(delta.modified.iter()) {
     let rel = rel_posix(root, path);
     // A file whose existence alone counts is not hashed; its contents are
     // never compared.
