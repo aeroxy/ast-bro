@@ -5935,14 +5935,22 @@ fn elixir_modules_are_named_where_elixir_defines_them() {
   ];
   let got: Vec<&str> = targets.iter().map(|(t, _)| t.as_str()).collect();
   assert_eq!(got, want, "{targets:?}");
-  // An incremental update names them the same way.
-  write(
-    &root.join("lib/user.ex"),
-    &std::fs::read_to_string(root.join("lib/user.ex"))
-      .unwrap()
-      .replace("go(x)", "go(x, _y)"),
-  );
-  assert_eq!(callee_targets(root, "User.go", false), targets);
+  // An incremental update names them the same way: `Top.b` renamed is
+  // still in `Top`.
+  for file in ["lib/outer.ex", "lib/user.ex"] {
+    let body = std::fs::read_to_string(root.join(file)).unwrap();
+    write(
+      &root.join(file),
+      &body
+        .replace("def b(x)", "def bb(x)")
+        .replace("Top.b(x)", "Top.bb(x)"),
+    );
+  }
+  let targets = callee_targets(root, "User.go", false);
+  let got: Vec<&str> = targets.iter().map(|(t, _)| t.as_str()).collect();
+  let mut want = want.to_vec();
+  want[3] = "lib/outer.ex::Top::bb";
+  assert_eq!(got, want, "{targets:?}");
 }
 
 #[test]
@@ -5994,16 +6002,17 @@ fn elixir_digest_and_show_name_modules_as_elixir_does() {
     assert!(out.contains(line), "missing {line:?}:\n{out}");
   }
   for (symbol, header) in [
-    ("Outer.Sub.a", "Outer.Sub.a (function)"),
-    ("Top.b", "Top.b (function)"),
+    ("Outer.Sub.a", "# lib/outer.ex:3-3 Outer.Sub.a (function)"),
+    ("Top.b", "# lib/outer.ex:7-7 Top.b (function)"),
     (
       "String.Chars.Outer.to_string",
-      "String.Chars.Outer.to_string (function)",
+      "# lib/outer.ex:11-11 String.Chars.Outer.to_string (function)",
     ),
   ] {
     let (out, code) = run_in(root, &["show", "lib/outer.ex", symbol]);
     assert_eq!(code, 0, "{symbol}: {out}");
-    assert!(out.contains(header), "{symbol}:\n{out}");
+    let first = out.lines().next().unwrap_or_default().replace('\\', "/");
+    assert_eq!(first, header, "{symbol}:\n{out}");
   }
   // `map` outlines the source: each module where it is written.
   let (out, _) = run_in(root, &["map", "lib/outer.ex"]);
@@ -6066,11 +6075,13 @@ end
     assert_eq!(t.len(), 1, "{symbol}: {t:?}");
     t[0].0.clone()
   };
-  for rebuild in [true, false] {
+  // The second pass is the incremental update after `M.h` is removed,
+  // so the call that bound to it no longer does (`elixirc` agrees).
+  for (rebuild, h) in [(true, "lib/m.ex::M::h"), (false, "[external] h")] {
     assert_eq!(target("U.macro_in", rebuild), "lib/m.ex::M::m");
     assert_eq!(target("U.function_out", rebuild), "[external] h");
     assert_eq!(target("U.listed", rebuild), "lib/m.ex::M::f");
-    assert_eq!(target("V.function_in", rebuild), "lib/m.ex::M::h");
+    assert_eq!(target("V.function_in", rebuild), h);
     assert_eq!(target("V.macro_out", rebuild), "[external] n");
     // A second `except:` re-import filters the first one's result.
     assert_eq!(target("W.excluded_first", rebuild), "[external] m");
@@ -6080,12 +6091,11 @@ end
     assert_eq!(target("X.excluded_first", rebuild), "[external] g");
     assert_eq!(target("X.excluded_second", rebuild), "[external] h");
     assert_eq!(target("X.kept", rebuild), "lib/m.ex::M::f");
-    // The incremental update resolves the same way.
     write(
       &root.join("lib/m.ex"),
       &std::fs::read_to_string(root.join("lib/m.ex"))
         .unwrap()
-        .replace("defmodule M do\n", "defmodule M do\n  @moduledoc false\n"),
+        .replace("  def h(x), do: x\n", ""),
     );
   }
 }
@@ -6113,22 +6123,34 @@ fn ruby_a_class_named_from_the_top_is_not_in_its_module() {
     vec!["lib/outer.rb::Outer::Inner::c", "lib/outer.rb::Top::b"],
     "{targets:?}"
   );
-  // The incremental update names them the same way.
-  write(
-    &root.join("lib/user.rb"),
-    &std::fs::read_to_string(root.join("lib/user.rb"))
-      .unwrap()
-      .replace("def go(x)", "def go(x, _y = nil)"),
-  );
-  assert_eq!(callee_targets(root, "User.go", false), targets);
   let (out, _) = run_in(root, &["digest", "lib/outer.rb"]);
   assert!(out.contains("class Top  L2-6"), "{out}");
   // A module named from the top names what is inside it too.
   assert!(out.contains("class Space.K  L15-16"), "{out}");
   let (out, code) = run_in(root, &["show", "lib/outer.rb", "Top.b"]);
   assert_eq!(code, 0, "{out}");
+  let first = out.lines().next().unwrap_or_default().replace('\\', "/");
+  assert_eq!(first, "# lib/outer.rb:3-5 Top.b (method)", "{out}");
   let (out, _) = run_in(root, &["map", "lib/outer.rb"]);
   assert!(out.contains("    class ::Top  L2-6"), "{out}");
+  // The incremental update names them the same way: `Top.b` renamed is
+  // still in `Top`.
+  for file in ["lib/outer.rb", "lib/user.rb"] {
+    let body = std::fs::read_to_string(root.join(file)).unwrap();
+    write(
+      &root.join(file),
+      &body
+        .replace("def self.b(x)", "def self.bb(x)")
+        .replace("Top.b(x)", "Top.bb(x)"),
+    );
+  }
+  let targets = callee_targets(root, "User.go", false);
+  let got: Vec<&str> = targets.iter().map(|(t, _)| t.as_str()).collect();
+  assert_eq!(
+    got,
+    vec!["lib/outer.rb::Outer::Inner::c", "lib/outer.rb::Top::bb"],
+    "{targets:?}"
+  );
 }
 
 #[test]

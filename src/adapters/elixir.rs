@@ -605,7 +605,7 @@ impl<'s> Walker<'s> {
     let written = _text(first);
 
     let signature = _module_signature(node, keyword, &written);
-    let (kind, names, mut bases, native) = match keyword {
+    let (kind, names, bases, native) = match keyword {
       "defprotocol" => (
         DeclarationKind::Interface,
         vec![(written.clone(), signature)],
@@ -690,18 +690,32 @@ impl<'s> Walker<'s> {
     }
     // A list-form `defimpl` defines one module per type, and `__MODULE__`
     // in its body is each in turn, so the body is walked once per module.
-    // Its directives and modules are recorded by the first walk only.
+    // A later walk records only the directives and modules the earlier
+    // ones did not: what `__MODULE__` makes differ.
     let mut bodies = Vec::with_capacity(fqns.len());
     for (i, fqn) in fqns.iter().enumerate() {
       let marks = (self.directives.len(), self.defined.len());
       bodies.push(self.walk_scoped(module_forms(node), fqn));
       if i > 0 {
-        self.directives.truncate(marks.0);
-        self.defined.truncate(marks.1);
+        let directives = self.directives.split_off(marks.0);
+        for d in directives {
+          let seen = self
+            .directives
+            .iter()
+            .any(|e| (e.keyword, &e.module, e.line) == (d.keyword, &d.module, d.line));
+          if !seen {
+            self.directives.push(d);
+          }
+        }
+        let defined = self.defined.split_off(marks.1);
+        for m in defined {
+          if !self.defined.contains(&m) {
+            self.defined.push(m);
+          }
+        }
       }
     }
     let first = &bodies[0];
-    bases.extend(first.behaviours.iter().cloned());
     let kind = if first.defines_struct && kind == DeclarationKind::Class && native == "module" {
       DeclarationKind::Struct
     } else {
@@ -723,7 +737,7 @@ impl<'s> Walker<'s> {
         kind,
         name,
         signature,
-        bases: bases.clone(),
+        bases: bases.iter().chain(&body.behaviours).cloned().collect(),
         attrs: Vec::new(),
         docs: body.moduledoc,
         docs_inside: true,
@@ -2966,6 +2980,22 @@ mod tests {
         ("reference", "B".to_string())
       ]
     );
+    // What differs per module is recorded for each: `__MODULE__.Helper`
+    // is `P.A.Helper` in one and `P.B.Helper` in the other.
+    let (defined, directives) = scan(
+      "defimpl P, for: [A, B] do\n  alias __MODULE__.Helper\n  defmodule Helper do\n  end\nend\n",
+    );
+    assert_eq!(defined, vec!["P.A", "P.B", "P.A.Helper", "P.B.Helper"]);
+    let aliases: Vec<&str> = directives
+      .iter()
+      .filter(|(k, _)| *k == "alias")
+      .map(|(_, m)| m.as_str())
+      .collect();
+    assert_eq!(aliases, vec!["P.A.Helper", "P.B.Helper"]);
+    // So are its behaviours.
+    let r = parse("defimpl P, for: [A, B] do\n  @behaviour __MODULE__.Beh\nend\n");
+    let bases: Vec<Vec<String>> = r.declarations.iter().map(|m| m.bases.clone()).collect();
+    assert_eq!(bases, vec![vec!["P", "P.A.Beh"], vec!["P", "P.B.Beh"]]);
   }
 
   #[test]
