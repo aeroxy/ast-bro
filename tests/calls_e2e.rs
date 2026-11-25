@@ -6013,3 +6013,54 @@ fn elixir_digest_and_show_name_modules_as_elixir_does() {
     "{out}"
   );
 }
+
+#[test]
+fn elixir_an_except_reimport_brings_in_the_kind_the_only_list_named_nothing_of() {
+  // After `import M, only: [f: 1]`, `import M, except: [g: 1]` keeps the
+  // functions to `f` and brings in every macro: the list named no macro.
+  // With `only: [m: 1]` it is the other way round. As the compiler has it.
+  let tmp = tempfile::tempdir().unwrap();
+  let root = tmp.path();
+  write(&root.join("mix.exs"), "defmodule App.MixProject do\nend\n");
+  write(
+    &root.join("lib/m.ex"),
+    "defmodule M do\n  def f(x), do: x\n  def g(x), do: x\n  def h(x), do: x\n  defmacro m(x), do: x\n  defmacro n(x), do: x\nend\n",
+  );
+  write(
+    &root.join("lib/u.ex"),
+    r#"defmodule U do
+  import M, only: [f: 1]
+  import M, except: [g: 1]
+  def macro_in(x), do: m(x)
+  def function_out(x), do: h(x)
+  def listed(x), do: f(x)
+end
+
+defmodule V do
+  import M, only: [m: 1]
+  import M, except: [g: 1]
+  def function_in(x), do: h(x)
+  def macro_out(x), do: n(x)
+end
+"#,
+  );
+  let target = |symbol: &str, rebuild: bool| -> String {
+    let t = callee_targets(root, symbol, rebuild);
+    assert_eq!(t.len(), 1, "{symbol}: {t:?}");
+    t[0].0.clone()
+  };
+  for rebuild in [true, false] {
+    assert_eq!(target("U.macro_in", rebuild), "lib/m.ex::M::m");
+    assert_eq!(target("U.function_out", rebuild), "[external] h");
+    assert_eq!(target("U.listed", rebuild), "lib/m.ex::M::f");
+    assert_eq!(target("V.function_in", rebuild), "lib/m.ex::M::h");
+    assert_eq!(target("V.macro_out", rebuild), "[external] n");
+    // The incremental update resolves the same way.
+    write(
+      &root.join("lib/m.ex"),
+      &std::fs::read_to_string(root.join("lib/m.ex"))
+        .unwrap()
+        .replace("defmodule M do\n", "defmodule M do\n  @moduledoc false\n"),
+    );
+  }
+}

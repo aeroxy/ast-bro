@@ -132,14 +132,47 @@ impl Call<'_> {
     let imported = elixir_only(symbol_table.get(name))
       .filter(|q| {
         let module = module_of(q);
-        self
-          .imports
-          .iter()
-          .any(|i| i.module == module && accepts(q, Some(i.only)))
+        self.imports.iter().any(|i| {
+          i.module == module
+            && accepts(q, Some(i.only))
+            && !listed_names_its_kind(i, &module, q, self.arity, tables)
+        })
       })
       .collect();
     pick(name, imported).unwrap_or_else(|| external(name))
   }
+}
+
+/// Whether `i.unless_listed` names a definition of `q`'s kind in `module`,
+/// which keeps `q` out: an `except:` re-import lets in only the kinds an
+/// earlier `only:` list named nothing of. A kind nobody can tell — no
+/// definition with that arity — names nothing.
+fn listed_names_its_kind(
+  i: &Imported,
+  module: &str,
+  q: &Qn,
+  arity: Option<usize>,
+  tables: Tables,
+) -> bool {
+  let (symbol_table, _, callable_meta) = tables;
+  let Some(is_macro) = macro_at(callable_meta.get(q), arity) else {
+    return false;
+  };
+  i.unless_listed.iter().any(|(name, listed_arity)| {
+    elixir_only(symbol_table.get(name))
+      .filter(|l| module_of(l) == module)
+      .any(|l| macro_at(callable_meta.get(&l), Some(*listed_arity)) == Some(is_macro))
+  })
+}
+
+/// Whether the definition taking `arity` arguments is a macro; `None` when
+/// there is no such definition.
+fn macro_at(meta: Option<&CallableMeta>, arity: Option<usize>) -> Option<bool> {
+  meta?
+    .arities
+    .iter()
+    .find(|a| !a.is_callback && arity.is_none_or(|n| (a.min..=a.max).contains(&n)))
+    .map(|a| a.is_macro)
 }
 
 /// The Elixir qns among `qns`.
