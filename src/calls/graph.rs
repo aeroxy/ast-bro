@@ -135,6 +135,10 @@ pub struct CallEdge {
   /// `CallSite::arity`. Same no-skip rule as `receiver`.
   #[serde(default)]
   pub arity: Option<usize>,
+  /// `RawEdge::nesting`, so the incremental update looks a lexical
+  /// receiver up in the same scopes. Same no-skip rule as `receiver`.
+  #[serde(default)]
+  pub nesting: Vec<String>,
 }
 
 // `CallEdge::target.name_or_raw()` is the only consumer surface — kept on

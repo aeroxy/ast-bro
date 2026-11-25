@@ -16,7 +16,7 @@ use crate::calls::graph::{
 };
 use crate::calls::pass::{file_rel, qn_from, FilePass, RawEdge};
 use crate::calls::resolve::{self, qn_lang};
-use crate::core::{CallSite, Declaration, DeclarationKind};
+use crate::core::{CallSite, Declaration, DeclarationKind, ReceiverScope};
 use crate::deps::DepGraph;
 use crate::main_helpers::parse_file_for_hook;
 use rayon::prelude::*;
@@ -119,6 +119,7 @@ pub fn extract_file(root: &Path, file: &Path) -> Option<FilePass> {
     &rel,
     parse.language,
     Vec::new(),
+    &Nesting::default(),
     &mut defined,
     &mut callable_locations,
     &mut raw_edges,
@@ -137,6 +138,16 @@ pub fn extract_file(root: &Path, file: &Path) -> Option<FilePass> {
   })
 }
 
+/// The scopes enclosing a declaration as written, outermost first, each
+/// under the name its language gives it, and whether any of them is named
+/// apart from where it is written (`core::qualified_path`). Only then do
+/// they differ from the scopes in the declaration's qn.
+#[derive(Default)]
+struct Nesting {
+  scopes: Vec<String>,
+  renamed: bool,
+}
+
 /// Recursive walker collecting:
 /// - one `Qn` per callable declaration (functions / methods / ctors).
 /// - one `RawEdge` per `CallSite` attached to a callable declaration.
@@ -148,6 +159,7 @@ fn walk(
   rel_file: &str,
   language: &str,
   parents: Vec<String>,
+  nesting: &Nesting,
   defined: &mut Vec<Qn>,
   callable_locations: &mut Vec<CallableMeta>,
   raw_edges: &mut Vec<RawEdge>,
@@ -155,7 +167,9 @@ fn walk(
   namespaces: &mut Vec<Qn>,
 ) {
   for d in decls {
-    let next_parents = crate::core::qualified_path(language, &parents, d).unwrap_or_else(|| {
+    let qualified = crate::core::qualified_path(language, &parents, d);
+    let renamed = nesting.renamed || qualified.is_some();
+    let next_parents = qualified.unwrap_or_else(|| {
       let mut path = parents.clone();
       if !d.name.is_empty() {
         path.push(d.name.clone());
@@ -173,7 +187,7 @@ fn walk(
         arities: crate::calls::elixir::arities(rel_file, d),
       });
       for cs in &d.calls {
-        raw_edges.push(call_to_raw(qn.clone(), cs));
+        raw_edges.push(call_to_raw(qn.clone(), cs, nesting));
       }
     } else if is_type(d) && !d.name.is_empty() {
       let qn = qn_from(rel_file, &next_parents);
@@ -191,11 +205,14 @@ fn walk(
     }
 
     if !d.children.is_empty() {
+      let mut scopes = nesting.scopes.clone();
+      scopes.push(next_parents.join("::"));
       walk(
         &d.children,
         rel_file,
         language,
         next_parents,
+        &Nesting { scopes, renamed },
         defined,
         callable_locations,
         raw_edges,
@@ -229,7 +246,9 @@ fn is_type(d: &Declaration) -> bool {
   matches!(d.kind, Class | Struct | Interface | Enum | Record)
 }
 
-fn call_to_raw(source: Qn, cs: &CallSite) -> RawEdge {
+fn call_to_raw(source: Qn, cs: &CallSite, nesting: &Nesting) -> RawEdge {
+  // The lookup walks the qn's scopes unless a scope was named apart.
+  let lexical = cs.receiver_scope == ReceiverScope::Lexical && nesting.renamed;
   RawEdge {
     source,
     bare_name: cs.name.clone(),
@@ -239,5 +258,10 @@ fn call_to_raw(source: Qn, cs: &CallSite) -> RawEdge {
     receiver_scope: cs.receiver_scope,
     imports: cs.imports.clone(),
     arity: cs.arity,
+    nesting: if lexical {
+      nesting.scopes.iter().rev().cloned().collect()
+    } else {
+      Vec::new()
+    },
   }
 }

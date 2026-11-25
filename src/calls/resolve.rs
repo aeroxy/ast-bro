@@ -135,6 +135,7 @@ pub fn run_with_table(
           raw.receiver_scope,
           &raw.bare_name,
           raw.arity,
+          &raw.nesting,
           &symbol_table,
           callable_meta,
           scopes,
@@ -642,6 +643,7 @@ pub(crate) fn resolve_scoped(
   lookup: ReceiverScope,
   name: &str,
   arity: Option<usize>,
+  nesting: &[String],
   symbol_table: &HashMap<String, Vec<Qn>>,
   callable_meta: &HashMap<Qn, CallableMeta>,
   scopes: &Scopes,
@@ -650,12 +652,25 @@ pub(crate) fn resolve_scoped(
   let is_scope = |path: &[&str]| scopes.paths.contains(&(lang, path.join("::")));
   let normalized = receiver.replace(['\\', '.'], "::");
   let path: Vec<&str> = normalized.split("::").filter(|p| !p.is_empty()).collect();
-  let enclosing = match lookup {
-    ReceiverScope::Lexical => enclosing_parts(caller),
-    ReceiverScope::None | ReceiverScope::Absolute => Vec::new(),
+  // The scopes the path is looked up in, innermost first, ending at the
+  // top level: the caller's enclosing scopes, or the ones written around
+  // it where a scope is named apart (`RawEdge::nesting`).
+  let bases: Vec<Vec<&str>> = match lookup {
+    ReceiverScope::Lexical if !nesting.is_empty() => nesting
+      .iter()
+      .map(|s| dotted_path(&s.split("::").collect::<Vec<_>>()))
+      .chain(std::iter::once(Vec::new()))
+      .collect(),
+    ReceiverScope::Lexical => {
+      let enclosing = enclosing_parts(caller);
+      (0..=enclosing.len())
+        .rev()
+        .map(|depth| dotted_path(&enclosing[..depth]))
+        .collect()
+    }
+    ReceiverScope::None | ReceiverScope::Absolute => vec![Vec::new()],
   };
-  let found = (0..=enclosing.len()).rev().find_map(|depth| {
-    let mut scope = dotted_path(&enclosing[..depth]);
+  let found = bases.into_iter().find_map(|mut scope| {
     scope.extend(&path);
     is_scope(&scope).then_some(scope)
   });

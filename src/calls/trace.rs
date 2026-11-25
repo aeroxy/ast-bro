@@ -568,6 +568,7 @@ mod tests {
       receiver_scope: crate::core::ReceiverScope::None,
       imports: Vec::new(),
       arity: None,
+      nesting: Vec::new(),
     }
   }
 

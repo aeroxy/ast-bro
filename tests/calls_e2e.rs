@@ -6050,6 +6050,15 @@ defmodule W do
   def excluded_first(x), do: m(x)
   def excluded_second(x), do: n(x)
 end
+
+defmodule X do
+  import M, only: []
+  import M, except: [g: 1]
+  import M, except: [h: 1]
+  def excluded_first(x), do: g(x)
+  def excluded_second(x), do: h(x)
+  def kept(x), do: f(x)
+end
 "#,
   );
   let target = |symbol: &str, rebuild: bool| -> String {
@@ -6066,6 +6075,11 @@ end
     // A second `except:` re-import filters the first one's result.
     assert_eq!(target("W.excluded_first", rebuild), "[external] m");
     assert_eq!(target("W.excluded_second", rebuild), "[external] n");
+    // After `only: []`, the first `except:` imports everything but `g`,
+    // and the second filters that.
+    assert_eq!(target("X.excluded_first", rebuild), "[external] g");
+    assert_eq!(target("X.excluded_second", rebuild), "[external] h");
+    assert_eq!(target("X.kept", rebuild), "lib/m.ex::M::f");
     // The incremental update resolves the same way.
     write(
       &root.join("lib/m.ex"),
@@ -6115,4 +6129,44 @@ fn ruby_a_class_named_from_the_top_is_not_in_its_module() {
   assert_eq!(code, 0, "{out}");
   let (out, _) = run_in(root, &["map", "lib/outer.rb"]);
   assert!(out.contains("    class ::Top  L2-6"), "{out}");
+}
+
+#[test]
+fn ruby_a_class_named_from_the_top_looks_up_constants_where_it_is_written() {
+  // Inside `class ::Top` in `module Outer`, `Module.nesting` is
+  // `[Top, Outer]`: `Util` is `Top::Util` before `Outer::Util`, and
+  // `Helpers` is `Outer::Helpers` before the top-level one (`ruby -e`
+  // agrees).
+  let tmp = tempfile::tempdir().unwrap();
+  let root = tmp.path();
+  std::fs::create_dir_all(root.join(".git")).unwrap();
+  write(
+    &root.join("lib/top.rb"),
+    "module Helpers\n  def self.go\n  end\nend\n\nmodule Util\n  def self.u\n  end\nend\n\nclass Top\n  module Util\n    def self.u\n    end\n  end\nend\n",
+  );
+  let helpers = "module Outer\n  module Helpers\n    def self.go\n    end\n  end\nend\n";
+  write(&root.join("lib/helpers.rb"), helpers);
+  write(
+    &root.join("lib/outer.rb"),
+    "module Outer\n  module Util\n    def self.u\n    end\n  end\n\n  class ::Top\n    def run\n      Helpers.go\n      Util.u\n    end\n  end\nend\n",
+  );
+  let got = |rebuild: bool| -> Vec<String> {
+    callee_targets(root, "Top.run", rebuild)
+      .into_iter()
+      .map(|(t, _)| t)
+      .collect()
+  };
+  let nested = vec![
+    "lib/helpers.rb::Outer::Helpers::go",
+    "lib/top.rb::Top::Util::u",
+  ];
+  let top = vec!["lib/top.rb::Helpers::go", "lib/top.rb::Top::Util::u"];
+  assert_eq!(got(true), nested);
+  // The incremental update looks up the same scopes when another file
+  // changes them: without `Outer::Helpers`, `Helpers` is the top-level
+  // one; with it back, it is `Outer::Helpers` again.
+  write(&root.join("lib/helpers.rb"), "module Outer\nend\n");
+  assert_eq!(got(false), top);
+  write(&root.join("lib/helpers.rb"), helpers);
+  assert_eq!(got(false), nested);
 }
