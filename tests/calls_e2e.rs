@@ -6042,6 +6042,14 @@ defmodule V do
   def function_in(x), do: h(x)
   def macro_out(x), do: n(x)
 end
+
+defmodule W do
+  import M, only: [f: 1]
+  import M, except: [m: 1]
+  import M, except: [n: 1]
+  def excluded_first(x), do: m(x)
+  def excluded_second(x), do: n(x)
+end
 "#,
   );
   let target = |symbol: &str, rebuild: bool| -> String {
@@ -6055,6 +6063,9 @@ end
     assert_eq!(target("U.listed", rebuild), "lib/m.ex::M::f");
     assert_eq!(target("V.function_in", rebuild), "lib/m.ex::M::h");
     assert_eq!(target("V.macro_out", rebuild), "[external] n");
+    // A second `except:` re-import filters the first one's result.
+    assert_eq!(target("W.excluded_first", rebuild), "[external] m");
+    assert_eq!(target("W.excluded_second", rebuild), "[external] n");
     // The incremental update resolves the same way.
     write(
       &root.join("lib/m.ex"),
@@ -6075,7 +6086,7 @@ fn ruby_a_class_named_from_the_top_is_not_in_its_module() {
   std::fs::create_dir_all(root.join(".git")).unwrap();
   write(
     &root.join("lib/outer.rb"),
-    "module Outer\n  class ::Top\n    def self.b(x)\n      x\n    end\n  end\n\n  class Inner\n    def self.c(x)\n      x\n    end\n  end\nend\n",
+    "module Outer\n  class ::Top\n    def self.b(x)\n      x\n    end\n  end\n\n  class Inner\n    def self.c(x)\n      x\n    end\n  end\n\n  module ::Space\n    class K\n    end\n  end\nend\n",
   );
   write(
     &root.join("lib/user.rb"),
@@ -6088,8 +6099,18 @@ fn ruby_a_class_named_from_the_top_is_not_in_its_module() {
     vec!["lib/outer.rb::Outer::Inner::c", "lib/outer.rb::Top::b"],
     "{targets:?}"
   );
+  // The incremental update names them the same way.
+  write(
+    &root.join("lib/user.rb"),
+    &std::fs::read_to_string(root.join("lib/user.rb"))
+      .unwrap()
+      .replace("def go(x)", "def go(x, _y = nil)"),
+  );
+  assert_eq!(callee_targets(root, "User.go", false), targets);
   let (out, _) = run_in(root, &["digest", "lib/outer.rb"]);
   assert!(out.contains("class Top  L2-6"), "{out}");
+  // A module named from the top names what is inside it too.
+  assert!(out.contains("class Space.K  L15-16"), "{out}");
   let (out, code) = run_in(root, &["show", "lib/outer.rb", "Top.b"]);
   assert_eq!(code, 0, "{out}");
   let (out, _) = run_in(root, &["map", "lib/outer.rb"]);
