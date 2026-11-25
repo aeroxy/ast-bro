@@ -677,6 +677,16 @@ mod tests {
     assert!(matches!(load_with_delta(&root), LoadOutcome::Stale { .. }));
     load_or_build_with_records(&root, false).expect("update");
     assert!(matches!(load_with_delta(&root), LoadOutcome::Fresh { .. }));
+    // A file whose existence alone counts, added and then deleted: each is
+    // one update, and the update's records hold it.
+    write(&root.join("notes.txt"), "later\n");
+    assert!(matches!(load_with_delta(&root), LoadOutcome::Stale { .. }));
+    load_or_build_with_records(&root, false).expect("update after an add");
+    assert!(matches!(load_with_delta(&root), LoadOutcome::Fresh { .. }));
+    fs::remove_file(root.join("notes.txt")).unwrap();
+    assert!(matches!(load_with_delta(&root), LoadOutcome::Stale { .. }));
+    load_or_build_with_records(&root, false).expect("update after a delete");
+    assert!(matches!(load_with_delta(&root), LoadOutcome::Fresh { .. }));
   }
 
   /// A tree where `a.py` imports `b`, for the race tests.
