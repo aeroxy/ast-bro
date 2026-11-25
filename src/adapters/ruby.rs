@@ -5,6 +5,16 @@ use std::path::Path;
 
 pub struct RubyAdapter;
 
+/// The qualified path of a class or module declared under `parents` when
+/// Ruby does not name it `parents` + its written name: `class ::Top` inside
+/// `module Outer` defines `Top`, from the top level. The declaration stays
+/// where it is written, as `map` outlines the source; `None` for anything
+/// else.
+pub(crate) fn qualified_path(_parents: &[String], d: &Declaration) -> Option<Vec<String>> {
+  let top = d.name.strip_prefix("::")?;
+  (!top.is_empty()).then(|| vec![top.to_string()])
+}
+
 impl LanguageAdapter for RubyAdapter {
   fn language_name(&self) -> &'static str {
     "ruby"

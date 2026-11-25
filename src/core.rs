@@ -1449,11 +1449,12 @@ fn _format_inline_attrs(attrs: &[String]) -> String {
 }
 
 /// The qualified path of `d` under `parents` when its language does not
-/// name it `parents` + `d.name`: an Elixir `defimpl` or
-/// `defmodule Elixir.Top` is not in the module it is written in. `None`:
-/// the usual path. Every reader that builds a qualified name from the
-/// nesting asks this first — `digest`, `show`, and the call graph — so the
-/// declaration can stay where `map` outlines it.
+/// name it `parents` + `d.name`: a declaration written in one scope that
+/// defines a name in another — Ruby's `class ::Top`, Elixir's
+/// `defmodule Elixir.Top` or a `defimpl` inside a module. `None`: the usual
+/// path. Every reader that builds a qualified name from the nesting asks
+/// this first — `digest`, `show`, and the call graph — so the declaration
+/// can stay where `map` outlines it. Each rule sits beside its adapter.
 pub(crate) fn qualified_path(
   language: &str,
   parents: &[String],
@@ -1461,6 +1462,7 @@ pub(crate) fn qualified_path(
 ) -> Option<Vec<String>> {
   match language {
     "elixir" => crate::adapters::elixir::qualified_path(parents, d),
+    "ruby" => crate::adapters::ruby::qualified_path(parents, d),
     _ => None,
   }
 }
