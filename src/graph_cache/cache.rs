@@ -514,6 +514,7 @@ mod tests {
     );
     write(&root.join("svc/go.mod"), "module example.com/svc\n");
     write(&root.join("svc/main.go"), "package main\n");
+    write(&root.join("Cargo.toml"), "[package]\nname = \"x\"\n");
     write(&root.join("tsconfig.json"), "{}\n");
     write(&root.join("composer.json"), "{}\n");
     write(&root.join("README.md"), "# Title\n");
@@ -539,7 +540,7 @@ mod tests {
           .to_string_lossy()
           .replace('\\', "/")
       })
-      .chain(["svc/go.mod", "tsconfig.json", "composer.json"].map(String::from))
+      .chain(["svc/go.mod", "Cargo.toml", "tsconfig.json", "composer.json"].map(String::from))
       .collect();
     want.sort();
     assert_eq!(got, want);
