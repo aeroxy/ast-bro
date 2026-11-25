@@ -346,7 +346,7 @@ The cache also stores the version of the binary that wrote it (`CacheFile::versi
 
 1. Rebuild the suffix index once. It decides which files the graph holds, as in a cold build, so a removed file drops out here.
 2. Keep the cached imports (`DepGraph::imports`) of every file that did not change, and re-extract only added + modified files (parallel via rayon).
-3. Resolve **every** file against the new index with `deps::resolve_all`, the same function the full build uses, which also re-aggregates the stats. An added, removed, or edited file can move where an unchanged file's import resolves, so resolving only the changed files leaves stale edges (#93).
+3. Resolve **every** file against the new index with `deps::resolve_all`, the same function the full build uses, which also recounts the file, edge, and external counts; `stats.build_ms` keeps the cold build's time. An added, removed, or edited file can move where an unchanged file's import resolves, so resolving only the changed files leaves stale edges (#93).
 
 **`apply_delta_to_calls`** (more careful since the call graph has cross-file edges):
 
