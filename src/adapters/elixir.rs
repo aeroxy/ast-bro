@@ -1571,7 +1571,10 @@ impl<'s> Walker<'s> {
                 unless_listed: Vec::new(),
               });
             }
-          } else {
+          } else if only.as_ref().is_none_or(|listed| !listed.is_empty()) {
+            // `only: []` imports nothing: Elixir drops the module from
+            // the imports, so a later `except:` starts from the whole
+            // module.
             scope.imports.push(Import {
               module: module.clone(),
               only,

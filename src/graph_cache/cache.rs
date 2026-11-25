@@ -341,6 +341,44 @@ mod tests {
     assert_ne!(head.schema, "ast-bro.graph-index.v8");
   }
 
+  /// A call edge stores the imports in scope at its call site (Elixir).
+  /// bincode reads fields by position, so a field left out when empty
+  /// makes the whole cache undecodable, and every query rebuilds it.
+  #[test]
+  fn a_call_graph_with_imports_decodes_from_disk() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(&root.join("mix.exs"), "defmodule App.MixProject do\nend\n");
+    write(
+      &root.join("lib/m.ex"),
+      "defmodule M do\n  def f(x), do: x\nend\n",
+    );
+    write(
+      &root.join("lib/u.ex"),
+      "defmodule U do\n  import M\n  def go(x), do: f(x)\nend\n",
+    );
+    shared::forget(root);
+    shared::get_or_init(root).expect("cold get_or_init");
+    shared::promote_calls(root, |g| {
+      crate::calls::build::build_call_graph(root, &g.deps)
+    })
+    .expect("promote_calls");
+    shared::forget(root);
+
+    let bytes = fs::read(cache_path(root)).expect("read promoted cache");
+    let (cf, _): (CacheFile, _) =
+      decode_from_slice(&bytes, bincode::config::standard()).expect("decode promoted");
+    let calls = cf.graph.calls.expect("promoted cache carries calls");
+    assert!(
+      calls
+        .forward
+        .values()
+        .flatten()
+        .any(|e| !e.imports.is_empty()),
+      "the edge from `U.go` carries the import of `M`"
+    );
+  }
+
   /// Cold build → on-disk cache has `calls: None`. After `promote_calls`,
   /// re-reading and decoding the file directly (NOT via the in-memory
   /// registry) must show `calls: Some(...)`. Then `forget` + `get_or_init`

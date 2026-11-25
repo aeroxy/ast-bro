@@ -42,7 +42,9 @@ pub const JSON_SCHEMA_RUN: &str = "ast-bro.run.v1";
 /// which an older binary would read as the start of the graph; v10 adds
 /// `DepGraph::imports`, so an incremental update can resolve unchanged
 /// files again (#93); v11 adds `Imported::unless_listed` to the call
-/// edges, for an Elixir `except:` re-import after an `only:` list.
+/// edges, for an Elixir `except:` re-import after an `only:` list, and
+/// `CallEdge::nesting`, the scopes a Ruby constant is looked up in when
+/// a class is named from the top (`class ::Top`).
 ///
 /// Since v9 the cache also stores the crate version, and another version's
 /// cache is rebuilt (#81). So bump this only when the layout changes: an
@@ -274,7 +276,10 @@ pub struct Imported {
   /// nothing of in `module`. After `import M, only: [f: 1]`, a re-import
   /// `import M, except: [...]` brings in each kind the list did not name,
   /// whole, minus `except:`. Empty: no condition.
-  #[serde(default, skip_serializing_if = "Vec::is_empty")]
+  ///
+  /// Cached in `CallEdge::imports`, so no `skip_serializing_if` — see
+  /// `DepEdge::local_name`.
+  #[serde(default)]
   pub unless_listed: Vec<(String, usize)>,
 }
 

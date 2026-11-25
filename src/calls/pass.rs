@@ -45,6 +45,11 @@ pub struct RawEdge {
   pub receiver_scope: ReceiverScope,
   pub imports: Vec<crate::core::Imported>,
   pub arity: Option<usize>,
+  /// The scopes a `ReceiverScope::Lexical` receiver is looked up in,
+  /// innermost first, where they are not the scopes enclosing `source`:
+  /// inside Ruby's `class ::Top` in `module Outer`, `Top` and then
+  /// `Outer`. Empty otherwise.
+  pub nesting: Vec<String>,
 }
 
 pub fn qn_from(rel_file: &str, parents: &[String]) -> Qn {
@@ -85,5 +90,6 @@ pub(crate) fn raw_to_edge(
     receiver_scope: raw.receiver_scope,
     imports: raw.imports,
     arity: raw.arity,
+    nesting: raw.nesting,
   }
 }

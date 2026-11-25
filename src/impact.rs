@@ -314,6 +314,7 @@ fn compute_impact(
             receiver_scope: crate::core::ReceiverScope::None,
             imports: Vec::new(),
             arity: None,
+            nesting: Vec::new(),
           },
         });
       }
@@ -434,6 +435,7 @@ fn compute_impact(
               receiver_scope: crate::core::ReceiverScope::None,
               imports: Vec::new(),
               arity: None,
+              nesting: Vec::new(),
             },
           });
         }
@@ -715,6 +717,7 @@ fn build_callers_section(
               receiver_scope: crate::core::ReceiverScope::None,
               imports: Vec::new(),
               arity: None,
+              nesting: Vec::new(),
             },
           });
         }
