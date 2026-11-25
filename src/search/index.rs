@@ -520,14 +520,15 @@ impl Index {
     let mut new_files: Vec<FileRecord> = Vec::with_capacity(self.files.len());
     let mut mtime_refresh: std::collections::HashMap<String, (i128, u64)> =
       std::collections::HashMap::new();
-    for p in &delta.mtime_only {
-      let rel = p
+    for touched in &delta.mtime_only {
+      let rel = touched
+        .path
         .strip_prefix(&self.paths.root)
         .map(normalise_path)
-        .unwrap_or_else(|_| p.display().to_string());
-      if let Ok(m) = fs::metadata(p) {
-        mtime_refresh.insert(rel, (mtime_nanos(&m), m.len()));
-      }
+        .unwrap_or_else(|_| touched.path.display().to_string());
+      // The metadata the delta hashed under, not a fresh `stat`: see
+      // `MtimeOnly`.
+      mtime_refresh.insert(rel, (touched.mtime_ns, touched.size));
     }
 
     for f in self.files.drain(..) {

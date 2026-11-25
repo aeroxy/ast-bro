@@ -47,6 +47,18 @@ pub struct FileRecord {
   pub chunk_end: u32,
 }
 
+/// A file whose mtime or size changed while its content hash did not, with
+/// the mtime and size read before it was hashed. A record refreshed from
+/// these, not from a later `stat`, pairs the hash with the metadata it was
+/// taken under: an edit after the hash changes the mtime again, and the
+/// next comparison hashes the file and sees the edit.
+#[derive(Debug, Clone)]
+pub struct MtimeOnly {
+  pub path: PathBuf,
+  pub mtime_ns: i128,
+  pub size: u64,
+}
+
 /// Result of comparing the cache against the working tree.
 #[derive(Debug, Default, Clone)]
 pub struct Delta {
@@ -58,7 +70,7 @@ pub struct Delta {
   pub removed: Vec<String>,
   /// Files where mtime/size changed but content hash matched. Records can
   /// have their mtime refreshed without re-embedding.
-  pub mtime_only: Vec<PathBuf>,
+  pub mtime_only: Vec<MtimeOnly>,
   /// Total number of indexable files seen on disk.
   pub seen_count: usize,
 }
@@ -159,7 +171,11 @@ pub fn delta_from_files(
         // Expensive path: hash the file to disambiguate.
         match hash_file(&path) {
           Ok(hash) if hash == record.content_hash => {
-            delta.mtime_only.push(path);
+            delta.mtime_only.push(MtimeOnly {
+              path,
+              mtime_ns,
+              size,
+            });
           }
           Ok(_) => delta.modified.push(path),
           Err(_) => delta.modified.push(path),
@@ -305,6 +321,10 @@ mod tests {
     assert_eq!(delta.mtime_only.len(), 1);
     assert!(delta.modified.is_empty());
     assert!(delta.added.is_empty());
+    // It carries the metadata it was hashed under, for the refresh.
+    let meta = fs::metadata(&path).unwrap();
+    assert_eq!(delta.mtime_only[0].mtime_ns, mtime_nanos(&meta));
+    assert_eq!(delta.mtime_only[0].size, size);
   }
 
   #[test]
