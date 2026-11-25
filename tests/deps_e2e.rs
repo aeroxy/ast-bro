@@ -1033,3 +1033,99 @@ fn incremental_update_drops_a_deleted_importer() {
   assert!(has_edge(&edges, "a.py", "b.py"), "{}", edges);
   assert!(!has_edge(&edges, "gone.py", "b.py"), "{}", edges);
 }
+
+// ---- Change detection covers every deps input (issue #123) ----
+//
+// Each change below is the only change in the tree. The cache must notice
+// it on its own: a file the deps graph reads but the freshness check does
+// not track keeps its old answer until `--rebuild`.
+
+#[test]
+fn incremental_update_sees_an_edit_to_a_hidden_file() {
+  let tmp = tempfile::tempdir().unwrap();
+  let root = tmp.path();
+  write_in(root, ".cfg/h.py", "import x\n");
+  write_in(root, "x.py", "X = 1\n");
+  write_in(root, "y.py", "Y = 1\n");
+  let edges = incremental_matches_cold(root, |root| {
+    write_in(root, ".cfg/h.py", "import y\n");
+  });
+  assert!(has_edge(&edges, ".cfg/h.py", "y.py"), "{}", edges);
+}
+
+#[test]
+fn incremental_update_sees_an_edit_to_a_file_over_the_search_size_cap() {
+  // The search index skips files over 2 MB; the deps graph reads them.
+  let pad = "#".repeat(2_100_000);
+  let tmp = tempfile::tempdir().unwrap();
+  let root = tmp.path();
+  write_in(root, "big.py", &format!("import x\n{}\n", pad));
+  write_in(root, "x.py", "X = 1\n");
+  write_in(root, "y.py", "Y = 1\n");
+  let edges = incremental_matches_cold(root, |root| {
+    write_in(root, "big.py", &format!("import y\n{}\n", pad));
+  });
+  assert!(has_edge(&edges, "big.py", "y.py"), "{}", edges);
+}
+
+#[test]
+fn incremental_update_sees_an_edit_to_go_mod() {
+  let tmp = tempfile::tempdir().unwrap();
+  let root = tmp.path();
+  write_in(root, "go.mod", "module example.com/old\n");
+  write_in(
+    root,
+    "main.go",
+    "package main\n\nimport \"example.com/new/pkg\"\n\nfunc main() { pkg.P() }\n",
+  );
+  write_in(root, "pkg/p.go", "package pkg\n\nfunc P() {}\n");
+  let edges = incremental_matches_cold(root, |root| {
+    write_in(root, "go.mod", "module example.com/new\n");
+  });
+  assert!(has_edge(&edges, "main.go", "pkg/p.go"), "{}", edges);
+}
+
+#[test]
+fn incremental_update_sees_an_edit_to_tsconfig_json() {
+  let tmp = tempfile::tempdir().unwrap();
+  let root = tmp.path();
+  write_in(
+    root,
+    "tsconfig.json",
+    r#"{ "compilerOptions": { "paths": { "@old/*": ["lib/*"] } } }"#,
+  );
+  write_in(root, "a.ts", "import { u } from \"@lib/u\";\n");
+  write_in(root, "lib/u.ts", "export const u = 1;\n");
+  let edges = incremental_matches_cold(root, |root| {
+    write_in(
+      root,
+      "tsconfig.json",
+      r#"{ "compilerOptions": { "paths": { "@lib/*": ["lib/*"] } } }"#,
+    );
+  });
+  assert!(has_edge(&edges, "a.ts", "lib/u.ts"), "{}", edges);
+}
+
+#[test]
+fn incremental_update_sees_an_edit_to_composer_json() {
+  // Two classes share a name, so only the PSR-4 mapping decides which one
+  // `use Vendor\Account;` reaches.
+  let tmp = tempfile::tempdir().unwrap();
+  let root = tmp.path();
+  write_in(
+    root,
+    "composer.json",
+    r#"{ "autoload": { "psr-4": { "Vendor\\": "a/" } } }"#,
+  );
+  write_in(root, "User.php", "<?php\nuse Vendor\\Account;\n");
+  write_in(root, "a/Account.php", "<?php\nclass Account {}\n");
+  write_in(root, "b/Account.php", "<?php\nclass Account {}\n");
+  let edges = incremental_matches_cold(root, |root| {
+    write_in(
+      root,
+      "composer.json",
+      r#"{ "autoload": { "psr-4": { "Vendor\\": "b/" } } }"#,
+    );
+  });
+  assert!(has_edge(&edges, "User.php", "b/Account.php"), "{}", edges);
+}

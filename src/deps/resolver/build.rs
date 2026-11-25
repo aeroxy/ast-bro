@@ -16,7 +16,34 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use crate::deps::manifest::parse_go_module;
-use crate::file_filter::{add_filters, should_skip_path};
+use crate::file_filter::{add_filters, should_skip_path, HARDCODED_IGNORE_DIRS};
+
+/// The walk every deps input comes from: hidden files included, ignore
+/// files honoured, and the hardcoded ignore directories (`.git`,
+/// `node_modules`, ...) not entered. The index build and the graph cache's
+/// freshness check both use it, so the cache tracks exactly the files the
+/// graph reads (#123). Keep only the entries `is_deps_input` accepts.
+pub fn deps_walk(root: &Path) -> ignore::Walk {
+  let mut builder = WalkBuilder::new(root);
+  builder.hidden(false);
+  add_filters(&mut builder, root);
+  builder.filter_entry(|entry| {
+    let is_dir = entry.file_type().is_some_and(|t| t.is_dir());
+    let name = entry.file_name().to_string_lossy();
+    entry.depth() == 0 || !is_dir || !HARDCODED_IGNORE_DIRS.contains(&name.as_ref())
+  });
+  builder.build()
+}
+
+/// Whether the deps graph reads this walked file: a `go.mod`, or a source
+/// file in one of the deps languages.
+pub fn is_deps_input(path: &Path, root: &Path) -> bool {
+  !should_skip_path(path, root) && (is_go_mod(path) || Lang::from_path(path).is_some())
+}
+
+fn is_go_mod(path: &Path) -> bool {
+  path.file_name().and_then(|s| s.to_str()) == Some("go.mod")
+}
 
 /// Per-file metadata collected during the walk.
 #[derive(Debug, Clone)]
@@ -122,20 +149,14 @@ pub fn build_suffix_index(root: &Path) -> SuffixIndex {
     ..Default::default()
   };
 
-  let mut builder = WalkBuilder::new(root);
-  builder.hidden(false);
-  add_filters(&mut builder, root);
   let mut elixir_files: Vec<PathBuf> = Vec::new();
 
-  for entry in builder.build().flatten() {
+  for entry in deps_walk(root).flatten() {
     let path = entry.path();
-    if !entry.file_type().is_some_and(|ft| ft.is_file()) {
+    if !entry.file_type().is_some_and(|ft| ft.is_file()) || !is_deps_input(path, root) {
       continue;
     }
-    if should_skip_path(path, root) {
-      continue;
-    }
-    if path.file_name().and_then(|s| s.to_str()) == Some("go.mod") {
+    if is_go_mod(path) {
       if let Some(prefix) = parse_go_module(path) {
         let dir = path
           .parent()

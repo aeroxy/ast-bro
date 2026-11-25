@@ -84,45 +84,53 @@ impl Delta {
 /// Honours `.gitignore` etc. via `ignore::WalkBuilder` and only considers
 /// files that pass `is_indexable`.
 pub fn compute_delta(walk_root: &Path, strip_root: &Path, cached_files: &[FileRecord]) -> Delta {
+  let mut builder = WalkBuilder::new(walk_root);
+  add_filters(&mut builder, walk_root);
+  let files = builder.build().flatten().filter_map(|entry| {
+    let path = entry.path();
+    if !entry.file_type().is_some_and(|ft| ft.is_file()) {
+      return None;
+    }
+    // Belt-and-suspenders: skip the hardcoded denylist even when
+    // .gitignore / .ast-bro-ignore don't list it.
+    if should_skip_path(path, walk_root) {
+      return None;
+    }
+    is_indexable(path)?;
+    // Reuse the walker's metadata (cached from the directory scan on most
+    // platforms) instead of a fresh `fs::metadata` syscall. Safe here: the
+    // `is_file()` check above already excluded symlinks/dirs, so this is a
+    // regular file and matches what `fs::metadata` would return.
+    let meta = entry.metadata().ok()?;
+    // Oversized files are not indexed — see MAX_INDEX_FILE_BYTES. Skipping
+    // before `seen` means a file that grows past the cap is treated as
+    // removed on the next open (and dropped from the index), matching the
+    // build-side walk which won't chunk it either.
+    if meta.len() > MAX_INDEX_FILE_BYTES {
+      return None;
+    }
+    Some((entry.into_path(), meta))
+  });
+  delta_from_files(files, strip_root, cached_files)
+}
+
+/// Compare `files` — each a path with its metadata — against
+/// `cached_files`. The walk decides which files count; this decides what
+/// changed. `compute_delta` walks the search corpus; the graph cache walks
+/// the files the deps graph reads, and both compare here.
+pub fn delta_from_files(
+  files: impl IntoIterator<Item = (PathBuf, fs::Metadata)>,
+  strip_root: &Path,
+  cached_files: &[FileRecord],
+) -> Delta {
   let cached: HashMap<&str, &FileRecord> =
     cached_files.iter().map(|r| (r.path.as_str(), r)).collect();
 
   let mut delta = Delta::default();
   let mut seen: HashSet<String> = HashSet::with_capacity(cached.len());
 
-  let mut builder = WalkBuilder::new(walk_root);
-  add_filters(&mut builder, walk_root);
-  let walker = builder.build();
-
-  for entry in walker.flatten() {
-    let path = entry.path();
-    if !entry.file_type().is_some_and(|ft| ft.is_file()) {
-      continue;
-    }
-    // Belt-and-suspenders: skip the hardcoded denylist even when
-    // .gitignore / .ast-bro-ignore don't list it.
-    if should_skip_path(path, walk_root) {
-      continue;
-    }
-    if is_indexable(path).is_none() {
-      continue;
-    }
-    // Reuse the walker's metadata (cached from the directory scan on most
-    // platforms) instead of a fresh `fs::metadata` syscall. Safe here: the
-    // `is_file()` check above already excluded symlinks/dirs, so this is a
-    // regular file and matches what `fs::metadata` would return.
-    let meta = match entry.metadata() {
-      Ok(m) => m,
-      Err(_) => continue,
-    };
+  for (path, meta) in files {
     let size = meta.len();
-    // Oversized files are not indexed — see MAX_INDEX_FILE_BYTES. Skipping
-    // before `seen` means a file that grows past the cap is treated as
-    // removed on the next open (and dropped from the index), matching the
-    // build-side walk which won't chunk it either.
-    if size > MAX_INDEX_FILE_BYTES {
-      continue;
-    }
     delta.seen_count += 1;
 
     let rel = match path.strip_prefix(strip_root) {
@@ -134,19 +142,19 @@ pub fn compute_delta(walk_root: &Path, strip_root: &Path, cached_files: &[FileRe
     let mtime_ns = mtime_nanos(&meta);
 
     match cached.get(rel.as_str()) {
-      None => delta.added.push(path.to_path_buf()),
+      None => delta.added.push(path),
       Some(record) => {
         if record.mtime_ns == mtime_ns && record.size == size {
           // Cheap path: unchanged, skip the hash.
           continue;
         }
         // Expensive path: hash the file to disambiguate.
-        match hash_file(path) {
+        match hash_file(&path) {
           Ok(hash) if hash == record.content_hash => {
-            delta.mtime_only.push(path.to_path_buf());
+            delta.mtime_only.push(path);
           }
-          Ok(_) => delta.modified.push(path.to_path_buf()),
-          Err(_) => delta.modified.push(path.to_path_buf()),
+          Ok(_) => delta.modified.push(path),
+          Err(_) => delta.modified.push(path),
         }
       }
     }
