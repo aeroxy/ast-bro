@@ -518,18 +518,7 @@ impl Index {
 
     let mut new_tombstones: Vec<u32> = Vec::new();
     let mut new_files: Vec<FileRecord> = Vec::with_capacity(self.files.len());
-    let mut mtime_refresh: std::collections::HashMap<String, (i128, u64)> =
-      std::collections::HashMap::new();
-    for touched in &delta.mtime_only {
-      let rel = touched
-        .path
-        .strip_prefix(&self.paths.root)
-        .map(normalise_path)
-        .unwrap_or_else(|_| touched.path.display().to_string());
-      // The metadata the delta hashed under, not a fresh `stat`: see
-      // `MtimeOnly`.
-      mtime_refresh.insert(rel, (touched.mtime_ns, touched.size));
-    }
+    let mut mtime_refresh = mtime_refresh(&self.paths.root, delta);
 
     for f in self.files.drain(..) {
       let key = f.path.as_str();
@@ -1441,6 +1430,27 @@ fn normalise_path(p: &Path) -> String {
     .join("/")
 }
 
+/// The mtime and size to record for each file the delta found touched with
+/// no change, keyed by its record path. They are the ones the delta hashed
+/// under, not a fresh `stat`: see `MtimeOnly`.
+fn mtime_refresh(
+  root: &Path,
+  delta: &crate::search::cache::Delta,
+) -> std::collections::HashMap<String, (i128, u64)> {
+  delta
+    .mtime_only
+    .iter()
+    .map(|touched| {
+      let rel = touched
+        .path
+        .strip_prefix(root)
+        .map(normalise_path)
+        .unwrap_or_else(|_| touched.path.display().to_string());
+      (rel, (touched.mtime_ns, touched.size))
+    })
+    .collect()
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -1561,6 +1571,26 @@ mod tests {
 
   /// Smoke test of the persistence round-trip without touching the embedder.
   /// Builds tiny structures by hand, writes, reads back, asserts equality.
+  /// A touched file's record takes the metadata the delta hashed it under.
+  /// An edit after the hash then still differs from the record, and the
+  /// next delta hashes the file again.
+  #[test]
+  fn a_touched_file_is_refreshed_from_the_metadata_it_was_hashed_under() {
+    let dir = tmp_repo();
+    let path = dir.path().join("a.rs");
+    fs::write(&path, "fn edited_after_the_hash() {}").unwrap();
+    let delta = crate::search::cache::Delta {
+      mtime_only: vec![crate::search::cache::MtimeOnly {
+        path: path.clone(),
+        mtime_ns: 42,
+        size: 5,
+      }],
+      ..Default::default()
+    };
+    let refresh = mtime_refresh(dir.path(), &delta);
+    assert_eq!(refresh.get("a.rs"), Some(&(42, 5)));
+  }
+
   #[test]
   fn persistence_roundtrip() {
     let dir = tmp_repo();
