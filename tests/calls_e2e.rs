@@ -4032,8 +4032,9 @@ fn incremental_update_keeps_constructions_of_types() {
 fn incremental_update_demotes_a_construction_of_a_deleted_type() {
   // Types count as targets only while they exist: step 3 drops a changed
   // file's types before step 8 runs, so a struct that is gone takes its
-  // constructions' target with it. (A cold build still names
-  // `src/a.rs::Foo` here, from the import alone: #127.)
+  // constructions' target with it. The construction itself stays, by name,
+  // as an unresolved call site. (A cold build still names `src/a.rs::Foo`
+  // here, from the import alone: #127.)
   let tmp = construction_project();
   let root = tmp.path();
   assert_eq!(
@@ -4043,10 +4044,10 @@ fn incremental_update_demotes_a_construction_of_a_deleted_type() {
   );
 
   write(&root.join("src/a.rs"), "pub struct Renamed { pub x: u8 }\n");
-  let after = callee_targets(root, "make", false);
-  assert!(
-    !after.iter().any(|(t, _)| t == "src/a.rs::Foo"),
-    "a deleted struct kept its construction: {after:?}"
+  assert_eq!(
+    callee_targets(root, "make", false),
+    vec![("[unresolved] Foo".to_string(), "Ambiguous".to_string())],
+    "a deleted struct's construction keeps no target, and is still listed"
   );
 }
 
