@@ -88,6 +88,31 @@ impl LanguageAdapter for ElixirAdapter {
   }
 }
 
+/// The qualified path of a module declared under `parents` when Elixir does
+/// not name it `parents` + its written name: a `defimpl` defines the module
+/// it is named for in full (`String.Chars.Outer`) wherever it is written,
+/// `defmodule Elixir.Top` defines `Top`, and `defmodule __MODULE__.Sub`
+/// defines `Sub` in the enclosing module. The declaration stays where it is
+/// written, as `map` outlines the source; `None` for anything else.
+pub(crate) fn qualified_path(parents: &[String], d: &Declaration) -> Option<Vec<String>> {
+  let native = d.native_kind.as_deref()?;
+  if native == "impl" {
+    return Some(vec![d.name.clone()]);
+  }
+  if !matches!(native, "module" | "protocol") {
+    return None;
+  }
+  if let Some(top) = d.name.strip_prefix("Elixir.") {
+    return Some(vec![top.to_string()]);
+  }
+  let rest = d.name.strip_prefix("__MODULE__")?;
+  let mut path = parents.to_vec();
+  if let Some(rest) = rest.strip_prefix('.') {
+    path.push(rest.to_string());
+  }
+  Some(path)
+}
+
 /// An `alias` / `import` / `require` / `use`, a `defimpl`'s protocol
 /// (`impl`), or (`reference`) a module named without a directive.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -640,65 +665,78 @@ impl<'s> Walker<'s> {
       ),
     };
 
-    // `defimpl` names its modules (`P.T`); a nested `defmodule` qualifies.
-    let fqn = if keyword == "defimpl" || parent_fqn.is_empty() {
-      names
-        .first()
-        .map(|(n, _)| n.clone())
-        .unwrap_or_else(|| written.clone())
-    } else if written.starts_with("__MODULE__") {
-      _expand_module(&written, parent_fqn)
+    // The module each name defines, as Elixir names it: `defimpl` names
+    // its modules in full (`P.T`), a nested `defmodule` qualifies, and
+    // `__MODULE__.` and `Elixir.` name it from the parent and the top.
+    let fqns: Vec<String> = if keyword == "defimpl" {
+      names.iter().map(|(n, _)| n.clone()).collect()
     } else if let Some(absolute) = written.strip_prefix("Elixir.") {
-      absolute.to_string()
+      vec![absolute.to_string()]
+    } else if parent_fqn.is_empty() {
+      vec![written.clone()]
+    } else if written.starts_with("__MODULE__") {
+      vec![_expand_module(&written, parent_fqn)]
     } else {
-      format!("{}.{}", parent_fqn, written)
+      vec![format!("{}.{}", parent_fqn, written)]
     };
-    // A list-form `defimpl`'s body is walked once, under the first type.
-    if keyword == "defimpl" {
-      self.defined.extend(names.iter().map(|(n, _)| n.clone()));
-    } else {
-      self.defined.push(fqn.clone());
+    self.defined.extend(fqns.iter().cloned());
+    if fqns.is_empty() {
+      // `for: []` defines no module, but its body still names
+      // dependencies.
+      self.walk_scoped(module_forms(node), &written);
+      return Vec::new();
     }
-    let body = self.walk_scoped(module_forms(node), &fqn);
-    bases.extend(body.behaviours);
-    let kind = if body.defines_struct && kind == DeclarationKind::Class && native == "module" {
+    // A list-form `defimpl` defines one module per type, and `__MODULE__`
+    // in its body is each in turn, so the body is walked once per module.
+    // Its directives and modules are recorded by the first walk only.
+    let mut bodies = Vec::with_capacity(fqns.len());
+    for (i, fqn) in fqns.iter().enumerate() {
+      let marks = (self.directives.len(), self.defined.len());
+      bodies.push(self.walk_scoped(module_forms(node), fqn));
+      if i > 0 {
+        self.directives.truncate(marks.0);
+        self.defined.truncate(marks.1);
+      }
+    }
+    let first = &bodies[0];
+    bases.extend(first.behaviours.iter().cloned());
+    let kind = if first.defines_struct && kind == DeclarationKind::Class && native == "module" {
       DeclarationKind::Struct
     } else {
       kind
     };
     let mut modifiers = Vec::new();
-    if body.moduledoc_hidden {
+    if first.moduledoc_hidden {
       modifiers.push("hidden".to_string());
     }
 
     let range = node.range();
-    let decl = Declaration {
-      kind,
-      name: String::new(),
-      signature: String::new(),
-      bases,
-      attrs: Vec::new(),
-      docs: body.moduledoc,
-      docs_inside: true,
-      group: None,
-      visibility: String::new(),
-      start_line: node.start_pos().line() + 1,
-      end_line: node.end_pos().line() + 1,
-      start_byte: range.start,
-      end_byte: range.end,
-      doc_start_byte: range.start,
-      native_kind: Some(native.to_string()),
-      modifiers,
-      deprecated: false,
-      children: body.decls,
-      calls: Vec::new(),
-    };
+    // Each module is declared where it is written, under its written name,
+    // as `map` outlines the source; the call graph names it as Elixir does
+    // (`calls::elixir::module_path`).
     names
       .into_iter()
-      .map(|(name, signature)| Declaration {
+      .zip(bodies)
+      .map(|((name, signature), body)| Declaration {
+        kind,
         name,
         signature,
-        ..decl.clone()
+        bases: bases.clone(),
+        attrs: Vec::new(),
+        docs: body.moduledoc,
+        docs_inside: true,
+        group: None,
+        visibility: String::new(),
+        start_line: node.start_pos().line() + 1,
+        end_line: node.end_pos().line() + 1,
+        start_byte: range.start,
+        end_byte: range.end,
+        doc_start_byte: range.start,
+        native_kind: Some(native.to_string()),
+        modifiers: modifiers.clone(),
+        deprecated: false,
+        children: body.decls,
+        calls: Vec::new(),
       })
       .collect()
   }
@@ -1685,7 +1723,9 @@ impl<'s> Walker<'s> {
   /// A nested `defmodule B.C` aliases `B` in its parent, before its own
   /// body is read; `defmodule __MODULE__.C` and `Elixir.C` alias nothing.
   fn nested_alias<'a, D: Doc>(&mut self, node: &Node<'a, D>, keyword: &str, module_fqn: &str) {
-    if keyword != "defmodule" || module_fqn.is_empty() {
+    // `defprotocol` defines its module with `defmodule`, so it aliases it
+    // too; `defimpl` passes `defmodule` a full name, which aliases nothing.
+    if !matches!(keyword, "defmodule" | "defprotocol") || module_fqn.is_empty() {
       return;
     }
     let Some(written) = _named_args(node).first().map(|n| _text(n)) else {
@@ -2586,14 +2626,16 @@ mod tests {
     let d = &r.declarations[0];
     assert_eq!(names(&d.children), vec!["describe group", "Helper"]);
     assert_eq!(names(&d.children[0].children), vec!["test group uses it"]);
-    // A protocol and an implementation are modules too.
+    // A protocol and an implementation are modules too. The nested
+    // `defprotocol` aliases `Proto` to `D.Proto`, so the implementation is
+    // `D.Proto.Atom`, as the compiler names it.
     let r = parse(
       "defmodule D do\n  describe \"group\" do\n    defprotocol Proto do\n      def go(x)\n    end\n\n    defimpl Proto, for: Atom do\n      def go(_), do: :ok\n    end\n  end\nend\n",
     );
     let d = &r.declarations[0];
     assert_eq!(
       names(&d.children),
-      vec!["describe group", "Proto", "Proto.Atom"]
+      vec!["describe group", "Proto", "D.Proto.Atom"]
     );
     assert!(d.children[0].children.is_empty());
   }
@@ -2843,6 +2885,50 @@ mod tests {
     let f = &r.declarations[0].children[0];
     assert!(f.docs.is_empty(), "{:?}", f.docs);
     assert_eq!(f.start_line, 4);
+  }
+
+  #[test]
+  fn modules_are_declared_where_written_and_defined_as_elixir_names_them() {
+    // `map` outlines the source: each module where it is written, under its
+    // written name. The modules defined are Elixir's names, as
+    // `Kernel.ParallelCompiler.compile/2` lists them.
+    let src = "defmodule Outer do\n  defmodule __MODULE__.Sub do\n  end\n  defmodule Elixir.Top do\n  end\n  defimpl String.Chars, for: Outer do\n  end\n  defmodule Inner do\n  end\nend\ndefmodule Elixir.Foo do\nend\n";
+    let r = parse(src);
+    let names = |ds: &[Declaration]| -> Vec<String> { ds.iter().map(|d| d.name.clone()).collect() };
+    assert_eq!(names(&r.declarations), vec!["Outer", "Elixir.Foo"]);
+    assert_eq!(
+      names(&r.declarations[0].children),
+      vec![
+        "__MODULE__.Sub",
+        "Elixir.Top",
+        "String.Chars.Outer",
+        "Inner"
+      ]
+    );
+    assert_eq!(
+      scan_modules(src).defined,
+      vec![
+        "Outer",
+        "Outer.Sub",
+        "Top",
+        "String.Chars.Outer",
+        "Outer.Inner",
+        "Foo"
+      ]
+    );
+  }
+
+  #[test]
+  fn a_listed_defimpl_walks_its_body_once_per_module() {
+    // In `for: [A, B]`, `__MODULE__` is `P.A` in one module and `P.B` in
+    // the other, so each declaration carries its own calls.
+    let r = parse("defimpl P, for: [A, B] do\n  def f(x), do: __MODULE__.g(x)\nend\n");
+    let receivers: Vec<String> = r
+      .declarations
+      .iter()
+      .map(|m| m.children[0].calls[0].receiver.clone().unwrap_or_default())
+      .collect();
+    assert_eq!(receivers, vec!["P.A", "P.B"]);
   }
 
   #[test]

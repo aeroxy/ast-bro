@@ -5877,3 +5877,139 @@ fn unresolved_sites_count_declarers_in_the_targets_language_only() {
   );
   assert!(!out.contains("declared by"), "{}", out);
 }
+
+/// A project whose modules Elixir names apart from where they are written:
+/// `defmodule __MODULE__.Sub` and `defmodule Elixir.Top` inside `Outer`
+/// define `Outer.Sub` and `Top`, and a `defimpl` inside `Outer` defines
+/// `String.Chars.Outer` — as `Kernel.ParallelCompiler.compile/2` lists them.
+fn elixir_named_apart_project() -> tempfile::TempDir {
+  let tmp = tempfile::tempdir().unwrap();
+  let root = tmp.path();
+  write(&root.join("mix.exs"), "defmodule App.MixProject do\nend\n");
+  write(
+    &root.join("lib/outer.ex"),
+    r#"defmodule Outer do
+  defmodule __MODULE__.Sub do
+    def a(x), do: x
+  end
+
+  defmodule Elixir.Top do
+    def b(x), do: x
+  end
+
+  defimpl String.Chars, for: Outer do
+    def to_string(_), do: "outer"
+  end
+
+  defmodule Inner do
+    def c(x), do: x
+  end
+end
+"#,
+  );
+  write(
+    &root.join("lib/user.ex"),
+    r#"defmodule User do
+  def go(x) do
+    Outer.Sub.a(x)
+    Top.b(x)
+    Outer.Inner.c(x)
+    String.Chars.Outer.to_string(x)
+  end
+end
+"#,
+  );
+  tmp
+}
+
+#[test]
+fn elixir_modules_are_named_where_elixir_defines_them() {
+  let tmp = elixir_named_apart_project();
+  let root = tmp.path();
+  let targets = callee_targets(root, "User.go", true);
+  let want = [
+    "lib/outer.ex::Outer::Inner::c",
+    "lib/outer.ex::Outer::Sub::a",
+    "lib/outer.ex::String.Chars.Outer::to_string",
+    "lib/outer.ex::Top::b",
+  ];
+  let got: Vec<&str> = targets.iter().map(|(t, _)| t.as_str()).collect();
+  assert_eq!(got, want, "{targets:?}");
+  // An incremental update names them the same way.
+  write(
+    &root.join("lib/user.ex"),
+    &std::fs::read_to_string(root.join("lib/user.ex"))
+      .unwrap()
+      .replace("go(x)", "go(x, _y)"),
+  );
+  assert_eq!(callee_targets(root, "User.go", false), targets);
+}
+
+#[test]
+fn elixir_a_listed_defimpl_expands_module_per_type() {
+  // `defimpl P, for: [A, B]` defines `P.A` and `P.B`; in each, `__MODULE__`
+  // is that module, so `P.B.f` calls `P.B.helper`.
+  let tmp = tempfile::tempdir().unwrap();
+  let root = tmp.path();
+  write(&root.join("mix.exs"), "defmodule App.MixProject do\nend\n");
+  write(
+    &root.join("lib/p.ex"),
+    r#"defprotocol P do
+  def f(x)
+end
+
+defimpl P, for: [A, B] do
+  def f(x), do: __MODULE__.helper(x)
+  def helper(x), do: x
+end
+"#,
+  );
+  for (caller, want) in [
+    ("P.A.f", "lib/p.ex::P.A::helper"),
+    ("P.B.f", "lib/p.ex::P.B::helper"),
+  ] {
+    let targets = callee_targets(root, caller, true);
+    assert_eq!(
+      targets,
+      vec![(want.to_string(), "Exact".to_string())],
+      "{caller}"
+    );
+  }
+}
+
+#[test]
+fn elixir_digest_and_show_name_modules_as_elixir_does() {
+  // The outline keeps the source nesting; the qualified names that
+  // `digest` and `show` build from it are the modules Elixir defines.
+  let tmp = elixir_named_apart_project();
+  let root = tmp.path();
+  let (out, code) = run_in(root, &["digest", "lib/outer.ex"]);
+  assert_eq!(code, 0, "{out}");
+  for line in [
+    "module Outer.Sub  L2-4",
+    "module Top  L6-8",
+    "impl String.Chars.Outer : String.Chars  L10-12",
+    "module Outer.Inner  L14-16",
+  ] {
+    assert!(out.contains(line), "missing {line:?}:\n{out}");
+  }
+  for (symbol, header) in [
+    ("Outer.Sub.a", "Outer.Sub.a (function)"),
+    ("Top.b", "Top.b (function)"),
+    (
+      "String.Chars.Outer.to_string",
+      "String.Chars.Outer.to_string (function)",
+    ),
+  ] {
+    let (out, code) = run_in(root, &["show", "lib/outer.ex", symbol]);
+    assert_eq!(code, 0, "{symbol}: {out}");
+    assert!(out.contains(header), "{symbol}:\n{out}");
+  }
+  // `map` outlines the source: each module where it is written.
+  let (out, _) = run_in(root, &["map", "lib/outer.ex"]);
+  assert!(out.contains("    defmodule Elixir.Top  L6-8"), "{out}");
+  assert!(
+    out.contains("    defimpl String.Chars, for: Outer  L10-12"),
+    "{out}"
+  );
+}
