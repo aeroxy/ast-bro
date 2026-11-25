@@ -10,6 +10,7 @@ use crate::core::JSON_SCHEMA_GRAPH_INDEX;
 use crate::deps::build_graph;
 use crate::deps::manifest::ROOT_MANIFESTS;
 use crate::deps::resolver::build::{deps_walk, is_deps_input};
+use crate::file_filter::should_skip_path;
 use crate::graph_cache::delta::{apply_delta_to_calls, apply_delta_to_deps, refresh_records};
 use crate::graph_cache::UnifiedGraph;
 use crate::search::cache::{delta_from_files, hash_file, Delta, FileRecord};
@@ -129,11 +130,63 @@ pub fn load_with_delta(root: &Path) -> LoadOutcome {
 /// later via `promote_calls`), persist it, and return it with the file
 /// fingerprints captured during the build.
 fn build_with_records(root: &Path) -> std::io::Result<(UnifiedGraph, Vec<FileRecord>)> {
-  let deps = build_graph(root).map_err(std::io::Error::other)?;
-  let graph = UnifiedGraph::from_deps(deps);
+  build_with_records_by(root, build_graph)
+}
+
+/// `build_with_records` with the build step passed in, so a test can edit a
+/// file while the build reads it.
+///
+/// The fingerprints are taken before the build reads anything. A file an
+/// editor saves while the build runs then keeps its earlier fingerprint,
+/// and the next check sees the edit. Taken after the build, they would
+/// record the edit against a graph that read the earlier contents, and
+/// that graph would load as fresh until another change.
+fn build_with_records_by(
+  root: &Path,
+  build: impl FnOnce(&Path) -> Result<crate::deps::DepGraph, crate::deps::DepError>,
+) -> std::io::Result<(UnifiedGraph, Vec<FileRecord>)> {
   let records = collect_file_records(root)?;
+  let deps = build(root).map_err(std::io::Error::other)?;
+  let graph = UnifiedGraph::from_deps(deps);
   let _ = save(root, &graph, &records);
   Ok((graph, records))
+}
+
+/// Patch `graph` for `delta` and return the records it reflects; `None`
+/// when the deps half fails, and the caller rebuilds. The calls half is
+/// patched only when the graph has it; a `None` calls half is promoted
+/// lazily by the next `callers` / `callees` query.
+pub(crate) fn patch(
+  graph: &mut UnifiedGraph,
+  prev: Vec<FileRecord>,
+  root: &Path,
+  delta: &Delta,
+) -> Option<Vec<FileRecord>> {
+  patch_by(graph, prev, root, delta, apply_delta)
+}
+
+fn apply_delta(graph: &mut UnifiedGraph, root: &Path, delta: &Delta) -> bool {
+  if apply_delta_to_deps(&mut graph.deps, root, delta).is_err() {
+    return false;
+  }
+  if let Some(calls) = graph.calls.as_mut() {
+    apply_delta_to_calls(calls, &graph.deps, root, delta);
+  }
+  true
+}
+
+/// `patch` with the patch step passed in, so a test can edit a file while
+/// the patch reads it. The fingerprints are taken first, for the reason
+/// `build_with_records_by` gives.
+fn patch_by(
+  graph: &mut UnifiedGraph,
+  prev: Vec<FileRecord>,
+  root: &Path,
+  delta: &Delta,
+  apply: impl FnOnce(&mut UnifiedGraph, &Path, &Delta) -> bool,
+) -> Option<Vec<FileRecord>> {
+  let records = refresh_records(prev, root, delta);
+  apply(graph, root, delta).then_some(records)
 }
 
 /// Build a fresh `UnifiedGraph` + fingerprints and persist them, returning
@@ -154,25 +207,13 @@ pub fn load_or_build_with_records(
       delta,
       prev_records,
     } => {
-      // Deps half: per-file patch. Failure (e.g. an extractor erroring)
-      // falls back to a full rebuild so the user's query still succeeds.
-      if apply_delta_to_deps(&mut graph.deps, root, &delta).is_err() {
+      // A failed patch (e.g. an extractor erroring) falls back to a full
+      // rebuild, so the user's query still succeeds.
+      let Some(new_records) = patch(&mut graph, prev_records, root, &delta) else {
         return build_with_records(root);
-      }
-      // Calls half: only patch when the on-disk cache had it. A
-      // None calls field stays None; the next callers/callees query
-      // promotes it via the existing lazy path.
-      if graph.calls.is_some() {
-        let deps_snapshot = graph.deps.clone();
-        if let Some(calls) = graph.calls.as_mut() {
-          apply_delta_to_calls(calls, &deps_snapshot, root, &delta);
-        }
-      }
-      // Persist the patched graph + refreshed fingerprints. Best-effort:
-      // a write failure leaves the in-memory state correct for this
-      // session and the on-disk cache slightly stale (next launch will
-      // re-detect the same delta and re-patch).
-      let new_records = refresh_records(prev_records, root, &delta);
+      };
+      // Best-effort: a write failure leaves the in-memory state correct
+      // for this session; the next launch re-detects the delta and patches.
       let _ = save(root, &graph, &new_records);
       Ok((graph, new_records))
     }
@@ -225,69 +266,125 @@ fn write_gitignore(dir: &Path) -> std::io::Result<()> {
   Ok(())
 }
 
-/// The delta of the files the graph reads, against `cached`: every file the
-/// deps index walks, and the root manifests `detect_aliases` reads. The
-/// search corpus is a different set — it skips hidden files and files over
-/// its size cap, and it holds Markdown and other text the graph never reads
-/// — so tracking it left edits the graph depends on unseen (#123).
-pub fn compute_graph_delta(root: &Path, cached: &[FileRecord]) -> Delta {
-  let walked = deps_walk(root).flatten().filter_map(|entry| {
-    let is_file = entry.file_type().is_some_and(|t| t.is_file());
-    if !is_file || !is_deps_input(entry.path(), root) {
-      return None;
+/// The files the graph depends on, each with its metadata when the graph
+/// reads its contents, or with `None` when only its existence counts.
+///
+/// - Contents: every deps input (`deps_walk` + `is_deps_input`, the walk
+///   and rule `build_suffix_index` uses) and the root manifests
+///   `detect_aliases` reads by name, whatever the ignore files say.
+/// - Existence: every other walked file. A relative import may name any
+///   file, and the resolver checks that it exists (`./data.json`,
+///   `./logo.svg`), so adding or deleting one can move an edge, while
+///   editing one cannot.
+///
+/// The search corpus is a different set — it skips hidden files and files
+/// over its size cap — so tracking it left changes the graph depends on
+/// unseen (#123).
+fn graph_inputs(root: &Path) -> Vec<(PathBuf, Option<fs::Metadata>)> {
+  let mut out = Vec::new();
+  let mut manifests_walked = HashSet::new();
+  for entry in deps_walk(root).flatten() {
+    if !entry.file_type().is_some_and(|t| t.is_file()) || should_skip_path(entry.path(), root) {
+      continue;
     }
-    let meta = entry.metadata().ok()?;
-    Some((entry.into_path(), meta))
-  });
-  // Read by name, whatever the ignore files say, as `detect_aliases` does.
-  // None of them is a deps input, so the walk never yields them too.
-  let manifests = ROOT_MANIFESTS.iter().filter_map(|name| {
-    let path = root.join(name);
-    let meta = fs::metadata(&path).ok().filter(|m| m.is_file())?;
-    Some((path, meta))
-  });
-  delta_from_files(walked.chain(manifests), root, cached)
-}
-
-/// Build a `Vec<FileRecord>` describing the current state of every
-/// indexable file in `root`. Reuses search's `compute_delta` against an
-/// empty cache to populate hashes.
-pub fn collect_file_records(root: &Path) -> std::io::Result<Vec<FileRecord>> {
-  let delta = compute_graph_delta(root, &[]);
-  let mut out = Vec::with_capacity(delta.added.len());
-  for path in delta.added {
-    // Skip a file that vanished or became unreadable between the delta walk
-    // and this stat (TOCTOU, broken symlink) instead of failing the whole
-    // build — mirrors `compute_delta` and `refresh_records`. A skipped file
-    // just resurfaces as `added` on the next re-validation.
-    let Ok(meta) = std::fs::metadata(&path) else {
+    if !tracks_contents(entry.path(), root) {
+      out.push((entry.into_path(), None));
+      continue;
+    }
+    let Ok(meta) = entry.metadata() else {
       continue;
     };
-    let mtime = meta.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-    let mtime_ns = match mtime.duration_since(std::time::SystemTime::UNIX_EPOCH) {
-      Ok(d) => d.as_nanos() as i128,
-      Err(e) => -(e.duration().as_nanos() as i128),
+    if is_root_manifest(entry.path(), root) {
+      manifests_walked.insert(entry.path().to_path_buf());
+    }
+    out.push((entry.into_path(), Some(meta)));
+  }
+  for name in ROOT_MANIFESTS {
+    let path = root.join(name);
+    if manifests_walked.contains(&path) {
+      continue;
+    }
+    if let Some(meta) = fs::metadata(&path).ok().filter(|m| m.is_file()) {
+      out.push((path, Some(meta)));
+    }
+  }
+  out
+}
+
+/// Whether the graph reads the contents of `path`, not only whether it
+/// exists: a deps input or a root manifest.
+pub(crate) fn tracks_contents(path: &Path, root: &Path) -> bool {
+  is_deps_input(path, root) || is_root_manifest(path, root)
+}
+
+fn is_root_manifest(path: &Path, root: &Path) -> bool {
+  path.parent() == Some(root)
+    && path
+      .file_name()
+      .and_then(|n| n.to_str())
+      .is_some_and(|n| ROOT_MANIFESTS.contains(&n))
+}
+
+/// The delta of the files the graph depends on, against `cached`.
+pub fn compute_graph_delta(root: &Path, cached: &[FileRecord]) -> Delta {
+  delta_from_files(graph_inputs(root), root, cached)
+}
+
+/// The fingerprints of the files the graph depends on, now. A file whose
+/// existence alone counts gets a placeholder record: its contents are never
+/// compared, so it is not hashed.
+pub fn collect_file_records(root: &Path) -> std::io::Result<Vec<FileRecord>> {
+  let mut out = Vec::new();
+  for (path, meta) in graph_inputs(root) {
+    let rel = rel_posix(root, &path);
+    let Some(meta) = meta else {
+      out.push(existence_record(rel));
+      continue;
     };
-    let rel = path
-      .strip_prefix(root)
-      .map(|r| {
-        r.components()
-          .map(|c| c.as_os_str().to_string_lossy().into_owned())
-          .collect::<Vec<_>>()
-          .join("/")
-      })
-      .unwrap_or_else(|_| path.display().to_string());
-    let hash = hash_file(&path).unwrap_or(0);
     out.push(FileRecord {
       path: rel,
-      mtime_ns,
+      mtime_ns: mtime_nanos(&meta),
       size: meta.len(),
-      content_hash: hash,
+      content_hash: hash_file(&path).unwrap_or(0),
       chunk_start: 0,
       chunk_end: 0,
     });
   }
   Ok(out)
+}
+
+/// The record of a file whose existence alone counts.
+pub(crate) fn existence_record(path: String) -> FileRecord {
+  FileRecord {
+    path,
+    mtime_ns: 0,
+    size: 0,
+    content_hash: 0,
+    chunk_start: 0,
+    chunk_end: 0,
+  }
+}
+
+/// `path` relative to `root`, with `/` separators, as records store it.
+pub(crate) fn rel_posix(root: &Path, path: &Path) -> String {
+  path
+    .strip_prefix(root)
+    .map(|r| {
+      r.components()
+        .map(|c| c.as_os_str().to_string_lossy().into_owned())
+        .collect::<Vec<_>>()
+        .join("/")
+    })
+    .unwrap_or_else(|_| path.display().to_string())
+}
+
+/// Nanoseconds since the epoch, as records store a modification time.
+pub(crate) fn mtime_nanos(meta: &fs::Metadata) -> i128 {
+  let mtime = meta.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+  match mtime.duration_since(std::time::SystemTime::UNIX_EPOCH) {
+    Ok(d) => d.as_nanos() as i128,
+    Err(e) => -(e.duration().as_nanos() as i128),
+  }
 }
 
 #[cfg(test)]
@@ -521,15 +618,24 @@ mod tests {
     (tmp, root)
   }
 
-  /// The records cover exactly what the deps graph reads (#123): every
-  /// file the index walks, each `go.mod`, and the root manifests. Nothing
-  /// the graph reads goes untracked, and Markdown no longer counts.
+  /// The records cover what the graph depends on (#123): the contents of
+  /// every file the index reads, each `go.mod`, and the root manifests; and
+  /// the existence of every other file, which a relative import may name.
+  /// Only the first set is fingerprinted.
   #[test]
   fn records_cover_the_files_the_deps_graph_reads() {
     let (_tmp, root) = mixed_inputs();
     let records = collect_file_records(&root).unwrap();
-    let mut got: Vec<&str> = records.iter().map(|r| r.path.as_str()).collect();
-    got.sort();
+    let mut contents: Vec<&str> = Vec::new();
+    let mut existence: Vec<&str> = Vec::new();
+    for r in &records {
+      if *r == existence_record(r.path.clone()) {
+        existence.push(&r.path);
+      } else {
+        contents.push(&r.path);
+      }
+    }
+    contents.sort();
     let idx = crate::deps::resolver::build_suffix_index(&root);
     let mut want: Vec<String> = idx
       .by_file
@@ -543,7 +649,20 @@ mod tests {
       .chain(["svc/go.mod", "Cargo.toml", "tsconfig.json", "composer.json"].map(String::from))
       .collect();
     want.sort();
-    assert_eq!(got, want);
+    assert_eq!(contents, want);
+    assert_eq!(existence, vec!["README.md"]);
+  }
+
+  /// An edit to a file whose existence alone counts is no change; adding
+  /// or deleting one is.
+  #[test]
+  fn only_the_existence_of_a_non_input_counts() {
+    let (_tmp, root) = mixed_inputs();
+    load_or_build_with_records(&root, false).expect("build");
+    write(&root.join("README.md"), "# Another title, longer\n");
+    assert!(matches!(load_with_delta(&root), LoadOutcome::Fresh { .. }));
+    fs::remove_file(root.join("README.md")).unwrap();
+    assert!(matches!(load_with_delta(&root), LoadOutcome::Stale { .. }));
   }
 
   /// The walk that writes the records and the walk that checks them are
@@ -558,5 +677,55 @@ mod tests {
     assert!(matches!(load_with_delta(&root), LoadOutcome::Stale { .. }));
     load_or_build_with_records(&root, false).expect("update");
     assert!(matches!(load_with_delta(&root), LoadOutcome::Fresh { .. }));
+  }
+
+  /// A tree where `a.py` imports `b`, for the race tests.
+  fn race_tree() -> (tempfile::TempDir, PathBuf) {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().canonicalize().unwrap();
+    write(&root.join("a.py"), "import b\n");
+    write(&root.join("b.py"), "X = 1\n");
+    write(&root.join("c.py"), "Y = 1\n");
+    (tmp, root)
+  }
+
+  /// An editor saves `a.py` after the build read it: the graph holds the
+  /// old import, so the next load must not call it fresh. The fingerprints
+  /// are taken before the build for this.
+  #[test]
+  fn an_edit_during_a_build_is_seen_by_the_next_load() {
+    let (_tmp, root) = race_tree();
+    build_with_records_by(&root, |r| {
+      let deps = build_graph(r);
+      write(&r.join("a.py"), "import c\nimport b\n");
+      deps
+    })
+    .expect("build");
+    assert!(matches!(load_with_delta(&root), LoadOutcome::Stale { .. }));
+  }
+
+  /// The same during a patch: the edit after the patch read the file must
+  /// stay visible to the next load.
+  #[test]
+  fn an_edit_during_a_patch_is_seen_by_the_next_load() {
+    let (_tmp, root) = race_tree();
+    load_or_build_with_records(&root, false).expect("build");
+    write(&root.join("a.py"), "import c\n");
+    let LoadOutcome::Stale {
+      mut graph,
+      delta,
+      prev_records,
+    } = load_with_delta(&root)
+    else {
+      panic!("the edit is a delta");
+    };
+    let records = patch_by(&mut graph, prev_records, &root, &delta, |g, r, d| {
+      let ok = apply_delta(g, r, d);
+      write(&r.join("a.py"), "import b\nimport c\n");
+      ok
+    })
+    .expect("patch");
+    save(&root, &graph, &records).unwrap();
+    assert!(matches!(load_with_delta(&root), LoadOutcome::Stale { .. }));
   }
 }

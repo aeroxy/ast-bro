@@ -21,6 +21,8 @@
 //! pass C — rather than approximating them here.
 
 use std::collections::{HashMap, HashSet};
+
+use crate::graph_cache::cache::{existence_record, mtime_nanos, rel_posix, tracks_contents};
 use std::path::{Path, PathBuf};
 
 use rayon::prelude::*;
@@ -130,8 +132,13 @@ pub fn apply_delta_to_calls(calls: &mut CallGraph, deps: &DepGraph, root: &Path,
   calls.implementors.retain(|_, v| !v.is_empty());
 
   // 5. Re-extract added + modified files. We only re-parse the changed
-  //    set (not the unchanged ones) — that's the whole point.
-  let to_process = changed_abs_paths(root, delta);
+  //    set (not the unchanged ones) — that's the whole point. Only a file
+  //    the deps graph holds is parsed, as in a cold build: a delta also
+  //    carries files whose existence alone counts (`data.json`, a README).
+  let to_process: Vec<PathBuf> = changed_abs_paths(root, delta)
+    .into_iter()
+    .filter(|p| deps.forward.contains_key(p))
+    .collect();
   let new_passes: Vec<FilePass> = to_process
     .par_iter()
     .filter_map(|file| extract_file(root, file))
@@ -344,12 +351,18 @@ pub fn refresh_records(prev: Vec<FileRecord>, root: &Path, delta: &Delta) -> Vec
     .chain(delta.modified.iter())
     .chain(delta.mtime_only.iter())
   {
+    let rel = rel_posix(root, path);
+    // A file whose existence alone counts is not hashed; its contents are
+    // never compared.
+    if !tracks_contents(path, root) {
+      out.push(existence_record(rel));
+      continue;
+    }
     let Ok(meta) = std::fs::metadata(path) else {
       continue;
     };
     let mtime_ns = mtime_nanos(&meta);
     let hash = hash_file(path).unwrap_or(0);
-    let rel = rel_posix(root, path);
     out.push(FileRecord {
       path: rel,
       mtime_ns,
@@ -371,26 +384,6 @@ fn changed_abs_paths(_root: &Path, delta: &Delta) -> Vec<PathBuf> {
     .chain(delta.modified.iter())
     .map(|p| p.canonicalize().unwrap_or_else(|_| p.clone()))
     .collect()
-}
-
-fn rel_posix(root: &Path, path: &Path) -> String {
-  path
-    .strip_prefix(root)
-    .map(|r| {
-      r.components()
-        .map(|c| c.as_os_str().to_string_lossy().into_owned())
-        .collect::<Vec<_>>()
-        .join("/")
-    })
-    .unwrap_or_else(|_| path.display().to_string())
-}
-
-fn mtime_nanos(meta: &std::fs::Metadata) -> i128 {
-  let mtime = meta.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-  match mtime.duration_since(std::time::SystemTime::UNIX_EPOCH) {
-    Ok(d) => d.as_nanos() as i128,
-    Err(e) => -(e.duration().as_nanos() as i128),
-  }
 }
 
 fn sort_dedup(calls: &mut CallGraph) {
