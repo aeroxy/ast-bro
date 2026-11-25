@@ -27,9 +27,10 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock, RwLock};
 
 use crate::graph_cache::cache;
+use crate::graph_cache::cache::compute_graph_delta;
 use crate::graph_cache::delta::{apply_delta_to_calls, apply_delta_to_deps, refresh_records};
 use crate::graph_cache::UnifiedGraph;
-use crate::search::cache::{compute_delta, Delta, FileRecord};
+use crate::search::cache::{Delta, FileRecord};
 
 /// One registry slot: the parsed graph plus the fingerprints it reflects.
 /// Both behind `Arc` so cloning the entry out of the lock (to avoid holding
@@ -73,7 +74,7 @@ pub fn get_or_init(root: &Path) -> std::io::Result<Arc<UnifiedGraph>> {
   // walk, and (critically) never held into a later `store` write lock.
   let cached = registry().read().unwrap().get(&key).cloned();
   if let Some(entry) = cached {
-    let delta = compute_delta(root, root, entry.records.as_slice());
+    let delta = compute_graph_delta(root, entry.records.as_slice());
     if !delta.requires_rebuild() {
       return Ok(entry.graph);
     }
@@ -92,7 +93,7 @@ pub fn get_or_init(root: &Path) -> std::io::Result<Arc<UnifiedGraph>> {
   // (holding a read guard into a write() on the same thread self-deadlocks).
   let cached = registry().read().unwrap().get(&key).cloned();
   if let Some(entry) = cached {
-    let delta = compute_delta(root, root, entry.records.as_slice());
+    let delta = compute_graph_delta(root, entry.records.as_slice());
     if !delta.requires_rebuild() {
       return Ok(entry.graph);
     }
@@ -265,5 +266,31 @@ mod tests {
     );
 
     forget(root);
+  }
+
+  /// A long-lived session sees an edit to a file the search corpus skips
+  /// (#123): here a hidden one, with nothing else changed.
+  #[test]
+  fn get_or_init_sees_an_edit_to_a_hidden_file() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().canonicalize().unwrap();
+    write(&root.join(".cfg/h.py"), "import x\n");
+    write(&root.join("x.py"), "X = 1\n");
+    write(&root.join("y.py"), "Y = 1\n");
+    let h = root.join(".cfg/h.py");
+    let targets = |g: &UnifiedGraph| -> Vec<PathBuf> {
+      g.deps.forward[&h]
+        .iter()
+        .map(|e| e.target.clone())
+        .collect()
+    };
+
+    forget(&root);
+    let first = get_or_init(&root).expect("cold build");
+    assert_eq!(targets(&first), vec![root.join("x.py")]);
+    write(&h, "import y\n");
+    let second = get_or_init(&root).expect("revalidate after edit");
+    assert_eq!(targets(&second), vec![root.join("y.py")]);
+    forget(&root);
   }
 }

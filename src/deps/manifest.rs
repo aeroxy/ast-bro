@@ -12,6 +12,14 @@
 
 use std::path::{Path, PathBuf};
 
+/// The manifests `detect_aliases` reads at the graph root. They are read
+/// directly, whatever the ignore files say, so the graph cache tracks them
+/// by name rather than through its walk (#123).
+pub const ROOT_MANIFESTS: [&str; 3] = [CARGO_TOML, TSCONFIG_JSON, COMPOSER_JSON];
+const CARGO_TOML: &str = "Cargo.toml";
+const TSCONFIG_JSON: &str = "tsconfig.json";
+const COMPOSER_JSON: &str = "composer.json";
+
 #[derive(Debug, Clone, Default)]
 pub struct ProjectAliases {
   /// Rust crate name (hyphens already converted to underscores). Used
@@ -27,9 +35,9 @@ pub struct ProjectAliases {
 
 pub fn detect_aliases(root: &Path) -> ProjectAliases {
   ProjectAliases {
-    rust_crate_name: parse_cargo_name(&root.join("Cargo.toml")),
-    ts_path_aliases: parse_tsconfig_paths(&root.join("tsconfig.json")),
-    php_psr4: parse_composer_psr4(&root.join("composer.json")),
+    rust_crate_name: parse_cargo_name(&root.join(CARGO_TOML)),
+    ts_path_aliases: parse_tsconfig_paths(&root.join(TSCONFIG_JSON)),
+    php_psr4: parse_composer_psr4(&root.join(COMPOSER_JSON)),
   }
 }
 

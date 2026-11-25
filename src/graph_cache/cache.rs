@@ -8,9 +8,11 @@
 
 use crate::core::JSON_SCHEMA_GRAPH_INDEX;
 use crate::deps::build_graph;
+use crate::deps::manifest::ROOT_MANIFESTS;
+use crate::deps::resolver::build::{deps_walk, is_deps_input};
 use crate::graph_cache::delta::{apply_delta_to_calls, apply_delta_to_deps, refresh_records};
 use crate::graph_cache::UnifiedGraph;
-use crate::search::cache::{compute_delta, hash_file, Delta, FileRecord};
+use crate::search::cache::{delta_from_files, hash_file, Delta, FileRecord};
 use bincode::serde::{decode_from_slice, encode_to_vec};
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
@@ -109,7 +111,7 @@ pub fn load_with_delta(root: &Path) -> LoadOutcome {
   if cf.schema != CACHE_SCHEMA || cf.version != env!("CARGO_PKG_VERSION") {
     return LoadOutcome::Missing;
   }
-  let delta = compute_delta(root, root, &cf.files);
+  let delta = compute_graph_delta(root, &cf.files);
   if !delta.requires_rebuild() {
     return LoadOutcome::Fresh {
       graph: cf.graph,
@@ -223,11 +225,35 @@ fn write_gitignore(dir: &Path) -> std::io::Result<()> {
   Ok(())
 }
 
+/// The delta of the files the graph reads, against `cached`: every file the
+/// deps index walks, and the root manifests `detect_aliases` reads. The
+/// search corpus is a different set — it skips hidden files and files over
+/// its size cap, and it holds Markdown and other text the graph never reads
+/// — so tracking it left edits the graph depends on unseen (#123).
+pub fn compute_graph_delta(root: &Path, cached: &[FileRecord]) -> Delta {
+  let walked = deps_walk(root).flatten().filter_map(|entry| {
+    let is_file = entry.file_type().is_some_and(|t| t.is_file());
+    if !is_file || !is_deps_input(entry.path(), root) {
+      return None;
+    }
+    let meta = entry.metadata().ok()?;
+    Some((entry.into_path(), meta))
+  });
+  // Read by name, whatever the ignore files say, as `detect_aliases` does.
+  // None of them is a deps input, so the walk never yields them too.
+  let manifests = ROOT_MANIFESTS.iter().filter_map(|name| {
+    let path = root.join(name);
+    let meta = fs::metadata(&path).ok().filter(|m| m.is_file())?;
+    Some((path, meta))
+  });
+  delta_from_files(walked.chain(manifests), root, cached)
+}
+
 /// Build a `Vec<FileRecord>` describing the current state of every
 /// indexable file in `root`. Reuses search's `compute_delta` against an
 /// empty cache to populate hashes.
 pub fn collect_file_records(root: &Path) -> std::io::Result<Vec<FileRecord>> {
-  let delta = compute_delta(root, root, &[]);
+  let delta = compute_graph_delta(root, &[]);
   let mut out = Vec::with_capacity(delta.added.len());
   for path in delta.added {
     // Skip a file that vanished or became unreadable between the delta walk
@@ -471,5 +497,65 @@ mod tests {
     let (graph, _) = load_or_build_with_records(&root, false).expect("update");
     let targets: Vec<&PathBuf> = graph.deps.forward[&a].iter().map(|e| &e.target).collect();
     assert_eq!(targets, vec![&root.join("c.py")]);
+  }
+
+  /// A tree with every kind of file the graph and the search corpus disagree
+  /// on: a hidden source file, one over the search size cap, a `go.mod`,
+  /// the root manifests, and Markdown the graph never reads.
+  fn mixed_inputs() -> (tempfile::TempDir, PathBuf) {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().canonicalize().unwrap();
+    write(&root.join("a.py"), "import b\n");
+    write(&root.join("b.py"), "X = 1\n");
+    write(&root.join(".cfg/h.py"), "import b\n");
+    write(
+      &root.join("big.py"),
+      &format!("import b\n{}\n", "#".repeat(2_100_000)),
+    );
+    write(&root.join("svc/go.mod"), "module example.com/svc\n");
+    write(&root.join("svc/main.go"), "package main\n");
+    write(&root.join("tsconfig.json"), "{}\n");
+    write(&root.join("composer.json"), "{}\n");
+    write(&root.join("README.md"), "# Title\n");
+    (tmp, root)
+  }
+
+  /// The records cover exactly what the deps graph reads (#123): every
+  /// file the index walks, each `go.mod`, and the root manifests. Nothing
+  /// the graph reads goes untracked, and Markdown no longer counts.
+  #[test]
+  fn records_cover_the_files_the_deps_graph_reads() {
+    let (_tmp, root) = mixed_inputs();
+    let records = collect_file_records(&root).unwrap();
+    let mut got: Vec<&str> = records.iter().map(|r| r.path.as_str()).collect();
+    got.sort();
+    let idx = crate::deps::resolver::build_suffix_index(&root);
+    let mut want: Vec<String> = idx
+      .by_file
+      .keys()
+      .map(|p| {
+        p.strip_prefix(&root)
+          .unwrap()
+          .to_string_lossy()
+          .replace('\\', "/")
+      })
+      .chain(["svc/go.mod", "tsconfig.json", "composer.json"].map(String::from))
+      .collect();
+    want.sort();
+    assert_eq!(got, want);
+  }
+
+  /// The walk that writes the records and the walk that checks them are
+  /// the same one: a build, and then an update, both load as fresh. A
+  /// mismatch would show every load as a delta.
+  #[test]
+  fn the_next_load_is_fresh_after_a_build_and_after_an_update() {
+    let (_tmp, root) = mixed_inputs();
+    load_or_build_with_records(&root, false).expect("build");
+    assert!(matches!(load_with_delta(&root), LoadOutcome::Fresh { .. }));
+    write(&root.join(".cfg/h.py"), "import a\n");
+    assert!(matches!(load_with_delta(&root), LoadOutcome::Stale { .. }));
+    load_or_build_with_records(&root, false).expect("update");
+    assert!(matches!(load_with_delta(&root), LoadOutcome::Fresh { .. }));
   }
 }

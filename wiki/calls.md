@@ -309,7 +309,7 @@ Within a single process — the `ast-bro mcp` long-running server is the case
 that matters — every `tools/call` goes through `get_or_init`, which:
 
 - **re-validates** the cached graph against the working tree on every call (a
-  stat-only `compute_delta` against the in-memory fingerprints in the steady
+  stat-only `compute_graph_delta` against the in-memory fingerprints in the steady
   state — no `graph.bin` re-read); an unchanged tree returns the memoised
   `Arc` with zero re-parse,
 - on a detected edit, patches the in-memory graph via the same
