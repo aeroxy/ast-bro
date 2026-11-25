@@ -41,13 +41,14 @@ pub const JSON_SCHEMA_RUN: &str = "ast-bro.run.v1";
 /// block nested in a module-level block; v9 adds `CacheFile::version`,
 /// which an older binary would read as the start of the graph; v10 adds
 /// `DepGraph::imports`, so an incremental update can resolve unchanged
-/// files again (#93).
+/// files again (#93); v11 adds `Imported::unless_listed` to the call
+/// edges, for an Elixir `except:` re-import after an `only:` list.
 ///
 /// Since v9 the cache also stores the crate version, and another version's
 /// cache is rebuilt (#81). So bump this only when the layout changes: an
 /// extraction change reaches every file with the next release. Two builds
 /// of one version share a cache; `--rebuild` covers that during review.
-pub const JSON_SCHEMA_GRAPH_INDEX: &str = "ast-bro.graph-index.v10";
+pub const JSON_SCHEMA_GRAPH_INDEX: &str = "ast-bro.graph-index.v11";
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Copy, Default)]
 pub enum DeclarationKind {
@@ -268,6 +269,13 @@ pub struct Imported {
   pub module: String,
   /// `only: :functions` or `only: :macros`.
   pub only: ImportOnly,
+  /// A condition the resolver checks, as only it knows which definitions
+  /// are macros: the name comes in only if it is of a kind this list names
+  /// nothing of in `module`. After `import M, only: [f: 1]`, a re-import
+  /// `import M, except: [...]` brings in each kind the list did not name,
+  /// whole, minus `except:`. Empty: no condition.
+  #[serde(default, skip_serializing_if = "Vec::is_empty")]
+  pub unless_listed: Vec<(String, usize)>,
 }
 
 /// The kinds of definition an `import` brings in.

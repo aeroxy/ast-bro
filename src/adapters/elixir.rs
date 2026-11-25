@@ -314,6 +314,8 @@ struct Import {
   except: Vec<(String, usize)>,
   /// `only: :functions` or `only: :macros`, which the resolver applies.
   kinds: ImportOnly,
+  /// Passed on as `Imported::unless_listed`.
+  unless_listed: Vec<(String, usize)>,
 }
 
 impl Import {
@@ -1242,6 +1244,7 @@ impl<'s> Walker<'s> {
         .map(|i| Imported {
           module: i.module.clone(),
           only: i.kinds,
+          unless_listed: i.unless_listed.clone(),
         })
         .collect(),
       _ => Vec::new(),
@@ -1541,6 +1544,18 @@ impl<'s> Walker<'s> {
               _ => None,
             };
             for mut i in earlier {
+              // An earlier `only:` list keeps each kind it named to the
+              // list, and lets in whole each kind it named nothing of.
+              // Which kinds it named, only the resolver can tell.
+              if let Some(listed) = i.only.clone() {
+                scope.imports.push(Import {
+                  module: module.clone(),
+                  only: None,
+                  except: except.clone(),
+                  kinds: i.kinds,
+                  unless_listed: listed,
+                });
+              }
               i.except.extend(except.iter().cloned());
               scope.imports.push(i);
             }
@@ -1550,6 +1565,7 @@ impl<'s> Walker<'s> {
                 only: None,
                 except,
                 kinds,
+                unless_listed: Vec::new(),
               });
             }
           } else {
@@ -1558,6 +1574,7 @@ impl<'s> Walker<'s> {
               only,
               except,
               kinds,
+              unless_listed: Vec::new(),
             });
           }
         }
