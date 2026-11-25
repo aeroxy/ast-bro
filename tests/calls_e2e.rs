@@ -6307,3 +6307,36 @@ fn ruby_a_class_named_from_the_top_looks_up_constants_where_it_is_written() {
   write(&root.join("lib/helpers.rb"), helpers);
   assert_eq!(got(false), nested);
 }
+
+#[test]
+fn incremental_update_sees_a_call_change_in_a_hidden_file() {
+  // The graph reads hidden files; the change check used to skip them, so
+  // an edit to one alone kept the old call edge (#123).
+  let tmp = tempfile::tempdir().unwrap();
+  let root = tmp.path();
+  std::fs::create_dir_all(root.join(".git")).unwrap();
+  write(
+    &root.join(".tools/m.py"),
+    "def g():\n    return 1\n\ndef h():\n    return 2\n\ndef f():\n    return g()\n",
+  );
+  let before = callee_targets(root, "f", true);
+  assert!(
+    before.iter().any(|(t, _)| t.ends_with("::g")),
+    "premise: f calls g: {before:?}"
+  );
+
+  write(
+    &root.join(".tools/m.py"),
+    "def g():\n    return 1\n\ndef h():\n    return 2\n\ndef f():\n    return h()\n",
+  );
+  let incremental = callee_targets(root, "f", false);
+  let cold = callee_targets(root, "f", true);
+  assert_eq!(
+    incremental, cold,
+    "a partial update and a cold build diverged"
+  );
+  assert!(
+    cold.iter().any(|(t, _)| t.ends_with("::h")),
+    "f now calls h: {cold:?}"
+  );
+}
