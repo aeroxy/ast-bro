@@ -6501,3 +6501,26 @@ fn typescript_a_construction_binds_to_the_imported_class() {
     vec![pair("src/a.ts::Foo", "Exact")]
   );
 }
+
+#[test]
+fn typescript_an_import_never_binds_to_a_method_of_the_same_name() {
+  // A module exports its top-level declarations: `real` from `./a` is the
+  // function, not `A`'s method that shares its name.
+  let tmp = tempfile::tempdir().unwrap();
+  let root = tmp.path();
+  write(
+    &root.join("src/a.ts"),
+    "export class A {\n  real() {}\n}\nexport function real() {}\n",
+  );
+  write(
+    &root.join("src/c.ts"),
+    "import { real as alias } from \"./a\"\nimport { real } from \"./a\"\n\nexport function go() {\n  alias()\n  real()\n}\n",
+  );
+  assert_eq!(
+    callee_targets_cold_and_after_a_change(root, "go", "src/d.ts"),
+    vec![
+      pair("src/a.ts::real", "Exact"),
+      pair("src/a.ts::real", "Exact")
+    ]
+  );
+}

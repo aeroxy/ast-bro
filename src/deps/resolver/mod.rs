@@ -17,4 +17,4 @@ pub mod build;
 pub mod resolve;
 
 pub use build::{build_suffix_index, Lang, SuffixIndex};
-pub use resolve::{resolve, ResolveCtx};
+pub use resolve::{resolve, resolve_from_import, ResolveCtx};
