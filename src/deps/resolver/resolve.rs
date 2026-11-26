@@ -24,6 +24,9 @@ pub struct ResolveCtx<'a> {
   /// Keys are bare prefixes (`@app/`); values are the substitution paths
   /// (`src/app/`) that the prefix expands to before suffix lookup.
   pub path_aliases: &'a [(String, String)],
+  /// TS `tsconfig.json` `compilerOptions.baseUrl`, relative to the root: a
+  /// bare specifier no `paths` entry maps resolves under it.
+  pub base_url: Option<&'a str>,
   /// PHP PSR-4 prefix → directory pairs from `composer.json`. Prefixes are
   /// already in slash form (`App/`) — see `manifest::parse_composer_psr4`.
   /// Sorted longest-first so the resolver picks the most specific match.
@@ -37,6 +40,7 @@ impl<'a> ResolveCtx<'a> {
       from_file,
       lang,
       path_aliases: &[],
+      base_url: None,
       php_psr4: &[],
     }
   }
@@ -100,7 +104,9 @@ pub fn resolve(spec: &str, ctx: &ResolveCtx<'_>, idx: &SuffixIndex) -> Option<Pa
     return resolve_relative_path(spec, ctx, idx);
   }
 
-  // tsconfig path aliases.
+  // tsconfig path aliases, then `baseUrl`. Any other bare specifier
+  // names a package: it is not whichever project file's path happens to
+  // end in it (#127).
   if matches!(ctx.lang, Lang::TypeScript | Lang::Tsx | Lang::JavaScript) {
     for (prefix, replacement) in ctx.path_aliases {
       if let Some(rest) = spec.strip_prefix(prefix.as_str()) {
@@ -111,6 +117,8 @@ pub fn resolve(spec: &str, ctx: &ResolveCtx<'_>, idx: &SuffixIndex) -> Option<Pa
         }
       }
     }
+    let base = ctx.base_url?;
+    return probe_path(&idx.root.join(base).join(spec), ctx);
   }
 
   // Go `import "mymod/pkg/foo"` — strip the module prefix. The module may
@@ -268,8 +276,25 @@ pub fn resolve(spec: &str, ctx: &ResolveCtx<'_>, idx: &SuffixIndex) -> Option<Pa
   }
 
   // Python `from a.b import c` arrives normalised to `a/b/c` already.
+  // `c` may be a module (`a/b/c.py`) or a name `a/b.py` declares, so the
+  // trailing segment is dropped once, as for a relative import. The suffix
+  // index holds every language's files, and a Python import names a
+  // Python module: `import requests` is not `web/requests.ts` (#127).
   let key = spec.replace('.', "/");
-  pick_closest(idx.lookup(&key), ctx.from_file)
+  if ctx.lang != Lang::Python {
+    return pick_closest(idx.lookup(&key), ctx.from_file);
+  }
+  let python = |key: &str| -> Option<PathBuf> {
+    let cands: Vec<PathBuf> = idx
+      .lookup(key)
+      .unwrap_or_default()
+      .iter()
+      .filter(|p| Lang::from_path(p) == Some(Lang::Python))
+      .cloned()
+      .collect();
+    pick_closest(Some(&cands), ctx.from_file)
+  };
+  python(&key).or_else(|| python(key.rsplit_once('/')?.0))
 }
 
 /// Walk a relative `./x/y` style path against `from_file`'s directory.
@@ -284,10 +309,27 @@ fn resolve_relative_path(spec: &str, ctx: &ResolveCtx<'_>, idx: &SuffixIndex) ->
   while let Some(rest) = remaining.strip_prefix("./") {
     remaining = rest;
   }
-  // Strip a known extension if present.
   let target = cur.join(remaining);
+  if let Some(p) = probe_path(&target, ctx) {
+    return Some(p);
+  }
+  // Last-ditch: ask the suffix index using the relative key.
+  let rel = match target.strip_prefix(&idx.root) {
+    Ok(r) => r
+      .components()
+      .map(|c| c.as_os_str().to_string_lossy().into_owned())
+      .collect::<Vec<_>>()
+      .join("/"),
+    Err(_) => target.display().to_string(),
+  };
+  pick_closest(idx.lookup(&rel), ctx.from_file)
+}
+
+/// The file `target` names on disk: the path itself, with the language's
+/// extensions, or as a directory's index (`index.ts`, `__init__.py`).
+fn probe_path(target: &Path, ctx: &ResolveCtx<'_>) -> Option<PathBuf> {
   if target.is_file() {
-    return Some(target);
+    return Some(target.to_path_buf());
   }
   // Try common extensions for TS/JS.
   if matches!(ctx.lang, Lang::TypeScript | Lang::Tsx | Lang::JavaScript) {
@@ -295,7 +337,7 @@ fn resolve_relative_path(spec: &str, ctx: &ResolveCtx<'_>, idx: &SuffixIndex) ->
       ".ts", ".tsx", ".mts", ".cts", ".d.ts", ".js", ".jsx", ".mjs", ".cjs", ".json",
     ];
     for e in ext_order {
-      let p = with_ext(&target, e);
+      let p = with_ext(target, e);
       if p.is_file() {
         return Some(p);
       }
@@ -310,7 +352,7 @@ fn resolve_relative_path(spec: &str, ctx: &ResolveCtx<'_>, idx: &SuffixIndex) ->
   }
   if ctx.lang == Lang::Python {
     for e in [".py", ".pyi"] {
-      let p = with_ext(&target, e);
+      let p = with_ext(target, e);
       if p.is_file() {
         return Some(p);
       }
@@ -335,16 +377,7 @@ fn resolve_relative_path(spec: &str, ctx: &ResolveCtx<'_>, idx: &SuffixIndex) ->
       }
     }
   }
-  // Last-ditch: ask the suffix index using the relative key.
-  let rel = match target.strip_prefix(&idx.root) {
-    Ok(r) => r
-      .components()
-      .map(|c| c.as_os_str().to_string_lossy().into_owned())
-      .collect::<Vec<_>>()
-      .join("/"),
-    Err(_) => target.display().to_string(),
-  };
-  pick_closest(idx.lookup(&rel), ctx.from_file)
+  None
 }
 
 fn with_ext(p: &Path, ext: &str) -> PathBuf {

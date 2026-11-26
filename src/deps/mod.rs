@@ -75,6 +75,7 @@ pub(crate) fn resolve_all(graph: &mut DepGraph, idx: &SuffixIndex, aliases: &Pro
         from_file: file,
         lang: info.language,
         path_aliases: &aliases.ts_path_aliases,
+        base_url: aliases.ts_base_url.as_deref(),
         php_psr4: &aliases.php_psr4,
       };
       let mut edges = Vec::new();
