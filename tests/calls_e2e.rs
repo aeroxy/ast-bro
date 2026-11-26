@@ -3963,8 +3963,10 @@ fn calls_partial_invalidation_demotes_stale_target() {
   assert_eq!(code3, 0, "renamed lookup failed: {out3}");
 }
 
-/// A Rust struct literal and a TS `new`, each in another file than its type.
-/// Both constructions resolve to the type's qn, not to a callable.
+/// A Rust struct literal, a TS `new` and a JS `new`, each in another file than
+/// its type. All three constructions resolve to the type's qn, not to a
+/// callable. The JS pair has a directory of its own: from a JS file beside
+/// `web/a.ts`, `./a` resolves to the `.ts`.
 fn construction_project() -> tempfile::TempDir {
   let tmp = tempfile::tempdir().unwrap();
   let root = tmp.path();
@@ -3983,6 +3985,11 @@ fn construction_project() -> tempfile::TempDir {
     &root.join("web/b.ts"),
     "import { Bar } from \"./a\"\nexport function build() { return new Bar() }\n",
   );
+  write(&root.join("js/a.js"), "export class Baz {}\n");
+  write(
+    &root.join("js/b.js"),
+    "import { Baz } from \"./a\"\nexport function create() { return new Baz() }\n",
+  );
   tmp
 }
 
@@ -3997,10 +4004,12 @@ fn incremental_update_keeps_constructions_of_types() {
   let root = tmp.path();
   let rust = vec![("src/a.rs::Foo".to_string(), "Exact".to_string())];
   let ts = vec![("web/a.ts::Bar".to_string(), "Exact".to_string())];
+  let js = vec![("js/a.js::Baz".to_string(), "Exact".to_string())];
   assert_eq!(callee_targets(root, "make", true), rust, "premise");
   assert_eq!(callee_targets(root, "build", false), ts, "premise");
+  assert_eq!(callee_targets(root, "create", false), js, "premise");
 
-  // A new file that has nothing to do with either type.
+  // A new file that has nothing to do with any of the types.
   write(&root.join("src/z.rs"), "pub fn z() {}\n");
   assert_eq!(
     callee_targets(root, "make", false),
@@ -4012,6 +4021,11 @@ fn incremental_update_keeps_constructions_of_types() {
     ts,
     "after an added file"
   );
+  assert_eq!(
+    callee_targets(root, "create", false),
+    js,
+    "after an added file"
+  );
 
   // An edit to the constructing file itself.
   write(
@@ -4020,6 +4034,7 @@ fn incremental_update_keeps_constructions_of_types() {
   );
   assert_eq!(callee_targets(root, "make", false), rust, "after an edit");
   assert_eq!(callee_targets(root, "build", false), ts, "after an edit");
+  assert_eq!(callee_targets(root, "create", false), js, "after an edit");
 
   assert_eq!(
     callee_targets(root, "make", true),
