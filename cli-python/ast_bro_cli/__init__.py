@@ -14,7 +14,7 @@ from pathlib import Path
 
 import httpx
 
-VERSION = "4.7.0"
+VERSION = "4.7.1"
 GITHUB_REPO = "aeroxy/ast-bro"
 BINARY_NAME = "ast-bro"
 
