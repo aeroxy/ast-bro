@@ -6358,3 +6358,146 @@ fn incremental_update_parses_only_files_the_graph_holds() {
   let (_, code) = run_in(root, &["callers", "orders", ".", "--rebuild"]);
   assert_eq!(code, 2);
 }
+
+/// `callee_targets` before and after an unrelated file is added: the
+/// incremental update must give the cold build's answer (#91).
+fn callee_targets_cold_and_after_a_change(
+  root: &std::path::Path,
+  symbol: &str,
+  unrelated: &str,
+) -> Vec<(String, String)> {
+  std::fs::create_dir_all(root.join(".git")).unwrap();
+  let cold = callee_targets(root, symbol, true);
+  write(&root.join(unrelated), "\n");
+  let incremental = callee_targets(root, symbol, false);
+  assert_eq!(
+    incremental, cold,
+    "a partial update and a cold build diverged"
+  );
+  cold
+}
+
+fn pair(target: &str, confidence: &str) -> (String, String) {
+  (target.to_string(), confidence.to_string())
+}
+
+#[test]
+fn rust_an_import_binds_to_the_declaration_it_names() {
+  // `real as alias` calls `real`, and `helper` imported through a
+  // `pub use` calls the `helper` the re-export names, under its own name
+  // or another. Each used to bind `Exact` to a qn that names nothing:
+  // `src/a.rs::alias` and `src/b.rs::helper` (#127).
+  let tmp = tempfile::tempdir().unwrap();
+  let root = tmp.path();
+  write(&root.join("Cargo.toml"), "[package]\nname = \"x\"\n");
+  write(&root.join("src/lib.rs"), "mod a;\nmod b;\nmod c;\n");
+  write(
+    &root.join("src/a.rs"),
+    "pub fn real() {}\npub fn helper() {}\n",
+  );
+  write(&root.join("src/b.rs"), "pub use crate::a::helper;\n");
+  write(
+    &root.join("src/c.rs"),
+    "use crate::a::real as alias;\nuse crate::b::helper;\nuse crate::b::helper as other;\n\npub fn go() {\n    alias();\n    helper();\n    other();\n}\n",
+  );
+  assert_eq!(
+    callee_targets_cold_and_after_a_change(root, "go", "src/d.rs"),
+    vec![
+      pair("src/a.rs::helper", "Exact"),
+      pair("src/a.rs::helper", "Exact"),
+      pair("src/a.rs::real", "Exact"),
+    ]
+  );
+}
+
+#[test]
+fn rust_a_re_exported_name_is_not_taken_from_an_unrelated_file() {
+  // With a second `helper` the name alone does not decide. The dep graph
+  // does: `src/c.rs` reaches `src/a.rs` through `src/b.rs`, and never
+  // reaches `src/other.rs`.
+  let tmp = tempfile::tempdir().unwrap();
+  let root = tmp.path();
+  write(&root.join("Cargo.toml"), "[package]\nname = \"x\"\n");
+  write(
+    &root.join("src/lib.rs"),
+    "mod a;\nmod b;\nmod c;\nmod other;\n",
+  );
+  write(&root.join("src/a.rs"), "pub fn helper() {}\n");
+  write(&root.join("src/other.rs"), "pub fn helper() {}\n");
+  write(&root.join("src/b.rs"), "pub use crate::a::helper;\n");
+  write(
+    &root.join("src/c.rs"),
+    "use crate::b::helper;\n\npub fn go() {\n    helper();\n}\n",
+  );
+  assert_eq!(
+    callee_targets_cold_and_after_a_change(root, "go", "src/d.rs"),
+    vec![pair("src/a.rs::helper", "Inferred")]
+  );
+}
+
+#[test]
+fn typescript_an_import_binds_to_the_declaration_it_names() {
+  // `real as alias` calls `real`. `"react"` is a package, not the Python
+  // script that happens to be called `scripts/react.py` (#127). The default
+  // export has no declared name to look up, so `{ default as d }` is no
+  // call of a function called `default`.
+  let tmp = tempfile::tempdir().unwrap();
+  let root = tmp.path();
+  write(
+    &root.join("src/a.ts"),
+    "export function real() {}\nexport default function () {}\n",
+  );
+  write(
+    &root.join("scripts/react.py"),
+    "def useState():\n    pass\n",
+  );
+  write(
+    &root.join("src/c.ts"),
+    "import { real as alias } from \"./a\"\nimport { useState } from \"react\"\nimport { default as d } from \"./a\"\n\nexport function go() {\n  alias()\n  d()\n  return useState(0)\n}\n",
+  );
+  assert_eq!(
+    callee_targets_cold_and_after_a_change(root, "go", "src/d.ts"),
+    vec![
+      pair("[unresolved] d", "Ambiguous"),
+      pair("[unresolved] useState", "Ambiguous"),
+      pair("src/a.ts::real", "Exact"),
+    ]
+  );
+}
+
+#[test]
+fn python_an_import_binds_to_the_declaration_it_names() {
+  // `from a import real` names `real` in `a.py`, aliased or not, and
+  // `b.py` defines a `real` of its own.
+  let tmp = tempfile::tempdir().unwrap();
+  let root = tmp.path();
+  write(&root.join("a.py"), "def real():\n    pass\n");
+  write(&root.join("b.py"), "def real():\n    pass\n");
+  write(
+    &root.join("c.py"),
+    "from a import real as alias\nfrom a import real\n\ndef go():\n    alias()\n    real()\n",
+  );
+  assert_eq!(
+    callee_targets_cold_and_after_a_change(root, "go", "d.py"),
+    vec![pair("a.py::real", "Exact"), pair("a.py::real", "Exact")]
+  );
+}
+
+#[test]
+fn typescript_a_construction_binds_to_the_imported_class() {
+  // A construction targets its type's qn, so an imported class counts as
+  // a declaration of the module: `new Foo()` is the `Foo` of `./a`, not
+  // the one in `./b`.
+  let tmp = tempfile::tempdir().unwrap();
+  let root = tmp.path();
+  write(&root.join("src/a.ts"), "export class Foo {}\n");
+  write(&root.join("src/b.ts"), "export class Foo {}\n");
+  write(
+    &root.join("src/c.ts"),
+    "import { Foo } from \"./a\"\n\nexport function go() {\n  return new Foo()\n}\n",
+  );
+  assert_eq!(
+    callee_targets_cold_and_after_a_change(root, "go", "src/d.ts"),
+    vec![pair("src/a.ts::Foo", "Exact")]
+  );
+}

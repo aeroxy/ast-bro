@@ -450,6 +450,7 @@ fn _handle_import_statement<'a, D: Doc>(
         out.push(ImportBinding {
           local,
           module,
+          imported: None,
           line,
         });
       }
@@ -462,6 +463,7 @@ fn _handle_import_statement<'a, D: Doc>(
           out.push(ImportBinding {
             local,
             module,
+            imported: None,
             line,
           });
         }
@@ -505,6 +507,7 @@ fn _handle_import_from<'a, D: Doc>(
           format!("{}.{}", module_prefix, bare)
         };
         out.push(ImportBinding {
+          imported: Some(bare.clone()),
           local: bare,
           module,
           line,
@@ -516,7 +519,7 @@ fn _handle_import_from<'a, D: Doc>(
         if let (Some(n), Some(a)) = (name, alias) {
           let bare = String::from_utf8_lossy(&src[n.range()]).to_string();
           let module = if module_prefix.is_empty() {
-            bare
+            bare.clone()
           } else {
             format!("{}.{}", module_prefix, bare)
           };
@@ -524,6 +527,7 @@ fn _handle_import_from<'a, D: Doc>(
           out.push(ImportBinding {
             local,
             module,
+            imported: Some(bare),
             line,
           });
         }
