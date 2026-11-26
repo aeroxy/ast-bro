@@ -366,6 +366,13 @@ pub struct ImportBinding {
   /// Module specifier as written: `crate::net::Bar`, `numpy.linalg`,
   /// `./helpers`, `com.foo.Bar`.
   pub module: String,
+  /// The name the module declares, when the binding is one of its
+  /// declarations: `real` in `use a::real as alias`,
+  /// `import { real as alias }` and `from a import real as alias`. `None`
+  /// when the binding is a whole module or a default export
+  /// (`import * as ns`, `import pandas as pd`, `import Foo from`,
+  /// `import { default as Foo }`), which has no declared name to look up.
+  pub imported: Option<String>,
   /// 1-indexed line of the import statement.
   pub line: u32,
 }

@@ -941,6 +941,7 @@ fn _handle_import_stmt<'a, D: Doc>(
             out.push(ImportBinding {
               local,
               module: source.clone(),
+              imported: None,
               line,
             });
           }
@@ -952,6 +953,7 @@ fn _handle_import_stmt<'a, D: Doc>(
                 out.push(ImportBinding {
                   local,
                   module: source.clone(),
+                  imported: None,
                   line,
                 });
               }
@@ -968,10 +970,17 @@ fn _handle_import_stmt<'a, D: Doc>(
                   .as_ref()
                   .or(name.as_ref())
                   .map(|n| String::from_utf8_lossy(&src[n.range()]).to_string());
+                // `{ default as x }` is the default export, which has no
+                // declared name to look up, as for `import x from`.
+                let imported = name
+                  .as_ref()
+                  .map(|n| String::from_utf8_lossy(&src[n.range()]).to_string())
+                  .filter(|n| n != "default");
                 if let Some(local) = local {
                   out.push(ImportBinding {
                     local,
                     module: source.clone(),
+                    imported,
                     line,
                   });
                 }

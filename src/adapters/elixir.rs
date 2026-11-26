@@ -73,6 +73,7 @@ impl LanguageAdapter for ElixirAdapter {
       .map(|d| ImportBinding {
         local: d.local,
         module: d.module,
+        imported: None,
         line: d.line,
       })
       .collect();

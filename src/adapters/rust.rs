@@ -683,6 +683,7 @@ fn _expand_use_tree<'a, D: Doc>(
       let mut full = prefix.clone();
       full.push(name.clone());
       out.push(ImportBinding {
+        imported: Some(name.clone()),
         local: name,
         module: full.join("::"),
         line,
@@ -698,6 +699,7 @@ fn _expand_use_tree<'a, D: Doc>(
         let local = String::from_utf8_lossy(&src[name_node.range()]).to_string();
         full.push(local.clone());
         out.push(ImportBinding {
+          imported: Some(local.clone()),
           local,
           module: full.join("::"),
           line,
@@ -715,12 +717,14 @@ fn _expand_use_tree<'a, D: Doc>(
         full.extend(segs);
       }
       let module = full.join("::");
+      let imported = full.last().cloned();
       let local = alias
         .map(|a| String::from_utf8_lossy(&src[a.range()]).to_string())
         .unwrap_or_else(|| full.last().cloned().unwrap_or_default());
       out.push(ImportBinding {
         local,
         module,
+        imported,
         line,
       });
     }

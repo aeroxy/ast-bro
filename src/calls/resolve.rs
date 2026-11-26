@@ -2,8 +2,10 @@
 //!
 //! Pass A — same-file: a call site `foo()` resolves if `foo` is defined in
 //! the same file (a `Qn` we already collected) or if it appears in the
-//! file's `ImportBinding`s and the import's module spec resolves to a
-//! project file via the existing `src/deps/resolver` suffix index.
+//! file's `ImportBinding`s, the import's module spec resolves to a project
+//! file via the existing `src/deps/resolver` suffix index, and that file
+//! declares the imported name. A name the file does not declare (a
+//! re-export) goes on to pass B/C under its declared name.
 //!
 //! A call on a scope receiver (`CallSite::receiver_scope`) skips the
 //! name-based passes: only a candidate inside that scope can be its target,
@@ -23,7 +25,7 @@
 
 use crate::calls::graph::{CallEdge, CallTarget, CallableMeta, Confidence, Qn};
 use crate::calls::pass::{file_rel, raw_to_edge, FilePass, RawEdge};
-use crate::core::{ImportOnly, ReceiverScope};
+use crate::core::{ImportBinding, ImportOnly, ReceiverScope};
 use crate::deps::manifest::detect_aliases;
 use crate::deps::resolver::{build_suffix_index, resolve as resolve_spec, Lang, ResolveCtx};
 use crate::deps::traverse;
@@ -113,16 +115,16 @@ pub fn run_with_table(
       .map(|q| (q.name().to_string(), q.clone()))
       .collect();
 
-    // Build a quick `local_name -> module spec` lookup for pass A.
-    let import_lookup: HashMap<String, String> = fp
+    // Build a quick `local_name -> binding` lookup for pass A.
+    let import_lookup: HashMap<String, ImportBinding> = fp
       .imports
       .iter()
-      .map(|b| (b.local.clone(), b.module.clone()))
+      .map(|b| (b.local.clone(), b.clone()))
       .collect();
 
     let lang = Lang::from_path(&fp.file);
 
-    for raw in fp.raw_edges {
+    for mut raw in fp.raw_edges {
       // -------- Scope receiver -------- //
       // The receiver says where the callee lives: the scope it names,
       // in this file or another, decides the target. The name-based
@@ -373,26 +375,35 @@ pub fn run_with_table(
       // `crate::helper()` explicitly names a path, not the imported
       // `helper` binding.
       if self_like && !scope_shifting {
-        if let Some(spec) = import_lookup.get(&raw.bare_name) {
-          if let Some(target) = resolve_via_imports(
-            spec,
-            &raw.bare_name,
+        if let Some(binding) = import_lookup.get(&raw.bare_name) {
+          match resolve_via_imports(
+            binding,
             &fp.file,
             lang,
             &aliases,
             &suffix_idx,
             root,
             &symbol_table,
+            type_by_name,
           ) {
-            let edge = raw_to_edge(
-              raw.clone(),
-              CallTarget::Resolved(target),
-              Confidence::Exact,
-              rel_path(root, &fp.file),
-              Vec::new(),
-            );
-            forward.entry(edge.source.clone()).or_default().push(edge);
-            continue;
+            Imported::Declared(target) => {
+              let edge = raw_to_edge(
+                raw.clone(),
+                CallTarget::Resolved(target),
+                Confidence::Exact,
+                rel_path(root, &fp.file),
+                Vec::new(),
+              );
+              forward.entry(edge.source.clone()).or_default().push(edge);
+              continue;
+            }
+            // The module is a project file that does not declare the
+            // name: it re-exports it (`pub use`, a barrel), or the import
+            // is stale. The passes below look the name up by what it is
+            // called where it is declared, which is also what the
+            // incremental update knows it by once the edge is resolved.
+            Imported::Undeclared(name) => raw.bare_name = name,
+            Imported::Outside => {}
           }
         }
       }
@@ -708,22 +719,34 @@ pub(crate) fn resolve_scoped(
   }
 }
 
+/// What an import binding says about a call to its local name.
+enum Imported {
+  /// The module is a project file that declares the imported name.
+  Declared(Qn),
+  /// The module is a project file that does not declare the name: the
+  /// name to look the call up by elsewhere.
+  Undeclared(String),
+  /// The module is not a project file, or the language has no resolver.
+  Outside,
+}
+
 /// Resolve `from <module> import <name>` (or equivalent) by mapping `module`
-/// to a project file via the suffix index, then qualifying `name` inside it.
-/// Returns `None` when the module isn't resolvable to a project file
-/// (likely an external dep — we leave that to pass-B/C).
+/// to a project file via the suffix index, then looking `name` up among the
+/// declarations of that file.
 #[allow(clippy::too_many_arguments)] // resolution context is genuinely wide
 fn resolve_via_imports(
-  spec: &str,
-  bare_name: &str,
+  binding: &ImportBinding,
   from_file: &Path,
   lang: Option<Lang>,
   aliases: &crate::deps::manifest::ProjectAliases,
   idx: &crate::deps::resolver::SuffixIndex,
   root: &Path,
   symbol_table: &HashMap<String, Vec<Qn>>,
-) -> Option<Qn> {
-  let lang = lang?;
+  type_by_name: &HashMap<String, Vec<Qn>>,
+) -> Imported {
+  let Some(lang) = lang else {
+    return Imported::Outside;
+  };
   let ctx = ResolveCtx {
     from_file,
     lang,
@@ -731,20 +754,35 @@ fn resolve_via_imports(
     base_url: aliases.ts_base_url.as_deref(),
     php_psr4: &aliases.php_psr4,
   };
-  let target_file = resolve_spec(spec, &ctx, idx)?;
+  let Some(target_file) = resolve_spec(&binding.module, &ctx, idx) else {
+    return Imported::Outside;
+  };
   let rel = file_rel(root, &target_file);
+  // The name the module declares: `real` in `real as alias`. A binding of
+  // a whole module or a default export has none, and goes by its local name.
+  let name = binding.imported.as_deref().unwrap_or(&binding.local);
 
-  // Prefer a qn whose file matches the resolved target.
-  if let Some(cands) = symbol_table.get(bare_name) {
-    for cand in cands {
-      if cand.file() == rel {
-        return Some(cand.clone());
-      }
-    }
+  // A callable in the resolved file, or a type there: a construction
+  // targets its type's qn.
+  let declared = symbol_table
+    .get(name)
+    .into_iter()
+    .flatten()
+    .chain(
+      type_by_name
+        .get(&crate::calls::graph::type_key(
+          Lang::from_path(&target_file),
+          name,
+        ))
+        .into_iter()
+        .flatten()
+        .filter(|qn| qn.name() == name),
+    )
+    .find(|cand| cand.file() == rel);
+  match declared {
+    Some(qn) => Imported::Declared(qn.clone()),
+    None => Imported::Undeclared(name.to_string()),
   }
-  // Fall back: synthesize a file-scope qn (not always correct for nested
-  // declarations, but better than dropping the edge).
-  Some(Qn::new(format!("{}::{}", rel, bare_name)))
 }
 
 /// Per-file forward-dep closures, memoized. A file's closure is the same for
