@@ -275,11 +275,10 @@ pub fn resolve(spec: &str, ctx: &ResolveCtx<'_>, idx: &SuffixIndex) -> Option<Pa
     );
   }
 
-  // Python `from a.b import c` arrives normalised to `a/b/c` already.
-  // `c` may be a module (`a/b/c.py`) or a name `a/b.py` declares, so the
-  // trailing segment is dropped once, as for a relative import. The suffix
-  // index holds every language's files, and a Python import names a
-  // Python module: `import requests` is not `web/requests.ts` (#127).
+  // Python `from a.b import c` arrives normalised to `a/b/c` already; see
+  // `resolve_from_import` for a `c` that is not a module. The suffix index
+  // holds every language's files, and a Python import names a Python
+  // module: `import requests` is not `web/requests.ts` (#127).
   let key = spec.replace('.', "/");
   if ctx.lang != Lang::Python {
     return pick_closest(idx.lookup(&key), ctx.from_file);
@@ -294,7 +293,23 @@ pub fn resolve(spec: &str, ctx: &ResolveCtx<'_>, idx: &SuffixIndex) -> Option<Pa
       .collect();
     pick_closest(Some(&cands), ctx.from_file)
   };
-  python(&key).or_else(|| python(key.rsplit_once('/')?.0))
+  python(&key)
+}
+
+/// Resolve a Python `from a.b import c`, whose spec is `a.b.c`: `c` may be
+/// a module (`a/b/c.py`) or a name `a/b.py` declares, so the last segment
+/// is dropped once when the whole does not resolve, as the relative form
+/// does (`resolve_relative_path`). A plain `import a.b` names the module
+/// `a.b` and takes `resolve` alone: `tools/a.py` is not it.
+pub fn resolve_from_import(spec: &str, ctx: &ResolveCtx<'_>, idx: &SuffixIndex) -> Option<PathBuf> {
+  resolve(spec, ctx, idx).or_else(|| {
+    let relative = spec.starts_with("./") || spec.starts_with("../");
+    if ctx.lang != Lang::Python || relative {
+      return None;
+    }
+    let (parent, _) = spec.rsplit_once(['/', '.'])?;
+    resolve(parent, ctx, idx)
+  })
 }
 
 /// Walk a relative `./x/y` style path against `from_file`'s directory.

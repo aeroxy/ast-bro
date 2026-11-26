@@ -1298,13 +1298,17 @@ fn a_python_import_resolves_only_to_a_python_file() {
   write_in(root, "web/requests.ts", "export function get() {}\n");
   write_in(root, "web/os.ts", "export const sep = 1;\n");
   write_in(root, "util.py", "def f():\n    pass\n");
+  write_in(root, "tools/xml.py", "def f():\n    pass\n");
   write_in(
     root,
     "c.py",
-    "import requests\nimport os.path\nfrom requests import get\nfrom util import f\n",
+    "import requests\nimport os.path\nfrom requests import get\nfrom util import f\nimport xml.etree\n",
   );
   let edges = incremental_matches_cold(root, |root| write_in(root, "d.py", "\n"));
   assert!(!has_edge(&edges, "c.py", "web/requests.ts"), "{}", edges);
   assert!(!has_edge(&edges, "c.py", "web/os.ts"), "{}", edges);
   assert!(has_edge(&edges, "c.py", "util.py"), "{}", edges);
+  // `import xml.etree` names the module `xml.etree`, so only a
+  // `from … import` drops the last segment: `tools/xml.py` is not it.
+  assert!(!has_edge(&edges, "c.py", "tools/xml.py"), "{}", edges);
 }

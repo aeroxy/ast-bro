@@ -27,7 +27,9 @@ use crate::calls::graph::{CallEdge, CallTarget, CallableMeta, Confidence, Qn};
 use crate::calls::pass::{file_rel, raw_to_edge, FilePass, RawEdge};
 use crate::core::{ImportBinding, ImportOnly, ReceiverScope};
 use crate::deps::manifest::detect_aliases;
-use crate::deps::resolver::{build_suffix_index, resolve as resolve_spec, Lang, ResolveCtx};
+use crate::deps::resolver::{
+  build_suffix_index, resolve as resolve_spec, resolve_from_import, Lang, ResolveCtx,
+};
 use crate::deps::traverse;
 use crate::deps::DepGraph;
 use std::collections::{HashMap, HashSet};
@@ -385,6 +387,7 @@ pub fn run_with_table(
             root,
             &symbol_table,
             type_by_name,
+            callable_meta,
           ) {
             Imported::Declared(target) => {
               let edge = raw_to_edge(
@@ -743,6 +746,7 @@ fn resolve_via_imports(
   root: &Path,
   symbol_table: &HashMap<String, Vec<Qn>>,
   type_by_name: &HashMap<String, Vec<Qn>>,
+  callable_meta: &HashMap<Qn, CallableMeta>,
 ) -> Imported {
   let Some(lang) = lang else {
     return Imported::Outside;
@@ -754,7 +758,14 @@ fn resolve_via_imports(
     base_url: aliases.ts_base_url.as_deref(),
     php_psr4: &aliases.php_psr4,
   };
-  let Some(target_file) = resolve_spec(&binding.module, &ctx, idx) else {
+  // A binding of one declaration (`from a import real`) may name it in
+  // the module's spec; see `resolve_from_import`.
+  let target_file = if binding.imported.is_some() {
+    resolve_from_import(&binding.module, &ctx, idx)
+  } else {
+    resolve_spec(&binding.module, &ctx, idx)
+  };
+  let Some(target_file) = target_file else {
     return Imported::Outside;
   };
   let rel = file_rel(root, &target_file);
@@ -762,12 +773,14 @@ fn resolve_via_imports(
   // a whole module or a default export has none, and goes by its local name.
   let name = binding.imported.as_deref().unwrap_or(&binding.local);
 
-  // A callable in the resolved file, or a type there: a construction
-  // targets its type's qn.
+  // A function in the resolved file, or a type there: a construction
+  // targets its type's qn. A method is not something a module exports, so
+  // `A::real` is not the `real` it exports.
   let declared = symbol_table
     .get(name)
     .into_iter()
     .flatten()
+    .filter(|qn| callable_meta.get(*qn).is_some_and(|m| m.kind == "function"))
     .chain(
       type_by_name
         .get(&crate::calls::graph::type_key(

@@ -38,10 +38,15 @@ pub struct ProjectAliases {
 }
 
 pub fn detect_aliases(root: &Path) -> ProjectAliases {
+  // Read once: `paths` and `baseUrl` come from the same version of the file.
+  let tsconfig = read_tsconfig(&root.join(TSCONFIG_JSON));
   ProjectAliases {
     rust_crate_name: parse_cargo_name(&root.join(CARGO_TOML)),
-    ts_path_aliases: parse_tsconfig_paths(&root.join(TSCONFIG_JSON)),
-    ts_base_url: parse_tsconfig_base_url(&root.join(TSCONFIG_JSON)),
+    ts_path_aliases: tsconfig
+      .as_ref()
+      .map(parse_tsconfig_paths)
+      .unwrap_or_default(),
+    ts_base_url: tsconfig.as_ref().and_then(tsconfig_base_url),
     php_psr4: parse_composer_psr4(&root.join(COMPOSER_JSON)),
   }
 }
@@ -86,17 +91,17 @@ fn parse_cargo_name(path: &Path) -> Option<String> {
   None
 }
 
+/// tsconfig.json, parsed, or `None` when it is missing or unreadable.
+fn read_tsconfig(path: &Path) -> Option<serde_json::Value> {
+  let s = std::fs::read_to_string(path).ok()?;
+  serde_json::from_str(strip_jsonc(&s).as_str()).ok()
+}
+
 /// Read `compilerOptions.paths` and `compilerOptions.baseUrl` out of
 /// tsconfig.json. Returns prefix → replacement pairs ready to feed
 /// into the resolver. Only handles the common single-target form
 /// (`"@app/*": ["src/app/*"]` style) — multiple targets pick the first.
-pub fn parse_tsconfig_paths(path: &Path) -> Vec<(String, String)> {
-  let Ok(s) = std::fs::read_to_string(path) else {
-    return Vec::new();
-  };
-  let Ok(v) = serde_json::from_str::<serde_json::Value>(strip_jsonc(&s).as_str()) else {
-    return Vec::new();
-  };
+fn parse_tsconfig_paths(v: &serde_json::Value) -> Vec<(String, String)> {
   let Some(co) = v.get("compilerOptions") else {
     return Vec::new();
   };
@@ -133,20 +138,31 @@ pub fn parse_tsconfig_paths(path: &Path) -> Vec<(String, String)> {
 
 /// Read `compilerOptions.baseUrl` out of tsconfig.json, with or without
 /// `paths`.
-pub fn parse_tsconfig_base_url(path: &Path) -> Option<String> {
-  let s = std::fs::read_to_string(path).ok()?;
-  let v = serde_json::from_str::<serde_json::Value>(strip_jsonc(&s).as_str()).ok()?;
+#[cfg(test)]
+fn parse_tsconfig_base_url(path: &Path) -> Option<String> {
+  tsconfig_base_url(&read_tsconfig(path)?)
+}
+
+/// `compilerOptions.baseUrl` as a root-relative path, normalised
+/// (`./src/` and `src/../src` are `src`, `.` is `""`). `None` when it is
+/// absolute or leaves the root: it names no project file there, and
+/// joining an absolute path onto the root would replace the root.
+fn tsconfig_base_url(v: &serde_json::Value) -> Option<String> {
   let base = v.get("compilerOptions")?.get("baseUrl")?.as_str()?;
-  let base = base.trim_start_matches("./").trim_end_matches('/');
-  // A `baseUrl` outside the root (`"../"`) names no project file.
-  if base.split('/').any(|s| s == "..") {
+  if base.starts_with(['/', '\\']) || Path::new(base).is_absolute() || base.contains(':') {
     return None;
   }
-  Some(if base == "." {
-    String::new()
-  } else {
-    base.to_string()
-  })
+  let mut parts: Vec<&str> = Vec::new();
+  for seg in base.split(['/', '\\']) {
+    match seg {
+      "" | "." => {}
+      ".." => {
+        parts.pop()?;
+      }
+      s => parts.push(s),
+    }
+  }
+  Some(parts.join("/"))
 }
 
 /// Strip JSON-with-comments artefacts so `serde_json` can parse the file.
@@ -303,8 +319,12 @@ mod tests {
     assert_eq!(with("./src/").as_deref(), Some("src"));
     assert_eq!(with(".").as_deref(), Some(""));
     assert_eq!(with("./").as_deref(), Some(""));
-    // Outside the root there is no project file to name.
+    assert_eq!(with("src/../lib").as_deref(), Some("lib"));
+    // Outside the root there is no project file to name, and an absolute
+    // path would replace the root in a join.
     assert_eq!(with("../shared"), None);
+    assert_eq!(with("src/../../shared"), None);
+    assert_eq!(with("/opt/shared"), None);
     assert_eq!(base_url(r#"{ "compilerOptions": {} }"#), None);
   }
 }

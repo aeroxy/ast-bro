@@ -28,8 +28,11 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use crate::deps::extract::extract;
+use crate::deps::graph::ImportKind;
 use crate::deps::manifest::{detect_aliases, ProjectAliases};
-use crate::deps::resolver::{build_suffix_index, resolve, ResolveCtx, SuffixIndex};
+use crate::deps::resolver::{
+  build_suffix_index, resolve, resolve_from_import, ResolveCtx, SuffixIndex,
+};
 
 /// Build a `DepGraph` from scratch by walking `root`, parsing every
 /// supported file, and resolving each import.
@@ -81,7 +84,11 @@ pub(crate) fn resolve_all(graph: &mut DepGraph, idx: &SuffixIndex, aliases: &Pro
       let mut edges = Vec::new();
       let mut external = Vec::new();
       for ri in imports {
-        match resolve(&ri.spec, &ctx, idx) {
+        let target = match ri.kind {
+          ImportKind::From => resolve_from_import(&ri.spec, &ctx, idx),
+          _ => resolve(&ri.spec, &ctx, idx),
+        };
+        match target {
           // A self-edge from a path collision — skip.
           Some(target) if target == *file => {}
           Some(target) => edges.push(DepEdge {
