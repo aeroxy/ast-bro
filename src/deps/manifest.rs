@@ -28,6 +28,10 @@ pub struct ProjectAliases {
   pub rust_crate_name: Option<String>,
   /// TS path aliases — `(prefix, replacement)` pairs.
   pub ts_path_aliases: Vec<(String, String)>,
+  /// TS `compilerOptions.baseUrl`, relative to the root, without a leading
+  /// `./`; `""` when it is the root itself. `None` when there is none or it
+  /// leaves the root.
+  pub ts_base_url: Option<String>,
   /// PHP PSR-4 namespace prefix → directory pairs from `composer.json`.
   /// Prefixes are normalised to slash form (e.g. `App/` from `App\\`).
   pub php_psr4: Vec<(String, String)>,
@@ -37,6 +41,7 @@ pub fn detect_aliases(root: &Path) -> ProjectAliases {
   ProjectAliases {
     rust_crate_name: parse_cargo_name(&root.join(CARGO_TOML)),
     ts_path_aliases: parse_tsconfig_paths(&root.join(TSCONFIG_JSON)),
+    ts_base_url: parse_tsconfig_base_url(&root.join(TSCONFIG_JSON)),
     php_psr4: parse_composer_psr4(&root.join(COMPOSER_JSON)),
   }
 }
@@ -124,6 +129,24 @@ pub fn parse_tsconfig_paths(path: &Path) -> Vec<(String, String)> {
     out.push((prefix_norm, combined));
   }
   out
+}
+
+/// Read `compilerOptions.baseUrl` out of tsconfig.json, with or without
+/// `paths`.
+pub fn parse_tsconfig_base_url(path: &Path) -> Option<String> {
+  let s = std::fs::read_to_string(path).ok()?;
+  let v = serde_json::from_str::<serde_json::Value>(strip_jsonc(&s).as_str()).ok()?;
+  let base = v.get("compilerOptions")?.get("baseUrl")?.as_str()?;
+  let base = base.trim_start_matches("./").trim_end_matches('/');
+  // A `baseUrl` outside the root (`"../"`) names no project file.
+  if base.split('/').any(|s| s == "..") {
+    return None;
+  }
+  Some(if base == "." {
+    String::new()
+  } else {
+    base.to_string()
+  })
 }
 
 /// Strip JSON-with-comments artefacts so `serde_json` can parse the file.
@@ -256,4 +279,32 @@ pub fn cargo_workspace_members(root: &Path) -> Vec<PathBuf> {
     .flat_map(|m| crate::path_glob::expand_pattern(&root.join(m)))
     .filter(|p| p.join("Cargo.toml").is_file())
     .collect()
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  fn base_url(json: &str) -> Option<String> {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join(TSCONFIG_JSON);
+    std::fs::write(&path, json).unwrap();
+    parse_tsconfig_base_url(&path)
+  }
+
+  #[test]
+  fn base_url_is_read_relative_to_the_root() {
+    let with = |b: &str| {
+      base_url(&format!(
+        r#"{{ "compilerOptions": {{ "baseUrl": "{b}" }} }}"#
+      ))
+    };
+    assert_eq!(with("src").as_deref(), Some("src"));
+    assert_eq!(with("./src/").as_deref(), Some("src"));
+    assert_eq!(with(".").as_deref(), Some(""));
+    assert_eq!(with("./").as_deref(), Some(""));
+    // Outside the root there is no project file to name.
+    assert_eq!(with("../shared"), None);
+    assert_eq!(base_url(r#"{ "compilerOptions": {} }"#), None);
+  }
 }

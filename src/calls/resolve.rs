@@ -728,6 +728,7 @@ fn resolve_via_imports(
     from_file,
     lang,
     path_aliases: &aliases.ts_path_aliases,
+    base_url: aliases.ts_base_url.as_deref(),
     php_psr4: &aliases.php_psr4,
   };
   let target_file = resolve_spec(spec, &ctx, idx)?;

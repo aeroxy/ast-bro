@@ -1178,3 +1178,133 @@ fn incremental_update_sees_a_non_source_import_target_come_and_go() {
   assert!(!has_edge(&edges, "a.ts", "data.json"), "{}", edges);
   assert!(!has_edge(&edges, "b.ts", "logo.svg"), "{}", edges);
 }
+
+#[test]
+fn a_bare_typescript_import_is_external_without_a_base_url() {
+  // A bare specifier names a package unless `tsconfig.json` maps it: it
+  // is not the project file whose path happens to end in it (#127).
+  let tmp = tempfile::tempdir().unwrap();
+  let root = tmp.path();
+  write_in(root, "scripts/react.py", "def useState():\n    pass\n");
+  write_in(root, "source/types/ky.ts", "export class NetworkError {}\n");
+  write_in(root, "src/util.ts", "export const u = 1;\n");
+  write_in(
+    root,
+    "src/c.ts",
+    "import { useState } from \"react\";\nimport { NetworkError } from \"ky\";\nimport { u } from \"./util\";\n",
+  );
+  let edges = incremental_matches_cold(root, |root| write_in(root, "src/d.ts", "\n"));
+  assert!(has_edge(&edges, "src/c.ts", "src/util.ts"), "{}", edges);
+  assert!(
+    !has_edge(&edges, "src/c.ts", "scripts/react.py"),
+    "{}",
+    edges
+  );
+  assert!(
+    !has_edge(&edges, "src/c.ts", "source/types/ky.ts"),
+    "{}",
+    edges
+  );
+}
+
+#[test]
+fn a_bare_typescript_import_resolves_under_the_base_url() {
+  // `baseUrl` alone, without `paths`, makes `components/Button` a project
+  // path, anchored at that directory.
+  let tmp = tempfile::tempdir().unwrap();
+  let root = tmp.path();
+  write_in(
+    root,
+    "tsconfig.json",
+    r#"{ "compilerOptions": { "baseUrl": "src" } }"#,
+  );
+  write_in(root, "src/components/Button.ts", "export const b = 1;\n");
+  write_in(root, "other/components/Button.ts", "export const b = 2;\n");
+  write_in(root, "src/components/index.ts", "export const i = 1;\n");
+  write_in(
+    root,
+    "src/app.ts",
+    "import { b } from \"components/Button\";\nimport { i } from \"components\";\n",
+  );
+  let edges = incremental_matches_cold(root, |root| write_in(root, "src/d.ts", "\n"));
+  assert!(
+    has_edge(&edges, "src/app.ts", "src/components/Button.ts"),
+    "{}",
+    edges
+  );
+  assert!(
+    has_edge(&edges, "src/app.ts", "src/components/index.ts"),
+    "{}",
+    edges
+  );
+  assert!(
+    !has_edge(&edges, "src/app.ts", "other/components/Button.ts"),
+    "{}",
+    edges
+  );
+}
+
+#[test]
+fn python_an_absolute_from_import_resolves_to_the_module_file() {
+  // `from a import real` names `real` in `a.py`: the name is not a file.
+  let tmp = tempfile::tempdir().unwrap();
+  let root = tmp.path();
+  write_in(root, "a.py", "def real():\n    pass\n");
+  write_in(root, "pkg/__init__.py", "");
+  write_in(root, "pkg/mod.py", "def f():\n    pass\n");
+  write_in(
+    root,
+    "c.py",
+    "from a import real as alias\nfrom pkg.mod import f\nfrom pkg import mod\n",
+  );
+  let edges = incremental_matches_cold(root, |root| write_in(root, "d.py", "\n"));
+  assert!(has_edge(&edges, "c.py", "a.py"), "{}", edges);
+  assert!(has_edge(&edges, "c.py", "pkg/mod.py"), "{}", edges);
+}
+
+#[test]
+fn a_bare_typescript_import_under_a_root_base_url_is_still_a_package() {
+  // `"baseUrl": "."` makes `react` the root's `react.ts` if there is one,
+  // not any file whose path ends in `react`.
+  let tmp = tempfile::tempdir().unwrap();
+  let root = tmp.path();
+  write_in(
+    root,
+    "tsconfig.json",
+    r#"{ "compilerOptions": { "baseUrl": "." } }"#,
+  );
+  write_in(root, "scripts/react.py", "def useState():\n    pass\n");
+  write_in(root, "src/util.ts", "export const u = 1;\n");
+  write_in(
+    root,
+    "src/c.ts",
+    "import { useState } from \"react\";\nimport { u } from \"src/util\";\n",
+  );
+  let edges = incremental_matches_cold(root, |root| write_in(root, "src/d.ts", "\n"));
+  assert!(
+    !has_edge(&edges, "src/c.ts", "scripts/react.py"),
+    "{}",
+    edges
+  );
+  assert!(has_edge(&edges, "src/c.ts", "src/util.ts"), "{}", edges);
+}
+
+#[test]
+fn a_python_import_resolves_only_to_a_python_file() {
+  // The suffix index holds every language's files; `requests` and `os`
+  // here are TypeScript, so the imports stay external (#127).
+  let tmp = tempfile::tempdir().unwrap();
+  let root = tmp.path();
+  write_in(root, "web/requests.ts", "export function get() {}\n");
+  write_in(root, "web/os.ts", "export const sep = 1;\n");
+  write_in(root, "util.py", "def f():\n    pass\n");
+  write_in(
+    root,
+    "c.py",
+    "import requests\nimport os.path\nfrom requests import get\nfrom util import f\n",
+  );
+  let edges = incremental_matches_cold(root, |root| write_in(root, "d.py", "\n"));
+  assert!(!has_edge(&edges, "c.py", "web/requests.ts"), "{}", edges);
+  assert!(!has_edge(&edges, "c.py", "web/os.ts"), "{}", edges);
+  assert!(has_edge(&edges, "c.py", "util.py"), "{}", edges);
+}
