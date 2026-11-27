@@ -867,7 +867,8 @@ fn import_scope(
 /// Whether a Rust `use` path names a declaration at the top of `rel`, the
 /// file it resolved to: the segment before the name is the file's module
 /// (`a` for `src/a.rs` and `src/a/mod.rs`), a crate root's crate name, or
-/// a path keyword. `crate::a::inner::real` names `real` in `mod inner`,
+/// a path keyword, or the name is the file's module (see below).
+/// `crate::a::inner::real` names `real` in `mod inner`,
 /// which may only re-export it, not the `real` at the top of `src/a.rs`.
 /// A nested module named as its file (`crate::a::a::real`) passes: the
 /// path alone does not say which `a` is the file.
@@ -889,7 +890,10 @@ fn rust_path_ends_at_file(module: &str, name: &str, rel: &str) -> bool {
       .and_then(|s| s.to_str()),
     stem => stem,
   };
-  module_name.is_none_or(|m| m == last)
+  // `crate::deps::resolver::resolve` may resolve to `resolve.rs` itself:
+  // the name is the file's module, and its own `resolve` is what the
+  // parent module re-exports under that name.
+  module_name.is_none_or(|m| m == last || m == name)
 }
 
 /// Per-file forward-dep closures, memoized. A file's closure is the same for
@@ -1001,6 +1005,11 @@ mod tests {
       "crate::a::inner::real",
       "real",
       "src/a/mod.rs"
+    ));
+    assert!(rust_path_ends_at_file(
+      "crate::deps::resolver::resolve",
+      "resolve",
+      "src/deps/resolver/resolve.rs"
     ));
   }
 }
