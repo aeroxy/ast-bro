@@ -226,12 +226,12 @@ pub fn apply_delta_to_calls(
     .chain(calls.types.keys())
     .cloned()
     .collect();
-  //    An edge pass A resolved through an import resolves that import
+  //    An edge pass A looked up through an import resolves that import
   //    again, stale or not, as a cold build does: the module may since
-  //    declare the name, no longer declare it, or be gone, and then the
-  //    call is to the name the file wrote (`alias`), not to another
-  //    file's `real`. Its target can outlive the module, so the target
-  //    alone cannot say when.
+  //    declare the name, no longer declare it, be gone, or be back. While
+  //    it is gone the call is to the name the file wrote (`alias`), not
+  //    to another file's `real`. Its target can outlive the module, so the
+  //    target alone cannot say when.
   for edges in calls.forward.values_mut() {
     for e in edges.iter_mut() {
       // Step 9 re-resolves every Elixir edge from its whole target,
@@ -264,15 +264,13 @@ pub fn apply_delta_to_calls(
             CallTarget::Bare(name),
             crate::calls::graph::Confidence::Ambiguous,
           ),
-          // What a cold build records: the local name, and no binding.
-          resolve::Imported::Outside => {
-            let local = binding.local.clone();
-            e.import = None;
-            (
-              CallTarget::Bare(local),
-              crate::calls::graph::Confidence::Ambiguous,
-            )
-          }
+          // What a cold build records: the local name, which step 9
+          // resolves by the cold rules. The binding stays, so the update
+          // that adds the module resolves the import again.
+          resolve::Imported::Outside => (
+            CallTarget::Bare(binding.local.clone()),
+            crate::calls::graph::Confidence::Ambiguous,
+          ),
         };
         continue;
       }

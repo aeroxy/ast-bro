@@ -411,7 +411,10 @@ pub fn run_with_table(
               raw.bare_name = name;
               raw.import = Some(binding.clone());
             }
-            Imported::Outside => {}
+            // The module is not a project file now, but a later update
+            // may add it, and only the binding finds it then: the caller
+            // is not extracted again.
+            Imported::Outside => raw.import = Some(binding.clone()),
           }
         }
       }
@@ -824,7 +827,8 @@ pub(crate) fn resolve_via_imports(
 /// passes below follow. Rust is the exception, since its path goes on into
 /// the file: `use crate::a::inner::real` names `inner::real`, so the scope
 /// must be the tail of the path before the name, and the longest such tail
-/// wins. A binding of a whole module or a default export goes by its local
+/// wins. For the same reason that path does not name a `real` at the top
+/// of the file; see `rust_path_ends_at_file`. A binding of a whole module or a default export goes by its local
 /// name and keeps the first match, as all matches rank 0.
 fn import_scope(
   cand: &Qn,
@@ -849,7 +853,7 @@ fn import_scope(
     scope.split("::").count()
   };
   if depth == 0 {
-    return Some(0);
+    return (lang != Lang::Rust || rust_path_ends_at_file(&binding.module, name, rel)).then_some(0);
   }
   let path_ends_in_scope = lang == Lang::Rust
     && binding
@@ -858,6 +862,34 @@ fn import_scope(
       .and_then(|m| m.strip_suffix("::"))
       .is_some_and(|m| m == scope || m.ends_with(&format!("::{scope}")));
   path_ends_in_scope.then_some(depth)
+}
+
+/// Whether a Rust `use` path names a declaration at the top of `rel`, the
+/// file it resolved to: the segment before the name is the file's module
+/// (`a` for `src/a.rs` and `src/a/mod.rs`), a crate root's crate name, or
+/// a path keyword. `crate::a::inner::real` names `real` in `mod inner`,
+/// which may only re-export it, not the `real` at the top of `src/a.rs`.
+/// A nested module named as its file (`crate::a::a::real`) passes: the
+/// path alone does not say which `a` is the file.
+fn rust_path_ends_at_file(module: &str, name: &str, rel: &str) -> bool {
+  let Some(parent) = module.strip_suffix(name).and_then(|m| m.strip_suffix("::")) else {
+    return true;
+  };
+  let last = parent.rsplit("::").next().unwrap_or(parent);
+  if matches!(last, "crate" | "self" | "super") {
+    return true;
+  }
+  let path = Path::new(rel);
+  let module_name = match path.file_stem().and_then(|s| s.to_str()) {
+    // A crate root: the path names it by the crate's name.
+    Some("lib" | "main") => return true,
+    Some("mod") => path
+      .parent()
+      .and_then(|d| d.file_name())
+      .and_then(|s| s.to_str()),
+    stem => stem,
+  };
+  module_name.is_none_or(|m| m == last)
 }
 
 /// Per-file forward-dep closures, memoized. A file's closure is the same for
@@ -939,4 +971,36 @@ fn rel_path(root: &Path, file: &Path) -> PathBuf {
     .strip_prefix(root)
     .map(|p| p.to_path_buf())
     .unwrap_or_else(|_| file.to_path_buf())
+}
+
+#[cfg(test)]
+mod tests {
+  use super::rust_path_ends_at_file;
+
+  #[test]
+  fn a_rust_path_ends_at_the_file_it_names() {
+    assert!(rust_path_ends_at_file("crate::a::real", "real", "src/a.rs"));
+    assert!(rust_path_ends_at_file(
+      "crate::a::real",
+      "real",
+      "src/a/mod.rs"
+    ));
+    assert!(rust_path_ends_at_file("super::real", "real", "src/a.rs"));
+    assert!(rust_path_ends_at_file("crate::real", "real", "src/lib.rs"));
+    assert!(rust_path_ends_at_file(
+      "other::real",
+      "real",
+      "other/src/lib.rs"
+    ));
+    assert!(!rust_path_ends_at_file(
+      "crate::a::inner::real",
+      "real",
+      "src/a.rs"
+    ));
+    assert!(!rust_path_ends_at_file(
+      "crate::a::inner::real",
+      "real",
+      "src/a/mod.rs"
+    ));
+  }
 }

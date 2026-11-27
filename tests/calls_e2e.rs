@@ -6638,3 +6638,104 @@ fn typescript_a_barrel_that_starts_declaring_a_name_takes_its_importers() {
   );
   assert_eq!(cold, vec![pair("src/b.ts::real", "Exact")]);
 }
+
+#[test]
+fn typescript_an_aliased_import_finds_its_file_again_after_a_restore() {
+  // `a.ts` is deleted and restored, with only updates in between. The
+  // importer is never re-extracted, so its edge must keep the binding
+  // while the file is gone, as a cold build does.
+  let tmp = tempfile::tempdir().unwrap();
+  let root = tmp.path();
+  std::fs::create_dir_all(root.join(".git")).unwrap();
+  write(&root.join("src/a.ts"), "export function real() {}\n");
+  write(
+    &root.join("src/c.ts"),
+    "import { real as alias } from \"./a\"\n\nexport function go() {\n  alias()\n}\n",
+  );
+  let after = |root: &std::path::Path| {
+    let incremental = callee_targets(root, "go", false);
+    let cold = callee_targets(root, "go", true);
+    assert_eq!(
+      incremental, cold,
+      "a partial update and a cold build diverged"
+    );
+    cold
+  };
+  assert_eq!(
+    callee_targets(root, "go", true),
+    vec![pair("src/a.ts::real", "Exact")]
+  );
+  std::fs::remove_file(root.join("src/a.ts")).unwrap();
+  assert_eq!(
+    callee_targets(root, "go", false),
+    vec![pair("[unresolved] alias", "Ambiguous")]
+  );
+  write(&root.join("src/a.ts"), "export function real() {}\n");
+  assert_eq!(after(root), vec![pair("src/a.ts::real", "Exact")]);
+  // A cold build that starts without the file keeps the binding too.
+  std::fs::remove_file(root.join("src/a.ts")).unwrap();
+  assert_eq!(after(root), vec![pair("[unresolved] alias", "Ambiguous")]);
+  write(&root.join("src/a.ts"), "export function real() {}\n");
+  assert_eq!(after(root), vec![pair("src/a.ts::real", "Exact")]);
+}
+
+#[test]
+fn typescript_a_quoted_import_name_is_the_name_it_quotes() {
+  // `import { "real" as alias }` (ES2022) names `real`, and a quoted
+  // `"default"` is the default export, as the unquoted forms are.
+  for (quoted, plain) in [
+    ("\"real\" as alias", "real as alias"),
+    ("\"default\" as alias", "default as alias"),
+  ] {
+    let answer = |spec: &str| {
+      let tmp = tempfile::tempdir().unwrap();
+      let root = tmp.path();
+      std::fs::create_dir_all(root.join(".git")).unwrap();
+      write(
+        &root.join("src/a.ts"),
+        "export function real() {}\nexport default function alias() {}\n",
+      );
+      write(&root.join("src/b.ts"), "export function real() {}\n");
+      write(
+        &root.join("src/c.ts"),
+        &format!("import {{ {spec} }} from \"./a\"\n\nexport function go() {{\n  alias()\n}}\n"),
+      );
+      callee_targets(root, "go", true)
+    };
+    assert_eq!(answer(quoted), answer(plain), "{quoted}");
+  }
+}
+
+#[test]
+fn rust_an_import_through_a_nested_module_is_not_a_top_level_declaration() {
+  // `src/a.rs` has a top-level `real`, and `mod inner` re-exports the one
+  // in `src/b.rs`. `use crate::a::inner::real` names the re-export.
+  let tmp = tempfile::tempdir().unwrap();
+  let root = tmp.path();
+  write(&root.join("Cargo.toml"), "[package]\nname = \"x\"\n");
+  write(&root.join("src/lib.rs"), "mod a;\nmod b;\nmod c;\nmod d;\n");
+  write(
+    &root.join("src/a.rs"),
+    "pub fn real() {}\npub mod inner {\n    pub use crate::b::real;\n}\n",
+  );
+  write(&root.join("src/b.rs"), "pub fn real() {}\n");
+  write(
+    &root.join("src/c.rs"),
+    "use crate::a::real as alias;\n\npub fn go() {\n    alias();\n}\n",
+  );
+  write(
+    &root.join("src/d.rs"),
+    "use crate::a::inner::real;\n\npub fn nested() {\n    real();\n}\n",
+  );
+  // Two `real`s are left, and the name alone does not pick between them:
+  // an honest `Ambiguous`, where the import used to bind `Exact` to the
+  // top-level `src/a.rs::real`.
+  assert_eq!(
+    callee_targets_cold_and_after_a_change(root, "nested", "src/e.rs"),
+    vec![pair("[unresolved] real", "Ambiguous")]
+  );
+  assert_eq!(
+    callee_targets(root, "go", true),
+    vec![pair("src/a.rs::real", "Exact")]
+  );
+}
