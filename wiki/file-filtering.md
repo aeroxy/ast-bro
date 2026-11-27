@@ -78,7 +78,7 @@ These don't apply to map-family commands.
 
 `deps` / `reverse-deps` / `cycles` / `graph` (and the call graph built on them) walk with `deps_walk` + `is_deps_input` in [`src/deps/resolver/build.rs`](../src/deps/resolver/build.rs). Layers 1–3 apply, with three differences: hidden files are included, there is no size cap, and the allowlist is the deps languages plus every `go.mod`. The walk does not enter a directory on the hardcoded denylist at all, rather than skipping its files one by one.
 
-The graph cache's freshness check (`compute_graph_delta`) uses the same walk. It tracks the contents of the deps inputs and of the root manifests `detect_aliases` reads by name (`Cargo.toml`, `tsconfig.json`, `composer.json`), and only the existence of every other walked file, which a relative import may name (#123). It does not reuse the search corpus walk above: that one skips hidden and oversized files, and an edit to one of them alone kept the cached graph.
+The graph cache's freshness check (`compute_graph_delta`) uses the same walk. It tracks the contents of the deps inputs and of every file `detect_aliases` reads (`manifest::alias_sources`: the root `Cargo.toml`, `tsconfig.json`, `jsconfig.json` and `composer.json`, plus each config a root `tsconfig.json` extends), and only the existence of every other walked file, which a relative import may name (#123). It does not reuse the search corpus walk above: that one skips hidden and oversized files, and an edit to one of them alone kept the cached graph.
 
 ## Overlapping roots
 
