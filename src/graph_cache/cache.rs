@@ -8,7 +8,7 @@
 
 use crate::core::JSON_SCHEMA_GRAPH_INDEX;
 use crate::deps::build_graph;
-use crate::deps::manifest::ROOT_MANIFESTS;
+use crate::deps::manifest::alias_sources;
 use crate::deps::resolver::build::{deps_walk, is_deps_input};
 use crate::file_filter::should_skip_path;
 use crate::graph_cache::delta::{apply_delta_to_calls, apply_delta_to_deps, refresh_records};
@@ -270,8 +270,9 @@ fn write_gitignore(dir: &Path) -> std::io::Result<()> {
 /// reads its contents, or with `None` when only its existence counts.
 ///
 /// - Contents: every deps input (`deps_walk` + `is_deps_input`, the walk
-///   and rule `build_suffix_index` uses) and the root manifests
-///   `detect_aliases` reads by name, whatever the ignore files say.
+///   and rule `build_suffix_index` uses) and every file `detect_aliases`
+///   reads (`alias_sources`: the root manifests and the configs a root
+///   `tsconfig.json` extends), whatever the ignore files say.
 /// - Existence: every other walked file. A relative import may name any
 ///   file, and the resolver checks that it exists (`./data.json`,
 ///   `./logo.svg`), so adding or deleting one can move an edge, while
@@ -282,25 +283,25 @@ fn write_gitignore(dir: &Path) -> std::io::Result<()> {
 /// unseen (#123).
 fn graph_inputs(root: &Path) -> Vec<(PathBuf, Option<fs::Metadata>)> {
   let mut out = Vec::new();
+  let sources = alias_sources(root);
   let mut manifests_walked = HashSet::new();
   for entry in deps_walk(root).flatten() {
     if !entry.file_type().is_some_and(|t| t.is_file()) || should_skip_path(entry.path(), root) {
       continue;
     }
-    if !tracks_contents(entry.path(), root) {
+    if !tracks_contents(entry.path(), root, &sources) {
       out.push((entry.into_path(), None));
       continue;
     }
     let Ok(meta) = entry.metadata() else {
       continue;
     };
-    if is_root_manifest(entry.path(), root) {
+    if sources.iter().any(|s| s == entry.path()) {
       manifests_walked.insert(entry.path().to_path_buf());
     }
     out.push((entry.into_path(), Some(meta)));
   }
-  for name in ROOT_MANIFESTS {
-    let path = root.join(name);
+  for path in sources {
     if manifests_walked.contains(&path) {
       continue;
     }
@@ -312,17 +313,10 @@ fn graph_inputs(root: &Path) -> Vec<(PathBuf, Option<fs::Metadata>)> {
 }
 
 /// Whether the graph reads the contents of `path`, not only whether it
-/// exists: a deps input or a root manifest.
-pub(crate) fn tracks_contents(path: &Path, root: &Path) -> bool {
-  is_deps_input(path, root) || is_root_manifest(path, root)
-}
-
-fn is_root_manifest(path: &Path, root: &Path) -> bool {
-  path.parent() == Some(root)
-    && path
-      .file_name()
-      .and_then(|n| n.to_str())
-      .is_some_and(|n| ROOT_MANIFESTS.contains(&n))
+/// exists: a deps input or one of `sources`, the files `alias_sources`
+/// lists.
+pub(crate) fn tracks_contents(path: &Path, root: &Path, sources: &[PathBuf]) -> bool {
+  is_deps_input(path, root) || sources.iter().any(|s| s == path)
 }
 
 /// The delta of the files the graph depends on, against `cached`.

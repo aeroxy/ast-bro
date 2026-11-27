@@ -1312,3 +1312,150 @@ fn a_python_import_resolves_only_to_a_python_file() {
   // `from … import` drops the last segment: `tools/xml.py` is not it.
   assert!(!has_edge(&edges, "c.py", "tools/xml.py"), "{}", edges);
 }
+
+/// `src/app.ts` imports `lib/helpers` and `@app/util`; under `"baseUrl":
+/// "src"` they are `src/lib/helpers.ts` and `src/app/util.ts`.
+fn base_url_fixture(root: &std::path::Path) {
+  write_in(root, "src/lib/helpers.ts", "export const h = 1;\n");
+  write_in(root, "src/app/util.ts", "export const u = 1;\n");
+  write_in(
+    root,
+    "src/app.ts",
+    "import { h } from \"lib/helpers\";\nimport { u } from \"@app/util\";\n",
+  );
+}
+
+#[test]
+fn a_base_url_is_read_from_a_tsconfig_with_block_comments() {
+  // What `tsc --init` writes: block comments, some after a value and some
+  // spanning lines, beside strings that hold `/*` and `*/` themselves.
+  let tmp = tempfile::tempdir().unwrap();
+  let root = tmp.path();
+  base_url_fixture(root);
+  write_in(
+    root,
+    "tsconfig.json",
+    r#"{
+  /* Visit https://aka.ms/tsconfig to read more about this file */
+  "compilerOptions": {
+    "target": "es2016",                                  /* Set the JavaScript language version. */
+    /* "rootDir": "./",
+       spans lines */
+    "baseUrl": "./src",                                  /* Specify the base directory. */
+    "paths": { "@app/*": ["app/*"] },                    // `paths` too
+  },
+  "include": ["src/**/*", "types/*.d.ts"],
+}
+"#,
+  );
+  let edges = incremental_matches_cold(root, |root| write_in(root, "src/d.ts", "\n"));
+  assert!(
+    has_edge(&edges, "src/app.ts", "src/lib/helpers.ts"),
+    "{}",
+    edges
+  );
+  assert!(
+    has_edge(&edges, "src/app.ts", "src/app/util.ts"),
+    "{}",
+    edges
+  );
+}
+
+#[test]
+fn a_non_ascii_base_url_names_its_directory() {
+  let tmp = tempfile::tempdir().unwrap();
+  let root = tmp.path();
+  write_in(root, "源码/helpers.ts", "export const h = 1;\n");
+  write_in(root, "源码/app.ts", "import { h } from \"helpers\";\n");
+  write_in(
+    root,
+    "tsconfig.json",
+    r#"{ "compilerOptions": { "baseUrl": "源码", }, }"#,
+  );
+  let edges = incremental_matches_cold(root, |root| write_in(root, "d.ts", "\n"));
+  assert!(
+    has_edge(&edges, "源码/app.ts", "源码/helpers.ts"),
+    "{}",
+    edges
+  );
+}
+
+#[test]
+fn a_base_url_is_inherited_through_a_relative_extends() {
+  // `baseUrl` and `paths` resolve against the file that sets them, and
+  // `extends` may leave out `.json`.
+  let tmp = tempfile::tempdir().unwrap();
+  let root = tmp.path();
+  base_url_fixture(root);
+  write_in(
+    root,
+    "tsconfig.json",
+    r#"{ "extends": "./configs/base", "compilerOptions": { "strict": true } }"#,
+  );
+  write_in(
+    root,
+    "configs/base.json",
+    r#"{ "compilerOptions": { "baseUrl": "../src", "paths": { "@app/*": ["app/*"] } } }"#,
+  );
+  let edges = incremental_matches_cold(root, |root| write_in(root, "src/d.ts", "\n"));
+  assert!(
+    has_edge(&edges, "src/app.ts", "src/lib/helpers.ts"),
+    "{}",
+    edges
+  );
+  assert!(
+    has_edge(&edges, "src/app.ts", "src/app/util.ts"),
+    "{}",
+    edges
+  );
+}
+
+#[test]
+fn an_edit_to_an_extended_tsconfig_reaches_the_cached_graph() {
+  // Only `configs/base.json` changes; the cache must still see it.
+  let tmp = tempfile::tempdir().unwrap();
+  let root = tmp.path();
+  base_url_fixture(root);
+  write_in(root, "lib/lib/helpers.ts", "export const h = 2;\n");
+  write_in(
+    root,
+    "tsconfig.json",
+    r#"{ "extends": ["./configs/base.json"] }"#,
+  );
+  write_in(
+    root,
+    "configs/base.json",
+    r#"{ "compilerOptions": { "baseUrl": "../src" } }"#,
+  );
+  let edges = incremental_matches_cold(root, |root| {
+    write_in(
+      root,
+      "configs/base.json",
+      r#"{ "compilerOptions": { "baseUrl": "../lib" } }"#,
+    )
+  });
+  assert!(
+    has_edge(&edges, "src/app.ts", "lib/lib/helpers.ts"),
+    "{}",
+    edges
+  );
+}
+
+#[test]
+fn a_javascript_project_reads_its_base_url_from_jsconfig() {
+  let tmp = tempfile::tempdir().unwrap();
+  let root = tmp.path();
+  write_in(root, "src/lib/helpers.js", "export const h = 1;\n");
+  write_in(root, "src/app.js", "import { h } from \"lib/helpers\";\n");
+  write_in(
+    root,
+    "jsconfig.json",
+    r#"{ "compilerOptions": { "baseUrl": "src" } }"#,
+  );
+  let edges = incremental_matches_cold(root, |root| write_in(root, "src/d.js", "\n"));
+  assert!(
+    has_edge(&edges, "src/app.js", "src/lib/helpers.js"),
+    "{}",
+    edges
+  );
+}

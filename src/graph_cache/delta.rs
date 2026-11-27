@@ -353,6 +353,7 @@ pub fn refresh_records(prev: Vec<FileRecord>, root: &Path, delta: &Delta) -> Vec
     .map(|t| (rel_posix(root, &t.path), (t.mtime_ns, t.size)))
     .collect();
 
+  let sources = crate::deps::manifest::alias_sources(root);
   let mut out: Vec<FileRecord> = prev
     .into_iter()
     .filter(|r| !removed.contains(r.path.as_str()) && !touched.contains(&r.path))
@@ -369,7 +370,7 @@ pub fn refresh_records(prev: Vec<FileRecord>, root: &Path, delta: &Delta) -> Vec
     let rel = rel_posix(root, path);
     // A file whose existence alone counts is not hashed; its contents are
     // never compared.
-    if !tracks_contents(path, root) {
+    if !tracks_contents(path, root, &sources) {
       out.push(existence_record(rel));
       continue;
     }
