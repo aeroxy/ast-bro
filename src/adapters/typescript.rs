@@ -971,10 +971,18 @@ fn _handle_import_stmt<'a, D: Doc>(
                   .or(name.as_ref())
                   .map(|n| String::from_utf8_lossy(&src[n.range()]).to_string());
                 // `{ default as x }` is the default export, which has no
-                // declared name to look up, as for `import x from`.
+                // declared name to look up, as for `import x from`. A
+                // quoted name (`{ "real" as x }`, ES2022) is the name it
+                // quotes.
                 let imported = name
                   .as_ref()
-                  .map(|n| String::from_utf8_lossy(&src[n.range()]).to_string())
+                  .map(|n| {
+                    let text = String::from_utf8_lossy(&src[n.range()]).to_string();
+                    match text.get(1..text.len().saturating_sub(1)) {
+                      Some(inner) if n.kind().as_ref() as &str == "string" => inner.to_string(),
+                      _ => text,
+                    }
+                  })
                   .filter(|n| n != "default");
                 if let Some(local) = local {
                   out.push(ImportBinding {
