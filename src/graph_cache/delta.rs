@@ -32,8 +32,8 @@ use crate::calls::graph::{add_callable, type_key, type_key_of, CallGraph, CallTa
 use crate::calls::pass::{file_rel, FilePass};
 use crate::calls::resolve;
 use crate::deps::extract::{extract, RawImport};
-use crate::deps::manifest::detect_aliases;
-use crate::deps::resolver::build_suffix_index;
+use crate::deps::manifest::{detect_aliases, ProjectAliases};
+use crate::deps::resolver::{build_suffix_index, SuffixIndex};
 use crate::deps::{resolve_all, DepError, DepGraph};
 use crate::search::cache::{hash_file, Delta, FileRecord};
 
@@ -50,7 +50,7 @@ pub fn apply_delta_to_deps(
   deps: &mut DepGraph,
   root: &Path,
   delta: &Delta,
-) -> Result<(), DepError> {
+) -> Result<ImportResolver, DepError> {
   let changed: HashSet<PathBuf> = changed_abs_paths(root, delta).into_iter().collect();
   let aliases = detect_aliases(root);
   let idx = build_suffix_index(root);
@@ -77,14 +77,28 @@ pub fn apply_delta_to_deps(
 
   // `build_ms` keeps the cold build's time.
   resolve_all(deps, &idx, &aliases);
-  Ok(())
+  Ok(ImportResolver { aliases, idx })
+}
+
+/// What an import resolves against after an update: the project's
+/// aliases and the fresh suffix index `apply_delta_to_deps` built, which
+/// `apply_delta_to_calls` reuses rather than walking the tree again.
+pub struct ImportResolver {
+  aliases: ProjectAliases,
+  idx: SuffixIndex,
 }
 
 /// Patch the call graph for the same delta: drop everything anchored to
 /// changed files, re-extract added/modified files, splice the new qns +
 /// edges back in. `deps` is the *already-patched* deps graph so pass C's
 /// dep-closure filter sees post-update state.
-pub fn apply_delta_to_calls(calls: &mut CallGraph, deps: &DepGraph, root: &Path, delta: &Delta) {
+pub fn apply_delta_to_calls(
+  calls: &mut CallGraph,
+  deps: &DepGraph,
+  imports: &ImportResolver,
+  root: &Path,
+  delta: &Delta,
+) {
   // Build the set of relative POSIX paths whose qn-bearing entries we
   // need to invalidate. `Qn::file()` returns this same form, so the
   // membership check is a single string lookup.
@@ -213,11 +227,11 @@ pub fn apply_delta_to_calls(calls: &mut CallGraph, deps: &DepGraph, root: &Path,
     .cloned()
     .collect();
   //    An edge pass A resolved through an import resolves that import
-  //    again, as a cold build does: the module may declare the name
-  //    elsewhere, re-export it, or be gone, and then the call is to the
-  //    name the file wrote (`alias`), not to another file's `real`.
-  //    The index for it is built only when such an edge goes stale.
-  let mut import_ctx = None;
+  //    again, stale or not, as a cold build does: the module may since
+  //    declare the name, no longer declare it, or be gone, and then the
+  //    call is to the name the file wrote (`alias`), not to another
+  //    file's `real`. Its target can outlive the module, so the target
+  //    alone cannot say when.
   for edges in calls.forward.values_mut() {
     for e in edges.iter_mut() {
       // Step 9 re-resolves every Elixir edge from its whole target,
@@ -227,42 +241,48 @@ pub fn apply_delta_to_calls(calls: &mut CallGraph, deps: &DepGraph, root: &Path,
       {
         continue;
       }
-      let demote = matches!(&e.target, CallTarget::Resolved(qn) if !known_targets.contains(qn));
-      if !demote {
+      if let Some(binding) = &e.import {
+        let from_file = root.join(&e.file);
+        let resolved = resolve::resolve_via_imports(
+          binding,
+          &from_file,
+          crate::deps::resolver::Lang::from_path(&from_file),
+          &imports.aliases,
+          &imports.idx,
+          root,
+          &calls.symbol_table,
+          &calls.type_by_name,
+          &calls.callable_meta,
+        );
+        e.candidates.clear();
+        (e.target, e.confidence) = match resolved {
+          resolve::Imported::Declared(target) => (
+            CallTarget::Resolved(target),
+            crate::calls::graph::Confidence::Exact,
+          ),
+          resolve::Imported::Undeclared(name) => (
+            CallTarget::Bare(name),
+            crate::calls::graph::Confidence::Ambiguous,
+          ),
+          // What a cold build records: the local name, and no binding.
+          resolve::Imported::Outside => {
+            let local = binding.local.clone();
+            e.import = None;
+            (
+              CallTarget::Bare(local),
+              crate::calls::graph::Confidence::Ambiguous,
+            )
+          }
+        };
         continue;
       }
-      e.confidence = crate::calls::graph::Confidence::Ambiguous;
-      e.candidates.clear();
-      let Some(binding) = &e.import else {
-        e.target = CallTarget::Bare(e.target.name_or_raw());
-        continue;
-      };
-      let (aliases, idx) =
-        import_ctx.get_or_insert_with(|| (detect_aliases(root), build_suffix_index(root)));
-      let from_file = root.join(&e.file);
-      e.target = match resolve::resolve_via_imports(
-        binding,
-        &from_file,
-        crate::deps::resolver::Lang::from_path(&from_file),
-        aliases,
-        idx,
-        root,
-        &calls.symbol_table,
-        &calls.type_by_name,
-        &calls.callable_meta,
-      ) {
-        resolve::Imported::Declared(target) => {
-          e.confidence = crate::calls::graph::Confidence::Exact;
-          CallTarget::Resolved(target)
-        }
-        resolve::Imported::Undeclared(name) => CallTarget::Bare(name),
-        // What a cold build records: the local name, and no binding.
-        resolve::Imported::Outside => {
-          let local = binding.local.clone();
-          e.import = None;
-          CallTarget::Bare(local)
-        }
-      };
+      let demote = matches!(&e.target, CallTarget::Resolved(qn) if !known_targets.contains(qn));
+      if demote {
+        let bare = e.target.name_or_raw();
+        e.target = CallTarget::Bare(bare);
+        e.confidence = crate::calls::graph::Confidence::Ambiguous;
+        e.candidates.clear();
+      }
     }
   }
 
