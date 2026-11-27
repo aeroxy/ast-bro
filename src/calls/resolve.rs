@@ -791,11 +791,59 @@ fn resolve_via_imports(
         .flatten()
         .filter(|qn| qn.name() == name),
     )
-    .find(|cand| cand.file() == rel);
+    .filter(|cand| cand.file() == rel)
+    .filter_map(|cand| {
+      let scope = import_scope(cand, &rel, name, binding, lang)?;
+      Some((scope, cand))
+    })
+    .max_by_key(|(scope, _)| *scope)
+    .map(|(_, cand)| cand);
   match declared {
     Some(qn) => Imported::Declared(qn.clone()),
     None => Imported::Undeclared(name.to_string()),
   }
+}
+
+/// Whether an import binding names `cand`, a declaration of `name` in the
+/// file the binding resolved to (`rel`), and if so how many scopes deep it
+/// sits: the deepest match wins.
+///
+/// An import that names one declaration (`imported` is set) names one at
+/// module level: `mod inner { fn real() }` is not the `real` a
+/// `use crate::a::real` names, which may be a re-export (`pub use`) the
+/// passes below follow. Rust is the exception, since its path goes on into
+/// the file: `use crate::a::inner::real` names `inner::real`, so the scope
+/// must be the tail of the path before the name. A binding of a whole
+/// module or a default export goes by its local name and keeps any match.
+fn import_scope(
+  cand: &Qn,
+  rel: &str,
+  name: &str,
+  binding: &ImportBinding,
+  lang: Lang,
+) -> Option<usize> {
+  let scope = cand
+    .as_str()
+    .strip_prefix(rel)
+    .and_then(|s| s.strip_prefix("::"))
+    .and_then(|s| s.strip_suffix(name))
+    .map(|s| s.trim_end_matches("::"))
+    .unwrap_or("");
+  let depth = if scope.is_empty() {
+    0
+  } else {
+    scope.split("::").count()
+  };
+  if binding.imported.is_none() || depth == 0 {
+    return Some(depth);
+  }
+  let path_ends_in_scope = lang == Lang::Rust
+    && binding
+      .module
+      .strip_suffix(name)
+      .and_then(|m| m.strip_suffix("::"))
+      .is_some_and(|m| m == scope || m.ends_with(&format!("::{scope}")));
+  path_ends_in_scope.then_some(depth)
 }
 
 /// Per-file forward-dep closures, memoized. A file's closure is the same for
