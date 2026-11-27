@@ -1362,6 +1362,31 @@ fn a_base_url_is_read_from_a_tsconfig_with_block_comments() {
 }
 
 #[test]
+fn a_base_url_is_read_from_a_tsconfig_saved_with_a_byte_order_mark() {
+  // Visual Studio saves `tsconfig.json` with a UTF-8 BOM, and `tsc`
+  // reads it as if the BOM were not there.
+  let tmp = tempfile::tempdir().unwrap();
+  let root = tmp.path();
+  base_url_fixture(root);
+  write_in(
+    root,
+    "tsconfig.json",
+    "\u{feff}{ \"compilerOptions\": { \"baseUrl\": \"src\", \"paths\": { \"@app/*\": [\"app/*\"] } } }",
+  );
+  let edges = incremental_matches_cold(root, |root| write_in(root, "src/d.ts", "\n"));
+  assert!(
+    has_edge(&edges, "src/app.ts", "src/lib/helpers.ts"),
+    "{}",
+    edges
+  );
+  assert!(
+    has_edge(&edges, "src/app.ts", "src/app/util.ts"),
+    "{}",
+    edges
+  );
+}
+
+#[test]
 fn a_non_ascii_base_url_names_its_directory() {
   let tmp = tempfile::tempdir().unwrap();
   let root = tmp.path();

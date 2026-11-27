@@ -281,8 +281,11 @@ impl TsConfig {
 /// JSON with comments, as TypeScript reads it, made plain JSON for
 /// `serde_json`: `//` and `/* */` comments and trailing commas go, and
 /// strings stay byte for byte, `//`, `/*` and `*/` in them included. Only
-/// ASCII bytes outside strings are dropped, so the text stays UTF-8.
+/// ASCII bytes outside strings are dropped, so the text stays UTF-8. A
+/// leading byte order mark goes too: Visual Studio writes one, `tsc`
+/// skips it, and `serde_json` rejects it.
 fn strip_jsonc(s: &str) -> String {
+  let s = s.strip_prefix('\u{feff}').unwrap_or(s);
   let b = s.as_bytes();
   // Comments out, strings copied as they are.
   let mut plain: Vec<u8> = Vec::with_capacity(b.len());
