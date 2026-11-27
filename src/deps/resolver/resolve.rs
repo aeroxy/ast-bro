@@ -117,8 +117,14 @@ pub fn resolve(spec: &str, ctx: &ResolveCtx<'_>, idx: &SuffixIndex) -> Option<Pa
         }
       }
     }
+    // The index answers from memory: a bare specifier is most often a
+    // package, and each miss would stat every extension and index file.
+    // It holds what a cold build walks, which is all a `baseUrl` import
+    // can reach without the fallback it replaced.
     let base = ctx.base_url?;
-    return probe_path(&idx.root.join(base).join(spec), ctx);
+    return probe_path(&idx.root.join(base).join(spec), ctx, |p| {
+      idx.by_file.contains_key(p)
+    });
   }
 
   // Go `import "mymod/pkg/foo"` — strip the module prefix. The module may
@@ -325,7 +331,7 @@ fn resolve_relative_path(spec: &str, ctx: &ResolveCtx<'_>, idx: &SuffixIndex) ->
     remaining = rest;
   }
   let target = cur.join(remaining);
-  if let Some(p) = probe_path(&target, ctx) {
+  if let Some(p) = probe_path(&target, ctx, Path::is_file) {
     return Some(p);
   }
   // Last-ditch: ask the suffix index using the relative key.
@@ -340,10 +346,15 @@ fn resolve_relative_path(spec: &str, ctx: &ResolveCtx<'_>, idx: &SuffixIndex) ->
   pick_closest(idx.lookup(&rel), ctx.from_file)
 }
 
-/// The file `target` names on disk: the path itself, with the language's
+/// The file `target` names: the path itself, with the language's
 /// extensions, or as a directory's index (`index.ts`, `__init__.py`).
-fn probe_path(target: &Path, ctx: &ResolveCtx<'_>) -> Option<PathBuf> {
-  if target.is_file() {
+/// `exists` says whether a candidate is there.
+fn probe_path(
+  target: &Path,
+  ctx: &ResolveCtx<'_>,
+  exists: impl Fn(&Path) -> bool,
+) -> Option<PathBuf> {
+  if exists(target) {
     return Some(target.to_path_buf());
   }
   // Try common extensions for TS/JS.
@@ -353,14 +364,14 @@ fn probe_path(target: &Path, ctx: &ResolveCtx<'_>) -> Option<PathBuf> {
     ];
     for e in ext_order {
       let p = with_ext(target, e);
-      if p.is_file() {
+      if exists(&p) {
         return Some(p);
       }
     }
     // Index file fallback.
     for e in ext_order {
       let p = target.join(format!("index{}", e));
-      if p.is_file() {
+      if exists(&p) {
         return Some(p);
       }
     }
@@ -368,12 +379,12 @@ fn probe_path(target: &Path, ctx: &ResolveCtx<'_>) -> Option<PathBuf> {
   if ctx.lang == Lang::Python {
     for e in [".py", ".pyi"] {
       let p = with_ext(target, e);
-      if p.is_file() {
+      if exists(&p) {
         return Some(p);
       }
     }
     let init = target.join("__init__.py");
-    if init.is_file() {
+    if exists(&init) {
       return Some(init);
     }
     // The imported name may not be its own file — drop the trailing
@@ -382,12 +393,12 @@ fn probe_path(target: &Path, ctx: &ResolveCtx<'_>) -> Option<PathBuf> {
     if let Some(parent) = target.parent() {
       for e in [".py", ".pyi"] {
         let p = with_ext(parent, e);
-        if p.is_file() {
+        if exists(&p) {
           return Some(p);
         }
       }
       let init_parent = parent.join("__init__.py");
-      if init_parent.is_file() {
+      if exists(&init_parent) {
         return Some(init_parent);
       }
     }
