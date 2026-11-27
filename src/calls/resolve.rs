@@ -390,8 +390,10 @@ pub fn run_with_table(
             callable_meta,
           ) {
             Imported::Declared(target) => {
+              let mut raw = raw.clone();
+              raw.import = Some(binding.clone());
               let edge = raw_to_edge(
-                raw.clone(),
+                raw,
                 CallTarget::Resolved(target),
                 Confidence::Exact,
                 rel_path(root, &fp.file),
@@ -405,7 +407,10 @@ pub fn run_with_table(
             // is stale. The passes below look the name up by what it is
             // called where it is declared, which is also what the
             // incremental update knows it by once the edge is resolved.
-            Imported::Undeclared(name) => raw.bare_name = name,
+            Imported::Undeclared(name) => {
+              raw.bare_name = name;
+              raw.import = Some(binding.clone());
+            }
             Imported::Outside => {}
           }
         }
@@ -723,7 +728,7 @@ pub(crate) fn resolve_scoped(
 }
 
 /// What an import binding says about a call to its local name.
-enum Imported {
+pub(crate) enum Imported {
   /// The module is a project file that declares the imported name.
   Declared(Qn),
   /// The module is a project file that does not declare the name: the
@@ -737,7 +742,7 @@ enum Imported {
 /// to a project file via the suffix index, then looking `name` up among the
 /// declarations of that file.
 #[allow(clippy::too_many_arguments)] // resolution context is genuinely wide
-fn resolve_via_imports(
+pub(crate) fn resolve_via_imports(
   binding: &ImportBinding,
   from_file: &Path,
   lang: Option<Lang>,

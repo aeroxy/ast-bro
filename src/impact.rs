@@ -315,6 +315,7 @@ fn compute_impact(
             imports: Vec::new(),
             arity: None,
             nesting: Vec::new(),
+            import: None,
           },
         });
       }
@@ -436,6 +437,7 @@ fn compute_impact(
               imports: Vec::new(),
               arity: None,
               nesting: Vec::new(),
+              import: None,
             },
           });
         }
@@ -718,6 +720,7 @@ fn build_callers_section(
               imports: Vec::new(),
               arity: None,
               nesting: Vec::new(),
+              import: None,
             },
           });
         }
