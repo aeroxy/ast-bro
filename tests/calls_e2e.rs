@@ -6524,3 +6524,38 @@ fn typescript_an_import_never_binds_to_a_method_of_the_same_name() {
     ]
   );
 }
+
+#[test]
+fn rust_an_import_names_a_module_level_declaration_not_a_nested_one() {
+  // `src/a.rs` re-exports `real` from `src/b.rs` and also has a `real`
+  // nested in `mod inner`. `use crate::a::real` names the re-export; the
+  // nested one is `crate::a::inner::real`, which a second import names.
+  let tmp = tempfile::tempdir().unwrap();
+  let root = tmp.path();
+  write(&root.join("Cargo.toml"), "[package]\nname = \"x\"\n");
+  write(&root.join("src/lib.rs"), "mod a;\nmod b;\nmod c;\nmod d;\n");
+  write(
+    &root.join("src/a.rs"),
+    "pub mod inner {\n    pub fn real() {}\n}\npub use crate::b::real;\n",
+  );
+  write(&root.join("src/b.rs"), "pub fn real() {}\n");
+  write(
+    &root.join("src/c.rs"),
+    "use crate::a::real as alias;\n\npub fn go() {\n    alias();\n}\n",
+  );
+  write(
+    &root.join("src/d.rs"),
+    "use crate::a::inner::real;\n\npub fn nested() {\n    real();\n}\n",
+  );
+  // The re-export leaves two `real`s that `src/c.rs` reaches, and the
+  // name alone does not pick between them: an honest `Ambiguous`, where
+  // the import used to bind `Exact` to `src/a.rs::inner::real`.
+  assert_eq!(
+    callee_targets_cold_and_after_a_change(root, "go", "src/e.rs"),
+    vec![pair("[unresolved] real", "Ambiguous")]
+  );
+  assert_eq!(
+    callee_targets(root, "nested", true),
+    vec![pair("src/a.rs::inner::real", "Exact")]
+  );
+}
