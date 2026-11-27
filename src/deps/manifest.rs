@@ -121,12 +121,21 @@ struct TsConfig {
   /// config that sets it: the targets resolve against that directory when
   /// no `baseUrl` is set.
   paths: Option<(serde_json::Map<String, serde_json::Value>, String)>,
-  /// Every config read, the root one first.
+  /// Every config file found, the root one first, once each. A file
+  /// that does not parse is here too: an edit that makes it parse again
+  /// must reach the cache.
   files: Vec<PathBuf>,
+  /// How many configs were read; see `MAX_READS`.
+  reads: usize,
 }
 
 /// How deep an `extends` chain is followed.
 const MAX_EXTENDS: usize = 16;
+
+/// How many configs one project reads. A config two parents extend is
+/// read under each, so a deep diamond would otherwise read it
+/// exponentially often.
+const MAX_READS: usize = 256;
 
 fn read_ts_config(root: &Path) -> TsConfig {
   let mut cfg = TsConfig::default();
@@ -135,7 +144,7 @@ fn read_ts_config(root: &Path) -> TsConfig {
     .map(|name| root.join(name))
     .find(|p| p.is_file());
   if let Some(file) = file {
-    load_ts_config(root, &file, &mut cfg, 0);
+    load_ts_config(root, &file, &mut cfg, &mut Vec::new());
   }
   cfg
 }
@@ -143,9 +152,17 @@ fn read_ts_config(root: &Path) -> TsConfig {
 /// Read `path` into `cfg`: the configs it extends first, in order, so a
 /// later one, and then `path` itself, overrides what they set. `baseUrl`
 /// and `paths` resolve against the directory of the file that sets them.
-fn load_ts_config(root: &Path, path: &Path, cfg: &mut TsConfig, depth: usize) {
-  if depth > MAX_EXTENDS || cfg.files.iter().any(|f| f == path) {
+///
+/// `chain` holds the configs that extend `path`, which stops a cycle. A
+/// config two parents extend is read under each: `tsc` merges each
+/// parent's effective settings, so the later parent's inherited value wins.
+fn load_ts_config(root: &Path, path: &Path, cfg: &mut TsConfig, chain: &mut Vec<PathBuf>) {
+  if chain.len() > MAX_EXTENDS || cfg.reads >= MAX_READS || chain.iter().any(|f| f == path) {
     return;
+  }
+  cfg.reads += 1;
+  if !cfg.files.iter().any(|f| f == path) {
+    cfg.files.push(path.to_path_buf());
   }
   let Some(v) = std::fs::read_to_string(path)
     .ok()
@@ -153,7 +170,6 @@ fn load_ts_config(root: &Path, path: &Path, cfg: &mut TsConfig, depth: usize) {
   else {
     return;
   };
-  cfg.files.push(path.to_path_buf());
   let Some(dir) = path.parent().and_then(|d| d.strip_prefix(root).ok()) else {
     return;
   };
@@ -169,7 +185,9 @@ fn load_ts_config(root: &Path, path: &Path, cfg: &mut TsConfig, depth: usize) {
   };
   for spec in extends {
     if let Some(base) = extended_config(root, &dir, spec) {
-      load_ts_config(root, &base, cfg, depth + 1);
+      chain.push(path.to_path_buf());
+      load_ts_config(root, &base, cfg, chain);
+      chain.pop();
     }
   }
   let Some(co) = v.get("compilerOptions") else {
@@ -202,7 +220,7 @@ fn extended_config(root: &Path, dir: &str, spec: &str) -> Option<PathBuf> {
 /// `value` joined onto `dir` (both relative to the root, `/`-separated),
 /// normalised: `./src/` and `src/../src` are `src`, `.` is `""`. `None`
 /// when `value` is absolute or the result leaves the root.
-fn join_in_root(dir: &str, value: &str) -> Option<String> {
+pub(crate) fn join_in_root(dir: &str, value: &str) -> Option<String> {
   if value.starts_with(['/', '\\']) || Path::new(value).is_absolute() || value.contains(':') {
     return None;
   }
@@ -246,12 +264,14 @@ impl TsConfig {
       }
       let prefix_norm = prefix.replace("/*", "/");
       let target_norm = target.replace("/*", "/");
-      let target_norm = target_norm.trim_start_matches("./");
-      let combined = if base.is_empty() {
-        target_norm.to_string()
-      } else {
-        format!("{base}/{target_norm}")
+      // `configs/../src/` is the index key `src/`. A target that leaves
+      // the root names no project file.
+      let Some(mut combined) = join_in_root(base, &target_norm) else {
+        continue;
       };
+      if target_norm.ends_with('/') && !combined.is_empty() {
+        combined.push('/');
+      }
       out.push((prefix_norm, combined));
     }
     out

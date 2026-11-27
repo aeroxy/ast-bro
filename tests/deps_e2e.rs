@@ -1459,3 +1459,120 @@ fn a_javascript_project_reads_its_base_url_from_jsconfig() {
     edges
   );
 }
+
+#[test]
+fn a_shared_base_config_keeps_its_settings_under_a_later_parent() {
+  // The root extends `[a, b]`, and both extend `shared`. `a` overrides
+  // the `baseUrl` that `shared` sets; `b` inherits it, and the later
+  // entry wins, as in `tsc`.
+  let tmp = tempfile::tempdir().unwrap();
+  let root = tmp.path();
+  base_url_fixture(root);
+  write_in(root, "lib/lib/helpers.ts", "export const h = 2;\n");
+  write_in(
+    root,
+    "tsconfig.json",
+    r#"{ "extends": ["./configs/a.json", "./configs/b.json"] }"#,
+  );
+  write_in(
+    root,
+    "configs/shared.json",
+    r#"{ "compilerOptions": { "baseUrl": "../src" } }"#,
+  );
+  write_in(
+    root,
+    "configs/a.json",
+    r#"{ "extends": "./shared.json", "compilerOptions": { "baseUrl": "../lib" } }"#,
+  );
+  write_in(root, "configs/b.json", r#"{ "extends": "./shared.json" }"#);
+  let edges = incremental_matches_cold(root, |root| write_in(root, "src/d.ts", "\n"));
+  assert!(
+    has_edge(&edges, "src/app.ts", "src/lib/helpers.ts"),
+    "{}",
+    edges
+  );
+  assert!(
+    !has_edge(&edges, "src/app.ts", "lib/lib/helpers.ts"),
+    "{}",
+    edges
+  );
+}
+
+#[test]
+fn a_paths_target_that_leaves_its_config_directory_names_the_file() {
+  // No `baseUrl`: the `paths` targets resolve against the config that
+  // sets them, and `../src/app/*` from `configs/` is `src/app/*`.
+  let tmp = tempfile::tempdir().unwrap();
+  let root = tmp.path();
+  base_url_fixture(root);
+  write_in(
+    root,
+    "tsconfig.json",
+    r#"{ "extends": "./configs/base.json" }"#,
+  );
+  write_in(
+    root,
+    "configs/base.json",
+    r#"{ "compilerOptions": { "paths": { "@app/*": ["../src/app/*"] } } }"#,
+  );
+  let edges = incremental_matches_cold(root, |root| write_in(root, "src/d.ts", "\n"));
+  assert!(
+    has_edge(&edges, "src/app.ts", "src/app/util.ts"),
+    "{}",
+    edges
+  );
+}
+
+#[test]
+fn a_base_config_that_stops_parsing_reaches_the_cached_graph() {
+  // `configs/base.json` is valid, then is not: a cold build then reads
+  // no `baseUrl`, and the update must see the edit.
+  let tmp = tempfile::tempdir().unwrap();
+  let root = tmp.path();
+  base_url_fixture(root);
+  write_in(
+    root,
+    "tsconfig.json",
+    r#"{ "extends": "./configs/base.json" }"#,
+  );
+  write_in(
+    root,
+    "configs/base.json",
+    r#"{ "compilerOptions": { "baseUrl": "../src" } }"#,
+  );
+  let edges = incremental_matches_cold(root, |root| {
+    write_in(
+      root,
+      "configs/base.json",
+      r#"{ "compilerOptions": { "baseUrl": "#,
+    )
+  });
+  assert!(
+    !has_edge(&edges, "src/app.ts", "src/lib/helpers.ts"),
+    "{}",
+    edges
+  );
+}
+
+#[test]
+fn a_base_url_import_with_a_parent_segment_names_the_file() {
+  let tmp = tempfile::tempdir().unwrap();
+  let root = tmp.path();
+  base_url_fixture(root);
+  write_in(
+    root,
+    "src/other.ts",
+    "import { u } from \"lib/../app/util\";\n",
+  );
+  write_in(
+    root,
+    "tsconfig.json",
+    r#"{ "compilerOptions": { "baseUrl": "src" } }"#,
+  );
+  let edges = incremental_matches_cold(root, |root| write_in(root, "src/d.ts", "\n"));
+  assert!(
+    has_edge(&edges, "src/other.ts", "src/app/util.ts"),
+    "{}",
+    edges
+  );
+}
