@@ -121,10 +121,10 @@ pub fn resolve(spec: &str, ctx: &ResolveCtx<'_>, idx: &SuffixIndex) -> Option<Pa
     // package, and each miss would stat every extension and index file.
     // It holds what a cold build walks, which is all a `baseUrl` import
     // can reach without the fallback it replaced.
+    // The index keys are normalised: `lib/../util` is `util`.
     let base = ctx.base_url?;
-    return probe_path(&idx.root.join(base).join(spec), ctx, |p| {
-      idx.by_file.contains_key(p)
-    });
+    let target = crate::deps::manifest::join_in_root(base, spec)?;
+    return probe_path(&idx.root.join(target), ctx, |p| idx.by_file.contains_key(p));
   }
 
   // Go `import "mymod/pkg/foo"` — strip the module prefix. The module may
