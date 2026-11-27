@@ -6557,9 +6557,21 @@ fn typescript_an_aliased_import_of_a_deleted_file_matches_a_cold_build() {
   };
   write(&root.join("src/a.ts"), "export function other() {}\n");
   assert_eq!(after(root), vec![pair("src/b.ts::real", "Exact")]);
-  // Back to the resolved edge, then the file goes.
+  // The edge now targets `b.ts::real`, which outlives `a.ts`: the import
+  // decides, not whether the target is still there.
+  std::fs::remove_file(root.join("src/a.ts")).unwrap();
+  assert_eq!(after(root), vec![pair("[unresolved] alias", "Ambiguous")]);
+  // An edge the update itself re-extracted carries its binding too.
   write(&root.join("src/a.ts"), "export function real() {}\n");
   callee_targets(root, "go", true);
+  write(
+    &root.join("src/c.ts"),
+    "import { real as alias } from \"./a\"\n\nexport function go() {\n  alias()\n}\n// edited\n",
+  );
+  assert_eq!(
+    callee_targets(root, "go", false),
+    vec![pair("src/a.ts::real", "Exact")]
+  );
   std::fs::remove_file(root.join("src/a.ts")).unwrap();
   assert_eq!(after(root), vec![pair("[unresolved] alias", "Ambiguous")]);
 }
@@ -6597,4 +6609,32 @@ fn rust_an_import_names_a_module_level_declaration_not_a_nested_one() {
     callee_targets(root, "nested", true),
     vec![pair("src/a.rs::inner::real", "Exact")]
   );
+}
+
+#[test]
+fn typescript_a_barrel_that_starts_declaring_a_name_takes_its_importers() {
+  // `b.ts` re-exports `real` from `a.ts`, then declares its own. The
+  // importer is unchanged and its target still exists, so only resolving
+  // the import again finds that `./b` now declares the name (#91).
+  let tmp = tempfile::tempdir().unwrap();
+  let root = tmp.path();
+  std::fs::create_dir_all(root.join(".git")).unwrap();
+  write(&root.join("src/a.ts"), "export function real() {}\n");
+  write(&root.join("src/b.ts"), "export { real } from \"./a\"\n");
+  write(
+    &root.join("src/c.ts"),
+    "import { real } from \"./b\"\n\nexport function go() {\n  real()\n}\n",
+  );
+  assert_eq!(
+    callee_targets(root, "go", true),
+    vec![pair("src/a.ts::real", "Exact")]
+  );
+  write(&root.join("src/b.ts"), "export function real() {}\n");
+  let incremental = callee_targets(root, "go", false);
+  let cold = callee_targets(root, "go", true);
+  assert_eq!(
+    incremental, cold,
+    "a partial update and a cold build diverged"
+  );
+  assert_eq!(cold, vec![pair("src/b.ts::real", "Exact")]);
 }

@@ -166,11 +166,11 @@ pub(crate) fn patch(
 }
 
 fn apply_delta(graph: &mut UnifiedGraph, root: &Path, delta: &Delta) -> bool {
-  if apply_delta_to_deps(&mut graph.deps, root, delta).is_err() {
+  let Ok(imports) = apply_delta_to_deps(&mut graph.deps, root, delta) else {
     return false;
-  }
+  };
   if let Some(calls) = graph.calls.as_mut() {
-    apply_delta_to_calls(calls, &graph.deps, root, delta);
+    apply_delta_to_calls(calls, &graph.deps, &imports, root, delta);
   }
   true
 }
