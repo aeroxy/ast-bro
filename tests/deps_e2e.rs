@@ -1576,3 +1576,37 @@ fn a_base_url_import_with_a_parent_segment_names_the_file() {
     edges
   );
 }
+
+#[test]
+fn a_base_url_import_finds_each_file_form_the_probe_tries() {
+  // A `.d.ts` file, a spec with its own extension, and a directory's
+  // `index.ts` or `index.d.ts`, each under `baseUrl`.
+  let tmp = tempfile::tempdir().unwrap();
+  let root = tmp.path();
+  write_in(root, "src/types/env.d.ts", "export type E = 1;\n");
+  write_in(root, "src/lib/x.js", "export const x = 1;\n");
+  write_in(root, "src/ui/index.ts", "export const u = 1;\n");
+  write_in(root, "src/decl/index.d.ts", "export type D = 1;\n");
+  write_in(
+    root,
+    "src/app/main.ts",
+    "import { E } from \"types/env\";\nimport { x } from \"lib/x.js\";\nimport { u } from \"ui\";\nimport { D } from \"decl\";\n",
+  );
+  write_in(
+    root,
+    "tsconfig.json",
+    r#"{ "compilerOptions": { "baseUrl": "src" } }"#,
+  );
+  let edges = incremental_matches_cold(root, |root| write_in(root, "src/d.ts", "\n"));
+  for target in [
+    "src/types/env.d.ts",
+    "src/lib/x.js",
+    "src/ui/index.ts",
+    "src/decl/index.d.ts",
+  ] {
+    assert!(
+      has_edge(&edges, "src/app/main.ts", target),
+      "{target}: {edges}"
+    );
+  }
+}

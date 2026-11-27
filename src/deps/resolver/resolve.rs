@@ -118,12 +118,16 @@ pub fn resolve(spec: &str, ctx: &ResolveCtx<'_>, idx: &SuffixIndex) -> Option<Pa
       }
     }
     // The index answers from memory: a bare specifier is most often a
-    // package, and each miss would stat every extension and index file.
+    // package, and each miss would stat every extension and index file;
+    // `may_name_an_indexed_file` rules most misses out first.
     // It holds what a cold build walks, which is all a `baseUrl` import
     // can reach without the fallback it replaced.
     // The index keys are normalised: `lib/../util` is `util`.
     let base = ctx.base_url?;
     let target = crate::deps::manifest::join_in_root(base, spec)?;
+    if !may_name_an_indexed_file(idx, &target) {
+      return None;
+    }
     return probe_path(&idx.root.join(target), ctx, |p| idx.by_file.contains_key(p));
   }
 
@@ -404,6 +408,33 @@ fn probe_path(
     }
   }
   None
+}
+
+/// Whether a `baseUrl` candidate (`rel`, root-relative) can name an
+/// indexed file at all. The suffix index keys a file by its path without
+/// the last extension, so every file `probe_path` could find has one of
+/// these keys: `rel` (`rel.ts`), `rel.d` (`rel.d.ts`), `rel/index`,
+/// `rel/index.d`, or `rel` without its own extension (`lib/x.js`). Most
+/// bare specifiers are packages, and ruling one out takes a few short
+/// lookups where the probe builds and hashes up to 21 absolute paths, for
+/// every call through the import. An Elixir file is in `by_file` but not
+/// in `by_suffix`; no TS import names one.
+fn may_name_an_indexed_file(idx: &SuffixIndex, rel: &str) -> bool {
+  let index = if rel.is_empty() {
+    "index".to_string()
+  } else {
+    format!("{rel}/index")
+  };
+  let without_ext = rel
+    .rsplit_once('.')
+    .filter(|(_, ext)| !ext.contains('/'))
+    .map(|(stem, _)| stem);
+  let has = |key: &str| idx.by_suffix.contains_key(key);
+  has(rel)
+    || has(&format!("{rel}.d"))
+    || has(&index)
+    || has(&format!("{index}.d"))
+    || without_ext.is_some_and(has)
 }
 
 fn with_ext(p: &Path, ext: &str) -> PathBuf {
