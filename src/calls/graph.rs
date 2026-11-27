@@ -139,11 +139,12 @@ pub struct CallEdge {
   /// receiver up in the same scopes. Same no-skip rule as `receiver`.
   #[serde(default)]
   pub nesting: Vec<String>,
-  /// The import binding the call resolved through (`real as alias` from
-  /// `./a`), when it did. A cold build looks the call up by it, so when
-  /// the target goes the incremental update resolves the import again
-  /// rather than by the target's name: with `./a` gone the call is to
-  /// `alias`, not to some other `real`. Same no-skip rule as `receiver`.
+  /// The import binding pass A looked the call up by (`real as alias`
+  /// from `./a`), whether or not `./a` is a project file. The incremental
+  /// update resolves the import again rather than by the target's name:
+  /// with `./a` gone the call is to `alias`, not to some other `real`, and
+  /// once `./a` is back the call is to its `real` again, although the
+  /// caller is not extracted again. Same no-skip rule as `receiver`.
   #[serde(default)]
   pub import: Option<crate::core::ImportBinding>,
 }
