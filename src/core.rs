@@ -44,13 +44,15 @@ pub const JSON_SCHEMA_RUN: &str = "ast-bro.run.v1";
 /// files again (#93); v11 adds `Imported::unless_listed` to the call
 /// edges, for an Elixir `except:` re-import after an `only:` list, and
 /// `CallEdge::nesting`, the scopes a Ruby constant is looked up in when
-/// a class is named from the top (`class ::Top`).
+/// a class is named from the top (`class ::Top`); v12 adds
+/// `CallEdge::import`, the binding a call resolved through, so an
+/// incremental update resolves the import again when its target goes.
 ///
 /// Since v9 the cache also stores the crate version, and another version's
 /// cache is rebuilt (#81). So bump this only when the layout changes: an
 /// extraction change reaches every file with the next release. Two builds
 /// of one version share a cache; `--rebuild` covers that during review.
-pub const JSON_SCHEMA_GRAPH_INDEX: &str = "ast-bro.graph-index.v11";
+pub const JSON_SCHEMA_GRAPH_INDEX: &str = "ast-bro.graph-index.v12";
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Copy, Default)]
 pub enum DeclarationKind {
@@ -358,7 +360,7 @@ fn _call_kind_is_default(k: &CallKind) -> bool {
 /// One `import` / `use` / `using` binding from a source file. Populated by
 /// adapters; consumed by the call-graph resolver in pass A and useful as
 /// extra signal for downstream consumers.
-#[derive(Debug, Clone, Serialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ImportBinding {
   /// Local name visible in this file: `Foo`, `bar`, `pd` (in
   /// `import pandas as pd`).

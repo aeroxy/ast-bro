@@ -6526,6 +6526,45 @@ fn typescript_an_import_never_binds_to_a_method_of_the_same_name() {
 }
 
 #[test]
+fn typescript_an_aliased_import_of_a_deleted_file_matches_a_cold_build() {
+  // `real as alias` from `./a`, while `b.ts` has a `real` of its own. The
+  // update used to demote the edge to its target's name, `real`, and bind
+  // it to `b.ts::real`; a cold build knows the call by the import. Now
+  // the update resolves the import again: while `a.ts` is there without
+  // a `real` the call is to some other `real`, and once it is gone the
+  // call is to `alias`, which nothing declares.
+  let tmp = tempfile::tempdir().unwrap();
+  let root = tmp.path();
+  std::fs::create_dir_all(root.join(".git")).unwrap();
+  write(&root.join("src/a.ts"), "export function real() {}\n");
+  write(&root.join("src/b.ts"), "export function real() {}\n");
+  write(
+    &root.join("src/c.ts"),
+    "import { real as alias } from \"./a\"\n\nexport function go() {\n  alias()\n}\n",
+  );
+  assert_eq!(
+    callee_targets(root, "go", true),
+    vec![pair("src/a.ts::real", "Exact")]
+  );
+  let after = |root: &std::path::Path| {
+    let incremental = callee_targets(root, "go", false);
+    let cold = callee_targets(root, "go", true);
+    assert_eq!(
+      incremental, cold,
+      "a partial update and a cold build diverged"
+    );
+    cold
+  };
+  write(&root.join("src/a.ts"), "export function other() {}\n");
+  assert_eq!(after(root), vec![pair("src/b.ts::real", "Exact")]);
+  // Back to the resolved edge, then the file goes.
+  write(&root.join("src/a.ts"), "export function real() {}\n");
+  callee_targets(root, "go", true);
+  std::fs::remove_file(root.join("src/a.ts")).unwrap();
+  assert_eq!(after(root), vec![pair("[unresolved] alias", "Ambiguous")]);
+}
+
+#[test]
 fn rust_an_import_names_a_module_level_declaration_not_a_nested_one() {
   // `src/a.rs` re-exports `real` from `src/b.rs` and also has a `real`
   // nested in `mod inner`. `use crate::a::real` names the re-export; the

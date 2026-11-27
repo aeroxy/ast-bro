@@ -212,6 +212,12 @@ pub fn apply_delta_to_calls(calls: &mut CallGraph, deps: &DepGraph, root: &Path,
     .chain(calls.types.keys())
     .cloned()
     .collect();
+  //    An edge pass A resolved through an import resolves that import
+  //    again, as a cold build does: the module may declare the name
+  //    elsewhere, re-export it, or be gone, and then the call is to the
+  //    name the file wrote (`alias`), not to another file's `real`.
+  //    The index for it is built only when such an edge goes stale.
+  let mut import_ctx = None;
   for edges in calls.forward.values_mut() {
     for e in edges.iter_mut() {
       // Step 9 re-resolves every Elixir edge from its whole target,
@@ -222,12 +228,41 @@ pub fn apply_delta_to_calls(calls: &mut CallGraph, deps: &DepGraph, root: &Path,
         continue;
       }
       let demote = matches!(&e.target, CallTarget::Resolved(qn) if !known_targets.contains(qn));
-      if demote {
-        let bare = e.target.name_or_raw();
-        e.target = CallTarget::Bare(bare);
-        e.confidence = crate::calls::graph::Confidence::Ambiguous;
-        e.candidates.clear();
+      if !demote {
+        continue;
       }
+      e.confidence = crate::calls::graph::Confidence::Ambiguous;
+      e.candidates.clear();
+      let Some(binding) = &e.import else {
+        e.target = CallTarget::Bare(e.target.name_or_raw());
+        continue;
+      };
+      let (aliases, idx) =
+        import_ctx.get_or_insert_with(|| (detect_aliases(root), build_suffix_index(root)));
+      let from_file = root.join(&e.file);
+      e.target = match resolve::resolve_via_imports(
+        binding,
+        &from_file,
+        crate::deps::resolver::Lang::from_path(&from_file),
+        aliases,
+        idx,
+        root,
+        &calls.symbol_table,
+        &calls.type_by_name,
+        &calls.callable_meta,
+      ) {
+        resolve::Imported::Declared(target) => {
+          e.confidence = crate::calls::graph::Confidence::Exact;
+          CallTarget::Resolved(target)
+        }
+        resolve::Imported::Undeclared(name) => CallTarget::Bare(name),
+        // What a cold build records: the local name, and no binding.
+        resolve::Imported::Outside => {
+          let local = binding.local.clone();
+          e.import = None;
+          CallTarget::Bare(local)
+        }
+      };
     }
   }
 

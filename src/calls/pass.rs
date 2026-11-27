@@ -50,6 +50,9 @@ pub struct RawEdge {
   /// inside Ruby's `class ::Top` in `module Outer`, `Top` and then
   /// `Outer`. Empty otherwise.
   pub nesting: Vec<String>,
+  /// The import binding pass A resolved the call through; see
+  /// `CallEdge::import`.
+  pub import: Option<ImportBinding>,
 }
 
 pub fn qn_from(rel_file: &str, parents: &[String]) -> Qn {
@@ -91,5 +94,6 @@ pub(crate) fn raw_to_edge(
     imports: raw.imports,
     arity: raw.arity,
     nesting: raw.nesting,
+    import: raw.import,
   }
 }

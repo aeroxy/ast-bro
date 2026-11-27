@@ -569,6 +569,7 @@ mod tests {
       imports: Vec::new(),
       arity: None,
       nesting: Vec::new(),
+      import: None,
     }
   }
 
