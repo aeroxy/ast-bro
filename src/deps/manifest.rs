@@ -193,11 +193,17 @@ fn load_ts_config(root: &Path, path: &Path, cfg: &mut TsConfig, chain: &mut Vec<
   let Some(co) = v.get("compilerOptions") else {
     return;
   };
-  if let Some(base) = co.get("baseUrl").and_then(|x| x.as_str()) {
-    cfg.base_url = Some(join_in_root(&dir, base));
+  // An explicit `null` clears the inherited value, as in `tsc`; an
+  // absent property keeps it.
+  match co.get("baseUrl") {
+    Some(serde_json::Value::Null) => cfg.base_url = None,
+    Some(serde_json::Value::String(base)) => cfg.base_url = Some(join_in_root(&dir, base)),
+    _ => {}
   }
-  if let Some(paths) = co.get("paths").and_then(|x| x.as_object()) {
-    cfg.paths = Some((paths.clone(), dir));
+  match co.get("paths") {
+    Some(serde_json::Value::Null) => cfg.paths = None,
+    Some(serde_json::Value::Object(paths)) => cfg.paths = Some((paths.clone(), dir)),
+    _ => {}
   }
 }
 
