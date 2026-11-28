@@ -1440,6 +1440,64 @@ fn a_missing_base_url_keeps_the_inherited_setting() {
 }
 
 #[test]
+fn a_null_paths_clears_only_the_inherited_aliases() {
+  // `"paths": null` on its own: `@app/util` has no alias left, while the
+  // inherited `baseUrl` still makes `lib/helpers` `src/lib/helpers.ts`.
+  let tmp = tempfile::tempdir().unwrap();
+  let root = tmp.path();
+  base_url_fixture(root);
+  write_in(
+    root,
+    "configs/base.json",
+    r#"{ "compilerOptions": { "baseUrl": "../src", "paths": { "@app/*": ["app/*"] } } }"#,
+  );
+  write_in(
+    root,
+    "tsconfig.json",
+    r#"{ "extends": "./configs/base.json", "compilerOptions": { "paths": null } }"#,
+  );
+  let edges = incremental_matches_cold(root, |root| write_in(root, "src/d.ts", "\n"));
+  assert!(
+    has_edge(&edges, "src/app.ts", "src/lib/helpers.ts"),
+    "{edges}"
+  );
+  assert!(
+    !has_edge(&edges, "src/app.ts", "src/app/util.ts"),
+    "{edges}"
+  );
+}
+
+#[test]
+fn a_null_base_url_leaves_the_inherited_paths_under_their_own_config() {
+  // `"baseUrl": null` on its own: `lib/helpers` is no longer under `src/`,
+  // and with no `baseUrl` the inherited `paths` target resolves against the
+  // directory of the config that sets it, so `@app/util` is
+  // `configs/app/util.ts`, not `src/app/util.ts`.
+  let tmp = tempfile::tempdir().unwrap();
+  let root = tmp.path();
+  base_url_fixture(root);
+  write_in(root, "configs/app/util.ts", "export const u = 3;\n");
+  write_in(
+    root,
+    "configs/base.json",
+    r#"{ "compilerOptions": { "baseUrl": "../src", "paths": { "@app/*": ["./app/*"] } } }"#,
+  );
+  write_in(
+    root,
+    "tsconfig.json",
+    r#"{ "extends": "./configs/base.json", "compilerOptions": { "baseUrl": null } }"#,
+  );
+  let edges = incremental_matches_cold(root, |root| write_in(root, "src/d.ts", "\n"));
+  assert!(
+    has_edge(&edges, "src/app.ts", "configs/app/util.ts"),
+    "{edges}"
+  );
+  for target in ["src/lib/helpers.ts", "src/app/util.ts"] {
+    assert!(!has_edge(&edges, "src/app.ts", target), "{target}: {edges}");
+  }
+}
+
+#[test]
 fn a_non_ascii_base_url_names_its_directory() {
   let tmp = tempfile::tempdir().unwrap();
   let root = tmp.path();
