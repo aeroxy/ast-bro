@@ -1387,6 +1387,59 @@ fn a_base_url_is_read_from_a_tsconfig_saved_with_a_byte_order_mark() {
 }
 
 #[test]
+fn a_null_base_url_or_paths_clears_the_inherited_setting() {
+  // `tsc` clears an inherited `baseUrl` or `paths` on an explicit
+  // `null`. A root `lib/helpers.ts` and `app/util.ts` would otherwise
+  // be the targets under the cleared `"baseUrl": "."`.
+  let tmp = tempfile::tempdir().unwrap();
+  let root = tmp.path();
+  base_url_fixture(root);
+  write_in(root, "lib/helpers.ts", "export const h = 2;\n");
+  write_in(root, "app/util.ts", "export const u = 2;\n");
+  write_in(
+    root,
+    "configs/base.json",
+    r#"{ "compilerOptions": { "baseUrl": "..", "paths": { "@app/*": ["app/*"] } } }"#,
+  );
+  write_in(
+    root,
+    "tsconfig.json",
+    r#"{ "extends": "./configs/base.json", "compilerOptions": { "baseUrl": null, "paths": null } }"#,
+  );
+  let edges = incremental_matches_cold(root, |root| write_in(root, "src/d.ts", "\n"));
+  for target in [
+    "lib/helpers.ts",
+    "app/util.ts",
+    "src/lib/helpers.ts",
+    "src/app/util.ts",
+  ] {
+    assert!(!has_edge(&edges, "src/app.ts", target), "{target}: {edges}");
+  }
+}
+
+#[test]
+fn a_missing_base_url_keeps_the_inherited_setting() {
+  // An absent property is not `null`: the child inherits.
+  let tmp = tempfile::tempdir().unwrap();
+  let root = tmp.path();
+  base_url_fixture(root);
+  write_in(
+    root,
+    "configs/base.json",
+    r#"{ "compilerOptions": { "baseUrl": "../src", "paths": { "@app/*": ["app/*"] } } }"#,
+  );
+  write_in(
+    root,
+    "tsconfig.json",
+    r#"{ "extends": "./configs/base.json", "compilerOptions": { "strict": true } }"#,
+  );
+  let edges = incremental_matches_cold(root, |root| write_in(root, "src/d.ts", "\n"));
+  for target in ["src/lib/helpers.ts", "src/app/util.ts"] {
+    assert!(has_edge(&edges, "src/app.ts", target), "{target}: {edges}");
+  }
+}
+
+#[test]
 fn a_non_ascii_base_url_names_its_directory() {
   let tmp = tempfile::tempdir().unwrap();
   let root = tmp.path();
